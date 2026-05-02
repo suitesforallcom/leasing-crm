@@ -33498,6 +33498,40 @@ function renderUnits() {
     }));
   });
 
+  // === PASS 2.6: tenant-group highlight overlay ===
+  // PASS 2's wall lines are drawn ON TOP of the rect, so the rect's
+  // own stroke (which my .unit-group--group-active CSS does color
+  // purple) is hidden by the grey wall line. For axis-aligned units
+  // in the active group we re-draw the bbox edges in purple OVER
+  // the grey walls so the highlight is actually visible. Polygon
+  // and rotated units already render their own purple stroke via
+  // the rect/polygon element directly (no wall pass interferes), so
+  // they're skipped here.
+  if (_activeGroupId) {
+    units.forEach(u => {
+      if (u.groupId !== _activeGroupId) return;
+      if (u.rotation && u.rotation !== 0) return;
+      if (Array.isArray(u.points) && u.points.length >= 3) return;
+      const x1 = u.x, y1 = u.y, x2 = u.x + u.w, y2 = u.y + u.h;
+      const edges = [
+        ['H', y1, x1, x2],
+        ['H', y2, x1, x2],
+        ['V', x1, y1, y2],
+        ['V', x2, y1, y2],
+      ];
+      edges.forEach(e => {
+        const key = e.join('|');
+        const line = makeEdgeLine(key, {
+          stroke: '#a855f7', strokeWidth: '3.5', opacity: '1', linecap: 'round',
+        });
+        // Subtle outer glow so the highlight reads as one continuous
+        // ring around the leased area, not just thicker grey walls.
+        line.setAttribute('filter', 'drop-shadow(0 0 2px rgba(168,85,247,0.45))');
+        unitsG.appendChild(line);
+      });
+    });
+  }
+
   // === PASS 2.5: window stripes — draw AFTER walls so they sit on top.
   // Walls get rendered with opacity 0.7 and stroke-width 1; if we drew
   // stripes inside the unit group they'd be covered. Rendering here
