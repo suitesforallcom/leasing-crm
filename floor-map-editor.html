@@ -10705,6 +10705,18 @@
   body.no-finance .rent-strip,
   body.no-finance .stat-val.money,
   body.no-finance .sfa-finance-only { display: none !important; }
+  /* Floor-map SVG financial signals — hidden from teamviewer because
+     they reveal payment state (overdue, auto-charge failed, autopay
+     errors). The legacy 2×2 $-pill grid + compact-mode overdue dot
+     are gated in JS instead because they share generic classes with
+     non-financial badges (L lease pill, sigPending dot, new-tenant
+     star). Lease/onboarding signals stay visible — those are
+     operational, not financial. */
+  body.no-finance .unit-overdue-mark,
+  body.no-finance .unit-overdue-mark-text,
+  body.no-finance .unit-charge-failed-mark,
+  body.no-finance .unit-charge-failed-mark-text,
+  body.no-finance .unit-auto-err-overlay { display: none !important; }
   /* Hide the parent .stat-card of a hidden money stat-val so we don't leave empty cards */
   body.no-finance .stat-card:has(.stat-val.money) { display: none !important; }
   /* Hide the money-focused settings section for teamviewers */
@@ -33133,7 +33145,11 @@ function renderUnits() {
       };
 
       // Anchors inset so they don't collide with the window stripe (top-edge).
-      if (isOverdue) {
+      // Finance gate: overdue is a financial signal — hidden from
+      // teamviewer (and other no-finance roles). sigPending is
+      // operational (lease unsigned), not financial — always shown.
+      const _seeFin = (typeof canSeeFinance === 'function') ? canSeeFinance() : true;
+      if (isOverdue && _seeFin) {
         drawDot(u.w - 11, 11, '#E11D48', null, '!', 'Overdue rent');
       } else if (sigPending) {
         drawDot(u.w - 11, 11, '#0EA5E9', null, '~', 'Awaiting signature');
@@ -33248,9 +33264,15 @@ function renderUnits() {
       // "this is a recently onboarded tenant"). Star + pulsing ring
       // removed to reduce color noise and let status pills stand out.
       if (leaseS) drawPill(cL, cTop, leaseS.color, 'L', leaseS.label, leaseS.opacity);
-      // Bottom row — two $ pills, tooltip distinguishes them
-      if (rentS) drawPill(cL, cBot, rentS.color, '$', 'Rent · ' + rentS.label, rentS.opacity);
-      if (depS)  drawPill(cR, cBot, depS.color,  '$', 'Deposit · ' + depS.label, depS.opacity);
+      // Bottom row — two $ pills, tooltip distinguishes them.
+      // Finance gate: $ pills reveal payment state (rent paid /
+      // overdue, deposit paid / outstanding) — hidden from teamviewer.
+      // L (lease) pill is operational, stays visible.
+      const _legSeeFin = (typeof canSeeFinance === 'function') ? canSeeFinance() : true;
+      if (_legSeeFin) {
+        if (rentS) drawPill(cL, cBot, rentS.color, '$', 'Rent · ' + rentS.label, rentS.opacity);
+        if (depS)  drawPill(cR, cBot, depS.color,  '$', 'Deposit · ' + depS.label, depS.opacity);
+      }
 
       // Overdue alert overlay — bottom-right ⚠ marker only.
       // Pending onboarding ring — violet pulsing border on units where
