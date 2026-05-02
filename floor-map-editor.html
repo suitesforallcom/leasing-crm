@@ -55537,12 +55537,52 @@ function _buildNeedsAttention() {
   return { overdue, pending, dueSoon };
 }
 
+// Collapse multi-suite-lease entries into a single row — when a tenant
+// rents N suites under one group, surface them as one actionable line
+// (sum of rent, all suite IDs listed) instead of N separate rows that
+// clutter the queue. Ungrouped units pass through unchanged.
+function _collapseNeedsByGroup(items) {
+  const byGid = new Map();
+  const out = [];
+  for (const it of items) {
+    const gid = it.u && it.u.groupId;
+    if (!gid) { out.push(it); continue; }
+    if (byGid.has(gid)) {
+      const agg = byGid.get(gid);
+      agg.rent += +it.rent || 0;
+      agg.suiteIds.push(it.u.id);
+      agg.unitCount++;
+    } else {
+      const agg = {
+        ...it,
+        isGroup: true,
+        suiteIds: [it.u.id],
+        unitCount: 1,
+      };
+      // Prefer the primary unit as the row's u/b/f anchor (so jump-to
+      // and reminder actions land on the lease's source-of-truth suite).
+      const f = it.f;
+      const primary = (f && Array.isArray(f.units))
+        ? f.units.find(x => x.groupId === gid && x.groupRole === 'primary')
+        : null;
+      if (primary) agg.u = primary;
+      byGid.set(gid, agg);
+      out.push(agg);
+    }
+  }
+  return out;
+}
+
 function renderNeedsAttention() {
   const listEl = document.getElementById('needsAttentionList');
   const cntEl  = document.getElementById('needsAttentionCount');
   if (!listEl || !cntEl) return;
 
-  const { overdue, pending, dueSoon } = _buildNeedsAttention();
+  let { overdue, pending, dueSoon } = _buildNeedsAttention();
+  // Collapse group members so a multi-suite lease shows as one row.
+  overdue = _collapseNeedsByGroup(overdue);
+  pending = _collapseNeedsByGroup(pending);
+  dueSoon = _collapseNeedsByGroup(dueSoon);
   const total = overdue.length + pending.length + dueSoon.length;
   cntEl.textContent = total;
 
@@ -55573,11 +55613,23 @@ function renderNeedsAttention() {
     const moreCount = items.length - 4;
     const rows = visible.map(r => {
       const buildingFloorPayload = `'${esc(r.b?.id || '')}','${esc(r.f?.id || '')}','${esc(r.u?.id || '')}'`;
+      // Group label: "N suites · 121 · 133 · 134…" with full ID list in
+      // tooltip. Single label: "Suite 310" (unchanged for ungrouped).
+      const isGroup = r.isGroup === true && r.unitCount > 1;
+      const sortedIds = isGroup
+        ? r.suiteIds.slice().sort((a, c) => String(a).localeCompare(String(c)))
+        : null;
+      const headLabel = isGroup
+        ? `<span title="Suites: ${esc(sortedIds.join(', '))}">${r.unitCount} suites · ${esc(sortedIds.slice(0, 3).join(' · '))}${sortedIds.length > 3 ? '…' : ''}</span>`
+        : `Suite ${esc(r.u.id)}`;
+      const titleAttr = isGroup
+        ? `Open lease (primary suite ${esc(r.u.id)}) — ${r.unitCount} suites: ${esc(sortedIds.join(', '))}`
+        : `Open Suite ${esc(r.u.id)}`;
       return `
-        <div class="dash-needs-row" onclick="_dashOpenUnit(${buildingFloorPayload})" title="Open Suite ${esc(r.u.id)}">
+        <div class="dash-needs-row" onclick="_dashOpenUnit(${buildingFloorPayload})" title="${titleAttr}">
           <div class="dash-needs-rowmain">
-            <div class="dash-needs-suite">Suite ${esc(r.u.id)}<span class="dash-needs-tenant"> · ${esc(r.tenant || 'vacant')}</span></div>
-            <div class="dash-needs-rowsub">$${(+r.rent || 0).toLocaleString()} / mo</div>
+            <div class="dash-needs-suite">${headLabel}<span class="dash-needs-tenant"> · ${esc(r.tenant || 'vacant')}</span></div>
+            <div class="dash-needs-rowsub">$${(+r.rent || 0).toLocaleString()} / mo${isGroup ? ' total' : ''}</div>
           </div>
           <button class="dash-needs-action" onclick="event.stopPropagation(); _dashNeedsAction('${kind}', ${buildingFloorPayload})">${actionLabel}</button>
         </div>
