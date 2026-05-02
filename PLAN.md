@@ -49,7 +49,7 @@
 - [ ] **Send reminder via Stripe** — replace post-send "Send" buttons with "Send reminder" that calls `stripe.invoices.sendInvoice()` retry. Verify the email actually arrives.
 - [ ] **Invoice duplication guard** — block creating two rent invoices for same `(unitId, ym)` within 24h. Pre-flight check + clear error.
 - [ ] **Invoice naming with month** — change number format so rent invoices show `R-{suite}-{billingMonth}-{issuedDate}` (already done — verify display in all surfaces).
-- [ ] **Failed payment handling** — webhook handler for `invoice.payment_failed` already exists; surface in Move-in card with red badge "Payment failed N attempts" + manual "Retry" button.
+- [~] **Failed payment handling** — UI surfacing DONE in 4 layers: floor-map red `$` badge on units (`96cb219`), Rent Roll Suite cell + critical Stripe Status chip override (`cc37786`), Billing KPI clickable filter for "see N failures → show only those rows" (`1205e40`), real-time toast with Suite + Tenant + ym + amount + reason + "View →" jump button (`09771d5`). REMAINING: backend "Retry charge" endpoint via `stripe.invoices.pay()` + UI button (PAYMENT LOGIC — needs explicit approval per CLAUDE.md §7).
 - [ ] **Refund flow** — currently no UI. Add Refund button to PAID invoice rows in Invoice Report. Calls Stripe API, updates state, audits.
 - [ ] **Subscription detection** — for tenants on Stripe subscriptions, render subscription status in Move-in card instead of single-invoice flow.
 - [ ] **Smart Retries config** — surface Stripe's smart-retry settings in Settings → Billing so operator knows what's configured.
@@ -57,12 +57,13 @@
 
 ### B. Teamviewer role restrictions (Stage 2 finishup)
 
-- [ ] **Hide rent roll for teamviewer** — Reports → Rent Roll should be admin/manager only. Or at least redact rent column.
-- [ ] **Hide Stripe data for teamviewer** — Move-in card, Invoice History, Finance pane.
-- [ ] **Hide payment data for teamviewer** — Payment timeline, aging panel.
-- [ ] **Map view for teamviewer** — only floor plan + tenant names + lease end dates. No financials.
-- [ ] **Settings tabs for teamviewer** — only Templates + Help. Hide Billing, Integrations, Team, Data.
-- [ ] **Audit teamviewer access** — log every page load + tab open by teamviewer (consultant accountability).
+- [x] **Hide rent roll for teamviewer** — `applyRoleVisibility()` bounces from `rentroll`. CSS hides `#railRent`. Done before this session.
+- [x] **Hide Stripe data for teamviewer** — `body.no-finance` CSS hides `.revenue-block`, `.money-row`, `.rent-strip`, `.stat-val.money`, `.sfa-finance-only`. `showBilling()` gated by `canUseStripe()`. Floor-map financial signals hidden via CSS + JS gates in commit `a6ea72d`.
+- [x] **Hide payment data for teamviewer** — `applyRoleVisibility()` bounces from `payments`. CSS hides `#railPay`. Floor-map $ pills + overdue dot + auto-error overlay gated in `a6ea72d`.
+- [x] **Map view for teamviewer** — Floor plan only shows tenant names + lease/onboarding signals; financial signals (overdue mark, charge-failed badge, autopay error overlay, rent/deposit pills) hidden via CSS `body.no-finance` + JS `canSeeFinance()` gates (`a6ea72d`).
+- [x] **All Reports views gated for teamviewer** — `applyRoleVisibility()` bounce list extended to `home / billing / invoices / leases / stacking / commissions` in addition to `rentroll / payments`. Entry guards added to `showHome / showStackingPlan / showCommissions`. CSS hides rail icons `#railHome / #railBill / #railLeases / #railComm` (`b1c30f7`, 2026-05-02).
+- [ ] **Settings tabs for teamviewer** — only Templates + Help. Hide Billing, Integrations, Team, Data. NOT YET DONE.
+- [ ] **Audit teamviewer access** — log every page load + tab open by teamviewer (consultant accountability). NOT YET DONE.
 
 ### C. DocuSign — go deeper
 
@@ -75,13 +76,13 @@
 
 ### D. Reports — fill in gaps
 
-- [ ] **Vacancy report** — units vacant > N days, last-tenant info, market rent, days vacant trend.
-- [ ] **Move-out / move-in calendar** — next 30/60/90 day view of upcoming changes.
-- [ ] **Aging A/R report** — already in Payments view; add CSV export.
-- [ ] **P&L by month** — Revenue (paid invoices) - Refunds. Configurable.
-- [ ] **Tenant churn analytics** — % renewing vs not, by month / by suite size / by tenant tenure.
-- [ ] **Lease expiration calendar** — heat map of upcoming lease ends.
-- [ ] **Year-end financial export** — Schedule E -ready CSV.
+- [x] **Vacancy report** — Billing → Vacancy sub-tab. Suites with no active lease, sub-rooms of whole-rented parents excluded. KPIs (vacant suites/sqft/lost market rent/avg days), filters (search/min-days/building), days-vacant colour-coded ≥90/180/365, CSV. Days-vacant TREND deferred — needs snapshot store like revenue forecast (commit `33746b0`, 2026-05-02).
+- [x] **Move-out / move-in calendar** — Billing → Calendar sub-tab. Combined timeline of `u.until` (move-outs) + `u.leaseStart > now` (move-ins) within 30/60/90/180d window. KPIs split by direction with $ at-risk / incoming. Type pill, days countdown coloured, CSV (commit `2bcec76`, 2026-05-02).
+- [x] **Aging A/R CSV** — `exportAgingCsv` already shipped earlier; PLAN item was stale (no new commit needed, 2026-05-02).
+- [x] **P&L by month** — Billing → P&L sub-tab. Walks `u.payments[ym]` bucketed by `p.date` month. Revenue = status='paid', Bounced = status='bounced' (refunds proper not first-class — Stripe Dashboard handles them). Range 12/24mo/YTD/all-time, building filter, MoM trend column, footer Total, CSV (commit `0efd6bd`, 2026-05-02).
+- [ ] **Tenant churn analytics** — % renewing vs not, by month / by suite size / by tenant tenure. BLOCKED on snapshot store (need to capture lease-end events + outcome over time).
+- [ ] **Lease expiration heat map** — partial overlap with the Move-out half of the new Calendar. Reconsider scope: month-grid heatmap may still be a useful at-a-glance complement.
+- [x] **Year-end financial export — Schedule E CSV** — Button on P&L toolbar with year selector. Per-building rows mapped to IRS Form 1040 Schedule E Part I columns (Property/Address/Type=4 Commercial/Fair Rental Days/Rents Received line 3/expense placeholders lines 5-19/Income or Loss). TOTAL row + memo Bounced/Payments columns. Operator fills expense columns from their books (commit `a828012`, 2026-05-02).
 
 ### E. UX polish
 
