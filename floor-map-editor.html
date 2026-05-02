@@ -6751,10 +6751,17 @@
      uniform region. Without this, the .selected unit would keep its
      teal stroke and visually "stand out" from its siblings, defeating
      the point of the group-highlight. !important needed because the
-     base .selected rule (teal stroke) sits earlier in the cascade. */
-  .unit-group--group-active > .unit-rect {
+     base .selected rule (teal stroke) sits earlier in the cascade.
+     Multiple selectors cover both rect-based AND polygon-based units
+     (polygon units use a <polygon> element, not <rect>) and force-
+     override any inline `style` attribute set during render. */
+  .unit-group--group-active > .unit-rect,
+  .unit-group--group-active > rect.unit-rect,
+  .unit-group--group-active > polygon.unit-rect,
+  .unit-group--group-active > polygon {
     stroke: #a855f7 !important;
     stroke-width: 3.5 !important;
+    stroke-dasharray: none !important;
     filter: drop-shadow(0 0 4px rgba(168, 85, 247, 0.45)) !important;
   }
   .unit-group--in-tenant-group:not(.selected):not(.multi-selected) > .unit-rect {
