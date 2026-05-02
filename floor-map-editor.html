@@ -12535,6 +12535,7 @@
           <button class="bv-tab"        id="billTabContracts" onclick="setBillingTab('contracts')">Vendor contracts <span class="bv-tab-count" id="billContractCount">—</span></button>
           <button class="bv-tab"        id="billTabVacancy"   onclick="setBillingTab('vacancy')">Vacancy <span class="bv-tab-count" id="billVacancyCount">—</span></button>
           <button class="bv-tab"        id="billTabCalendar"  onclick="setBillingTab('calendar')">Calendar <span class="bv-tab-count" id="billCalendarCount">—</span></button>
+          <button class="bv-tab"        id="billTabPnl"       onclick="setBillingTab('pnl')">P&amp;L <span class="bv-tab-count" id="billPnlCount">—</span></button>
         </div>
         <div class="bv-tab-body">
 
@@ -13036,6 +13037,50 @@
             <div style="font-size: 34px; margin-bottom: 8px;">📅</div>
             <div style="font-size: 15px; font-weight: 600; margin-bottom: 6px;">Nothing scheduled</div>
             <div style="font-size: 12.5px;">No move-ins or move-outs in this window.</div>
+          </div>
+        </div>
+
+        <!-- P&L panel — monthly revenue (paid) minus bounced amounts.
+             Source = u.payments[ym] across all units. Bucketed by p.date
+             month (fall back to ym key). Configurable window (12 / 24 mo,
+             YTD, all-time). CSV export. Populated by renderPnlPanel(). -->
+        <div id="billingPnlPanel" style="display:none;">
+          <div class="billing-kpis" id="pnlKpis"></div>
+          <div class="ar-toolbar" style="margin-top: 6px;">
+            <div class="ar-toolbar-row">
+              <select id="pnlRange" class="ar-sel" onchange="renderPnlPanel()" title="Time range">
+                <option value="12">Last 12 months</option>
+                <option value="24" selected>Last 24 months</option>
+                <option value="ytd">Year to date</option>
+                <option value="all">All time (cap 60 mo)</option>
+              </select>
+              <select id="pnlBuilding" class="ar-sel" onchange="renderPnlPanel()" title="Filter by building">
+                <option value="">All buildings</option>
+              </select>
+              <div style="flex:1;"></div>
+              <button class="rr-btn ar-btn-sm" onclick="exportPnlCsv()" title="Export to CSV">⬇ CSV</button>
+            </div>
+          </div>
+          <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: auto; margin-top: 6px;">
+            <table class="inv-table" id="pnlTable">
+              <thead>
+                <tr>
+                  <th style="width: 110px;">Month</th>
+                  <th style="width: 110px; text-align: right;">Revenue</th>
+                  <th style="width: 110px; text-align: right;">Bounced</th>
+                  <th style="width: 110px; text-align: right;">Net</th>
+                  <th style="width: 80px; text-align: right;">Payments</th>
+                  <th style="text-align: right;">vs prior</th>
+                </tr>
+              </thead>
+              <tbody id="pnlTableBody"></tbody>
+              <tfoot id="pnlTableFoot"></tfoot>
+            </table>
+          </div>
+          <div id="pnlEmpty" style="display:none; padding:40px; text-align:center; color: var(--muted);">
+            <div style="font-size: 34px; margin-bottom: 8px;">📊</div>
+            <div style="font-size: 15px; font-weight: 600; margin-bottom: 6px;">No payments recorded</div>
+            <div style="font-size: 12.5px;">Once tenants pay, monthly revenue will appear here.</div>
           </div>
         </div>
         </div><!-- /bv-tab-body — wraps all four sub-panels above -->
@@ -71576,6 +71621,7 @@ function setBillingTab(tab) {
   document.getElementById('billTabContracts')?.classList.toggle('active', tab === 'contracts');
   document.getElementById('billTabVacancy')?.classList.toggle('active',   tab === 'vacancy');
   document.getElementById('billTabCalendar')?.classList.toggle('active',  tab === 'calendar');
+  document.getElementById('billTabPnl')?.classList.toggle('active',       tab === 'pnl');
   // Show the requested panel, hide the rest. Each panel is independent
   // and has its own render function — they don't share state.
   const tenantsPanel = document.getElementById('billingTenantsPanel');
@@ -71592,6 +71638,8 @@ function setBillingTab(tab) {
   if (vacancyPanel) vacancyPanel.style.display = tab === 'vacancy' ? '' : 'none';
   const calendarPanel = document.getElementById('billingCalendarPanel');
   if (calendarPanel) calendarPanel.style.display = tab === 'calendar' ? '' : 'none';
+  const pnlPanel = document.getElementById('billingPnlPanel');
+  if (pnlPanel) pnlPanel.style.display = tab === 'pnl' ? '' : 'none';
   if (tab === 'tenants')   renderTenantsPanelZip();  // ZIP-style — paints bvTenantsTable from state
   if (tab === 'invoices')  renderInvoicesPage();
   if (tab === 'aging')     renderAgingPanel();
@@ -71600,6 +71648,7 @@ function setBillingTab(tab) {
   if (tab === 'contracts') renderContractsPanel();
   if (tab === 'vacancy' && typeof renderVacancyPanel === 'function') renderVacancyPanel();
   if (tab === 'calendar' && typeof renderCalendarPanel === 'function') renderCalendarPanel();
+  if (tab === 'pnl' && typeof renderPnlPanel === 'function') renderPnlPanel();
   // Tab counts on the header (visible counters next to each tab name)
   try { _bvUpdateTabCounts(); } catch {}
   // Start/stop the 30s safety-net auto-refresh based on sub-tab.
@@ -71683,6 +71732,31 @@ function _bvUpdateTabCounts() {
       }
     }
     setCount('billCalendarCount', evt);
+  } catch {}
+  try {
+    // P&L counter — months in the last 12 with any paid payment activity.
+    // Cheap proxy for "is there data to look at"; renderPnlPanel re-derives
+    // the precise figures.
+    const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 12);
+    const months = new Set();
+    for (const b of (state.buildings || [])) {
+      if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
+      for (const f of (b.floors || [])) {
+        for (const u of (f.units || [])) {
+          const pays = u.payments || {};
+          for (const ym of Object.keys(pays)) {
+            const p = pays[ym];
+            if (!p || (p.status !== 'paid' && p.status !== 'bounced')) continue;
+            const t = (p.date && Date.parse(p.date)) || (ym && Date.parse(ym + '-01'));
+            if (!isNaN(t) && t >= cutoff.getTime()) {
+              const d = new Date(t);
+              months.add(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'));
+            }
+          }
+        }
+      }
+    }
+    setCount('billPnlCount', months.size);
   } catch {}
 }
 
@@ -72007,6 +72081,228 @@ function exportCalendarCsv() {
   const a = document.createElement('a');
   a.href = url;
   a.download = `move-calendar-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// =====================================================================
+// P&L by month — Revenue (sum of u.payments[ym].amount where status='paid')
+// minus bounced amounts (status='bounced' → bouncedAmount). Bucketed by
+// p.date month (preferred — actual cash date) or ym key fallback. Refunds
+// proper aren't a first-class concept yet; bounced is the closest negative.
+// =====================================================================
+function _pnlMonthKey(p, ym) {
+  if (p.date) {
+    const t = Date.parse(p.date);
+    if (!isNaN(t)) {
+      const d = new Date(t);
+      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+    }
+  }
+  return ym && /^\d{4}-\d{2}/.test(ym) ? ym.slice(0, 7) : null;
+}
+
+function _pnlCollect() {
+  const bldgFilter = document.getElementById('pnlBuilding')?.value || '';
+  const byMonth = new Map();   // mkey → { revenue, bounced, count }
+  const ensure = mkey => {
+    if (!byMonth.has(mkey)) byMonth.set(mkey, { mkey, revenue: 0, bounced: 0, count: 0 });
+    return byMonth.get(mkey);
+  };
+  for (const b of (state.buildings || [])) {
+    if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
+    if (bldgFilter && b.id !== bldgFilter) continue;
+    for (const f of (b.floors || [])) {
+      for (const u of (f.units || [])) {
+        const pays = u.payments || {};
+        for (const ym of Object.keys(pays)) {
+          const p = pays[ym];
+          if (!p) continue;
+          const mkey = _pnlMonthKey(p, ym);
+          if (!mkey) continue;
+          if (p.status === 'paid') {
+            const amt = +p.amount || 0;
+            if (amt > 0) {
+              const m = ensure(mkey);
+              m.revenue += amt;
+              m.count++;
+            }
+          } else if (p.status === 'bounced') {
+            const amt = +p.bouncedAmount || +p.amount || 0;
+            if (amt > 0) {
+              const m = ensure(mkey);
+              m.bounced += amt;
+            }
+          }
+        }
+      }
+    }
+  }
+  return byMonth;
+}
+
+function _pnlBuildRange(byMonth) {
+  const range = document.getElementById('pnlRange')?.value || '24';
+  const today = new Date();
+  let start;
+  if (range === 'ytd') {
+    start = new Date(today.getFullYear(), 0, 1);
+  } else if (range === 'all') {
+    let earliest = today;
+    for (const k of byMonth.keys()) {
+      const [y, m] = k.split('-').map(Number);
+      const d = new Date(y, m - 1, 1);
+      if (d < earliest) earliest = d;
+    }
+    const cap = new Date(today.getFullYear(), today.getMonth() - 60, 1);
+    start = earliest < cap ? cap : earliest;
+  } else {
+    const n = +range || 24;
+    start = new Date(today.getFullYear(), today.getMonth() - (n - 1), 1);
+  }
+  const months = [];
+  const cursor = new Date(start.getFullYear(), start.getMonth(), 1);
+  const end = new Date(today.getFullYear(), today.getMonth(), 1);
+  while (cursor <= end) {
+    const mkey = cursor.getFullYear() + '-' + String(cursor.getMonth() + 1).padStart(2, '0');
+    months.push(mkey);
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+  return months;
+}
+
+function _pnlPopulateBuildingSelect() {
+  const sel = document.getElementById('pnlBuilding');
+  if (!sel) return;
+  const cur = sel.value;
+  const seen = new Set();
+  const opts = ['<option value="">All buildings</option>'];
+  for (const b of (state.buildings || [])) {
+    if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
+    if (seen.has(b.id)) continue;
+    seen.add(b.id);
+    opts.push(`<option value="${esc(b.id)}">${esc(b.name || '(unnamed)')}</option>`);
+  }
+  sel.innerHTML = opts.join('');
+  if (cur && seen.has(cur)) sel.value = cur;
+}
+
+function renderPnlPanel() {
+  if (typeof canSeeFinance === 'function' && !canSeeFinance()) return;
+  _pnlPopulateBuildingSelect();
+  const byMonth = _pnlCollect();
+  const months = _pnlBuildRange(byMonth);
+
+  const rows = months.map(mk => {
+    const m = byMonth.get(mk) || { mkey: mk, revenue: 0, bounced: 0, count: 0 };
+    return Object.assign({}, m, { net: m.revenue - m.bounced });
+  });
+
+  const totalRevenue = rows.reduce((s, r) => s + r.revenue, 0);
+  const totalBounced = rows.reduce((s, r) => s + r.bounced, 0);
+  const totalNet     = totalRevenue - totalBounced;
+  const monthsWithRev = rows.filter(r => r.revenue > 0).length;
+  const avgRevenue   = monthsWithRev > 0 ? Math.round(totalRevenue / monthsWithRev) : 0;
+  const bestRow      = rows.reduce((best, r) => (r.net > (best?.net ?? -Infinity) ? r : best), null);
+
+  const fmt = n => '$' + Math.round(n).toLocaleString();
+  const fmtMonthLabel = mk => {
+    const [y, m] = mk.split('-').map(Number);
+    return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+  };
+
+  const kpis = document.getElementById('pnlKpis');
+  if (kpis) {
+    kpis.innerHTML = `
+      <div class="bv-kpi"><div class="bv-kpi-label">Total revenue</div><div class="bv-kpi-value" style="color:#16a34a;">${fmt(totalRevenue)}</div><div class="bv-kpi-sub">${rows.length} month${rows.length === 1 ? '' : 's'} in range</div></div>
+      <div class="bv-kpi"><div class="bv-kpi-label">Bounced</div><div class="bv-kpi-value bv-danger">${fmt(totalBounced)}</div><div class="bv-kpi-sub">subtracted from revenue</div></div>
+      <div class="bv-kpi"><div class="bv-kpi-label">Net</div><div class="bv-kpi-value">${fmt(totalNet)}</div><div class="bv-kpi-sub">avg ${fmt(avgRevenue)}/mo (months with activity)</div></div>
+      <div class="bv-kpi"><div class="bv-kpi-label">Best month</div><div class="bv-kpi-value">${bestRow && bestRow.net > 0 ? fmt(bestRow.net) : '—'}</div><div class="bv-kpi-sub">${bestRow && bestRow.net > 0 ? esc(fmtMonthLabel(bestRow.mkey)) : 'no activity yet'}</div></div>
+    `;
+  }
+
+  const body  = document.getElementById('pnlTableBody');
+  const foot  = document.getElementById('pnlTableFoot');
+  const empty = document.getElementById('pnlEmpty');
+  const table = document.getElementById('pnlTable');
+  if (!body) return;
+  if (totalRevenue === 0 && totalBounced === 0) {
+    body.innerHTML = '';
+    if (foot) foot.innerHTML = '';
+    if (empty) empty.style.display = '';
+    if (table) table.style.display = 'none';
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+  if (table) table.style.display = '';
+
+  // Newest first so the operator sees current month at the top.
+  const display = rows.slice().reverse();
+  let prevNet = null;
+  body.innerHTML = display.map(r => {
+    const fmtCell = n => n > 0 ? fmt(n) : '<span style="color:var(--muted);">—</span>';
+    let trend = '';
+    if (prevNet != null) {
+      if (prevNet === 0 && r.net === 0) trend = '';
+      else if (prevNet === 0) trend = '<span style="color:#16a34a;">▲ new</span>';
+      else {
+        const delta = r.net - prevNet;
+        const pct = Math.round((delta / Math.abs(prevNet)) * 100);
+        trend = delta >= 0
+          ? `<span style="color:#16a34a;">▲ ${fmt(delta)} (${pct >= 0 ? '+' : ''}${pct}%)</span>`
+          : `<span style="color:#dc2626;">▼ ${fmt(Math.abs(delta))} (${pct}%)</span>`;
+      }
+    }
+    prevNet = r.net;
+    return `<tr>
+      <td><b>${esc(fmtMonthLabel(r.mkey))}</b></td>
+      <td style="text-align:right; color:#16a34a;">${fmtCell(r.revenue)}</td>
+      <td style="text-align:right; color:${r.bounced > 0 ? '#dc2626' : 'var(--muted)'};">${fmtCell(r.bounced)}</td>
+      <td style="text-align:right; font-weight:600;">${fmtCell(r.net)}</td>
+      <td style="text-align:right;">${r.count || '—'}</td>
+      <td style="text-align:right;">${trend || '<span style="color:var(--muted);">—</span>'}</td>
+    </tr>`;
+  }).join('');
+
+  if (foot) {
+    foot.innerHTML = `<tr style="border-top:2px solid var(--border); font-weight:700; background:var(--surface-2);">
+      <td>Total</td>
+      <td style="text-align:right; color:#16a34a;">${fmt(totalRevenue)}</td>
+      <td style="text-align:right; color:${totalBounced > 0 ? '#dc2626' : 'var(--muted)'};">${fmt(totalBounced)}</td>
+      <td style="text-align:right;">${fmt(totalNet)}</td>
+      <td style="text-align:right;">${rows.reduce((s, r) => s + r.count, 0)}</td>
+      <td></td>
+    </tr>`;
+  }
+}
+
+function exportPnlCsv() {
+  if (typeof canSeeFinance === 'function' && !canSeeFinance()) {
+    if (typeof toast === 'function') toast('Export not available for your role', 'error');
+    return;
+  }
+  const byMonth = _pnlCollect();
+  const months = _pnlBuildRange(byMonth);
+  const esc1 = v => {
+    const s = (v == null) ? '' : String(v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const header = ['Month', 'Revenue', 'Bounced', 'Net', 'Payments'];
+  const lines = [header.join(',')];
+  let totalR = 0, totalB = 0, totalC = 0;
+  for (const mk of months) {
+    const m = byMonth.get(mk) || { revenue: 0, bounced: 0, count: 0 };
+    totalR += m.revenue; totalB += m.bounced; totalC += m.count;
+    lines.push([mk, m.revenue, m.bounced, m.revenue - m.bounced, m.count].map(esc1).join(','));
+  }
+  lines.push(['TOTAL', totalR, totalB, totalR - totalB, totalC].map(esc1).join(','));
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `pnl-${new Date().toISOString().slice(0, 10)}.csv`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
