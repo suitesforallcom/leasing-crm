@@ -28754,19 +28754,94 @@ function _renderStackingChart(b) {
     const isSel = selectedLevel !== null && f.number === selectedLevel;
     const rowClass = selectedLevel !== null ? (isSel ? 'sv-row-active' : 'sv-row-dim') : '';
 
-    const suitesHTML = units.map((u, i) => {
-      const { bg, dark } = stackingSuiteColor(u, metric);
-      const w = (+u.sqft || 0) / rentableSqft * 100;
-      const isVacant = stackingUnitStatus(u) === 'vacant';
+    // Pre-process units into segments. Adjacent units sharing the same
+    // groupId collapse into a single segment so a multi-suite lease
+    // renders as ONE wide bar with centered tenant + total rent — not N
+    // narrow stripes the operator has to mentally re-glue. Single units
+    // (no group, OR group member with non-group neighbour on the sorted
+    // line) render as before.
+    const segments = [];
+    {
+      let cur = null;
+      for (const u of units) {
+        if (cur && u.groupId && u.groupId === cur.groupId) {
+          cur.units.push(u);
+          cur.sqft += +u.sqft || 0;
+          cur.rent += +u.contractRent || +u.rent || 0;
+        } else {
+          cur = {
+            groupId: u.groupId || null,
+            units: [u],
+            sqft: +u.sqft || 0,
+            rent: +u.contractRent || +u.rent || 0,
+          };
+          segments.push(cur);
+        }
+      }
+    }
+
+    const suitesHTML = segments.map((seg, i) => {
+      const lead = seg.units[0];   // representative for color / hover / click
+      const { bg, dark } = stackingSuiteColor(lead, metric);
+      const w = seg.sqft / rentableSqft * 100;
+      const isVacant = stackingUnitStatus(lead) === 'vacant';
       const textColor = dark ? '#fff' : isVacant ? '#8f887c' : '#2e2a25';
       const mutedColor = dark ? 'rgba(255,255,255,0.7)' : '#8f887c';
-      const tenant = u.tenant || u.company || '';
+      const tenant = lead.tenant || lead.company || '';
+      const borderRight = i < segments.length - 1 ? 'border-right:1px solid rgba(255,255,255,0.4);' : '';
+      const padH = w > 8 ? 10 : 4;
+      const isMerged = seg.units.length > 1;
+      const groupStripe = seg.groupId
+        ? `<div style="position:absolute; top:0; left:0; right:0; height:3px; background:#a855f7;"></div>` +
+          `<div style="position:absolute; top:4px; right:6px; font-size:11px; line-height:1;"
+                title="Multi-suite lease (${seg.units.length} suite${seg.units.length === 1 ? '' : 's'})">🔗</div>`
+        : '';
+
+      if (isMerged) {
+        // ONE wide bar. Suite IDs listed compactly on top, tenant name +
+        // total rent centered. Click / hover targets primary so jump-to
+        // and tooltip resolve to the lease's source-of-truth suite.
+        const ids = seg.units.map(u => u.id)
+          .sort((a, c) => String(a).localeCompare(String(c)))
+          .join(' · ');
+        const primary = seg.units.find(u => u.groupRole === 'primary') || lead;
+        const showRent = w > 6;
+        return `
+          <div class="sv-suite sv-suite--grouped sv-suite--merged"
+               style="width:${w}%; background:${bg}; padding:8px ${padH}px; ${borderRight}
+                      position:relative; display:flex; flex-direction:column;
+                      justify-content:center; text-align:center; overflow:hidden;"
+               data-group-id="${esc(seg.groupId)}"
+               onmouseenter="stackingHoverSuite(event,'${esc(b.id)}','${esc(f.id)}','${esc(primary.id)}')"
+               onmousemove="stackingHoverSuite(event,'${esc(b.id)}','${esc(f.id)}','${esc(primary.id)}')"
+               onmouseleave="stackingHideTooltip()"
+               onclick="event.stopPropagation(); stackingJumpToUnit('${esc(b.id)}','${esc(f.id)}','${esc(primary.id)}')">
+            ${groupStripe}
+            <div style="font-size:10.5px; font-weight:600; color:${mutedColor};
+                        margin-bottom:4px; overflow:hidden; text-overflow:ellipsis;
+                        white-space:nowrap;" title="${esc(ids)} · ${seg.sqft.toLocaleString()} ft²">
+              ${esc(ids)}
+              <span style="opacity:0.75; font-weight:400; margin-left:4px;">${seg.sqft.toLocaleString()}ft²</span>
+            </div>
+            ${tenant ? `
+              <div style="font-size:14px; font-weight:700; color:${textColor};
+                          overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+                          margin-bottom:2px;" title="${esc(tenant)}">
+                ${esc(tenant)}
+              </div>` : ''}
+            ${showRent && seg.rent > 0 ? `
+              <div style="font-size:12px; color:${mutedColor}; font-variant-numeric:tabular-nums;">
+                $${seg.rent >= 10000 ? (seg.rent / 1000).toFixed(1) + 'k' : seg.rent.toLocaleString()} / mo total
+              </div>` : ''}
+          </div>`;
+      }
+
+      // Single-unit segment — original layout.
+      const u = lead;
       const rent = +u.contractRent || +u.rent || 0;
-      const borderRight = i < units.length - 1 ? 'border-right:1px solid rgba(255,255,255,0.4);' : '';
       const showSqft   = w > 10;
       const showTenant = w > 8;
       const showRent   = w > 14;
-      const padH = w > 8 ? 10 : 4;
       const contentTop = w > 5 ? `
         <div class="sv-suite-top">
           <span class="sv-suite-num" style="color:${textColor}">${esc(u.id)}</span>
@@ -28778,18 +28853,9 @@ function _renderStackingChart(b) {
             ? `<div class="sv-suite-tenant" style="color:${textColor}">${esc(tenant)}</div>`
             : `<div class="sv-suite-avail">Available</div>`}
           ${showRent && !isVacant && rent > 0
-            ? `<div class="sv-suite-rent" style="color:${mutedColor}">$${rent >= 10000 ? (rent/1000).toFixed(1)+'k' : rent.toLocaleString()}/mo</div>`
+            ? `<div class="sv-suite-rent" style="color:${mutedColor}">$${rent >= 10000 ? (rent / 1000).toFixed(1) + 'k' : rent.toLocaleString()}/mo</div>`
             : ''}
         </div>` : '';
-      // Multi-suite-lease marker — purple top stripe + tiny corner dot if
-      // this suite is part of a tenant group. Operator can spot at a
-      // glance which bars share a lease without hovering each one.
-      const groupStripe = u.groupId
-        ? `<div style="position:absolute; top:0; left:0; right:0; height:3px; background:#a855f7;"></div>` +
-          (u.groupRole === 'primary'
-            ? `<div style="position:absolute; top:4px; right:4px; font-size:10px; line-height:1;" title="Primary of multi-suite lease">🔗</div>`
-            : '')
-        : '';
       return `
         <div class="sv-suite${u.groupId ? ' sv-suite--grouped' : ''}"
              style="width:${w}%; background:${bg}; padding:8px ${padH}px; ${borderRight} position:relative;"
@@ -62391,9 +62457,14 @@ function _addLeaseDocMonthsBetween(startIso, endIso) {
   const lastDayOfEndMonth = new Date(e.getFullYear(), e.getMonth() + 1, 0).getDate();
 
   // 1. End-of-month convention (preferred): end is the last day of its
-  //    month → term = calendar-month diff.
+  //    month. When start is ALSO the 1st of its month, the lease covers
+  //    start_month .. end_month INCLUSIVE — i.e. (monthDiff + 1) full
+  //    calendar months. Without the +1 we'd return 11 for Jan 1 → Dec 31
+  //    (same year), which everyone reads as a 12-month lease.
+  //    For mid-month starts (startDay > 1), the lease only covers
+  //    monthDiff full months — the partial start month doesn't count.
   if (endDay === lastDayOfEndMonth) {
-    return Math.max(0, monthDiff);
+    return Math.max(0, monthDiff + (startDay === 1 ? 1 : 0));
   }
   // 2. Anniversary day exact match → term = calendar-month diff.
   if (endDay === startDay) {
