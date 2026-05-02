@@ -45480,8 +45480,87 @@ function _applyInvoiceBusSignal(bus) {
     if (bus.status === 'paid') {
       toast(`✓ Invoice ${bus.invoiceId} marked paid`, 'success');
     } else if (bus.status === 'failed') {
-      toast(`⚠ Auto-charge failed on invoice ${bus.invoiceId}`, 'error');
+      _notifyChargeFailed(bus);
     }
+  }
+}
+
+// Rich charge-failed toast — replaces the bare "⚠ Auto-charge failed
+// on invoice <id>" message with a context-rich card: suite + tenant +
+// ym + amount + reason code, plus a "View unit →" action that jumps
+// to the unit on the floor plan. Also bumps the dismiss timer from
+// the default 2.8s to 12s so an operator who briefly looked away
+// still catches the alert.
+//
+// Falls back to the bare toast if bus.unitId can't be resolved (e.g.
+// legacy webhook without unit context, or unit was archived between
+// the failure and the snapshot landing).
+function _notifyChargeFailed(bus) {
+  if (!bus || !bus.unitId) {
+    toast(`⚠ Auto-charge failed on invoice ${bus?.invoiceId || ''}`, 'error');
+    return;
+  }
+  // Resolve unit from bus context. Walk state since bus carries
+  // building+floor+unit ids — cheaper than scanning every building.
+  let bldg = null, flr = null, u = null;
+  if (bus.buildingId && bus.floorId) {
+    bldg = (state.buildings || []).find(b => b.id === bus.buildingId);
+    flr  = bldg && (bldg.floors || []).find(f => f.id === bus.floorId);
+    u    = flr && (flr.units || []).find(x => x.id === bus.unitId);
+  } else {
+    // Legacy bus shape — walk all buildings
+    outer: for (const b of (state.buildings || [])) {
+      for (const f of (b.floors || [])) {
+        const hit = (f.units || []).find(x => x.id === bus.unitId);
+        if (hit) { bldg = b; flr = f; u = hit; break outer; }
+      }
+    }
+  }
+  if (!u) {
+    toast(`⚠ Auto-charge failed on invoice ${bus.invoiceId}`, 'error');
+    return;
+  }
+  const tenantLbl = u.tenant || u.company || '(no tenant)';
+  const amtNum = (typeof bus.amountRemaining === 'number' && bus.amountRemaining > 0)
+                  ? bus.amountRemaining
+                  : (u?.stripe?.lastChargeFailure?.amount || 0);
+  const amtLbl = amtNum ? '$' + Math.round(amtNum).toLocaleString() : '';
+  const ymLbl = bus.ym ? esc(bus.ym) : '';
+  const codeLbl = bus.code ? esc(bus.code) : '';
+  const attLbl = (bus.attemptCount && bus.attemptCount > 1) ? `attempt ${bus.attemptCount}` : '';
+  // Dim parts join with " · " — only the parts we actually have
+  const detailParts = [ymLbl, amtLbl, codeLbl, attLbl].filter(Boolean);
+  const detail = detailParts.length ? detailParts.join(' · ') : '';
+
+  const t = document.getElementById('toast');
+  if (!t) { toast(`⚠ Auto-charge failed`, 'error'); return; }
+  t.className = 'status-toast show error';
+  // Inline button uses a unique id so the click handler can find it
+  // without relying on closures (toast HTML is set via innerHTML).
+  // Clicking jumps + dismisses; clicking elsewhere on the toast just
+  // dismisses (so a stray click doesn't navigate the operator away).
+  t.innerHTML =
+    `⚠ Auto-charge failed · <b>Suite ${esc(String(u.id))}</b>` +
+    ` — ${esc(tenantLbl)}` +
+    (detail ? `<div style="font-size:12px; font-weight:500; opacity:0.92; margin-top:3px;">${detail}</div>` : '') +
+    ` <button id="_chgFailToastBtn" style="margin-left:10px; padding:3px 10px; font-size:12px; font-weight:600; background:#fff; color:#b91c1c; border:none; border-radius:5px; cursor:pointer; vertical-align:middle;">View →</button>`;
+
+  // 12s dismiss (vs 2.8s default) — critical alert, give operator
+  // room to react if they were briefly away from the screen.
+  clearTimeout(t._timeout);
+  t._timeout = setTimeout(() => t.classList.remove('show'), 12000);
+
+  // Wire the View button — jumps to the unit + dismisses toast.
+  const btn = document.getElementById('_chgFailToastBtn');
+  if (btn) {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      clearTimeout(t._timeout);
+      t.classList.remove('show');
+      if (typeof rentRollJumpToUnit === 'function') {
+        rentRollJumpToUnit(bus.buildingId || bldg?.id, bus.floorId || flr?.id, bus.unitId);
+      }
+    };
   }
 }
 
