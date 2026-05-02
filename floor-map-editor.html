@@ -70156,6 +70156,16 @@ function payMonthsShift(delta) {
 // left rail icon (⚡ inside a rounded square).
 // =========================================================================
 const _billingSelection = new Set();  // keys "bid|fid|uid"
+// Toggle filter: when true, the Billing table only shows units whose
+// most recent auto-charge failed (u.stripe.lastChargeFailure is set).
+// Wired to the "⚠ Auto-charge failures" KPI tile — clicking it cycles
+// the filter on/off so the operator can drill from "I see N failures"
+// → "show me only those rows" without leaving the page.
+let _billingChargeFailuresFilter = false;
+function toggleBillingChargeFailuresFilter() {
+  _billingChargeFailuresFilter = !_billingChargeFailuresFilter;
+  renderBilling();
+}
 
 // =========================================================================
 // ===== Multi-select — shared helpers for Rent Roll + Payments ===========
@@ -71002,6 +71012,10 @@ function renderBilling() {
         if (!u.tenant && !u.company) continue;
         const st = billingUnitState(u);
         if (statesSet && !statesSet.has(st)) continue;
+        // KPI-driven drill-down: when the operator clicked the
+        // "⚠ Auto-charge failures" tile, the table collapses to only
+        // those units. Cleared by clicking the same tile again.
+        if (_billingChargeFailuresFilter && !u?.stripe?.lastChargeFailure?.invoiceId) continue;
         const hay = [u.id, u.tenant, u.company, u.email].join(' ').toLowerCase();
         if (search && !hay.includes(search)) continue;
         rows.push({b, f, u, st});
@@ -71033,7 +71047,7 @@ function renderBilling() {
     <div class="billing-kpi"><div class="billing-kpi-label">Not Set Up</div><div class="billing-kpi-value">${counts.none}</div></div>
     <div class="billing-kpi"><div class="billing-kpi-label">Missing Email/Rent</div><div class="billing-kpi-value" style="color:var(--danger)">${counts.error}</div></div>
     <div class="billing-kpi"><div class="billing-kpi-label">Total Billable Units</div><div class="billing-kpi-value">${rows.length}</div></div>
-    ${chargeFailures > 0 ? `<div class="billing-kpi" style="background:#fef2f2; border:1px solid #fecaca;"><div class="billing-kpi-label" style="color:#991b1b;">⚠ Auto-charge failures</div><div class="billing-kpi-value" style="color:var(--danger)">${chargeFailures}</div></div>` : ''}
+    ${chargeFailures > 0 ? `<div class="billing-kpi" style="background:${_billingChargeFailuresFilter ? '#fee2e2' : '#fef2f2'}; border:${_billingChargeFailuresFilter ? '2px solid #dc2626' : '1px solid #fecaca'}; cursor:pointer;" onclick="toggleBillingChargeFailuresFilter()" title="${_billingChargeFailuresFilter ? 'Click to clear filter — show all units' : 'Click to filter table — show only units with auto-charge failures'}"><div class="billing-kpi-label" style="color:#991b1b;">⚠ Auto-charge failures${_billingChargeFailuresFilter ? ' · filtering ✕' : ''}</div><div class="billing-kpi-value" style="color:var(--danger)">${chargeFailures}</div></div>` : ''}
   `;
 
   // Header
