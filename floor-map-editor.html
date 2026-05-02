@@ -12533,6 +12533,7 @@
           <button class="bv-tab"        id="billTabRecovery"  onclick="setBillingTab('recovery')">Recovery <span class="bv-tab-count" id="billRecoveryCount">—</span></button>
           <button class="bv-tab"        id="billTabLeases"    onclick="setBillingTab('leases')">Leases <span class="bv-tab-count" id="billLeaseCount">—</span></button>
           <button class="bv-tab"        id="billTabContracts" onclick="setBillingTab('contracts')">Vendor contracts <span class="bv-tab-count" id="billContractCount">—</span></button>
+          <button class="bv-tab"        id="billTabVacancy"   onclick="setBillingTab('vacancy')">Vacancy <span class="bv-tab-count" id="billVacancyCount">—</span></button>
         </div>
         <div class="bv-tab-body">
 
@@ -12938,6 +12939,53 @@
             <div style="font-size: 15px; font-weight: 600; margin-bottom: 6px;">No contracts on file</div>
             <div style="font-size: 12.5px; margin-bottom: 14px;">Track vendor agreements, insurance policies, utility contracts, and all your signed leases in one place.</div>
             <button class="rr-btn primary" onclick="openContractModal()" style="padding: 7px 14px;">+ Add first contract</button>
+          </div>
+        </div>
+
+        <!-- Vacancy panel — units with no active lease, sortable by days vacant.
+             Last-tenant info pulled from u.tenantHistory[last]. Market rent =
+             u.rate * u.sqft / 12. Sub-rooms of whole-rented parents excluded
+             via _isInactiveSubRoom. Populated by renderVacancyPanel(). -->
+        <div id="billingVacancyPanel" style="display:none;">
+          <div class="billing-kpis" id="vacancyKpis"></div>
+          <div class="ar-toolbar" style="margin-top: 6px;">
+            <div class="ar-toolbar-row">
+              <input type="text" class="rr-search" id="vacancySearch" placeholder="Search suite, building, last tenant…" oninput="renderVacancyPanel()" style="min-width: 220px; flex: 1 1 260px;">
+              <select id="vacancyMinDays" class="ar-sel" onchange="renderVacancyPanel()" title="Filter by days vacant">
+                <option value="0">Any duration</option>
+                <option value="30">≥ 30 days</option>
+                <option value="60">≥ 60 days</option>
+                <option value="90">≥ 90 days</option>
+                <option value="180">≥ 180 days</option>
+                <option value="365">≥ 365 days</option>
+              </select>
+              <select id="vacancyBuilding" class="ar-sel" onchange="renderVacancyPanel()" title="Filter by building">
+                <option value="">All buildings</option>
+              </select>
+              <div style="flex:1;"></div>
+              <button class="rr-btn ar-btn-sm" onclick="exportVacancyCsv()" title="Export current view to CSV">⬇ CSV</button>
+            </div>
+          </div>
+          <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: auto; margin-top: 6px;">
+            <table class="inv-table" id="vacancyTable">
+              <thead>
+                <tr>
+                  <th style="width: 110px;">Suite</th>
+                  <th>Building · Floor</th>
+                  <th style="width: 80px; text-align: right;">Sq ft</th>
+                  <th style="width: 110px; text-align: right;">Market rent</th>
+                  <th>Last tenant</th>
+                  <th style="width: 105px;">Moved out</th>
+                  <th style="width: 100px; text-align: right;">Days vacant</th>
+                </tr>
+              </thead>
+              <tbody id="vacancyTableBody"></tbody>
+            </table>
+          </div>
+          <div id="vacancyEmpty" style="display:none; padding:40px; text-align:center; color: var(--muted);">
+            <div style="font-size: 34px; margin-bottom: 8px;">🏢</div>
+            <div style="font-size: 15px; font-weight: 600; margin-bottom: 6px;">No vacant suites</div>
+            <div style="font-size: 12.5px;">Every suite in the current filter has an active lease.</div>
           </div>
         </div>
         </div><!-- /bv-tab-body — wraps all four sub-panels above -->
@@ -71476,6 +71524,7 @@ function setBillingTab(tab) {
   document.getElementById('billTabRecovery')?.classList.toggle('active',  tab === 'recovery');
   document.getElementById('billTabLeases')?.classList.toggle('active',    tab === 'leases');
   document.getElementById('billTabContracts')?.classList.toggle('active', tab === 'contracts');
+  document.getElementById('billTabVacancy')?.classList.toggle('active',   tab === 'vacancy');
   // Show the requested panel, hide the rest. Each panel is independent
   // and has its own render function — they don't share state.
   const tenantsPanel = document.getElementById('billingTenantsPanel');
@@ -71488,12 +71537,15 @@ function setBillingTab(tab) {
   if (leasesPanel) leasesPanel.style.display = tab === 'leases' ? '' : 'none';
   const contractsPanel = document.getElementById('billingContractsPanel');
   if (contractsPanel) contractsPanel.style.display = tab === 'contracts' ? '' : 'none';
+  const vacancyPanel = document.getElementById('billingVacancyPanel');
+  if (vacancyPanel) vacancyPanel.style.display = tab === 'vacancy' ? '' : 'none';
   if (tab === 'tenants')   renderTenantsPanelZip();  // ZIP-style — paints bvTenantsTable from state
   if (tab === 'invoices')  renderInvoicesPage();
   if (tab === 'aging')     renderAgingPanel();
   if (tab === 'recovery' && typeof renderRecoveryPanel === 'function') renderRecoveryPanel();
   if (tab === 'leases')    renderLeasesPanel();
   if (tab === 'contracts') renderContractsPanel();
+  if (tab === 'vacancy' && typeof renderVacancyPanel === 'function') renderVacancyPanel();
   // Tab counts on the header (visible counters next to each tab name)
   try { _bvUpdateTabCounts(); } catch {}
   // Start/stop the 30s safety-net auto-refresh based on sub-tab.
@@ -71539,10 +71591,180 @@ function _bvUpdateTabCounts() {
     ).length;
     setCount('billRecoveryCount', openRc);
   } catch {}
+  try {
+    let vac = 0;
+    for (const b of (state.buildings || [])) {
+      if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
+      for (const f of (b.floors || [])) {
+        for (const u of (f.units || [])) {
+          if (typeof _isInactiveSubRoom === 'function' && _isInactiveSubRoom(u)) continue;
+          if (u.status !== 'occupied') vac++;
+        }
+      }
+    }
+    setCount('billVacancyCount', vac);
+  } catch {}
 }
 
 // Jump from the Outstanding widget at the top of Billing into A/R Aging.
 function billingJumpToAging() { setBillingTab('aging'); }
+
+// =====================================================================
+// Vacancy report — every vacant suite, with last-tenant info, market
+// rent estimate, and days-vacant counter. Sortable, filterable by
+// building + min days, CSV-exportable.
+// =====================================================================
+function _vacancyCollect() {
+  const today = Date.now();
+  const rows = [];
+  for (const b of (state.buildings || [])) {
+    if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
+    for (const f of (b.floors || [])) {
+      for (const u of (f.units || [])) {
+        if (typeof _isInactiveSubRoom === 'function' && _isInactiveSubRoom(u)) continue;
+        if (u.status === 'occupied') continue;
+        const hist = Array.isArray(u.tenantHistory) ? u.tenantHistory : [];
+        const last = hist.length ? hist[hist.length - 1] : null;
+        const movedOutMs = last && last.movedOut ? Date.parse(last.movedOut) : null;
+        const daysVacant = (movedOutMs && !isNaN(movedOutMs)) ? Math.max(0, Math.floor((today - movedOutMs) / 86400000)) : null;
+        const sqft = +u.sqft || 0;
+        const rate = +u.rate || 0;
+        const marketRent = (rate > 0 && sqft > 0) ? Math.round(rate * sqft / 12) : 0;
+        rows.push({
+          bldgId: b.id, bldgName: b.name || '',
+          flrId: f.id, flrName: f.name || '',
+          uId: u.id, suite: u.suite || u.label || '',
+          sqft, marketRent,
+          lastTenant: last ? (last.tenant || last.company || '') : '',
+          lastCompany: last ? (last.company || '') : '',
+          movedOut: last && last.movedOut ? last.movedOut : '',
+          daysVacant
+        });
+      }
+    }
+  }
+  return rows;
+}
+
+function _vacancyApplyFilters(rows) {
+  const q = (document.getElementById('vacancySearch')?.value || '').trim().toLowerCase();
+  const minDays = +(document.getElementById('vacancyMinDays')?.value || 0);
+  const bldg = document.getElementById('vacancyBuilding')?.value || '';
+  return rows.filter(r => {
+    if (bldg && r.bldgId !== bldg) return false;
+    if (minDays > 0 && (r.daysVacant == null || r.daysVacant < minDays)) return false;
+    if (q) {
+      const blob = (r.suite + ' ' + r.bldgName + ' ' + r.flrName + ' ' + r.lastTenant + ' ' + r.lastCompany).toLowerCase();
+      if (blob.indexOf(q) === -1) return false;
+    }
+    return true;
+  });
+}
+
+function _vacancyPopulateBuildingSelect() {
+  const sel = document.getElementById('vacancyBuilding');
+  if (!sel) return;
+  const cur = sel.value;
+  const seen = new Set();
+  const opts = ['<option value="">All buildings</option>'];
+  for (const b of (state.buildings || [])) {
+    if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
+    if (seen.has(b.id)) continue;
+    seen.add(b.id);
+    opts.push(`<option value="${esc(b.id)}">${esc(b.name || '(unnamed)')}</option>`);
+  }
+  sel.innerHTML = opts.join('');
+  if (cur && seen.has(cur)) sel.value = cur;
+}
+
+function renderVacancyPanel() {
+  if (typeof canSeeFinance === 'function' && !canSeeFinance()) return;
+  _vacancyPopulateBuildingSelect();
+  const all = _vacancyCollect();
+  const rows = _vacancyApplyFilters(all);
+  rows.sort((a, b) => (b.daysVacant ?? -1) - (a.daysVacant ?? -1));
+
+  const totalSqft   = rows.reduce((s, r) => s + (r.sqft || 0), 0);
+  const totalMarket = rows.reduce((s, r) => s + (r.marketRent || 0), 0);
+  const knownDays   = rows.filter(r => r.daysVacant != null);
+  const avgDays     = knownDays.length ? Math.round(knownDays.reduce((s, r) => s + r.daysVacant, 0) / knownDays.length) : 0;
+  const over90      = rows.filter(r => (r.daysVacant ?? 0) >= 90).length;
+
+  const kpis = document.getElementById('vacancyKpis');
+  if (kpis) {
+    const fmt = n => '$' + Math.round(n).toLocaleString();
+    kpis.innerHTML = `
+      <div class="bv-kpi"><div class="bv-kpi-label">Vacant suites</div><div class="bv-kpi-value">${rows.length}</div><div class="bv-kpi-sub">${all.length} total in scope</div></div>
+      <div class="bv-kpi"><div class="bv-kpi-label">Vacant sq ft</div><div class="bv-kpi-value">${totalSqft.toLocaleString()}</div><div class="bv-kpi-sub">across filter</div></div>
+      <div class="bv-kpi"><div class="bv-kpi-label">Lost market rent</div><div class="bv-kpi-value">${fmt(totalMarket)}</div><div class="bv-kpi-sub">/ month at current rates</div></div>
+      <div class="bv-kpi"><div class="bv-kpi-label">Avg days vacant</div><div class="bv-kpi-value">${avgDays || '—'}</div><div class="bv-kpi-sub">${over90} suite${over90 === 1 ? '' : 's'} ≥ 90 days</div></div>
+    `;
+  }
+
+  const body  = document.getElementById('vacancyTableBody');
+  const empty = document.getElementById('vacancyEmpty');
+  const table = document.getElementById('vacancyTable');
+  if (!body) return;
+  if (rows.length === 0) {
+    body.innerHTML = '';
+    if (empty) empty.style.display = '';
+    if (table) table.style.display = 'none';
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+  if (table) table.style.display = '';
+
+  const fmtMoney = n => n > 0 ? '$' + n.toLocaleString() : '<span style="color:var(--muted);">—</span>';
+  const fmtDays  = d => d == null ? '<span style="color:var(--muted);" title="No move-out record on file">unknown</span>'
+                       : (d >= 365 ? `<b style="color:#dc2626;">${d}</b>`
+                       : (d >= 180 ? `<b style="color:#f59e0b;">${d}</b>`
+                       : (d >= 90  ? `<b style="color:#eab308;">${d}</b>`
+                       : `${d}`)));
+  const fmtTenant = (t, c) => t
+    ? esc(t) + (c && c !== t ? ` <span style="color:var(--muted); font-size:11.5px;">· ${esc(c)}</span>` : '')
+    : '<span style="color:var(--muted);">never leased</span>';
+
+  body.innerHTML = rows.map(r => {
+    const bf = `${esc(r.bldgName || '—')}${r.flrName ? ' · ' + esc(r.flrName) : ''}`;
+    return `<tr style="cursor:pointer;" onclick="rentRollJumpToUnit && rentRollJumpToUnit('${esc(r.bldgId)}','${esc(r.flrId)}','${esc(r.uId)}')" title="Click to open suite">
+      <td><b>${esc(r.suite || '—')}</b></td>
+      <td>${bf}</td>
+      <td style="text-align:right;">${r.sqft ? r.sqft.toLocaleString() : '—'}</td>
+      <td style="text-align:right;">${fmtMoney(r.marketRent)}</td>
+      <td>${fmtTenant(r.lastTenant, r.lastCompany)}</td>
+      <td>${r.movedOut ? esc(r.movedOut) : '<span style="color:var(--muted);">—</span>'}</td>
+      <td style="text-align:right;">${fmtDays(r.daysVacant)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function exportVacancyCsv() {
+  if (typeof canSeeFinance === 'function' && !canSeeFinance()) {
+    if (typeof toast === 'function') toast('Export not available for your role', 'error');
+    return;
+  }
+  const all = _vacancyCollect();
+  const rows = _vacancyApplyFilters(all);
+  rows.sort((a, b) => (b.daysVacant ?? -1) - (a.daysVacant ?? -1));
+  const esc1 = v => {
+    const s = (v == null) ? '' : String(v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const header = ['Suite', 'Building', 'Floor', 'Sqft', 'Market rent ($/mo)', 'Last tenant', 'Last company', 'Moved out', 'Days vacant'];
+  const lines = [header.join(',')];
+  for (const r of rows) {
+    lines.push([r.suite, r.bldgName, r.flrName, r.sqft, r.marketRent, r.lastTenant, r.lastCompany, r.movedOut, (r.daysVacant ?? '')].map(esc1).join(','));
+  }
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `vacancy-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 
 // =====================================================================
 // Recovery Tracker — debts that survive a tenant move-out.
