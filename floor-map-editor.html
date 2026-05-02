@@ -13058,7 +13058,9 @@
                 <option value="">All buildings</option>
               </select>
               <div style="flex:1;"></div>
-              <button class="rr-btn ar-btn-sm" onclick="exportPnlCsv()" title="Export to CSV">⬇ CSV</button>
+              <button class="rr-btn ar-btn-sm" onclick="exportPnlCsv()" title="Export current view to CSV">⬇ CSV</button>
+              <select id="pnlScheduleEYear" class="ar-sel" title="Tax year for Schedule E export"></select>
+              <button class="rr-btn ar-btn-sm" onclick="exportScheduleECsv()" title="Schedule E (Form 1040) — per-building rent summary for IRS rental income filing">⬇ Schedule E</button>
             </div>
           </div>
           <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: auto; margin-top: 6px;">
@@ -72189,9 +72191,33 @@ function _pnlPopulateBuildingSelect() {
   if (cur && seen.has(cur)) sel.value = cur;
 }
 
+function _pnlPopulateScheduleEYears() {
+  const sel = document.getElementById('pnlScheduleEYear');
+  if (!sel) return;
+  // Years with any payment activity, plus current and prior year as defaults.
+  const years = new Set();
+  const today = new Date();
+  years.add(today.getFullYear());
+  years.add(today.getFullYear() - 1);
+  for (const b of (state.buildings || [])) {
+    for (const f of (b.floors || [])) {
+      for (const u of (f.units || [])) {
+        for (const ym of Object.keys(u.payments || {})) {
+          if (/^\d{4}/.test(ym)) years.add(+ym.slice(0, 4));
+        }
+      }
+    }
+  }
+  const sorted = Array.from(years).sort((a, b) => b - a);
+  const cur = sel.value || String(today.getFullYear() - 1);
+  sel.innerHTML = sorted.map(y => `<option value="${y}">${y}</option>`).join('');
+  if (sorted.includes(+cur)) sel.value = cur;
+}
+
 function renderPnlPanel() {
   if (typeof canSeeFinance === 'function' && !canSeeFinance()) return;
   _pnlPopulateBuildingSelect();
+  _pnlPopulateScheduleEYears();
   const byMonth = _pnlCollect();
   const months = _pnlBuildRange(byMonth);
 
@@ -72307,6 +72333,168 @@ function exportPnlCsv() {
   a.click();
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// =====================================================================
+// Schedule E (IRS Form 1040) — per-building rental income summary for
+// the selected tax year. Maps onto Part I rows: address, type, days
+// rented, rents received (line 3), expense categories (lines 5-19,
+// blank for operator to fill since we don't track expenses yet).
+// CSV is structured so it can be imported into TurboTax / accountant
+// spreadsheet without manual transcription of the rents-received
+// column.
+// =====================================================================
+function exportScheduleECsv() {
+  if (typeof canSeeFinance === 'function' && !canSeeFinance()) {
+    if (typeof toast === 'function') toast('Export not available for your role', 'error');
+    return;
+  }
+  const yearStr = document.getElementById('pnlScheduleEYear')?.value || String(new Date().getFullYear() - 1);
+  const year = +yearStr;
+  if (!Number.isFinite(year)) { toast?.('Pick a tax year first', 'error'); return; }
+
+  // Gather per-building totals from u.payments. Walk all buildings (no
+  // building filter applied — Schedule E is whole-portfolio).
+  const byBldg = new Map();   // bId → { name, address, rentsReceived, refundsBounced, payments, daysRented }
+  const ensure = (b) => {
+    if (!byBldg.has(b.id)) byBldg.set(b.id, {
+      bId: b.id, name: b.name || '', address: b.address || '',
+      rentsReceived: 0, refundsBounced: 0, payments: 0, daysRented: 0,
+    });
+    return byBldg.get(b.id);
+  };
+
+  for (const b of (state.buildings || [])) {
+    if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
+    const bRec = ensure(b);
+    const occupiedDaysByUnit = new Map();
+    for (const f of (b.floors || [])) {
+      for (const u of (f.units || [])) {
+        for (const ym of Object.keys(u.payments || {})) {
+          const p = u.payments[ym];
+          if (!p) continue;
+          // Bucket by p.date year (preferred — actual cash year), fall back to ym.
+          let payYear = null;
+          if (p.date) {
+            const t = Date.parse(p.date);
+            if (!isNaN(t)) payYear = new Date(t).getFullYear();
+          }
+          if (payYear == null && /^\d{4}/.test(ym)) payYear = +ym.slice(0, 4);
+          if (payYear !== year) continue;
+          if (p.status === 'paid') {
+            const amt = +p.amount || 0;
+            if (amt > 0) { bRec.rentsReceived += amt; bRec.payments++; }
+          } else if (p.status === 'bounced') {
+            const amt = +p.bouncedAmount || +p.amount || 0;
+            if (amt > 0) bRec.refundsBounced += amt;
+          }
+        }
+        // Days rented = max(intersection of [u.leaseStart, u.until] with [year-01-01, year-12-31]).
+        // Use the unit-level dates rather than tenantHistory so we count
+        // current tenants too. Per-unit so multi-tenant buildings sum properly.
+        const ls = u.leaseStart || u.signed;
+        const le = u.until || u.leaseEnd;
+        if (ls) {
+          const yStart = new Date(year, 0, 1).getTime();
+          const yEnd   = new Date(year, 11, 31, 23, 59, 59).getTime();
+          const sMs = Date.parse(ls);
+          const eMs = le ? Date.parse(le) : Date.now();
+          if (!isNaN(sMs)) {
+            const start = Math.max(sMs, yStart);
+            const end   = Math.min(isNaN(eMs) ? Date.now() : eMs, yEnd);
+            if (end > start) {
+              const days = Math.round((end - start) / 86400000);
+              occupiedDaysByUnit.set(u.id, (occupiedDaysByUnit.get(u.id) || 0) + days);
+            }
+          }
+        }
+      }
+    }
+    // For Schedule E "Days rented" we sum per-unit days then divide by total
+    // unit count — gives an approximate building-level occupancy in days. The
+    // operator will likely override this with their accountant's preferred
+    // calculation; we just provide a starting number.
+    const allUnits = (b.floors || []).flatMap(f => f.units || []);
+    const unitCount = allUnits.length || 1;
+    const sumDays = Array.from(occupiedDaysByUnit.values()).reduce((s, d) => s + d, 0);
+    bRec.daysRented = Math.round(sumDays / unitCount);
+  }
+
+  const esc1 = v => {
+    const s = (v == null) ? '' : String(v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+
+  // Schedule E header — column names match IRS Form 1040 Schedule E Part I
+  // row labels so an accountant can map directly.
+  const cols = [
+    'Property',                          // building name (informal)
+    'Address',                           // line 1, "Physical address of each property"
+    'Type',                              // line 2 — 4 = Commercial (this app's fit)
+    'Fair Rental Days',                  // line 2 column "Days"
+    'Personal Use Days',                 // always 0 for commercial portfolio
+    'QJV',                               // qualified joint venture, blank
+    'Rents Received (Line 3)',           // line 3
+    'Royalties Received (Line 4)',       // 0 for rental
+    'Advertising (Line 5)',              // expense placeholder
+    'Auto and Travel (Line 6)',
+    'Cleaning and Maintenance (Line 7)',
+    'Commissions (Line 8)',
+    'Insurance (Line 9)',
+    'Legal and Professional (Line 10)',
+    'Management Fees (Line 11)',
+    'Mortgage Interest to Banks (Line 12)',
+    'Other Interest (Line 13)',
+    'Repairs (Line 14)',
+    'Supplies (Line 15)',
+    'Taxes (Line 16)',
+    'Utilities (Line 17)',
+    'Depreciation (Line 18)',
+    'Other (Line 19)',
+    'Total Expenses (Line 20)',
+    'Income or Loss (Line 21)',
+    'Bounced / Refunded (memo)',         // not on Schedule E itself; for reconciliation
+    'Payments Count (memo)',
+  ];
+  const lines = [`# IRS Schedule E (Form 1040) — Tax Year ${year}`, `# Generated ${new Date().toISOString().slice(0, 10)} from SuitesForAll. Expense columns are blank — fill in from your bookkeeping.`, '', cols.join(',')];
+
+  let totalRents = 0, totalBounced = 0, totalPayments = 0;
+  for (const r of byBldg.values()) {
+    totalRents    += r.rentsReceived;
+    totalBounced  += r.refundsBounced;
+    totalPayments += r.payments;
+    const rents = Math.round(r.rentsReceived);
+    lines.push([
+      r.name, r.address, '4', r.daysRented, 0, '',
+      rents, 0,
+      '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',   // expense placeholders
+      0,            // total expenses
+      rents,        // income/loss = rents - expenses (= rents while expenses blank)
+      Math.round(r.refundsBounced),
+      r.payments,
+    ].map(esc1).join(','));
+  }
+  // TOTAL row for the whole portfolio.
+  lines.push([
+    'TOTAL', '', '', '', '', '',
+    Math.round(totalRents), 0,
+    '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',
+    0,
+    Math.round(totalRents),
+    Math.round(totalBounced),
+    totalPayments,
+  ].map(esc1).join(','));
+
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `schedule-e-${year}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  if (typeof toast === 'function') toast(`Schedule E for ${year} downloaded — fill in expense columns from your books`, 'ok');
 }
 
 // =====================================================================
