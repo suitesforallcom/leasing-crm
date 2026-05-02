@@ -69911,11 +69911,17 @@ function renderRRCell(r, c) {
       const rentOk  = !!(+u.contractRent || +u.rent);
       const s = u.stripe || {};
       const autopay = !!s.autoPayEnabled && s.subscriptionStatus === 'active';
+      // Charge-failure takes priority over autopay/connected — when the
+      // most recent attempt failed, "⚡ Auto-pay" is misleading because
+      // the auto-pay isn't actually working. Operator needs to see the
+      // failure FIRST so they can re-collect the card or escalate.
+      const cf = s.lastChargeFailure;
       let cls, label;
-      if (!emailOk || !rentOk) { cls = 'error';    label = '⚠ Error'; }
-      else if (autopay)        { cls = 'autopay';  label = '⚡ Auto-pay'; }
-      else if (s.customerId)   { cls = 'cust';     label = '⚡ Connected'; }
-      else                     { cls = 'none';     label = 'Not set up'; }
+      if (!emailOk || !rentOk)    { cls = 'error';    label = '⚠ Error'; }
+      else if (cf && cf.invoiceId){ cls = 'error';    label = '⚠ Charge failed'; }
+      else if (autopay)           { cls = 'autopay';  label = '⚡ Auto-pay'; }
+      else if (s.customerId)      { cls = 'cust';     label = '⚡ Connected'; }
+      else                        { cls = 'none';     label = 'Not set up'; }
       // Role-gated: only editors can trigger Stripe actions
       const clickable = canUseStripe();
       const handler = clickable
@@ -69974,7 +69980,21 @@ function renderRRCell(r, c) {
           groupBadge = ` <span title="${isPri ? 'Primary of multi-suite lease' : 'Part of multi-suite lease'} with: ${esc(others)}" style="color:#a855f7; font-weight:${isPri ? '700' : '500'}; cursor:help;">🔗${members.length}</span>`;
         }
       }
-      return '<b>' + esc(r.suite) + '</b>' + groupBadge;
+      // Charge-failed marker — small red $ pill next to the suite ID
+      // when invoice.payment_failed has stamped lastChargeFailure on
+      // the unit. Mirrors the floor-map top-left badge so the same
+      // signal reads the same way across both surfaces. Lives in the
+      // Suite column (always visible) so the alert isn't hidden when
+      // the operator collapses the dedicated Stripe column.
+      let chargeFailedBadge = '';
+      const _cf = r._u && r._u.stripe && r._u.stripe.lastChargeFailure;
+      if (_cf && _cf.invoiceId) {
+        const ymTip = _cf.ym ? ' · ' + _cf.ym : '';
+        const attTip = (_cf.attemptCount && _cf.attemptCount > 1) ? ' · attempt ' + _cf.attemptCount : '';
+        const codeTip = _cf.code ? ' · ' + _cf.code : '';
+        chargeFailedBadge = ` <span title="Auto-charge failed${esc(ymTip + attTip + codeTip)}" style="display:inline-block; min-width:14px; height:14px; padding:0 4px; line-height:14px; font-size:10px; font-weight:700; color:#fff; background:#dc2626; border-radius:7px; cursor:help; vertical-align:1px;">$</span>`;
+      }
+      return '<b>' + esc(r.suite) + '</b>' + groupBadge + chargeFailedBadge;
     }
     case 'email':
       return r.email ? `<a href="mailto:${esc(r.email)}" style="color:var(--accent); text-decoration:none;">${esc(r.email)}</a>` : '<span style="color:var(--muted)">—</span>';
