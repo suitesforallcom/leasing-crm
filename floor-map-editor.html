@@ -28660,10 +28660,27 @@ function _renderStackingHeader(b) {
 
 // Shared filter for "is this unit a leasable office?" — used by every
 // stacking-view sub-renderer so they all draw the same population.
+//
+// Sub-room handling: a sub-room (u.parentId set) of a whole-rented OR
+// group-leased parent is INACTIVE — its physical space is already
+// covered by the parent's lease, so including it in the chart would
+// (a) double-count area and (b) display as red/vacant when in fact
+// it's part of the parent's rented footprint. Exclude these.
+// Sub-rooms of a VACANT parent stay in the chart — they rent
+// independently when the parent isn't whole-rented.
 function _stIsOffice(u) {
   if (!u) return false;
   if (typeof isArchived === 'function' && isArchived(u)) return false;
-  return u.type === 'office' && u.rentable !== false;
+  if (u.type !== 'office' || u.rentable === false) return false;
+  if (u.parentId && typeof _unitParent === 'function') {
+    const p = _unitParent(u);
+    if (p) {
+      const parentDirectRented = (p.tenant || p.company) && p.status === 'occupied';
+      const parentInGroup      = !!p.groupId;
+      if (parentDirectRented || parentInGroup) return false;
+    }
+  }
+  return true;
 }
 
 // Convert a floor's drawn outline polygon to square feet using the
@@ -38993,14 +39010,58 @@ function renderDetail() {
   const el = document.getElementById('detail');
 
   // Sync the suite-id badge inside the "Unit" sidebar tab (matching the
-  // ZIP redesign mock). Shows the selected suite number; hidden when no
-  // unit is selected. Called every render so it stays in sync after
-  // floor switches, multi-select, etc.
+  // ZIP redesign mock). For office units (rentable suites) it shows the
+  // suite number — that's what the operator references in conversation,
+  // invoices, etc. For non-office units (mechanical / restroom / kitchen
+  // / storage / etc.) the suite ID is meaningless ("NEW-13823"), so we
+  // show an abbreviated type label instead — matches the in-floor
+  // common-area label tiers used in the SVG render. Hidden when no unit
+  // selected. Called every render so it stays in sync after floor
+  // switches, multi-select, etc.
   try {
     const badge = document.getElementById('sbUnitBadge');
     if (badge) {
       if (selectedIds.length === 1) {
-        badge.textContent = selectedIds[0];
+        const _u = (typeof currentUnits === 'function')
+          ? currentUnits().find(x => x && x.id === selectedIds[0])
+          : null;
+        // Abbreviation table — short, scannable. Mirrors the in-floor
+        // common-area label tiers (mechanical → "Mech.") so the badge
+        // matches what the operator sees on the map.
+        const _abbr = {
+          mechanical: 'Mech.',
+          restroom:   'WC',
+          storage:    'Stor.',
+          kitchen:    'Kit.',
+          conference: 'Conf.',
+          conf:       'Conf.',
+          stairs:     'Stair',
+          elevator:   'Elev.',
+          atrium:     'Atr.',
+          lobby:      'Lobby',
+          hallway:    'Hall',
+          mech:       'Mech.',
+          electrical: 'Elec.',
+          server:     'Srv.',
+          security:   'Sec.',
+        };
+        let label = selectedIds[0];
+        if (_u && _u.type && _u.type !== 'office') {
+          const key = String(_u.type).toLowerCase().trim();
+          if (_abbr[key]) {
+            label = _abbr[key];
+          } else if (typeof TYPE_LABELS === 'object' && TYPE_LABELS[_u.type]) {
+            // Custom type registered via TYPE_LABELS — take first 8 chars
+            // of the human label (e.g. "Security Room" → "Security")
+            const full = String(TYPE_LABELS[_u.type]).trim();
+            const firstWord = full.split(/\s+/)[0];
+            label = firstWord.length > 0 ? firstWord.slice(0, 10) : full.slice(0, 10);
+          } else {
+            // Unknown custom type — use type slug, capitalized + clipped
+            label = (_u.type.charAt(0).toUpperCase() + _u.type.slice(1)).slice(0, 10);
+          }
+        }
+        badge.textContent = label;
         badge.style.display = '';
       } else {
         badge.textContent = '';

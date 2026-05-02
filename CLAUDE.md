@@ -167,6 +167,35 @@ After completing work, the report MUST include:
 The Final Report is the deliverable. Code without a Final Report is
 half-done.
 
+## 12. Fast-track for trivial changes (set 2026-05-01)
+The Required Workflow (Section 2) and the propose-then-wait cadence
+(Section 9) exist to prevent surprises on substantial work. They are
+overkill for small tweaks. A change qualifies as **fast-track** when
+ALL of these hold:
+- Single file touched.
+- < 30 lines net diff.
+- Pure UI (label / color / copy / spacing / abbreviation / hide-show).
+- No data-model change, no migration, no new dependency, no auth /
+  payment / CRM / form / SEO logic touched, no Firestore-rules edit.
+- Reversible by a single `git checkout <hash> -- <file>`.
+
+For fast-track changes:
+1. Skip "explain current behavior + propose plan + wait approval" —
+   just do the edit.
+2. Run parse-check (or build/lint) immediately.
+3. Compress the Final Report to 3 lines: what changed (one sentence) +
+   files (one line) + rollback (one line). Section 11's full template
+   is not required.
+4. Branch + commit still required (Section 1, Section 3) — but can be
+   batched into one terminal paste at the end of several fast-track
+   tweaks rather than after each.
+5. Operator can always escalate back to full workflow by saying "stop,
+   propose first" — that overrides fast-track for the rest of the
+   conversation.
+
+If in doubt whether a change is fast-track: assume it's NOT, and use
+the full workflow.
+
 ## Core principles
 
 1. Always optimize for correctness, clarity, maintainability, security, and delivery speed together.
