@@ -1,0 +1,1129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SuitesForAll · Billing</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<style>
+  :root {
+    --paper: #f6f3ec; --paper-2: #efeadf; --paper-3: #e6dfd1;
+    --ink: #1a1815; --ink-2: #2e2a25; --ink-3: #4a453d; --ink-4: #6b655b; --ink-5: #8f887c;
+    --line: #d9d2c3; --line-2: #c7bfae;
+    --surface: #fffdf8;
+    --accent: #1a3a5c; --accent-2: #2a5080; --accent-wash: #e8eef5;
+    --paid: #3d6b4a; --paid-wash: #e3ebdf;
+    --due: #a86b1c; --due-wash: #f4e9d4;
+    --overdue: #a8332a; --overdue-wash: #f0d9d5;
+    --vacant: #8f887c; --vacant-wash: #ebe6db;
+    --reserved: #4a5a7a; --reserved-wash: #dfe3ec;
+    --pending: #6b4a7a; --pending-wash: #e8dfed;
+    --sans: 'Geist', -apple-system, system-ui, sans-serif;
+    --mono: 'Geist Mono', ui-monospace, monospace;
+    --serif: 'Instrument Serif', Georgia, serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: var(--sans); color: var(--ink); background: var(--paper); -webkit-font-smoothing: antialiased; font-feature-settings: 'ss01','cv11'; }
+  html, body { height: 100%; }
+  .tab { font-variant-numeric: tabular-nums; }
+  button, input { font-family: inherit; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #c7bfae; border-radius: 5px; border: 2px solid var(--paper); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+
+const C = {
+  paper: '#f6f3ec', paper2: '#efeadf', paper3: '#e6dfd1',
+  ink: '#1a1815', ink2: '#2e2a25', ink3: '#4a453d', ink4: '#6b655b', ink5: '#8f887c',
+  line: '#d9d2c3', line2: '#c7bfae', surface: '#fffdf8',
+  accent: '#1a3a5c', accent2: '#2a5080', accentWash: '#e8eef5',
+  paid: '#3d6b4a', paidWash: '#e3ebdf',
+  due: '#a86b1c', dueWash: '#f4e9d4',
+  overdue: '#a8332a', overdueWash: '#f0d9d5',
+  vacant: '#8f887c', vacantWash: '#ebe6db',
+  reserved: '#4a5a7a', reservedWash: '#dfe3ec',
+  pending: '#6b4a7a', pendingWash: '#e8dfed',
+};
+
+// ═══ SHARED ATOMS ═══
+const Pill = ({ status, label }) => {
+  const map = {
+    paid:{fg:C.paid,wash:C.paidWash,l:'Paid'}, due:{fg:C.due,wash:C.dueWash,l:'Due'},
+    overdue:{fg:C.overdue,wash:C.overdueWash,l:'Overdue'}, draft:{fg:C.ink5,wash:C.paper3,l:'Draft'},
+    open:{fg:C.accent,wash:C.accentWash,l:'Open'}, sent:{fg:C.accent,wash:C.accentWash,l:'Sent'},
+    void:{fg:C.ink5,wash:C.paper3,l:'Void'}, partial:{fg:C.due,wash:C.dueWash,l:'Partial'},
+    active:{fg:C.paid,wash:C.paidWash,l:'Active'}, expired:{fg:C.overdue,wash:C.overdueWash,l:'Expired'},
+    pending:{fg:C.pending,wash:C.pendingWash,l:'Pending'}, signed:{fg:C.paid,wash:C.paidWash,l:'Signed'},
+    awaiting:{fg:C.pending,wash:C.pendingWash,l:'Awaiting signature'},
+  };
+  const m = map[status]; if (!m) return null;
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 6,
+      padding: '3px 9px 3px 8px', background: m.wash, color: m.fg,
+      borderRadius: 4, fontSize: 11.5, fontWeight: 500, lineHeight: 1.3, whiteSpace: 'nowrap',
+    }}>
+      <span style={{ width: 6, height: 6, borderRadius: 3, background: m.fg }} />
+      {label || m.l}
+    </span>
+  );
+};
+
+const Btn = ({ variant = 'secondary', size = 'md', icon, iconRight, children, onClick, style, active, title }) => {
+  const V = {
+    primary:   { bg: C.ink,     fg: C.paper,     bd: C.ink,     hb: C.ink2 },
+    secondary: { bg: C.surface, fg: C.ink,       bd: C.line2,   hb: C.paper2 },
+    ghost:     { bg: 'transparent', fg: C.ink3,  bd: 'transparent', hb: C.paper2 },
+    accent:    { bg: C.accent,  fg: '#fff',      bd: C.accent,  hb: C.accent2 },
+    danger:    { bg: C.overdue, fg: '#fff',      bd: C.overdue, hb: '#8a2a22' },
+  };
+  const S = { sm: { h: 28, px: 10, fs: 12.5 }, md: { h: 34, px: 12, fs: 13 }, lg: { h: 40, px: 18, fs: 14 } };
+  const v = V[variant]; const s = S[size];
+  const [h, setH] = React.useState(false);
+  return (
+    <button title={title} onClick={onClick} onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)} style={{
+      display: 'inline-flex', alignItems: 'center', gap: 6,
+      height: s.h, padding: `0 ${s.px}px`, fontSize: s.fs, fontWeight: 500,
+      color: v.fg, background: (active || h) ? v.hb : v.bg,
+      border: `1px solid ${v.bd}`, borderRadius: 6, cursor: 'pointer',
+      letterSpacing: -0.1, transition: 'background 120ms', whiteSpace: 'nowrap', ...style,
+    }}>{icon}{children}{iconRight}</button>
+  );
+};
+
+const Icon = ({ n, s = 16 }) => {
+  const p = {
+    search: <><circle cx="8" cy="8" r="5"/><path d="M12 12l5 5"/></>,
+    plus: <><path d="M10 4v12M4 10h12"/></>,
+    chevron: <><path d="M6 8l4 4 4-4"/></>,
+    chevronR: <><path d="M8 6l4 4-4 4"/></>,
+    x: <><path d="M5 5l10 10M15 5L5 15"/></>,
+    download: <><path d="M10 3v10M5 9l5 5 5-5M3 17h14"/></>,
+    filter: <><path d="M2 5h16M5 10h10M8 15h4"/></>,
+    eye: <><path d="M1 10s3-6 9-6 9 6 9 6-3 6-9 6-9-6-9-6z"/><circle cx="10" cy="10" r="3"/></>,
+    cols: <><rect x="2" y="3" width="4" height="14"/><rect x="8" y="3" width="4" height="14"/><rect x="14" y="3" width="4" height="14"/></>,
+    building: <><path d="M3 17V4a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v13"/><path d="M1 17h18M7 7h2M11 7h2M7 10h2M11 10h2M7 13h2M11 13h2"/></>,
+    map: <><path d="M7 3L1 5v12l6-2 6 2 6-2V3l-6 2-6-2z"/><path d="M7 3v12M13 5v12"/></>,
+    dollar: <><path d="M10 2v16M14 5H8.5a2.5 2.5 0 0 0 0 5h3a2.5 2.5 0 0 1 0 5H5"/></>,
+    doc: <><path d="M5 2h8l4 4v12H5z"/><path d="M13 2v4h4M8 10h6M8 13h6M8 7h2"/></>,
+    users: <><circle cx="7" cy="7" r="3"/><circle cx="14" cy="8" r="2.5"/><path d="M1 17c0-3 2.5-5 6-5s6 2 6 5M13 17c0-2.5 2-4 5-4"/></>,
+    bell: <><path d="M5 8a5 5 0 0 1 10 0v4l2 3H3l2-3z"/><path d="M8 17a2 2 0 0 0 4 0"/></>,
+    check: <><path d="M4 10l4 4 8-8"/></>,
+    more: <><circle cx="5" cy="10" r="1.2"/><circle cx="10" cy="10" r="1.2"/><circle cx="15" cy="10" r="1.2"/></>,
+    mail: <><rect x="2" y="4" width="16" height="12" rx="1"/><path d="M2 5l8 6 8-6"/></>,
+    phone: <><path d="M4 3h3l2 5-2 1a10 10 0 0 0 4 4l1-2 5 2v3a2 2 0 0 1-2 2A14 14 0 0 1 2 5a2 2 0 0 1 2-2z"/></>,
+    card: <><rect x="2" y="5" width="16" height="11" rx="1.5"/><path d="M2 9h16M5 13h3"/></>,
+    clock: <><circle cx="10" cy="10" r="7"/><path d="M10 5v5l3 2"/></>,
+    scale: <><path d="M10 3v14M4 7l3-4 3 4M16 10l-3-4-3 4M4 7h6M10 6h6"/></>,
+    stripe: <><rect x="2" y="5" width="16" height="10" rx="2"/><path d="M7 10h2M7 12h1"/></>,
+    calendar: <><rect x="2" y="4" width="16" height="14" rx="1"/><path d="M2 8h16M6 2v4M14 2v4"/></>,
+    signature: <><path d="M3 15c3-4 5-8 7-8s0 8 3 8 4-4 4-4"/></>,
+    arrowUp: <><path d="M10 16V4M5 9l5-5 5 5"/></>,
+    arrowDn: <><path d="M10 4v12M5 11l5 5 5-5"/></>,
+  };
+  return (
+    <svg width={s} height={s} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'block', flexShrink: 0 }}>
+      {p[n]}
+    </svg>
+  );
+};
+
+const Avatar = ({ name, size = 28 }) => {
+  if (!name) return <div style={{ width: size, height: size, borderRadius: size / 2, background: C.paper3 }} />;
+  const initials = name.split(' ').map((s) => s[0]).join('').slice(0, 2).toUpperCase();
+  const hash = [...name].reduce((a, c) => a + c.charCodeAt(0), 0);
+  const bgs = [C.paid, C.due, C.reserved, C.pending, C.accent];
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: size / 2,
+      background: bgs[hash % bgs.length], color: '#fff',
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+      fontSize: size * 0.4, fontWeight: 600, letterSpacing: 0.2, flexShrink: 0,
+    }}>{initials}</div>
+  );
+};
+
+// ═══ CHROME ═══
+const Topbar = () => (
+  <div style={{ height: 56, borderBottom: `1px solid ${C.line}`, background: C.surface, display: 'flex', alignItems: 'center', padding: '0 24px', gap: 20 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      <div style={{ width: 26, height: 26, background: C.ink, borderRadius: 5, color: C.paper, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--serif)', fontSize: 17, letterSpacing: -0.5 }}>S</div>
+      <div style={{ fontFamily: 'var(--serif)', fontSize: 18, letterSpacing: -0.3 }}>SuitesForAll</div>
+    </div>
+    <div style={{ height: 20, width: 1, background: C.line }} />
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: C.ink3 }}>
+      <Icon n="building" s={15} /><span>Portfolio</span>
+      <Icon n="chevronR" s={12} /><span>All buildings</span>
+      <Icon n="chevronR" s={12} /><span style={{ color: C.ink, fontWeight: 500 }}>Billing</span>
+    </div>
+    <div style={{ flex: 1 }} />
+    <div style={{
+      display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px',
+      background: C.paidWash, color: C.paid, borderRadius: 20, fontSize: 11.5, fontWeight: 500,
+    }}>
+      <span style={{ width: 6, height: 6, borderRadius: 3, background: C.paid }} />
+      Stripe connected
+    </div>
+    <Avatar name="Maya Chen" size={28} />
+  </div>
+);
+
+const Rail = () => {
+  const items = [
+    { n: 'map', l: 'Floor plan' }, { n: 'doc', l: 'Rent roll' },
+    { n: 'dollar', l: 'Billing', active: true }, { n: 'building', l: 'Portfolio' },
+    { n: 'users', l: 'People' }, { n: 'check', l: 'Commissions' },
+  ];
+  return (
+    <div style={{ width: 56, borderRight: `1px solid ${C.line}`, background: C.surface, display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '12px 0', gap: 4 }}>
+      {items.map((it) => (
+        <button key={it.l} title={it.l} style={{
+          width: 40, height: 40, borderRadius: 6,
+          background: it.active ? C.paper2 : 'transparent',
+          color: it.active ? C.ink : C.ink4,
+          border: `1px solid ${it.active ? C.line : 'transparent'}`,
+          cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}><Icon n={it.n} s={18} /></button>
+      ))}
+    </div>
+  );
+};
+
+// ═══ DATA ═══
+let _seed = 7;
+const rand = () => { _seed = (_seed * 9301 + 49297) % 233280; return _seed / 233280; };
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+const rnd = (min, max) => Math.floor(rand() * (max - min + 1)) + min;
+
+const TENANTS = [
+  { id: 't1', name: 'Northline Accounting', co: 'Northline LLC', ind: 'Accounting', email: 'billing@northline.co', phone: '(813) 555-0142', since: 'Jan 2023', status: 'overdue', mrr: 3200, bal: 6400, outstanding: 2, suite: '405', bname: 'Pinellas Park' },
+  { id: 't2', name: 'Harbor Logistics',     co: 'Harbor Logistics LLC', ind: 'Logistics', email: 'ap@harbor-log.com', phone: '(813) 555-0288', since: 'Mar 2022', status: 'paid', mrr: 3240, bal: 0, outstanding: 0, suite: '401', bname: 'Pinellas Park' },
+  { id: 't3', name: 'Dr. Yuen Dental',      co: 'Yuen Family Dentistry', ind: 'Medical', email: 'billing@yuendental.com', phone: '(727) 555-0119', since: 'Jul 2024', status: 'due', mrr: 4850, bal: 4850, outstanding: 1, suite: '403', bname: 'Pinellas Park' },
+  { id: 't4', name: 'Rivet Architects',     co: 'Rivet + Partners', ind: 'Architecture', email: 'finance@rivet.studio', phone: '(813) 555-0472', since: 'Sep 2023', status: 'paid', mrr: 3900, bal: 0, outstanding: 0, suite: '406', bname: 'Pinellas Park' },
+  { id: 't5', name: 'Crest Dental Group',   co: 'Crest Dental PLLC', ind: 'Medical', email: 'ar@crestdental.com', phone: '(727) 555-0631', since: 'Feb 2023', status: 'overdue', mrr: 4100, bal: 4100, outstanding: 1, suite: '412', bname: 'Harbor Terminal' },
+  { id: 't6', name: 'Atrium & Co.',         co: 'Atrium Law LLP', ind: 'Law', email: 'billing@atrium.legal', phone: '(813) 555-0904', since: 'Jun 2021', status: 'overdue', mrr: 5200, bal: 10400, outstanding: 2, suite: '428', bname: 'Harbor Terminal' },
+  { id: 't7', name: 'Halcyon Design Co.',   co: 'Halcyon Creative', ind: 'Design', email: 'ops@halcyon.design', phone: '(727) 555-0245', since: 'Oct 2024', status: 'paid', mrr: 2800, bal: 0, outstanding: 0, suite: '407', bname: 'Pinellas Park' },
+  { id: 't8', name: 'Nimbus Therapy',       co: 'Nimbus Wellness PLLC', ind: 'Therapy', email: 'care@nimbus.care', phone: '(813) 555-0388', since: 'Apr 2022', status: 'paid', mrr: 2100, bal: 0, outstanding: 0, suite: '214', bname: 'Harbor Terminal' },
+  { id: 't9', name: 'Bellwether Partners',  co: 'Bellwether Consulting', ind: 'Consulting', email: 'finance@bellwether.co', phone: '(727) 555-0562', since: 'Aug 2023', status: 'due', mrr: 4200, bal: 4200, outstanding: 1, suite: '316', bname: 'Pinellas Park' },
+  { id: 't10', name: 'Orenda Financial',    co: 'Orenda CFP', ind: 'Finance', email: 'orders@orenda.fund', phone: '(813) 555-0795', since: 'Nov 2022', status: 'paid', mrr: 3600, bal: 0, outstanding: 0, suite: '308', bname: 'Pinellas Park' },
+  { id: 't11', name: 'Meridian Law',        co: 'Meridian Law PLLC', ind: 'Law', email: 'ap@meridianlaw.legal', phone: '(727) 555-0138', since: 'May 2021', status: 'paid', mrr: 4700, bal: 0, outstanding: 0, suite: '511', bname: 'Pinellas Park' },
+  { id: 't12', name: 'Tidepool Analytics',  co: 'Tidepool Inc.', ind: 'Data', email: 'billing@tidepool.io', phone: '(813) 555-0211', since: 'Jan 2025', status: 'paid', mrr: 3150, bal: 0, outstanding: 0, suite: '305', bname: 'Pinellas Park' },
+];
+
+const genInvoices = () => {
+  const inv = [];
+  let id = 40120;
+  const statuses = ['paid','paid','paid','paid','paid','paid','paid','paid','due','open','open','overdue','overdue','draft','void'];
+  for (let m = 0; m < 4; m++) {
+    for (const t of TENANTS) {
+      const issued = new Date(2026, 3 - m, 1);
+      const due = new Date(2026, 3 - m, 15);
+      const st = m === 0 ? (t.status === 'overdue' ? 'overdue' : t.status === 'due' ? 'open' : 'paid') : pick(statuses);
+      const paid = st === 'paid' ? t.mrr : st === 'partial' ? Math.round(t.mrr * 0.6 / 50) * 50 : 0;
+      inv.push({
+        id: `INV-${id++}`,
+        tenantId: t.id, tenant: t.name, co: t.co, email: t.email,
+        suite: t.suite, bname: t.bname,
+        total: t.mrr, paid, remaining: t.mrr - paid,
+        status: st, issued, due,
+        stripe: st === 'paid' ? 'stripe' : st === 'void' ? null : 'stripe',
+      });
+    }
+  }
+  return inv.sort((a, b) => b.issued - a.issued);
+};
+
+const INVOICES = genInvoices();
+
+const LEASES = TENANTS.map((t, i) => {
+  const ty = 24 + rnd(0, 36);
+  const start = new Date(2021 + rnd(0, 4), rnd(0, 11), 1 + rnd(0, 27));
+  const end = new Date(start.getFullYear() + Math.floor(ty / 12), start.getMonth() + (ty % 12), start.getDate());
+  const daysLeft = Math.round((end - new Date()) / 86400000);
+  return {
+    id: `LSE-${2100 + i}`,
+    tenant: t.name, co: t.co, suite: t.suite, bname: t.bname,
+    rent: t.mrr, start, end, term: ty, daysLeft,
+    status: end < new Date() ? 'expired' : daysLeft < 60 ? 'pending' : 'active',
+    signed: ['signed','signed','signed','signed','awaiting','signed','signed','signed','signed','signed','signed','signed'][i],
+  };
+}).sort((a, b) => a.daysLeft - b.daysLeft);
+
+const CONTRACTS = [
+  { id: 'C-2401', vendor: 'Sunny HVAC Service', type: 'Service', amount: 1850, period: 'Monthly', start: 'Jan 2024', end: 'Dec 2026', status: 'active', nextPay: 'May 1' },
+  { id: 'C-2402', vendor: 'Florida Power & Light', type: 'Utility', amount: 4200, period: 'Monthly', start: 'Mar 2020', end: '—', status: 'active', nextPay: 'Apr 15' },
+  { id: 'C-2403', vendor: 'Clearwater Cleaning Co.', type: 'Service', amount: 3200, period: 'Monthly', start: 'Jun 2023', end: 'Jun 2026', status: 'active', nextPay: 'May 1' },
+  { id: 'C-2404', vendor: 'Metro Insurance Brokers', type: 'Insurance', amount: 28400, period: 'Annual', start: 'Jul 2025', end: 'Jun 2026', status: 'active', nextPay: 'Jun 30' },
+  { id: 'C-2405', vendor: 'Coastal Pest Control', type: 'Service', amount: 450, period: 'Quarterly', start: 'Feb 2022', end: 'Feb 2027', status: 'active', nextPay: 'May 15' },
+  { id: 'C-2406', vendor: 'Beacon Elevator Co.', type: 'Maintenance', amount: 2800, period: 'Monthly', start: 'Oct 2021', end: 'Sep 2026', status: 'active', nextPay: 'May 1' },
+  { id: 'C-2407', vendor: 'LegalShield Advisors', type: 'Legal', amount: 8500, period: 'Annual', start: 'Jan 2025', end: 'Dec 2025', status: 'pending', nextPay: 'Renewal due' },
+];
+
+const fmt$ = (n, compact) => {
+  if (n == null || isNaN(n)) return '—';
+  if (compact && n >= 10000) return `$${(n / 1000).toFixed(1)}k`;
+  return `$${n.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+};
+const fmtDate = (d) => d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+const fmtDateShort = (d) => d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—';
+
+// ═══ PAGE HEADER + KPI ═══
+const PageHeader = ({ onCreateInvoice }) => (
+  <div style={{ padding: '24px 24px 20px', borderBottom: `1px solid ${C.line}`, background: C.surface }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 20, flexWrap: 'wrap' }}>
+      <div>
+        <div style={{ fontFamily: 'var(--mono)', fontSize: 10.5, color: C.ink5, letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: 4 }}>Billing</div>
+        <h1 style={{ margin: 0, fontFamily: 'var(--serif)', fontSize: 'clamp(32px, 4.5vw, 48px)', fontWeight: 400, letterSpacing: -1.2, lineHeight: 1.1 }}>
+          Money moves <span style={{ color: C.ink5 }}>·</span> <span style={{ fontStyle: 'italic', color: C.accent }}>April 2026</span>
+        </h1>
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Btn size="md" icon={<Icon n="download" s={14} />}>Export</Btn>
+        <Btn size="md" variant="primary" icon={<Icon n="plus" s={14} />} onClick={onCreateInvoice}>Create invoice</Btn>
+      </div>
+    </div>
+  </div>
+);
+
+const KPIStrip = () => {
+  const totalOutstanding = INVOICES.filter((i) => ['open','due','overdue','partial'].includes(i.status)).reduce((a, i) => a + i.remaining, 0);
+  const overdueTotal = INVOICES.filter((i) => i.status === 'overdue').reduce((a, i) => a + i.remaining, 0);
+  const collectedThisMonth = INVOICES.filter((i) => i.status === 'paid' && i.issued.getMonth() === 3).reduce((a, i) => a + i.paid, 0);
+  const rate = Math.round((collectedThisMonth / (collectedThisMonth + totalOutstanding)) * 100);
+
+  const Item = ({ label, value, sub, danger, accent }) => (
+    <div style={{ flex: 1, minWidth: 180, padding: '16px 24px', borderRight: `1px solid ${C.line}` }}>
+      <div style={{ fontFamily: 'var(--mono)', fontSize: 10, letterSpacing: 0.8, textTransform: 'uppercase', color: C.ink5, marginBottom: 8 }}>{label}</div>
+      <div style={{ fontFamily: 'var(--serif)', fontSize: 32, fontWeight: 400, letterSpacing: -0.8, lineHeight: 1, color: danger ? C.overdue : accent ? C.accent : C.ink }} className="tab">{value}</div>
+      {sub && <div style={{ fontSize: 11.5, color: C.ink5, marginTop: 8 }}>{sub}</div>}
+    </div>
+  );
+
+  return (
+    <div style={{ display: 'flex', background: C.surface, borderBottom: `1px solid ${C.line}`, flexWrap: 'wrap' }}>
+      <Item label="Collected · April" value={fmt$(collectedThisMonth)} sub={`${rate}% of billed`} accent />
+      <Item label="Outstanding" value={fmt$(totalOutstanding)} sub={`${INVOICES.filter(i=>['open','due','overdue','partial'].includes(i.status)).length} open invoices`} />
+      <Item label="Overdue" value={fmt$(overdueTotal)} sub={`${INVOICES.filter(i=>i.status==='overdue').length} past due`} danger />
+      <Item label="Active leases" value={LEASES.filter(l=>l.status==='active').length} sub={`${LEASES.filter(l=>l.status==='pending').length} up for renewal`} />
+      <div style={{ flex: 1, minWidth: 180, padding: '16px 24px' }}>
+        <div style={{ fontFamily: 'var(--mono)', fontSize: 10, letterSpacing: 0.8, textTransform: 'uppercase', color: C.ink5, marginBottom: 8 }}>Month-to-month</div>
+        <Spark data={[82,78,85,81,88,85,90,87,92,89,93,95]} />
+        <div style={{ fontSize: 11.5, color: C.ink5, marginTop: 4 }}>Collection rate · 12mo</div>
+      </div>
+    </div>
+  );
+};
+
+const Spark = ({ data }) => {
+  const max = Math.max(...data), min = Math.min(...data), range = max - min || 1;
+  const w = 160, h = 36;
+  const pts = data.map((v, i) => `${(i / (data.length - 1)) * w},${h - ((v - min) / range) * h}`);
+  return (
+    <svg width={w} height={h} style={{ display: 'block' }}>
+      <polyline points={pts.join(' ')} fill="none" stroke={C.accent} strokeWidth={1.5} />
+      <circle cx={pts[pts.length - 1].split(',')[0]} cy={pts[pts.length - 1].split(',')[1]} r={3} fill={C.accent} />
+    </svg>
+  );
+};
+
+// ═══ TABS ═══
+const Tabs = ({ active, setActive }) => {
+  const items = [
+    { k: 'tenants', l: 'Tenants', count: TENANTS.length },
+    { k: 'invoices', l: 'Invoices', count: INVOICES.length },
+    { k: 'aging', l: 'Aging' },
+    { k: 'leases', l: 'Leases', count: LEASES.length },
+    { k: 'contracts', l: 'Vendor contracts', count: CONTRACTS.length },
+  ];
+  return (
+    <div style={{
+      display: 'flex', gap: 4, padding: '0 24px',
+      borderBottom: `1px solid ${C.line}`, background: C.surface,
+      position: 'sticky', top: 0, zIndex: 5,
+    }}>
+      {items.map((it) => (
+        <div key={it.k} onClick={() => setActive(it.k)} style={{
+          padding: '14px 16px', fontSize: 13.5, fontWeight: 500,
+          color: it.k === active ? C.ink : C.ink4,
+          borderBottom: `2px solid ${it.k === active ? C.ink : 'transparent'}`,
+          marginBottom: -1, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          {it.l}
+          {it.count != null && (
+            <span style={{
+              fontSize: 11, fontFamily: 'var(--mono)',
+              padding: '2px 6px', borderRadius: 4,
+              background: it.k === active ? C.paper2 : 'transparent',
+              color: it.k === active ? C.ink3 : C.ink5,
+            }} className="tab">{it.count}</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// ═══ TABLE PRIMITIVES ═══
+const TH = ({ children, w, align = 'left' }) => (
+  <th style={{
+    position: 'sticky', top: 0, background: C.paper2, borderBottom: `1px solid ${C.line2}`,
+    padding: '10px 14px', textAlign: align, width: w, minWidth: w,
+    fontFamily: 'var(--mono)', fontSize: 10.5, letterSpacing: 0.5, textTransform: 'uppercase',
+    color: C.ink4, fontWeight: 500,
+  }}>{children}</th>
+);
+
+const TD = ({ children, align = 'left', mono, bold, color, size, style }) => (
+  <td style={{
+    padding: '12px 14px', borderBottom: `1px solid ${C.line}`,
+    textAlign: align, fontFamily: mono ? 'var(--mono)' : undefined,
+    fontWeight: bold ? 500 : undefined, color, fontSize: size || 13,
+    ...style,
+  }}>{children}</td>
+);
+
+// ═══ PANELS ═══
+
+// -------- TENANTS --------
+const TenantsPanel = ({ onSelect }) => {
+  const [hover, setHover] = React.useState(null);
+  return (
+    <div style={{ padding: 24 }}>
+      <div style={{ display: 'flex', gap: 12, marginBottom: 16, alignItems: 'center' }}>
+        <SearchField placeholder="Search tenant, company, email…" />
+        <Btn size="sm" iconRight={<Icon n="chevron" s={12} />}>All statuses</Btn>
+        <Btn size="sm" iconRight={<Icon n="chevron" s={12} />}>All buildings</Btn>
+        <div style={{ flex: 1 }} />
+        <Btn size="sm" icon={<Icon n="mail" s={14} />}>Email selected</Btn>
+        <Btn size="sm" icon={<Icon n="download" s={14} />}>CSV</Btn>
+      </div>
+
+      <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 8, overflow: 'hidden' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead>
+            <tr>
+              <TH w={36} align="center"><input type="checkbox" style={{ accentColor: C.accent }} /></TH>
+              <TH>Tenant</TH>
+              <TH w={140}>Suite · building</TH>
+              <TH w={100} align="right">MRR</TH>
+              <TH w={110} align="right">Balance</TH>
+              <TH w={120}>Status</TH>
+              <TH w={160}>Contact</TH>
+              <TH w={100}>Since</TH>
+              <TH w={60} />
+            </tr>
+          </thead>
+          <tbody>
+            {TENANTS.map((t) => (
+              <tr key={t.id} onMouseEnter={() => setHover(t.id)} onMouseLeave={() => setHover(null)} onClick={() => onSelect(t)}
+                style={{ background: hover === t.id ? C.paper2 : C.surface, cursor: 'pointer', transition: 'background 100ms' }}>
+                <TD align="center" style={{ padding: '12px 4px' }} onClick={(e) => e.stopPropagation()}>
+                  <input type="checkbox" style={{ accentColor: C.accent }} />
+                </TD>
+                <TD>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <Avatar name={t.name} size={32} />
+                    <div>
+                      <div style={{ fontWeight: 500 }}>{t.name}</div>
+                      <div style={{ fontSize: 11.5, color: C.ink5 }}>{t.co} · {t.ind}</div>
+                    </div>
+                  </div>
+                </TD>
+                <TD size={12.5}>
+                  <div style={{ fontFamily: 'var(--mono)', fontWeight: 500 }}>{t.suite}</div>
+                  <div style={{ fontSize: 11, color: C.ink5 }}>{t.bname}</div>
+                </TD>
+                <TD align="right" mono bold><span className="tab">{fmt$(t.mrr)}</span></TD>
+                <TD align="right" mono color={t.bal > 0 ? C.overdue : C.ink5}>
+                  <span className="tab" style={{ fontWeight: t.bal > 0 ? 500 : 400 }}>{t.bal > 0 ? fmt$(t.bal) : '—'}</span>
+                  {t.outstanding > 0 && <div style={{ fontSize: 10.5, color: C.ink5 }}>{t.outstanding} invoice{t.outstanding > 1 ? 's' : ''}</div>}
+                </TD>
+                <TD><Pill status={t.status} /></TD>
+                <TD size={12} color={C.ink4}>
+                  <div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 160 }}>{t.email}</div>
+                  <div style={{ fontSize: 11, color: C.ink5 }}>{t.phone}</div>
+                </TD>
+                <TD size={12.5} color={C.ink4}>{t.since}</TD>
+                <TD align="right">
+                  {hover === t.id && <Btn size="sm" variant="ghost" icon={<Icon n="more" s={14} />} />}
+                </TD>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+// -------- INVOICES --------
+const InvoicesPanel = () => {
+  const [filter, setFilter] = React.useState('all');
+  const [sel, setSel] = React.useState(new Set());
+  const filtered = filter === 'all' ? INVOICES : INVOICES.filter((i) => i.status === filter);
+  const counts = {
+    all: INVOICES.length,
+    open: INVOICES.filter((i) => ['open','due'].includes(i.status)).length,
+    overdue: INVOICES.filter((i) => i.status === 'overdue').length,
+    paid: INVOICES.filter((i) => i.status === 'paid').length,
+    draft: INVOICES.filter((i) => i.status === 'draft').length,
+  };
+
+  const tabs = [
+    ['all', 'All', counts.all],
+    ['open', 'Open', counts.open],
+    ['overdue', 'Overdue', counts.overdue],
+    ['paid', 'Paid', counts.paid],
+    ['draft', 'Drafts', counts.draft],
+  ];
+
+  const totalSel = [...sel].reduce((a, id) => a + (INVOICES.find((i) => i.id === id)?.remaining || 0), 0);
+
+  return (
+    <div style={{ padding: 24 }}>
+      {/* Segmented filter */}
+      <div style={{ display: 'flex', gap: 2, marginBottom: 16, background: C.paper2, padding: 3, borderRadius: 8, width: 'fit-content' }}>
+        {tabs.map(([k, l, c]) => (
+          <button key={k} onClick={() => setFilter(k)} style={{
+            padding: '7px 14px', fontSize: 13, fontWeight: 500,
+            background: filter === k ? C.surface : 'transparent',
+            color: filter === k ? C.ink : C.ink4,
+            border: 'none', borderRadius: 6, cursor: 'pointer',
+            boxShadow: filter === k ? '0 1px 3px rgba(40,30,20,0.08)' : 'none',
+            display: 'flex', alignItems: 'center', gap: 6,
+          }}>
+            {l} <span style={{ fontSize: 11, fontFamily: 'var(--mono)', color: C.ink5 }} className="tab">{c}</span>
+          </button>
+        ))}
+      </div>
+
+      <div style={{ display: 'flex', gap: 12, marginBottom: 16, alignItems: 'center' }}>
+        <SearchField placeholder="Search invoice, tenant…" />
+        <Btn size="sm" iconRight={<Icon n="chevron" s={12} />} icon={<Icon n="calendar" s={14} />}>Last 90 days</Btn>
+        <div style={{ flex: 1 }} />
+        {sel.size > 0 ? (
+          <>
+            <span style={{ fontSize: 12.5, color: C.ink4 }}>
+              <span style={{ color: C.ink, fontWeight: 500 }} className="tab">{sel.size}</span> selected · <span className="tab" style={{ fontWeight: 500 }}>{fmt$(totalSel)}</span>
+            </span>
+            <Btn size="sm" icon={<Icon n="mail" s={14} />}>Send</Btn>
+            <Btn size="sm" icon={<Icon n="bell" s={14} />}>Remind</Btn>
+            <Btn size="sm" variant="ghost" onClick={() => setSel(new Set())}>Clear</Btn>
+          </>
+        ) : (
+          <>
+            <Btn size="sm" icon={<Icon n="download" s={14} />}>Export</Btn>
+          </>
+        )}
+      </div>
+
+      <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 8, overflow: 'hidden' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead>
+            <tr>
+              <TH w={36} align="center"><input type="checkbox" style={{ accentColor: C.accent }} /></TH>
+              <TH w={130}>Invoice #</TH>
+              <TH>Tenant · suite</TH>
+              <TH w={110}>Issued</TH>
+              <TH w={110}>Due</TH>
+              <TH w={120}>Status</TH>
+              <TH w={100} align="right">Total</TH>
+              <TH w={110} align="right">Remaining</TH>
+              <TH w={80} align="center">Stripe</TH>
+              <TH w={80} />
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.slice(0, 24).map((inv) => {
+              const isSel = sel.has(inv.id);
+              return (
+                <tr key={inv.id} style={{ background: isSel ? C.accentWash : C.surface }}>
+                  <TD align="center" style={{ padding: '12px 4px' }}>
+                    <input type="checkbox" checked={isSel} onChange={() => {
+                      setSel((s) => { const n = new Set(s); n.has(inv.id) ? n.delete(inv.id) : n.add(inv.id); return n; });
+                    }} style={{ accentColor: C.accent }} />
+                  </TD>
+                  <TD mono bold size={13}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <Icon n="doc" s={14} />
+                      {inv.id}
+                    </div>
+                  </TD>
+                  <TD>
+                    <div style={{ fontWeight: 500 }}>{inv.tenant}</div>
+                    <div style={{ fontSize: 11.5, color: C.ink5 }}>Suite {inv.suite} · {inv.bname}</div>
+                  </TD>
+                  <TD mono size={12.5} color={C.ink4}>{fmtDate(inv.issued)}</TD>
+                  <TD mono size={12.5} color={inv.status === 'overdue' ? C.overdue : C.ink4}>
+                    {fmtDate(inv.due)}
+                    {inv.status === 'overdue' && <div style={{ fontSize: 10.5 }}>{Math.round((new Date() - inv.due) / 86400000)}d late</div>}
+                  </TD>
+                  <TD><Pill status={inv.status} /></TD>
+                  <TD align="right" mono bold><span className="tab">{fmt$(inv.total)}</span></TD>
+                  <TD align="right" mono color={inv.remaining > 0 ? C.overdue : C.ink5}>
+                    <span className="tab" style={{ fontWeight: inv.remaining > 0 ? 500 : 400 }}>{inv.remaining > 0 ? fmt$(inv.remaining) : '—'}</span>
+                  </TD>
+                  <TD align="center">
+                    {inv.stripe ? (
+                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: C.accent }}>
+                        <Icon n="stripe" s={13} />
+                      </div>
+                    ) : (
+                      <span style={{ color: C.ink5 }}>—</span>
+                    )}
+                  </TD>
+                  <TD align="right">
+                    <Btn size="sm" variant="ghost" icon={<Icon n="more" s={14} />} />
+                  </TD>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ marginTop: 12, fontSize: 11.5, color: C.ink5, textAlign: 'center' }}>
+        Showing 1–24 of {filtered.length} invoices
+      </div>
+    </div>
+  );
+};
+
+// -------- AGING --------
+const AgingPanel = () => {
+  const now = new Date();
+  const buckets = { current: [], b30: [], b60: [], b90: [], b120: [] };
+  INVOICES.filter((i) => ['open','due','overdue','partial'].includes(i.status)).forEach((i) => {
+    const d = Math.floor((now - i.due) / 86400000);
+    if (d <= 0) buckets.current.push(i);
+    else if (d <= 30) buckets.b30.push(i);
+    else if (d <= 60) buckets.b60.push(i);
+    else if (d <= 90) buckets.b90.push(i);
+    else buckets.b120.push(i);
+  });
+
+  const sum = (arr) => arr.reduce((a, i) => a + i.remaining, 0);
+  const totals = {
+    current: sum(buckets.current),
+    b30: sum(buckets.b30), b60: sum(buckets.b60),
+    b90: sum(buckets.b90), b120: sum(buckets.b120),
+  };
+  const grandTotal = Object.values(totals).reduce((a, b) => a + b, 0);
+
+  const bkts = [
+    { k: 'current', l: 'Current', sub: 'Not yet due', v: totals.current, n: buckets.current.length, c: C.paid, wash: C.paidWash },
+    { k: 'b30', l: '1–30 days', sub: 'Approaching', v: totals.b30, n: buckets.b30.length, c: C.due, wash: C.dueWash },
+    { k: 'b60', l: '31–60 days', sub: 'Follow up', v: totals.b60, n: buckets.b60.length, c: C.overdue, wash: C.overdueWash },
+    { k: 'b90', l: '61–90 days', sub: 'Escalate', v: totals.b90, n: buckets.b90.length, c: C.overdue, wash: C.overdueWash },
+    { k: 'b120', l: '90+ days', sub: 'Collections', v: totals.b120, n: buckets.b120.length, c: C.ink, wash: C.paper3 },
+  ];
+
+  // By-tenant aging breakdown
+  const byTenant = {};
+  [...buckets.current, ...buckets.b30, ...buckets.b60, ...buckets.b90, ...buckets.b120].forEach((inv) => {
+    if (!byTenant[inv.tenantId]) byTenant[inv.tenantId] = { tenant: inv.tenant, co: inv.co, suite: inv.suite, current: 0, b30: 0, b60: 0, b90: 0, b120: 0, total: 0 };
+    const d = Math.floor((now - inv.due) / 86400000);
+    const k = d <= 0 ? 'current' : d <= 30 ? 'b30' : d <= 60 ? 'b60' : d <= 90 ? 'b90' : 'b120';
+    byTenant[inv.tenantId][k] += inv.remaining;
+    byTenant[inv.tenantId].total += inv.remaining;
+  });
+  const tenantRows = Object.values(byTenant).sort((a, b) => b.total - a.total).slice(0, 10);
+
+  return (
+    <div style={{ padding: 24 }}>
+      {/* Bucket cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 24 }}>
+        {bkts.map((b) => (
+          <div key={b.k} style={{
+            background: C.surface, border: `1px solid ${C.line}`, borderRadius: 8,
+            padding: 18, position: 'relative', overflow: 'hidden',
+          }}>
+            <div style={{ position: 'absolute', top: 0, left: 0, bottom: 0, width: 3, background: b.c }} />
+            <div style={{ fontFamily: 'var(--mono)', fontSize: 10, letterSpacing: 0.8, textTransform: 'uppercase', color: C.ink5, marginBottom: 6 }}>{b.l}</div>
+            <div style={{ fontFamily: 'var(--serif)', fontSize: 32, fontWeight: 400, letterSpacing: -0.8, lineHeight: 1, color: b.c }} className="tab">{fmt$(b.v, true)}</div>
+            <div style={{ fontSize: 11.5, color: C.ink5, marginTop: 6, display: 'flex', justifyContent: 'space-between' }}>
+              <span>{b.n} invoice{b.n !== 1 ? 's' : ''}</span>
+              <span className="tab">{grandTotal ? Math.round((b.v / grandTotal) * 100) : 0}%</span>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Aging bar */}
+      <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 8, padding: 20, marginBottom: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
+          <div>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: 10, letterSpacing: 0.8, textTransform: 'uppercase', color: C.ink5, marginBottom: 4 }}>Total A/R</div>
+            <div style={{ fontFamily: 'var(--serif)', fontSize: 42, fontWeight: 400, letterSpacing: -1, lineHeight: 1 }} className="tab">{fmt$(grandTotal)}</div>
+          </div>
+          <div style={{ textAlign: 'right' }}>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: 10, letterSpacing: 0.8, textTransform: 'uppercase', color: C.ink5, marginBottom: 4 }}>Collection rate</div>
+            <div style={{ fontFamily: 'var(--serif)', fontSize: 42, fontWeight: 400, letterSpacing: -1, lineHeight: 1, color: C.paid }} className="tab">94.2%</div>
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 2, height: 44, borderRadius: 4, overflow: 'hidden' }}>
+          {bkts.map((b) => grandTotal ? (
+            <div key={b.k} style={{
+              flex: b.v / grandTotal,
+              background: b.c, display: 'flex', alignItems: 'center', padding: '0 10px',
+              color: '#fff', fontSize: 11, fontFamily: 'var(--mono)', fontWeight: 500,
+              minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap',
+            }} className="tab">{Math.round((b.v / grandTotal) * 100)}%</div>
+          ) : null)}
+        </div>
+        <div style={{ display: 'flex', marginTop: 8, fontSize: 10.5, color: C.ink5, fontFamily: 'var(--mono)' }}>
+          {bkts.map((b) => (
+            <div key={b.k} style={{ flex: grandTotal ? b.v / grandTotal : 0, minWidth: 40 }}>{b.l}</div>
+          ))}
+        </div>
+      </div>
+
+      {/* By-tenant breakdown */}
+      <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>Aging by tenant</h3>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Btn size="sm" icon={<Icon n="mail" s={14} />}>Send statements</Btn>
+          <Btn size="sm" icon={<Icon n="download" s={14} />}>Export A/R</Btn>
+        </div>
+      </div>
+
+      <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 8, overflow: 'hidden' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead>
+            <tr>
+              <TH>Tenant</TH>
+              <TH w={90}>Suite</TH>
+              <TH w={110} align="right">Current</TH>
+              <TH w={110} align="right">1–30</TH>
+              <TH w={110} align="right">31–60</TH>
+              <TH w={110} align="right">61–90</TH>
+              <TH w={110} align="right">90+</TH>
+              <TH w={120} align="right">Total</TH>
+              <TH w={90} />
+            </tr>
+          </thead>
+          <tbody>
+            {tenantRows.map((r, i) => (
+              <tr key={i}>
+                <TD>
+                  <div style={{ fontWeight: 500 }}>{r.tenant}</div>
+                  <div style={{ fontSize: 11.5, color: C.ink5 }}>{r.co}</div>
+                </TD>
+                <TD mono size={12.5} color={C.ink4}>{r.suite}</TD>
+                <TD align="right" mono color={r.current > 0 ? C.ink : C.ink5}><span className="tab">{r.current > 0 ? fmt$(r.current) : '—'}</span></TD>
+                <TD align="right" mono color={r.b30 > 0 ? C.due : C.ink5}><span className="tab" style={{ fontWeight: r.b30 > 0 ? 500 : 400 }}>{r.b30 > 0 ? fmt$(r.b30) : '—'}</span></TD>
+                <TD align="right" mono color={r.b60 > 0 ? C.overdue : C.ink5}><span className="tab" style={{ fontWeight: r.b60 > 0 ? 500 : 400 }}>{r.b60 > 0 ? fmt$(r.b60) : '—'}</span></TD>
+                <TD align="right" mono color={r.b90 > 0 ? C.overdue : C.ink5}><span className="tab" style={{ fontWeight: r.b90 > 0 ? 500 : 400 }}>{r.b90 > 0 ? fmt$(r.b90) : '—'}</span></TD>
+                <TD align="right" mono color={r.b120 > 0 ? C.ink : C.ink5}><span className="tab" style={{ fontWeight: r.b120 > 0 ? 500 : 400 }}>{r.b120 > 0 ? fmt$(r.b120) : '—'}</span></TD>
+                <TD align="right" mono bold><span className="tab">{fmt$(r.total)}</span></TD>
+                <TD align="right"><Btn size="sm" icon={<Icon n="mail" s={13} />}>Nudge</Btn></TD>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+// -------- LEASES --------
+const LeasesPanel = () => {
+  return (
+    <div style={{ padding: 24 }}>
+      <div style={{ display: 'flex', gap: 12, marginBottom: 16, alignItems: 'center' }}>
+        <SearchField placeholder="Search lease, tenant, suite…" />
+        <Btn size="sm" iconRight={<Icon n="chevron" s={12} />}>Active</Btn>
+        <Btn size="sm" iconRight={<Icon n="chevron" s={12} />}>All buildings</Btn>
+        <div style={{ flex: 1 }} />
+        <Btn size="sm" icon={<Icon n="signature" s={14} />}>Send for signature</Btn>
+        <Btn size="sm" variant="primary" icon={<Icon n="plus" s={14} />}>New lease</Btn>
+      </div>
+
+      {/* Timeline visualization — next 12 months */}
+      <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 8, padding: 20, marginBottom: 20 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 14, alignItems: 'center' }}>
+          <div>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: 10, letterSpacing: 0.8, textTransform: 'uppercase', color: C.ink5 }}>Expiration timeline</div>
+            <div style={{ fontSize: 15, fontWeight: 500, marginTop: 2 }}>Next 12 months · {LEASES.filter(l => l.daysLeft > 0 && l.daysLeft < 365).length} renewals upcoming</div>
+          </div>
+          <Btn size="sm" icon={<Icon n="calendar" s={14} />}>View calendar</Btn>
+        </div>
+        <div style={{ position: 'relative', paddingTop: 8 }}>
+          <div style={{ display: 'flex', height: 60, position: 'relative' }}>
+            {Array.from({ length: 12 }).map((_, m) => (
+              <div key={m} style={{ flex: 1, borderLeft: `1px solid ${m === 0 ? C.line2 : C.line}`, position: 'relative' }}>
+                <div style={{ position: 'absolute', top: -20, left: 4, fontSize: 10.5, fontFamily: 'var(--mono)', color: C.ink5, letterSpacing: 0.4 }}>
+                  {new Date(2026, 3 + m, 1).toLocaleDateString('en-US', { month: 'short' })}
+                </div>
+              </div>
+            ))}
+            {LEASES.filter(l => l.daysLeft > 0 && l.daysLeft < 365).map((l) => {
+              const pos = (l.daysLeft / 365) * 100;
+              const c = l.daysLeft < 60 ? C.overdue : l.daysLeft < 180 ? C.due : C.paid;
+              return (
+                <div key={l.id} style={{
+                  position: 'absolute', top: 10, left: `${pos}%`,
+                  transform: 'translateX(-50%)', cursor: 'pointer',
+                }} title={`${l.tenant} · expires ${fmtDate(l.end)}`}>
+                  <div style={{ width: 2, height: 40, background: c, margin: '0 auto' }} />
+                  <div style={{
+                    fontSize: 10, fontFamily: 'var(--mono)', color: c,
+                    whiteSpace: 'nowrap', transform: 'rotate(-35deg)', transformOrigin: 'left top',
+                    marginTop: 2, marginLeft: 6, letterSpacing: 0.2,
+                  }}>{l.tenant.split(' ')[0]}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* Table */}
+      <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 8, overflow: 'hidden' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead>
+            <tr>
+              <TH w={110}>Lease ID</TH>
+              <TH>Tenant</TH>
+              <TH w={110}>Suite</TH>
+              <TH w={120}>Start</TH>
+              <TH w={120}>End</TH>
+              <TH w={90} align="right">Days left</TH>
+              <TH w={100} align="right">Rent</TH>
+              <TH w={130}>Signature</TH>
+              <TH w={100}>Status</TH>
+              <TH w={80} />
+            </tr>
+          </thead>
+          <tbody>
+            {LEASES.map((l) => (
+              <tr key={l.id}>
+                <TD mono bold size={12.5}>{l.id}</TD>
+                <TD>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <Avatar name={l.tenant} size={28} />
+                    <div>
+                      <div style={{ fontWeight: 500 }}>{l.tenant}</div>
+                      <div style={{ fontSize: 11, color: C.ink5 }}>{l.co}</div>
+                    </div>
+                  </div>
+                </TD>
+                <TD size={12.5} mono color={C.ink4}>
+                  <div style={{ fontWeight: 500, color: C.ink3 }}>{l.suite}</div>
+                  <div style={{ fontSize: 11, color: C.ink5, fontFamily: 'var(--sans)' }}>{l.bname}</div>
+                </TD>
+                <TD mono size={12.5} color={C.ink4}>{fmtDate(l.start)}</TD>
+                <TD mono size={12.5} color={C.ink4}>
+                  {fmtDate(l.end)}
+                  <div style={{ fontSize: 10.5, color: C.ink5 }}>{l.term}mo term</div>
+                </TD>
+                <TD align="right" mono color={l.daysLeft < 60 ? C.overdue : l.daysLeft < 180 ? C.due : C.ink}>
+                  <span className="tab" style={{ fontWeight: 500 }}>{l.daysLeft > 0 ? l.daysLeft : 'expired'}</span>
+                </TD>
+                <TD align="right" mono bold><span className="tab">{fmt$(l.rent)}</span></TD>
+                <TD><Pill status={l.signed} /></TD>
+                <TD><Pill status={l.status} /></TD>
+                <TD align="right"><Btn size="sm" variant="ghost" icon={<Icon n="more" s={14} />} /></TD>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+// -------- CONTRACTS --------
+const ContractsPanel = () => {
+  const total = CONTRACTS.reduce((a, c) => a + (c.period === 'Monthly' ? c.amount * 12 : c.period === 'Quarterly' ? c.amount * 4 : c.amount), 0);
+  return (
+    <div style={{ padding: 24 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 20 }}>
+        <StatCard label="Annualized spend" value={fmt$(total)} sub={`${CONTRACTS.length} active contracts`} accent />
+        <StatCard label="Monthly recurring" value={fmt$(CONTRACTS.filter(c => c.period === 'Monthly').reduce((a, c) => a + c.amount, 0))} sub="Utilities + services" />
+        <StatCard label="Renewals ≤ 60d" value={CONTRACTS.filter(c => c.status === 'pending').length} sub="Review & renew" />
+        <StatCard label="Vendors" value={new Set(CONTRACTS.map(c => c.vendor)).size} sub="Active partners" />
+      </div>
+
+      <div style={{ display: 'flex', gap: 12, marginBottom: 16, alignItems: 'center' }}>
+        <SearchField placeholder="Search vendor, contract…" />
+        <Btn size="sm" iconRight={<Icon n="chevron" s={12} />}>All types</Btn>
+        <Btn size="sm" iconRight={<Icon n="chevron" s={12} />}>All status</Btn>
+        <div style={{ flex: 1 }} />
+        <Btn size="sm" icon={<Icon n="download" s={14} />}>Export</Btn>
+        <Btn size="sm" variant="primary" icon={<Icon n="plus" s={14} />}>Add contract</Btn>
+      </div>
+
+      <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 8, overflow: 'hidden' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead>
+            <tr>
+              <TH w={110}>Contract</TH>
+              <TH>Vendor</TH>
+              <TH w={120}>Type</TH>
+              <TH w={110}>Period</TH>
+              <TH w={110} align="right">Amount</TH>
+              <TH w={120}>Start</TH>
+              <TH w={120}>End</TH>
+              <TH w={130}>Next payment</TH>
+              <TH w={100}>Status</TH>
+              <TH w={60} />
+            </tr>
+          </thead>
+          <tbody>
+            {CONTRACTS.map((c) => {
+              const typeColors = { Service: C.accent, Utility: C.due, Insurance: C.paid, Maintenance: C.reserved, Legal: C.pending };
+              const tc = typeColors[c.type] || C.ink4;
+              return (
+                <tr key={c.id}>
+                  <TD mono bold size={12.5}>{c.id}</TD>
+                  <TD bold>{c.vendor}</TD>
+                  <TD>
+                    <span style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 8px',
+                      background: `${tc}1a`, color: tc, borderRadius: 4, fontSize: 11.5, fontWeight: 500,
+                    }}>
+                      <span style={{ width: 5, height: 5, borderRadius: 3, background: tc }} />
+                      {c.type}
+                    </span>
+                  </TD>
+                  <TD size={12.5} color={C.ink4}>{c.period}</TD>
+                  <TD align="right" mono bold><span className="tab">{fmt$(c.amount)}</span></TD>
+                  <TD mono size={12.5} color={C.ink4}>{c.start}</TD>
+                  <TD mono size={12.5} color={C.ink4}>{c.end}</TD>
+                  <TD mono size={12.5} color={c.nextPay.includes('Renewal') ? C.overdue : C.ink3}>
+                    {c.nextPay.includes('Renewal') ? (
+                      <span style={{ color: C.overdue, fontWeight: 500 }}>{c.nextPay}</span>
+                    ) : c.nextPay}
+                  </TD>
+                  <TD><Pill status={c.status} /></TD>
+                  <TD align="right"><Btn size="sm" variant="ghost" icon={<Icon n="more" s={14} />} /></TD>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+const StatCard = ({ label, value, sub, accent }) => (
+  <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 8, padding: 18 }}>
+    <div style={{ fontFamily: 'var(--mono)', fontSize: 10, letterSpacing: 0.8, textTransform: 'uppercase', color: C.ink5, marginBottom: 8 }}>{label}</div>
+    <div style={{ fontFamily: 'var(--serif)', fontSize: 32, fontWeight: 400, letterSpacing: -0.8, lineHeight: 1, color: accent ? C.accent : C.ink }} className="tab">{value}</div>
+    <div style={{ fontSize: 11.5, color: C.ink5, marginTop: 8 }}>{sub}</div>
+  </div>
+);
+
+// ═══ SEARCH FIELD ═══
+const SearchField = ({ placeholder }) => {
+  const [v, setV] = React.useState('');
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 8,
+      height: 32, padding: '0 12px', background: C.paper,
+      border: `1px solid ${C.line}`, borderRadius: 6, minWidth: 240, maxWidth: 340, flex: '1 1 260px',
+    }}>
+      <Icon n="search" s={14} />
+      <input value={v} onChange={(e) => setV(e.target.value)} placeholder={placeholder}
+        style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', fontSize: 13 }} />
+      {v && <button onClick={() => setV('')} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: C.ink5, padding: 2, display: 'flex' }}><Icon n="x" s={13} /></button>}
+    </div>
+  );
+};
+
+// ═══ CREATE INVOICE MODAL ═══
+const CreateInvoiceModal = ({ open, onClose }) => {
+  if (!open) return null;
+  const [tenant, setTenant] = React.useState(TENANTS[0].id);
+  const t = TENANTS.find((x) => x.id === tenant);
+
+  const lineItems = [
+    { desc: `April rent — Suite ${t.suite}`, qty: 1, rate: t.mrr, amount: t.mrr },
+    { desc: 'CAM charges', qty: 1, rate: 240, amount: 240 },
+  ];
+  const subtotal = lineItems.reduce((a, l) => a + l.amount, 0);
+  const tax = Math.round(subtotal * 0.07);
+  const total = subtotal + tax;
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(26,24,21,0.35)', zIndex: 100 }} />
+      <div style={{
+        position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+        width: 'min(720px, 92vw)', maxHeight: '88vh',
+        background: C.surface, borderRadius: 10, boxShadow: '0 20px 80px rgba(40,30,20,0.2)',
+        zIndex: 101, display: 'flex', flexDirection: 'column',
+      }}>
+        <div style={{ padding: '20px 24px', borderBottom: `1px solid ${C.line}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: 10.5, color: C.ink5, letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 4 }}>New invoice</div>
+            <div style={{ fontFamily: 'var(--serif)', fontSize: 28, letterSpacing: -0.6, lineHeight: 1 }}>Draft invoice</div>
+          </div>
+          <button onClick={onClose} style={{ border: 'none', background: 'transparent', cursor: 'pointer', width: 32, height: 32, borderRadius: 16, color: C.ink4, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Icon n="x" s={18} /></button>
+        </div>
+
+        <div style={{ flex: 1, overflow: 'auto', padding: 24 }}>
+          {/* Tenant + suite */}
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16, marginBottom: 20 }}>
+            <Field label="Tenant">
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 10,
+                height: 44, padding: '0 12px', background: C.paper,
+                border: `1px solid ${C.line2}`, borderRadius: 6,
+              }}>
+                <Avatar name={t.name} size={28} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 500 }}>{t.name}</div>
+                  <div style={{ fontSize: 11.5, color: C.ink5 }}>{t.email}</div>
+                </div>
+                <Icon n="chevron" s={14} />
+              </div>
+            </Field>
+            <Field label="Suite">
+              <div style={{
+                display: 'flex', alignItems: 'center',
+                height: 44, padding: '0 12px', background: C.paper,
+                border: `1px solid ${C.line2}`, borderRadius: 6,
+                fontFamily: 'var(--mono)', fontSize: 14, fontWeight: 500,
+              }}>{t.suite} · {t.bname}</div>
+            </Field>
+          </div>
+
+          {/* Dates */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16, marginBottom: 20 }}>
+            <Field label="Issue date"><TextInput value="Apr 15, 2026" icon="calendar" /></Field>
+            <Field label="Due date"><TextInput value="May 1, 2026" icon="calendar" /></Field>
+            <Field label="Invoice #"><TextInput value="INV-40145" mono /></Field>
+          </div>
+
+          {/* Line items */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: 10, letterSpacing: 0.8, textTransform: 'uppercase', color: C.ink5, marginBottom: 10 }}>Line items</div>
+            <div style={{ background: C.paper, border: `1px solid ${C.line}`, borderRadius: 6, overflow: 'hidden' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 70px 100px 120px 36px', padding: '10px 12px', background: C.paper2, borderBottom: `1px solid ${C.line}`, fontFamily: 'var(--mono)', fontSize: 10, color: C.ink5, letterSpacing: 0.5, textTransform: 'uppercase' }}>
+                <div>Description</div><div style={{ textAlign: 'right' }}>Qty</div><div style={{ textAlign: 'right' }}>Rate</div><div style={{ textAlign: 'right' }}>Amount</div><div />
+              </div>
+              {lineItems.map((li, i) => (
+                <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 70px 100px 120px 36px', padding: '12px', borderBottom: i < lineItems.length - 1 ? `1px solid ${C.line}` : 'none', alignItems: 'center', fontSize: 13 }}>
+                  <div>{li.desc}</div>
+                  <div style={{ textAlign: 'right', fontFamily: 'var(--mono)' }} className="tab">{li.qty}</div>
+                  <div style={{ textAlign: 'right', fontFamily: 'var(--mono)' }} className="tab">{fmt$(li.rate)}</div>
+                  <div style={{ textAlign: 'right', fontFamily: 'var(--mono)', fontWeight: 500 }} className="tab">{fmt$(li.amount)}</div>
+                  <div style={{ textAlign: 'center', color: C.ink5, cursor: 'pointer' }}><Icon n="x" s={13} /></div>
+                </div>
+              ))}
+              <div style={{ padding: '8px 12px', background: C.paper2 }}>
+                <button style={{
+                  border: 'none', background: 'transparent', cursor: 'pointer', color: C.accent,
+                  fontSize: 12.5, fontWeight: 500, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 0',
+                }}><Icon n="plus" s={12} /> Add line item</button>
+              </div>
+            </div>
+          </div>
+
+          {/* Totals */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
+            <div style={{ width: 280 }}>
+              <TotalRow label="Subtotal" value={subtotal} />
+              <TotalRow label="Tax (7%)" value={tax} />
+              <div style={{ borderTop: `1px solid ${C.line2}`, marginTop: 6, paddingTop: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                  <div style={{ fontSize: 13, fontWeight: 500 }}>Total</div>
+                  <div style={{ fontFamily: 'var(--serif)', fontSize: 32, letterSpacing: -0.8, lineHeight: 1 }} className="tab">{fmt$(total)}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Payment */}
+          <div style={{ padding: 14, background: C.accentWash, border: `1px solid ${C.accent}22`, borderRadius: 6, display: 'flex', gap: 10, alignItems: 'center' }}>
+            <Icon n="stripe" s={18} />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 500, color: C.accent }}>Stripe payment link included</div>
+              <div style={{ fontSize: 11.5, color: C.ink4, marginTop: 2 }}>Tenant can pay by card or ACH. Auto-reconciles on payment.</div>
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: C.ink3, cursor: 'pointer' }}>
+              <input type="checkbox" defaultChecked style={{ accentColor: C.accent }} /> Enable
+            </label>
+          </div>
+        </div>
+
+        <div style={{ padding: '16px 24px', borderTop: `1px solid ${C.line}`, background: C.paper2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ fontSize: 12, color: C.ink5 }}>Save as draft or send directly — tenant receives email with PDF + pay link.</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+            <Btn variant="secondary">Save draft</Btn>
+            <Btn variant="primary" icon={<Icon n="mail" s={14} />}>Send invoice</Btn>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+};
+
+const Field = ({ label, children }) => (
+  <div>
+    <div style={{ fontFamily: 'var(--mono)', fontSize: 10, letterSpacing: 0.8, textTransform: 'uppercase', color: C.ink5, marginBottom: 6 }}>{label}</div>
+    {children}
+  </div>
+);
+
+const TextInput = ({ value, icon, mono }) => (
+  <div style={{
+    display: 'flex', alignItems: 'center', gap: 8,
+    height: 44, padding: '0 12px', background: C.paper,
+    border: `1px solid ${C.line2}`, borderRadius: 6,
+  }}>
+    {icon && <Icon n={icon} s={15} />}
+    <input defaultValue={value} style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', fontSize: 13.5, fontFamily: mono ? 'var(--mono)' : undefined, fontWeight: 500 }} />
+  </div>
+);
+
+const TotalRow = ({ label, value }) => (
+  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '6px 0', color: C.ink3 }}>
+    <div>{label}</div>
+    <div style={{ fontFamily: 'var(--mono)' }} className="tab">{fmt$(value)}</div>
+  </div>
+);
+
+// ═══ APP ═══
+const App = () => {
+  const [tab, setTab] = React.useState('invoices');
+  const [modalOpen, setModalOpen] = React.useState(false);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: C.paper }}>
+      <Topbar />
+      <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+        <Rail />
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'auto' }}>
+          <PageHeader onCreateInvoice={() => setModalOpen(true)} />
+          <KPIStrip />
+          <Tabs active={tab} setActive={setTab} />
+          {tab === 'tenants' && <TenantsPanel onSelect={() => {}} />}
+          {tab === 'invoices' && <InvoicesPanel />}
+          {tab === 'aging' && <AgingPanel />}
+          {tab === 'leases' && <LeasesPanel />}
+          {tab === 'contracts' && <ContractsPanel />}
+        </div>
+      </div>
+      <CreateInvoiceModal open={modalOpen} onClose={() => setModalOpen(false)} />
+    </div>
+  );
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

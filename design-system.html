@@ -1,0 +1,917 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SuitesForAll · Design System</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<style>
+  :root {
+    /* Neutrals — warm paper */
+    --paper: #f6f3ec;
+    --paper-2: #efeadf;
+    --paper-3: #e6dfd1;
+    --ink: #1a1815;
+    --ink-2: #2e2a25;
+    --ink-3: #4a453d;
+    --ink-4: #6b655b;
+    --ink-5: #8f887c;
+    --line: #d9d2c3;
+    --line-2: #c7bfae;
+    --surface: #fffdf8;
+    --surface-raised: #ffffff;
+
+    /* Accent — deep ink blue (not generic blue) */
+    --accent: #1a3a5c;
+    --accent-2: #2a5080;
+    --accent-ink: #0f2540;
+    --accent-wash: #e8eef5;
+
+    /* Semantic status — muted, archival */
+    --paid: #3d6b4a;      /* forest */
+    --paid-wash: #e3ebdf;
+    --due: #a86b1c;       /* ochre */
+    --due-wash: #f4e9d4;
+    --overdue: #a8332a;   /* brick */
+    --overdue-wash: #f0d9d5;
+    --vacant: #8f887c;    /* stone */
+    --vacant-wash: #ebe6db;
+    --reserved: #4a5a7a;  /* slate */
+    --reserved-wash: #dfe3ec;
+    --pending: #6b4a7a;   /* plum */
+    --pending-wash: #e8dfed;
+
+    /* Shadows — soft, warm */
+    --shadow-sm: 0 1px 2px rgba(40,30,20,0.04);
+    --shadow: 0 1px 3px rgba(40,30,20,0.06), 0 4px 12px rgba(40,30,20,0.04);
+    --shadow-lg: 0 8px 32px rgba(40,30,20,0.12);
+
+    /* Type */
+    --sans: 'Geist', -apple-system, system-ui, sans-serif;
+    --mono: 'Geist Mono', ui-monospace, monospace;
+    --serif: 'Instrument Serif', Georgia, serif;
+
+    /* Radii */
+    --r-sm: 4px;
+    --r: 6px;
+    --r-lg: 10px;
+    --r-xl: 14px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: var(--sans);
+    color: var(--ink);
+    background: var(--paper);
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: 'ss01','cv11';
+  }
+  html, body { height: 100%; }
+  .tabular { font-variant-numeric: tabular-nums; }
+
+  /* Section shell — responsive */
+  .ds-section {
+    padding: 80px 80px 40px;
+    border-bottom: 1px solid var(--line);
+  }
+  .ds-section-inner {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    gap: 64px;
+    max-width: 1600px;
+  }
+  .ds-section-header p { max-width: 220px; }
+  .ds-grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }
+  .ds-grid-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 32px; }
+  .ds-grid-6 { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 20px; }
+  .ds-flex-wrap { display: flex; gap: 20px; flex-wrap: wrap; }
+
+  @media (max-width: 1100px) {
+    .ds-section { padding: 56px 40px 32px; }
+    .ds-section-inner { grid-template-columns: 1fr; gap: 32px; }
+    .ds-section-header p { max-width: 480px; }
+  }
+  @media (max-width: 640px) {
+    .ds-section { padding: 40px 24px 24px; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+
+// ═══════════════════════════════════════════════════════════════════
+// TOKENS — exposed as JS so components can read them
+// ═══════════════════════════════════════════════════════════════════
+const TOKENS = {
+  color: {
+    paper: '#f6f3ec', paper2: '#efeadf', paper3: '#e6dfd1',
+    ink: '#1a1815', ink2: '#2e2a25', ink3: '#4a453d', ink4: '#6b655b', ink5: '#8f887c',
+    line: '#d9d2c3', line2: '#c7bfae',
+    surface: '#fffdf8', surfaceRaised: '#ffffff',
+    accent: '#1a3a5c', accent2: '#2a5080', accentInk: '#0f2540', accentWash: '#e8eef5',
+    paid: '#3d6b4a', paidWash: '#e3ebdf',
+    due: '#a86b1c', dueWash: '#f4e9d4',
+    overdue: '#a8332a', overdueWash: '#f0d9d5',
+    vacant: '#8f887c', vacantWash: '#ebe6db',
+    reserved: '#4a5a7a', reservedWash: '#dfe3ec',
+    pending: '#6b4a7a', pendingWash: '#e8dfed',
+  },
+  type: {
+    display: { font: 'var(--serif)', size: 52, weight: 400, lh: 1.1, letter: -1 },
+    h1:      { font: 'var(--sans)', size: 32, weight: 600, lh: 1.2, letter: -0.6 },
+    h2:      { font: 'var(--sans)', size: 22, weight: 600, lh: 1.25, letter: -0.3 },
+    h3:      { font: 'var(--sans)', size: 16, weight: 600, lh: 1.35, letter: -0.1 },
+    body:    { font: 'var(--sans)', size: 14, weight: 400, lh: 1.5, letter: 0 },
+    small:   { font: 'var(--sans)', size: 12, weight: 400, lh: 1.45, letter: 0 },
+    micro:   { font: 'var(--sans)', size: 10.5, weight: 500, lh: 1.4, letter: 0.4, upper: true },
+    mono:    { font: 'var(--mono)', size: 13, weight: 400, lh: 1.4, letter: 0 },
+  },
+  space: [0, 4, 8, 12, 16, 20, 24, 32, 40, 48, 64, 80],
+  radius: { sm: 4, md: 6, lg: 10, xl: 14 },
+};
+
+// ═══════════════════════════════════════════════════════════════════
+// Utility — section shell
+// ═══════════════════════════════════════════════════════════════════
+const Section = ({ num, title, desc, children }) => (
+  <section className="ds-section">
+    <div className="ds-section-inner">
+      <header className="ds-section-header">
+        <div style={{ fontFamily: 'var(--mono)', fontSize: 11, letterSpacing: 1, color: TOKENS.color.ink5, marginBottom: 8 }}>
+          {num}
+        </div>
+        <h2 style={{ margin: 0, fontFamily: 'var(--serif)', fontSize: 38, fontWeight: 400, lineHeight: 1.1, letterSpacing: -0.8, color: TOKENS.color.ink }}>
+          {title}
+        </h2>
+        {desc && <p style={{ marginTop: 16, fontSize: 14, color: TOKENS.color.ink4, lineHeight: 1.55 }}>{desc}</p>}
+      </header>
+      <div style={{ minWidth: 0 }}>{children}</div>
+    </div>
+  </section>
+);
+
+const Label = ({ children, style }) => (
+  <div style={{
+    fontFamily: 'var(--mono)', fontSize: 10, letterSpacing: 0.8, textTransform: 'uppercase',
+    color: TOKENS.color.ink5, marginBottom: 12, ...style,
+  }}>{children}</div>
+);
+
+// ═══════════════════════════════════════════════════════════════════
+// COVER
+// ═══════════════════════════════════════════════════════════════════
+const Cover = () => (
+  <section style={{ padding: 'clamp(48px, 8vw, 96px) clamp(24px, 6vw, 80px)', borderBottom: `1px solid ${TOKENS.color.line}` }}>
+    <div style={{ maxWidth: 1200 }}>
+      <div style={{ fontFamily: 'var(--mono)', fontSize: 11, letterSpacing: 2, color: TOKENS.color.ink5, marginBottom: 32, textTransform: 'uppercase' }}>
+        Design System · v1.0 · April 2026
+      </div>
+      <h1 style={{
+        margin: 0, fontFamily: 'var(--serif)', fontSize: 'clamp(56px, 10vw, 96px)', fontWeight: 400, lineHeight: 1, letterSpacing: -3,
+        color: TOKENS.color.ink,
+      }}>
+        Suites<span style={{ fontStyle: 'italic', color: TOKENS.color.accent }}>For</span>All
+      </h1>
+      <div style={{ marginTop: 24, fontSize: 20, color: TOKENS.color.ink3, maxWidth: 720, lineHeight: 1.5 }}>
+        A property management surface for floor plans, rent rolls, billing, and commissions.
+        Built on an architectural grid — warm paper, inked lines, measured typography.
+      </div>
+      <div style={{ marginTop: 56, display: 'flex', gap: 'clamp(24px, 5vw, 64px)', flexWrap: 'wrap', borderTop: `1px solid ${TOKENS.color.line}`, paddingTop: 32 }}>
+        {[
+          ['14', 'Tokens'],
+          ['22', 'Components'],
+          ['6', 'Status states'],
+          ['∞', 'Possibilities'],
+        ].map(([n, l]) => (
+          <div key={l}>
+            <div style={{ fontFamily: 'var(--serif)', fontSize: 56, fontWeight: 400, lineHeight: 1, color: TOKENS.color.ink, letterSpacing: -1.5 }}>{n}</div>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: 11, letterSpacing: 1, color: TOKENS.color.ink5, marginTop: 8, textTransform: 'uppercase' }}>{l}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+);
+
+// ═══════════════════════════════════════════════════════════════════
+// COLORS
+// ═══════════════════════════════════════════════════════════════════
+const Swatch = ({ name, value, hex, big, dark }) => (
+  <div style={{ flex: big ? '0 0 220px' : '0 0 140px' }}>
+    <div style={{
+      height: big ? 140 : 92,
+      background: value,
+      borderRadius: 6,
+      border: `1px solid ${TOKENS.color.line}`,
+      display: 'flex',
+      alignItems: 'flex-end',
+      padding: 10,
+      color: dark ? '#fff' : TOKENS.color.ink,
+      fontFamily: 'var(--mono)',
+      fontSize: 10,
+      letterSpacing: 0.5,
+    }}>
+      {big && <span style={{ opacity: 0.7 }}>{hex}</span>}
+    </div>
+    <div style={{ marginTop: 10, fontSize: 13, fontWeight: 500, color: TOKENS.color.ink }}>{name}</div>
+    <div style={{ fontFamily: 'var(--mono)', fontSize: 10.5, color: TOKENS.color.ink5, marginTop: 2 }}>{hex}</div>
+  </div>
+);
+
+const ColorsSection = () => {
+  const group = (label, entries) => (
+    <div style={{ marginBottom: 40 }}>
+      <Label>{label}</Label>
+      <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+        {entries.map(([n, k, dark]) => (
+          <Swatch key={k} name={n} value={TOKENS.color[k]} hex={TOKENS.color[k]} dark={dark} />
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <Section num="01" title="Colors" desc="Warm paper, inked lines, a deep single accent. Statuses borrow from muted archival pigments — not highlighter neon.">
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24, marginBottom: 48 }}>
+        <Swatch big name="Paper" value={TOKENS.color.paper} hex="#f6f3ec" />
+        <Swatch big name="Ink" value={TOKENS.color.ink} hex="#1a1815" dark />
+        <Swatch big name="Accent · Midnight" value={TOKENS.color.accent} hex="#1a3a5c" dark />
+        <Swatch big name="Surface" value={TOKENS.color.surface} hex="#fffdf8" />
+      </div>
+
+      {group('Neutrals', [
+        ['Paper', 'paper'], ['Paper 2', 'paper2'], ['Paper 3', 'paper3'],
+        ['Line', 'line'], ['Line 2', 'line2'],
+        ['Ink 5', 'ink5'], ['Ink 4', 'ink4'], ['Ink 3', 'ink3', true], ['Ink 2', 'ink2', true], ['Ink', 'ink', true],
+      ])}
+
+      {group('Accent', [
+        ['Wash', 'accentWash'], ['Accent 2', 'accent2', true], ['Accent', 'accent', true], ['Accent Ink', 'accentInk', true],
+      ])}
+
+      <Label>Status · lease lifecycle</Label>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
+        {[
+          ['Paid', 'paid', 'paidWash'],
+          ['Due', 'due', 'dueWash'],
+          ['Overdue', 'overdue', 'overdueWash'],
+          ['Reserved', 'reserved', 'reservedWash'],
+          ['Pending', 'pending', 'pendingWash'],
+          ['Vacant', 'vacant', 'vacantWash'],
+        ].map(([n, dk, wk]) => (
+          <div key={n}>
+            <div style={{ display: 'flex', height: 64, borderRadius: 6, overflow: 'hidden', border: `1px solid ${TOKENS.color.line}` }}>
+              <div style={{ flex: 2, background: TOKENS.color[wk] }} />
+              <div style={{ flex: 1, background: TOKENS.color[dk] }} />
+            </div>
+            <div style={{ marginTop: 10, fontSize: 12.5, fontWeight: 500 }}>{n}</div>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: 10, color: TOKENS.color.ink5, marginTop: 2 }}>{TOKENS.color[dk]}</div>
+          </div>
+        ))}
+      </div>
+    </Section>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════════
+// TYPOGRAPHY
+// ═══════════════════════════════════════════════════════════════════
+const TypographySection = () => {
+  const row = (key, sample, meta) => {
+    const t = TOKENS.type[key];
+    return (
+      <div key={key} style={{
+        display: 'grid', gridTemplateColumns: '120px 1fr 200px', gap: 32,
+        padding: '20px 0', borderTop: `1px solid ${TOKENS.color.line}`, alignItems: 'baseline',
+      }}>
+        <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: TOKENS.color.ink5, textTransform: 'uppercase', letterSpacing: 0.6 }}>
+          {key}
+        </div>
+        <div style={{
+          fontFamily: t.font, fontSize: t.size, fontWeight: t.weight,
+          lineHeight: t.lh, letterSpacing: t.letter,
+          textTransform: t.upper ? 'uppercase' : 'none',
+          color: TOKENS.color.ink,
+        }}>
+          {sample}
+        </div>
+        <div style={{ fontFamily: 'var(--mono)', fontSize: 10.5, color: TOKENS.color.ink5, lineHeight: 1.6 }}>
+          {meta}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <Section num="02" title="Typography" desc="Geist for UI. Instrument Serif for display, numbers, pull-quotes. Geist Mono for tabular data, IDs, timestamps.">
+      <div style={{ marginBottom: 40, display: 'flex', gap: 48 }}>
+        <div>
+          <Label>Sans · Geist</Label>
+          <div style={{ fontSize: 64, fontFamily: 'var(--sans)', fontWeight: 500, letterSpacing: -1.5, lineHeight: 1 }}>Aa Bb Cc</div>
+          <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: TOKENS.color.ink5, marginTop: 8 }}>400 / 500 / 600 / 700</div>
+        </div>
+        <div>
+          <Label>Serif · Instrument</Label>
+          <div style={{ fontSize: 64, fontFamily: 'var(--serif)', fontWeight: 400, letterSpacing: -1.5, lineHeight: 1 }}>Aa <span style={{ fontStyle: 'italic' }}>Bb</span> Cc</div>
+          <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: TOKENS.color.ink5, marginTop: 8 }}>Regular · Italic</div>
+        </div>
+        <div>
+          <Label>Mono · Geist</Label>
+          <div style={{ fontSize: 56, fontFamily: 'var(--mono)', fontWeight: 400, letterSpacing: -0.5, lineHeight: 1 }}>0123</div>
+          <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: TOKENS.color.ink5, marginTop: 8 }}>Tabular · 400 / 500</div>
+        </div>
+      </div>
+
+      <div>
+        {row('display', '$2,384,500', '52 / 62 · serif · -1')}
+        {row('h1', 'Pinellas Park', '32 / 38 · sans 600 · -0.6')}
+        {row('h2', '4th Floor · 48 suites', '22 / 28 · sans 600 · -0.3')}
+        {row('h3', 'Tenant details', '16 / 22 · sans 600 · -0.1')}
+        {row('body', 'Rent collected on the 1st of each month.', '14 / 21 · sans 400')}
+        {row('small', 'Last updated 2h ago', '12 / 17 · sans 400')}
+        {row('micro', 'Status · Overdue', '10.5 / 15 · sans 500 · UPPER')}
+        {row('mono', '$1,245.00 · Suite 408', '13 / 18 · mono 400')}
+      </div>
+    </Section>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════════
+// SPACING · RADII · SHADOWS
+// ═══════════════════════════════════════════════════════════════════
+const SpacingSection = () => (
+  <Section num="03" title="Space & grid" desc="4-pt base. 8 is the beat. Spacing doubles up at major divisions — 16, 32, 64.">
+    <Label>Spacing scale</Label>
+    <div style={{ display: 'flex', gap: 20, alignItems: 'flex-end', marginBottom: 48, flexWrap: 'wrap' }}>
+      {TOKENS.space.slice(1).map((s) => (
+        <div key={s} style={{ textAlign: 'center' }}>
+          <div style={{ width: s, height: s, background: TOKENS.color.accent, borderRadius: 2 }} />
+          <div style={{ fontFamily: 'var(--mono)', fontSize: 10, color: TOKENS.color.ink5, marginTop: 8 }}>{s}</div>
+        </div>
+      ))}
+    </div>
+
+    <Label>Radii</Label>
+    <div style={{ display: 'flex', gap: 16, marginBottom: 48 }}>
+      {[['sm', 4], ['md', 6], ['lg', 10], ['xl', 14]].map(([n, r]) => (
+        <div key={n}>
+          <div style={{ width: 80, height: 80, background: TOKENS.color.surface, border: `1px solid ${TOKENS.color.line}`, borderRadius: r }} />
+          <div style={{ fontFamily: 'var(--mono)', fontSize: 10.5, color: TOKENS.color.ink5, marginTop: 8 }}>{n} · {r}px</div>
+        </div>
+      ))}
+    </div>
+
+    <Label>Elevation</Label>
+    <div style={{ display: 'flex', gap: 32 }}>
+      {[
+        ['sm', '0 1px 2px rgba(40,30,20,0.04)'],
+        ['base', '0 1px 3px rgba(40,30,20,0.06), 0 4px 12px rgba(40,30,20,0.04)'],
+        ['lg', '0 8px 32px rgba(40,30,20,0.12)'],
+      ].map(([n, s]) => (
+        <div key={n}>
+          <div style={{ width: 180, height: 100, background: TOKENS.color.surfaceRaised, borderRadius: 8, boxShadow: s, border: `1px solid ${TOKENS.color.line}` }} />
+          <div style={{ fontFamily: 'var(--mono)', fontSize: 10.5, color: TOKENS.color.ink5, marginTop: 8 }}>{n}</div>
+        </div>
+      ))}
+    </div>
+  </Section>
+);
+
+// ═══════════════════════════════════════════════════════════════════
+// COMPONENTS
+// ═══════════════════════════════════════════════════════════════════
+
+// Button
+const Button = ({ variant = 'primary', size = 'md', children, icon, iconRight, style, ...rest }) => {
+  const variants = {
+    primary:  { bg: TOKENS.color.ink, fg: TOKENS.color.paper, bd: TOKENS.color.ink },
+    secondary:{ bg: TOKENS.color.surface, fg: TOKENS.color.ink, bd: TOKENS.color.line2 },
+    ghost:    { bg: 'transparent', fg: TOKENS.color.ink3, bd: 'transparent' },
+    accent:   { bg: TOKENS.color.accent, fg: '#fff', bd: TOKENS.color.accent },
+    danger:   { bg: TOKENS.color.overdue, fg: '#fff', bd: TOKENS.color.overdue },
+  };
+  const sizes = {
+    sm: { h: 28, px: 10, fs: 12.5 },
+    md: { h: 36, px: 14, fs: 13.5 },
+    lg: { h: 44, px: 20, fs: 14.5 },
+  };
+  const v = variants[variant]; const s = sizes[size];
+  return (
+    <button {...rest} style={{
+      display: 'inline-flex', alignItems: 'center', gap: 8,
+      height: s.h, padding: `0 ${s.px}px`, fontSize: s.fs, fontWeight: 500,
+      fontFamily: 'var(--sans)', color: v.fg, background: v.bg,
+      border: `1px solid ${v.bd}`, borderRadius: 6,
+      cursor: 'pointer', letterSpacing: -0.1,
+      transition: 'background 120ms, border-color 120ms, transform 60ms',
+      ...style,
+    }}>
+      {icon}{children}{iconRight}
+    </button>
+  );
+};
+
+// Input
+const Input = ({ label, value, placeholder, prefix, suffix, monospace, style }) => (
+  <div style={{ ...style }}>
+    {label && <Label style={{ marginBottom: 6 }}>{label}</Label>}
+    <div style={{
+      display: 'flex', alignItems: 'center', height: 38,
+      background: TOKENS.color.surface, border: `1px solid ${TOKENS.color.line2}`,
+      borderRadius: 6, padding: '0 12px', gap: 8,
+    }}>
+      {prefix && <span style={{ fontSize: 13, color: TOKENS.color.ink5, fontFamily: monospace ? 'var(--mono)' : 'var(--sans)' }}>{prefix}</span>}
+      <input defaultValue={value} placeholder={placeholder} style={{
+        flex: 1, border: 'none', outline: 'none', background: 'transparent',
+        fontSize: 13.5, color: TOKENS.color.ink, fontFamily: monospace ? 'var(--mono)' : 'var(--sans)',
+      }} />
+      {suffix && <span style={{ fontSize: 13, color: TOKENS.color.ink5 }}>{suffix}</span>}
+    </div>
+  </div>
+);
+
+// Status pill
+const Pill = ({ status = 'paid', label, dot = true }) => {
+  const map = {
+    paid:     { fg: TOKENS.color.paid, wash: TOKENS.color.paidWash, default: 'Paid' },
+    due:      { fg: TOKENS.color.due, wash: TOKENS.color.dueWash, default: 'Due' },
+    overdue:  { fg: TOKENS.color.overdue, wash: TOKENS.color.overdueWash, default: 'Overdue' },
+    reserved: { fg: TOKENS.color.reserved, wash: TOKENS.color.reservedWash, default: 'Reserved' },
+    pending:  { fg: TOKENS.color.pending, wash: TOKENS.color.pendingWash, default: 'Pending' },
+    vacant:   { fg: TOKENS.color.vacant, wash: TOKENS.color.vacantWash, default: 'Vacant' },
+  };
+  const m = map[status];
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 6,
+      padding: '3px 9px 3px 8px',
+      background: m.wash, color: m.fg,
+      borderRadius: 4, fontSize: 11.5, fontWeight: 500,
+      fontFamily: 'var(--sans)', letterSpacing: 0.1,
+    }}>
+      {dot && <span style={{ width: 6, height: 6, borderRadius: 3, background: m.fg }} />}
+      {label || m.default}
+    </span>
+  );
+};
+
+// Card
+const Card = ({ title, subtitle, children, actions, style }) => (
+  <div style={{
+    background: TOKENS.color.surface, border: `1px solid ${TOKENS.color.line}`,
+    borderRadius: 8, padding: 20, ...style,
+  }}>
+    {(title || actions) && (
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: children ? 16 : 0 }}>
+        <div>
+          {title && <div style={{ fontSize: 14.5, fontWeight: 600, color: TOKENS.color.ink, letterSpacing: -0.1 }}>{title}</div>}
+          {subtitle && <div style={{ fontSize: 12.5, color: TOKENS.color.ink4, marginTop: 2 }}>{subtitle}</div>}
+        </div>
+        {actions}
+      </div>
+    )}
+    {children}
+  </div>
+);
+
+// Metric
+const Metric = ({ label, value, delta, deltaType = 'up', sub }) => (
+  <div>
+    <Label>{label}</Label>
+    <div style={{ fontFamily: 'var(--serif)', fontSize: 42, fontWeight: 400, letterSpacing: -1, lineHeight: 1, color: TOKENS.color.ink }} className="tabular">
+      {value}
+    </div>
+    {(delta || sub) && (
+      <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'center' }}>
+        {delta && (
+          <span style={{
+            fontSize: 12, fontWeight: 500,
+            color: deltaType === 'up' ? TOKENS.color.paid : TOKENS.color.overdue,
+            fontFamily: 'var(--sans)',
+          }}>{deltaType === 'up' ? '↑' : '↓'} {delta}</span>
+        )}
+        {sub && <span style={{ fontSize: 12, color: TOKENS.color.ink5 }}>{sub}</span>}
+      </div>
+    )}
+  </div>
+);
+
+// Tabs
+const Tabs = ({ items, active }) => (
+  <div style={{ display: 'flex', gap: 2, borderBottom: `1px solid ${TOKENS.color.line}` }}>
+    {items.map((it) => (
+      <div key={it} style={{
+        padding: '10px 16px', fontSize: 13.5, fontWeight: 500,
+        color: it === active ? TOKENS.color.ink : TOKENS.color.ink4,
+        borderBottom: it === active ? `2px solid ${TOKENS.color.ink}` : '2px solid transparent',
+        marginBottom: -1, cursor: 'pointer',
+      }}>{it}</div>
+    ))}
+  </div>
+);
+
+// Suite tile — scaled down unit from the floor plan
+const SuiteTile = ({ n, status, rent, sqft, tenant, selected }) => {
+  const map = {
+    paid:     { fill: TOKENS.color.paidWash, line: TOKENS.color.paid },
+    due:      { fill: TOKENS.color.dueWash, line: TOKENS.color.due },
+    overdue:  { fill: TOKENS.color.overdueWash, line: TOKENS.color.overdue },
+    reserved: { fill: TOKENS.color.reservedWash, line: TOKENS.color.reserved },
+    pending:  { fill: TOKENS.color.pendingWash, line: TOKENS.color.pending },
+    vacant:   { fill: TOKENS.color.paper3, line: TOKENS.color.line2 },
+  };
+  const m = map[status];
+  return (
+    <div style={{
+      width: 200, height: 120,
+      background: m.fill,
+      border: `1px solid ${m.line}`,
+      borderRadius: 2,
+      position: 'relative',
+      padding: '12px 14px',
+      boxShadow: selected ? `0 0 0 2px ${TOKENS.color.ink}` : 'none',
+    }}>
+      {/* window indicator */}
+      <div style={{ position: 'absolute', top: -2, left: 20, right: 20, height: 3, background: m.line, opacity: 0.7, borderRadius: 2 }} />
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div style={{ fontFamily: 'var(--mono)', fontSize: 14, fontWeight: 500, color: TOKENS.color.ink }}>{n}</div>
+        <div style={{ width: 6, height: 6, borderRadius: 3, background: m.line }} />
+      </div>
+      <div style={{ fontSize: 11, color: TOKENS.color.ink4, marginTop: 4 }}>{tenant || 'Vacant'}</div>
+      <div style={{ position: 'absolute', bottom: 10, left: 14, right: 14, display: 'flex', justifyContent: 'space-between', fontFamily: 'var(--mono)', fontSize: 10.5, color: TOKENS.color.ink4 }}>
+        <span>{rent ? `$${rent}` : '—'}</span>
+        <span>{sqft} ft²</span>
+      </div>
+    </div>
+  );
+};
+
+// Table row
+const TableDemo = () => {
+  const rows = [
+    ['401', 'Harbor Logistics LLC', 'paid',    '$3,240', '1,240', '—'],
+    ['402', 'Morandi Studio',       'paid',    '$2,100', '820',   '—'],
+    ['403', 'Dr. Yuen Dental',      'due',     '$4,850', '1,600', '3d'],
+    ['404', '—',                    'vacant',  '$2,400', '780',   '—'],
+    ['405', 'Northline Accounting', 'overdue', '$3,200', '1,100', '14d'],
+    ['406', 'Rivet Architects',     'pending', '$3,900', '1,380', '—'],
+  ];
+  return (
+    <div style={{ border: `1px solid ${TOKENS.color.line}`, borderRadius: 8, overflow: 'hidden', background: TOKENS.color.surface }}>
+      <div style={{
+        display: 'grid', gridTemplateColumns: '64px 1fr 120px 100px 80px 60px',
+        padding: '10px 16px', background: TOKENS.color.paper2,
+        borderBottom: `1px solid ${TOKENS.color.line}`,
+        fontFamily: 'var(--mono)', fontSize: 10.5, textTransform: 'uppercase', color: TOKENS.color.ink5, letterSpacing: 0.5,
+      }}>
+        <div>Suite</div><div>Tenant</div><div>Status</div><div style={{ textAlign: 'right' }}>Rent</div><div style={{ textAlign: 'right' }}>ft²</div><div style={{ textAlign: 'right' }}>Late</div>
+      </div>
+      {rows.map(([n, t, s, r, sf, late], i) => (
+        <div key={n} style={{
+          display: 'grid', gridTemplateColumns: '64px 1fr 120px 100px 80px 60px',
+          padding: '12px 16px', alignItems: 'center', fontSize: 13,
+          borderBottom: i < rows.length - 1 ? `1px solid ${TOKENS.color.line}` : 'none',
+        }}>
+          <div style={{ fontFamily: 'var(--mono)', fontWeight: 500 }}>{n}</div>
+          <div style={{ color: t === '—' ? TOKENS.color.ink5 : TOKENS.color.ink }}>{t}</div>
+          <div><Pill status={s} /></div>
+          <div style={{ textAlign: 'right', fontFamily: 'var(--mono)' }} className="tabular">{r}</div>
+          <div style={{ textAlign: 'right', fontFamily: 'var(--mono)', color: TOKENS.color.ink4 }} className="tabular">{sf}</div>
+          <div style={{ textAlign: 'right', fontFamily: 'var(--mono)', color: late !== '—' ? TOKENS.color.overdue : TOKENS.color.ink5, fontSize: 11.5 }}>{late}</div>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// Avatar
+const Avatar = ({ name, size = 32, color }) => {
+  const initials = name.split(' ').map((s) => s[0]).join('').slice(0, 2).toUpperCase();
+  const hash = [...name].reduce((a, c) => a + c.charCodeAt(0), 0);
+  const bgs = [TOKENS.color.paid, TOKENS.color.due, TOKENS.color.reserved, TOKENS.color.pending, TOKENS.color.accent];
+  const bg = color || bgs[hash % bgs.length];
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: size / 2,
+      background: bg, color: '#fff',
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+      fontSize: size * 0.38, fontWeight: 600, fontFamily: 'var(--sans)',
+      letterSpacing: 0.3,
+    }}>{initials}</div>
+  );
+};
+
+// Icon set — hand-picked, stroke 1.5
+const Icon = ({ name, size = 16 }) => {
+  const paths = {
+    map: <><path d="M7 3L1 5v12l6-2 6 2 6-2V3l-6 2-6-2z"/><path d="M7 3v12M13 5v12"/></>,
+    building: <><path d="M3 17V4a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v13"/><path d="M1 17h18M7 7h2M11 7h2M7 10h2M11 10h2M7 13h2M11 13h2"/></>,
+    chart: <><path d="M3 3v14h14"/><path d="M7 13l3-4 3 2 4-5"/></>,
+    users: <><circle cx="7" cy="7" r="3"/><circle cx="14" cy="8" r="2.5"/><path d="M1 17c0-3 2.5-5 6-5s6 2 6 5M13 17c0-2.5 2-4 5-4"/></>,
+    dollar: <><path d="M10 2v16M14 5H8.5a2.5 2.5 0 0 0 0 5h3a2.5 2.5 0 0 1 0 5H5"/></>,
+    doc: <><path d="M5 2h8l4 4v12H5z"/><path d="M13 2v4h4M8 10h6M8 13h6M8 7h2"/></>,
+    search: <><circle cx="8" cy="8" r="5"/><path d="M12 12l5 5"/></>,
+    bell: <><path d="M5 8a5 5 0 0 1 10 0v4l2 3H3l2-3z"/><path d="M8 17a2 2 0 0 0 4 0"/></>,
+    plus: <><path d="M10 4v12M4 10h12"/></>,
+    chevron: <><path d="M6 8l4 4 4-4"/></>,
+    calendar: <><rect x="2" y="4" width="16" height="14" rx="1"/><path d="M2 8h16M6 2v4M14 2v4"/></>,
+  };
+  return (
+    <svg width={size} height={size} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'block' }}>
+      {paths[name]}
+    </svg>
+  );
+};
+
+// Sparkline
+const Spark = ({ data, color = TOKENS.color.accent, width = 140, height = 36 }) => {
+  const max = Math.max(...data); const min = Math.min(...data);
+  const range = max - min || 1;
+  const pts = data.map((v, i) => `${(i / (data.length - 1)) * width},${height - ((v - min) / range) * height}`);
+  return (
+    <svg width={width} height={height} style={{ display: 'block' }}>
+      <polyline points={pts.join(' ')} fill="none" stroke={color} strokeWidth={1.5} strokeLinejoin="round" />
+      <circle cx={pts[pts.length - 1].split(',')[0]} cy={pts[pts.length - 1].split(',')[1]} r={3} fill={color} />
+    </svg>
+  );
+};
+
+// Bar chart (mini)
+const MiniBars = ({ data, color = TOKENS.color.ink, width = 200, height = 50 }) => {
+  const max = Math.max(...data);
+  const bw = (width - (data.length - 1) * 3) / data.length;
+  return (
+    <svg width={width} height={height}>
+      {data.map((v, i) => {
+        const h = (v / max) * height;
+        return <rect key={i} x={i * (bw + 3)} y={height - h} width={bw} height={h} fill={color} rx={1} />;
+      })}
+    </svg>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════════
+// COMPONENTS SECTION
+// ═══════════════════════════════════════════════════════════════════
+const ComponentsSection = () => (
+  <>
+    {/* Buttons */}
+    <Section num="04" title="Buttons" desc="Solid ink for primary action. Outlined paper for secondary. Accent reserved for single most-important CTA per view.">
+      <div style={{ display: 'flex', gap: 40, flexWrap: 'wrap', marginBottom: 40 }}>
+        <div>
+          <Label>Variants</Label>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <Button variant="primary">Send reminder</Button>
+            <Button variant="secondary">Cancel</Button>
+            <Button variant="accent">Generate invoice</Button>
+            <Button variant="danger">Move out</Button>
+            <Button variant="ghost">Dismiss</Button>
+          </div>
+        </div>
+        <div>
+          <Label>Sizes</Label>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Button size="sm">Small</Button>
+            <Button size="md">Medium</Button>
+            <Button size="lg">Large</Button>
+          </div>
+        </div>
+        <div>
+          <Label>With icons</Label>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <Button variant="primary" icon={<Icon name="plus" />}>Add tenant</Button>
+            <Button variant="secondary" iconRight={<Icon name="chevron" />}>Filter</Button>
+            <Button variant="ghost" icon={<Icon name="doc" />}>Export</Button>
+          </div>
+        </div>
+      </div>
+    </Section>
+
+    {/* Inputs */}
+    <Section num="05" title="Inputs" desc="Hairline borders. Labels in mono caps for an engineered-drawing feel.">
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 280px))', gap: 20 }}>
+        <Input label="Tenant name" placeholder="e.g. Harbor Logistics LLC" />
+        <Input label="Monthly rent" prefix="$" suffix="USD" value="3,240.00" monospace />
+        <Input label="Suite number" placeholder="401" prefix="#" monospace />
+        <Input label="Lease start" value="Apr 01, 2026" />
+        <Input label="Area" value="1,240" suffix="ft²" monospace />
+        <Input label="Search" placeholder="Suite, tenant, invoice…" />
+      </div>
+    </Section>
+
+    {/* Status */}
+    <Section num="06" title="Status · Pills" desc="Wash background + filled dot. One role per color — status never overlaps with non-status semantics.">
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 24 }}>
+        <Pill status="paid" /><Pill status="due" /><Pill status="overdue" />
+        <Pill status="reserved" /><Pill status="pending" label="Pending signature" /><Pill status="vacant" />
+      </div>
+      <Label>In context · unit table</Label>
+      <TableDemo />
+    </Section>
+
+    {/* Cards */}
+    <Section num="07" title="Cards" desc="Flat surfaces on paper. Elevation only when something truly floats (popovers, modals).">
+      <div className="ds-grid-3">
+        <Card title="Monthly revenue" subtitle="April 2026" actions={<Icon name="chart" />}>
+          <Metric value="$20,370" delta="4.2%" sub="vs. March" />
+          <div style={{ marginTop: 16 }}><Spark data={[12, 14, 13, 15, 17, 16, 18, 17, 19, 20, 19, 20]} /></div>
+        </Card>
+        <Card title="Occupancy" subtitle="42 of 48 suites" actions={<Icon name="building" />}>
+          <Metric value="87.5%" delta="2 units" sub="since Feb" />
+          <div style={{ marginTop: 16, display: 'flex', gap: 3 }}>
+            {Array.from({ length: 48 }).map((_, i) => (
+              <div key={i} style={{
+                flex: 1, height: 22,
+                background: i < 42 ? TOKENS.color.accent : TOKENS.color.paper3,
+                borderRadius: 1,
+              }} />
+            ))}
+          </div>
+        </Card>
+        <Card title="Needs attention" subtitle="3 overdue · $8,225" actions={<span style={{ fontSize: 10.5, color: TOKENS.color.overdue, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Action</span>}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {[['405', 'Northline', '14d'], ['412', 'Crest Dental', '9d'], ['428', 'Atrium Co.', '4d']].map(([n, t, d]) => (
+              <div key={n} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13 }}>
+                <div><span style={{ fontFamily: 'var(--mono)', fontWeight: 500 }}>{n}</span> · {t}</div>
+                <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: TOKENS.color.overdue }}>{d} late</div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
+    </Section>
+
+    {/* Metrics */}
+    <Section num="08" title="Metrics" desc="Serif numerals turn data into headlines. Supporting deltas always relative, never absolute alone.">
+      <div className="ds-grid-4">
+        <Metric label="MRR" value="$102,450" delta="6.1%" sub="March" />
+        <Metric label="Collected" value="93.2%" delta="1.8pp" sub="on-time" />
+        <Metric label="Vacancy" value="6 units" delta="1 unit" deltaType="down" sub="since Feb" />
+        <Metric label="Avg. tenure" value="3.2 yr" sub="median" />
+      </div>
+    </Section>
+
+    {/* Suite tiles */}
+    <Section num="09" title="Suite tile" desc="Atomic unit for the floor plan. Wash background = status; ink dot = same status reinforcement; thin line on top edge = window exposure.">
+      <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+        <SuiteTile n="401" status="paid" rent="3,240" sqft="1,240" tenant="Harbor Logistics" />
+        <SuiteTile n="403" status="due" rent="4,850" sqft="1,600" tenant="Yuen Dental" />
+        <SuiteTile n="405" status="overdue" rent="3,200" sqft="1,100" tenant="Northline Acctg." selected />
+        <SuiteTile n="406" status="pending" rent="3,900" sqft="1,380" tenant="Rivet Arch." />
+        <SuiteTile n="407" status="reserved" rent="2,800" sqft="940" tenant="Halcyon Design" />
+        <SuiteTile n="404" status="vacant" rent={null} sqft="780" />
+      </div>
+    </Section>
+
+    {/* Tabs + Avatar */}
+    <Section num="10" title="Tabs & people" desc="Underline tabs keep chrome light. Initials avatars auto-tinted from lease status palette.">
+      <div style={{ marginBottom: 40 }}>
+        <Tabs items={['Tenants', 'Invoices', 'Aging', 'Leases', 'Contracts']} active="Invoices" />
+      </div>
+      <Label>Avatars</Label>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+        {['Maya Chen', 'David Romero', 'Priya Shah', 'Kai Johansson', 'Lena Okafor'].map((n) => (
+          <div key={n} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <Avatar name={n} size={36} />
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 500 }}>{n}</div>
+              <div style={{ fontSize: 11, color: TOKENS.color.ink5 }}>Property manager</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </Section>
+
+    {/* Charts */}
+    <Section num="11" title="Charts" desc="Thin strokes. Ink as default line color. Chart area never bigger than the number it supports.">
+      <div className="ds-grid-3" style={{ gap: 24 }}>
+        <Card title="Collections trend" subtitle="Last 12 months">
+          <Spark data={[78, 82, 85, 83, 88, 90, 87, 92, 91, 93, 95, 94]} width={260} height={60} color={TOKENS.color.paid} />
+        </Card>
+        <Card title="Invoices issued" subtitle="Weekly · Q1">
+          <MiniBars data={[12, 18, 15, 22, 19, 25, 28, 24, 30, 27, 32, 29]} width={260} height={60} color={TOKENS.color.ink} />
+        </Card>
+        <Card title="Aging buckets" subtitle="As of today">
+          <div style={{ display: 'flex', gap: 1, height: 40, borderRadius: 2, overflow: 'hidden', marginTop: 4 }}>
+            <div style={{ flex: 74, background: TOKENS.color.paid, display: 'flex', alignItems: 'center', padding: '0 8px', color: '#fff', fontSize: 11, fontFamily: 'var(--mono)' }}>74%</div>
+            <div style={{ flex: 12, background: TOKENS.color.due }} />
+            <div style={{ flex: 8, background: TOKENS.color.overdue }} />
+            <div style={{ flex: 6, background: TOKENS.color.ink3 }} />
+          </div>
+          <div style={{ display: 'flex', gap: 12, marginTop: 10, fontSize: 11, color: TOKENS.color.ink5, fontFamily: 'var(--mono)' }}>
+            <span>Current</span><span>1–30</span><span>31–60</span><span>60+</span>
+          </div>
+        </Card>
+      </div>
+    </Section>
+
+    {/* Iconography */}
+    <Section num="12" title="Iconography" desc="1.5px stroke, rounded caps. Drawn to feel hand-set — not downloaded.">
+      <div className="ds-grid-6">
+        {['map', 'building', 'chart', 'users', 'dollar', 'doc', 'search', 'bell', 'plus', 'chevron', 'calendar'].map((n) => (
+          <div key={n} style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
+            padding: '20px 12px', border: `1px solid ${TOKENS.color.line}`, borderRadius: 6,
+            background: TOKENS.color.surface,
+          }}>
+            <Icon name={n} size={22} />
+            <span style={{ fontFamily: 'var(--mono)', fontSize: 10.5, color: TOKENS.color.ink5 }}>{n}</span>
+          </div>
+        ))}
+      </div>
+    </Section>
+
+    {/* Composition demo */}
+    <Section num="13" title="In use · Unit detail" desc="All the atoms composed — what a selected suite looks like in the right panel.">
+      <div style={{ maxWidth: 420, background: TOKENS.color.surface, border: `1px solid ${TOKENS.color.line}`, borderRadius: 8, padding: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
+          <div>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: TOKENS.color.ink5, textTransform: 'uppercase', letterSpacing: 0.8 }}>Suite</div>
+            <div style={{ fontFamily: 'var(--serif)', fontSize: 48, lineHeight: 1, letterSpacing: -1.5, marginTop: 4 }}>405</div>
+          </div>
+          <Pill status="overdue" />
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, paddingTop: 20, borderTop: `1px solid ${TOKENS.color.line}` }}>
+          <Metric label="Rent" value="$3,200" sub="monthly" />
+          <Metric label="Area" value="1,100" sub="ft²" />
+        </div>
+        <div style={{ marginTop: 24, paddingTop: 20, borderTop: `1px solid ${TOKENS.color.line}` }}>
+          <Label>Tenant</Label>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <Avatar name="Northline Accounting" size={44} />
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Northline Accounting</div>
+              <div style={{ fontSize: 12, color: TOKENS.color.ink5 }}>Tenant since Jan 2023</div>
+            </div>
+          </div>
+        </div>
+        <div style={{ marginTop: 24, display: 'flex', gap: 8 }}>
+          <Button variant="primary" style={{ flex: 1, justifyContent: 'center' }}>Send reminder</Button>
+          <Button variant="secondary" icon={<Icon name="doc" />}>Ledger</Button>
+        </div>
+      </div>
+    </Section>
+
+    {/* Modal */}
+    <Section num="14" title="Modal" desc="Centered, shadow-lg, single primary action. Never more than one modal open at a time.">
+      <div style={{ background: TOKENS.color.paper2, padding: 40, borderRadius: 8, position: 'relative' }}>
+        <div style={{
+          maxWidth: 520, margin: '0 auto', background: TOKENS.color.surfaceRaised,
+          borderRadius: 10, padding: 28, boxShadow: 'var(--shadow-lg)', border: `1px solid ${TOKENS.color.line}`,
+        }}>
+          <div style={{ fontSize: 20, fontWeight: 600, letterSpacing: -0.3 }}>Send payment reminder</div>
+          <div style={{ fontSize: 13.5, color: TOKENS.color.ink4, marginTop: 6, lineHeight: 1.55 }}>
+            Northline Accounting · Suite 405 is 14 days overdue on April rent ($3,200).
+            Choose a template or write a custom message.
+          </div>
+          <div style={{ marginTop: 20, display: 'grid', gap: 12 }}>
+            <Input label="Template" value="Friendly first reminder" suffix="▾" />
+            <Input label="Subject" value="April rent — quick nudge" />
+          </div>
+          <div style={{
+            marginTop: 14, padding: 14, background: TOKENS.color.paper, borderRadius: 6,
+            border: `1px solid ${TOKENS.color.line}`, fontSize: 13, color: TOKENS.color.ink3, lineHeight: 1.6,
+          }}>
+            Hi Northline team — our records show the April rent of $3,200 for Suite 405 is still outstanding.
+            Could you confirm when we can expect payment? Happy to set up a payment plan if helpful.
+          </div>
+          <div style={{ marginTop: 20, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ fontSize: 12, color: TOKENS.color.ink5 }}>Will be logged to the unit's history.</div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Button variant="ghost">Cancel</Button>
+              <Button variant="primary">Send reminder</Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Section>
+  </>
+);
+
+// ═══════════════════════════════════════════════════════════════════
+// APP
+// ═══════════════════════════════════════════════════════════════════
+const App = () => (
+  <div>
+    <Cover />
+    <ColorsSection />
+    <TypographySection />
+    <SpacingSection />
+    <ComponentsSection />
+    <footer style={{ padding: 'clamp(32px, 6vw, 60px) clamp(24px, 6vw, 80px)', color: TOKENS.color.ink5, fontSize: 12, fontFamily: 'var(--mono)', letterSpacing: 0.5 }}>
+      SUITESFORALL · DESIGN SYSTEM · v1.0 · Generated April 2026
+    </footer>
+  </div>
+);
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

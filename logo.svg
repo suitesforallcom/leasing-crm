@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-110 -110 220 220" role="img" aria-label="SuitesForAll">
+  <title>SuitesForAll</title>
+  <!-- SuitesForAll mark: three near-black pointed "leaf" petals arranged in
+       three of four quadrants, with a solid green disc sitting in the top-left
+       quadrant. Each leaf is a lens between the outer 90° arc (r=90) and an
+       inner concave arc (r=72) that gives them their characteristic almond
+       silhouette. -->
+
+  <!-- Top-right leaf -->
+  <path d="M 0 -90 A 90 90 0 0 1 90 0 A 72 72 0 0 0 0 -90 Z" fill="#0a1723"/>
+  <!-- Bottom-right leaf -->
+  <path d="M 90 0 A 90 90 0 0 1 0 90 A 72 72 0 0 0 90 0 Z" fill="#0a1723"/>
+  <!-- Bottom-left leaf -->
+  <path d="M 0 90 A 90 90 0 0 1 -90 0 A 72 72 0 0 0 0 90 Z" fill="#0a1723"/>
+
+  <!-- Green accent disc replacing the top-left petal. Radius ~40 and offset
+       to -45,-45 lines up with the petal centroids so it visually balances. -->
+  <circle cx="-45" cy="-45" r="38" fill="#0e6b5c"/>
+</svg>

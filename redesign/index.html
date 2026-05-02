@@ -1,0 +1,3575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>SuitesForAll · 4th Floor</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  html, body, #root { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    font-family: "Inter Tight", -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 13px;
+    color: #14120F;
+    background: #FAF9F7;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  button { font-family: inherit; }
+  kbd { font-family: "JetBrains Mono", ui-monospace, monospace; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #D6D2CA; border-radius: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+  body.dark {
+    background: #0F0E0C;
+    color: #F5F3EE;
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<!-- Firebase compat SDK (v10.14.1) — UMD builds exposing window.firebase.
+     Compat API keeps things simple for a single-file SPA: no bundler, no
+     module imports, just firebase.auth() / firebase.firestore() / firebase.functions().
+     Same project as the legacy floor-map-editor.html, so auth + Firestore
+     rules + Cloud Functions all map to the existing backend. -->
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-functions-compat.js"></script>
+
+<script>
+// =============================================================================
+// LiveData — standalone data layer for the redesign SPA.
+// =============================================================================
+// Replaces the old localStorage bridge. This SPA is fully independent of
+// floor-map-editor.html: it signs in directly to Firebase, subscribes to the
+// same Firestore state doc (/workspaces/default/data/state), and pulls Stripe
+// invoices via the listStripeInvoices Cloud Function.
+//
+// Contract for React consumers:
+//   window.LiveData = {
+//     user:        firebase.User | null,   // null => show sign-in screen
+//     authError:   string | null,          // last auth failure to display
+//     state:       FirestoreDoc | null,    // raw state doc from Firestore
+//     invoices:    Array<InvoiceRow>,      // Stripe rows, newest-first
+//     invoicesAt:  number,                 // ms timestamp of last Stripe fetch
+//     status:      'boot'|'signin'|'loading-state'|'loading-invoices'|'ready'|'error',
+//     lastError:   string | null,
+//     // Methods:
+//     signIn(email, pass) -> Promise
+//     signOut() -> Promise
+//     refreshInvoices() -> Promise
+//     subscribe(fn) -> unsubscribe    // fn called on any field change
+//   };
+//
+// Firebase config resolution (same tiered strategy as the legacy app):
+//   1. /__/firebase/init.json    (served automatically by Firebase Hosting)
+//   2. localStorage('sfa_firebase_*')  (dev override)
+//   3. Hardcoded (projectId only — user must provide apiKey via step 1 or 2)
+// =============================================================================
+(function () {
+  const WORKSPACE_ID = 'default';
+  const FUNCTIONS_REGION = 'us-central1';
+  const ROOT_ADMINS = ['tony@al-en.com'];
+
+  const LiveData = {
+    user: null,
+    authError: null,
+    state: null,
+    invoices: [],
+    invoicesAt: 0,
+    status: 'boot',
+    lastError: null,
+    _firebase: null,
+    _auth: null,
+    _db: null,
+    _fns: null,
+    _unsubState: null,
+    _listeners: new Set(),
+  };
+
+  function emit() {
+    for (const fn of LiveData._listeners) {
+      try { fn(LiveData); } catch (e) { console.error('[LiveData] listener error', e); }
+    }
+  }
+  LiveData.subscribe = (fn) => {
+    LiveData._listeners.add(fn);
+    return () => LiveData._listeners.delete(fn);
+  };
+
+  function setStatus(s, err) {
+    LiveData.status = s;
+    if (err !== undefined) LiveData.lastError = err;
+    emit();
+  }
+
+  async function fetchAutoConfig() {
+    try {
+      const r = await fetch('/__/firebase/init.json', { cache: 'no-store' });
+      if (r.ok) {
+        const cfg = await r.json();
+        if (cfg && cfg.apiKey && cfg.projectId) return cfg;
+      }
+    } catch {}
+    return null;
+  }
+
+  function readLocalConfig() {
+    try {
+      const projectId = localStorage.getItem('sfa_firebase_project');
+      const apiKey = localStorage.getItem('sfa_firebase_key');
+      const authDomain = localStorage.getItem('sfa_firebase_domain')
+                       || (projectId ? projectId + '.firebaseapp.com' : null);
+      return (projectId && apiKey) ? { projectId, apiKey, authDomain } : null;
+    } catch { return null; }
+  }
+
+  async function resolveConfig() {
+    const local = readLocalConfig();
+    if (local) return local;
+    const auto = await fetchAutoConfig();
+    if (auto) return auto;
+    // Last-resort hardcoded default — projectId only. If apiKey is missing
+    // the user will see a clear error on the sign-in screen.
+    return {
+      projectId: 'suitesforall',
+      authDomain: 'suitesforall.firebaseapp.com',
+      apiKey: '',
+    };
+  }
+
+  async function init() {
+    if (!window.firebase || !window.firebase.initializeApp) {
+      setStatus('error', 'Firebase SDK failed to load. Check your network / CSP.');
+      return;
+    }
+    let cfg;
+    try { cfg = await resolveConfig(); }
+    catch (e) { setStatus('error', 'Could not resolve Firebase config: ' + e.message); return; }
+
+    if (!cfg.apiKey) {
+      setStatus('error',
+        'Firebase API key not configured. Open /__/firebase/init.json on your host, ' +
+        'or set localStorage.sfa_firebase_key manually.');
+      return;
+    }
+
+    try {
+      const app = window.firebase.initializeApp(cfg);
+      LiveData._firebase = app;
+      LiveData._auth = window.firebase.auth(app);
+      LiveData._db = window.firebase.firestore(app);
+      LiveData._fns = window.firebase.app(app.name).functions(FUNCTIONS_REGION);
+    } catch (e) {
+      setStatus('error', 'Firebase init failed: ' + e.message);
+      return;
+    }
+
+    LiveData._auth.onAuthStateChanged(async (user) => {
+      LiveData.user = user || null;
+      LiveData.authError = null;
+      if (!user) {
+        // Signed out — tear down data subscriptions.
+        if (LiveData._unsubState) { try { LiveData._unsubState(); } catch {} LiveData._unsubState = null; }
+        LiveData.state = null;
+        LiveData.invoices = [];
+        LiveData.invoicesAt = 0;
+        setStatus('signin');
+        return;
+      }
+      // Admin whitelist check — matches the legacy app's ROOT_ADMINS list.
+      const email = (user.email || '').trim().toLowerCase();
+      if (!ROOT_ADMINS.includes(email)) {
+        LiveData.authError = 'Email not on admin allowlist.';
+        try { await LiveData._auth.signOut(); } catch {}
+        setStatus('signin');
+        return;
+      }
+      setStatus('loading-state');
+      subscribeToState();
+      refreshInvoices().catch(e => console.warn('[LiveData] invoice refresh failed', e));
+    });
+
+    setStatus('signin');
+  }
+
+  function subscribeToState() {
+    if (LiveData._unsubState) { try { LiveData._unsubState(); } catch {} }
+    const ref = LiveData._db.doc('workspaces/' + WORKSPACE_ID + '/data/state');
+    LiveData._unsubState = ref.onSnapshot(
+      (snap) => {
+        LiveData.state = snap.exists ? snap.data() : null;
+        if (LiveData.status === 'loading-state') setStatus('loading-invoices');
+        else emit();
+        // Invoices usually arrive in parallel; if they already loaded, flip to ready.
+        if (LiveData.invoicesAt > 0 && LiveData.status !== 'ready') setStatus('ready');
+      },
+      (err) => {
+        console.error('[LiveData] state snapshot error', err);
+        setStatus('error', 'Firestore read failed: ' + err.message);
+      }
+    );
+  }
+
+  async function refreshInvoices() {
+    if (!LiveData._fns) return;
+    try {
+      const callable = LiveData._fns.httpsCallable('listStripeInvoices');
+      const res = await callable({ limit: 200 });
+      LiveData.invoices = (res && res.data && res.data.rows) || [];
+      LiveData.invoicesAt = Date.now();
+      if (LiveData.state && LiveData.status !== 'ready') setStatus('ready');
+      else emit();
+    } catch (e) {
+      console.warn('[LiveData] listStripeInvoices failed', e);
+      // Non-fatal — suites will fall back to tenant-based status.
+      LiveData.invoices = [];
+      LiveData.invoicesAt = Date.now();
+      if (LiveData.state) setStatus('ready');
+      else emit();
+    }
+  }
+  LiveData.refreshInvoices = refreshInvoices;
+
+  LiveData.signIn = async (email, password) => {
+    LiveData.authError = null;
+    try {
+      await LiveData._auth.signInWithEmailAndPassword(email, password);
+    } catch (e) {
+      LiveData.authError = e.message || String(e);
+      emit();
+      throw e;
+    }
+  };
+
+  // Google sign-in via Firebase popup flow. The Google provider must be
+  // enabled in Firebase Console → Authentication → Sign-in method.
+  // Known failure modes we surface cleanly:
+  //  - auth/popup-blocked → browser killed the popup; tell user to allow popups
+  //  - auth/popup-closed-by-user → user dismissed; no error
+  //  - auth/operation-not-allowed → Google provider not enabled in Firebase
+  LiveData.signInWithGoogle = async () => {
+    LiveData.authError = null;
+    try {
+      if (!window.firebase || !firebase.auth || !firebase.auth.GoogleAuthProvider) {
+        throw new Error('Firebase auth SDK missing GoogleAuthProvider');
+      }
+      const provider = new firebase.auth.GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: 'select_account' });
+      await LiveData._auth.signInWithPopup(provider);
+    } catch (e) {
+      // Swallow user-cancelled popup as a no-op (not a real error).
+      if (e && e.code === 'auth/popup-closed-by-user') return;
+      // Friendlier messages for the two common setup issues.
+      if (e && e.code === 'auth/popup-blocked') {
+        LiveData.authError = 'Popup was blocked. Allow popups for this site and try again.';
+      } else if (e && e.code === 'auth/operation-not-allowed') {
+        LiveData.authError = 'Google sign-in is not enabled in Firebase. Ask an admin to enable the Google provider in Authentication → Sign-in method.';
+      } else if (e && e.code === 'auth/unauthorized-domain') {
+        LiveData.authError = 'This domain is not authorized for Google sign-in. Add it in Firebase Console → Authentication → Settings → Authorized domains.';
+      } else {
+        LiveData.authError = (e && e.message) || String(e);
+      }
+      emit();
+      throw e;
+    }
+  };
+
+  LiveData.signOut = async () => {
+    try { await LiveData._auth.signOut(); } catch (e) { console.warn(e); }
+  };
+
+  window.LiveData = LiveData;
+  // Boot after the DOM is idle so React has a chance to mount.
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>
+
+<script>
+// === inlined from src/data.js ===
+// Mock data for SuitesForAll 4th floor
+// Coordinates are in abstract "plan units" — rendered inside a 1400x900 viewBox
+
+// Status semantics for property manager:
+//  - vacant: empty, available to lease
+//  - reserved: held, not yet signed
+//  - pending-signature: lease sent, awaiting tenant signature
+//  - paid: current month invoice paid
+//  - due: invoice sent, not yet paid, within grace period
+//  - overdue: invoice past due
+//  - new: new tenant within last 30d (highlight overlay)
+
+let SUITES = [
+  // Top row (north wall) — window suites
+  { id: "418", x: 60,  y: 60,  w: 90,  h: 90,  type: "window", rent: 1700, sqft: 164, tenant: "Sarah Davis/Maur", party: 5, status: "paid" },
+  { id: "419", x: 150, y: 60,  w: 80,  h: 90,  type: "window", rent: 1200, sqft: 144, tenant: "—", party: 5, status: "vacant" },
+  { id: "420", x: 230, y: 60,  w: 80,  h: 90,  type: "window", rent: 850,  sqft: 104, tenant: "—", party: 5, status: "vacant" },
+  { id: "426", x: 310, y: 60,  w: 80,  h: 90,  type: "window", rent: 925,  sqft: 111, tenant: "William Peak", party: 5, status: "paid", newTenant: true },
+  { id: "427", x: 390, y: 60,  w: 90,  h: 90,  type: "window", rent: 1000, sqft: 141, tenant: "—", party: 5, status: "reserved" },
+  { id: "429", x: 480, y: 60,  w: 90,  h: 90,  type: "window", rent: 900,  sqft: 115, tenant: "Scott Harris & Gemayel Man", party: 5, status: "pending-signature" },
+  { id: "431", x: 570, y: 60,  w: 80,  h: 90,  type: "window", rent: 990,  sqft: 120, tenant: "Bogdan Shoyat", party: 5, status: "paid" },
+  { id: "432", x: 650, y: 60,  w: 90,  h: 90,  type: "window", rent: 1200, sqft: 165, tenant: "—", party: 5, status: "vacant" },
+  { id: "433", x: 740, y: 60,  w: 110, h: 90,  type: "window", rent: 1500, sqft: 172, tenant: "Lex Wagner", party: 5, status: "due" },
+
+  // Second row north — window suites
+  { id: "416", x: 60,  y: 170, w: 90,  h: 85,  type: "window", rent: 850,  sqft: 108, tenant: "—", party: 3, status: "vacant" },
+  { id: "417", x: 150, y: 170, w: 75,  h: 85,  type: "window", rent: 450,  sqft: 62,  tenant: "Suzanne Stokes", party: 3, status: "paid" },
+  { id: "421", x: 225, y: 170, w: 75,  h: 85,  type: "window", rent: 400,  sqft: 72,  tenant: "—", party: 3, status: "vacant" },
+  { id: "428", x: 300, y: 170, w: 80,  h: 85,  type: "window", rent: 525,  sqft: 82,  tenant: "Ava Carlie", party: 3, status: "overdue" },
+  { id: "430", x: 440, y: 170, w: 110, h: 130, type: "window", rent: 2100, sqft: 285, tenant: "—", party: 9, status: "vacant" },
+  { id: "434", x: 720, y: 170, w: 95,  h: 85,  type: "window", rent: 1050, sqft: 141, tenant: "—", party: 5, status: "vacant" },
+
+  // Middle interior band
+  { id: "415", x: 60,  y: 275, w: 90,  h: 75,  type: "interior", rent: 850, sqft: 98, tenant: "—", party: 3, status: "vacant" },
+  { id: "414", x: 150, y: 275, w: 75,  h: 75,  type: "interior", rent: 400, sqft: 63, tenant: "Andrew Penn", party: 3, status: "paid" },
+  { id: "423", x: 225, y: 275, w: 75,  h: 75,  type: "interior", rent: 450, sqft: 68, tenant: "Ben McMillan", party: 3, status: "paid" },
+  { id: "425", x: 300, y: 275, w: 80,  h: 75,  type: "interior", rent: 625, sqft: 105, tenant: "—", party: 3, status: "reserved" },
+  { id: "435", x: 555, y: 275, w: 140, h: 95,  type: "window", rent: 1200, sqft: 189, tenant: "—", party: 6, status: "vacant" },
+  { id: "436", x: 720, y: 275, w: 95,  h: 85,  type: "window", rent: 1050, sqft: 139, tenant: "—", party: 6, status: "pending-signature" },
+
+  // Lower-middle band (interior + atrium visible)
+  { id: "412", x: 60,  y: 360, w: 90,  h: 75,  type: "interior", rent: 550, sqft: 74, tenant: "Ivy Lukasik", party: 0, status: "paid" },
+  { id: "413", x: 150, y: 360, w: 90,  h: 75,  type: "interior", rent: 550, sqft: 82, tenant: "De'Asia Hill", party: 0, status: "overdue" },
+  { id: "424", x: 240, y: 360, w: 60,  h: 75,  type: "interior", rent: 400, sqft: 58, tenant: "Mark Cook", party: 0, status: "paid" },
+
+  { id: "411", x: 60,  y: 450, w: 95,  h: 75,  type: "interior", rent: 1000, sqft: 132, tenant: "Shannon Jenkins", party: 0, status: "paid" },
+
+  { id: "452", x: 440, y: 360, w: 90,  h: 80,  type: "interior", rent: 675, sqft: 98, tenant: "Jason Dzuong", party: 0, status: "due" },
+  { id: "438", x: 530, y: 360, w: 85,  h: 80,  type: "interior", rent: 450, sqft: 71, tenant: "Whitney Kyles", party: 0, status: "paid" },
+  { id: "437", x: 720, y: 380, w: 95,  h: 80,  type: "window", rent: 1050, sqft: 135, tenant: "—", party: 5, status: "vacant" },
+
+  { id: "439", x: 530, y: 450, w: 90,  h: 70,  type: "interior", rent: 550, sqft: 74, tenant: "Johnny Bardine", party: 0, status: "paid" },
+  { id: "440", x: 620, y: 450, w: 75,  h: 70,  type: "window", rent: 600,  sqft: 78, tenant: "—", party: 3, status: "vacant" },
+  { id: "441", x: 695, y: 450, w: 75,  h: 70,  type: "window", rent: 900,  sqft: 89, tenant: "—", party: 3, status: "reserved" },
+
+  { id: "407", x: 60,  y: 540, w: 140, h: 80,  type: "interior", rent: 1600, sqft: 210, tenant: "Amber Smith", party: 0, status: "paid" },
+  { id: "408", x: 220, y: 540, w: 90,  h: 80,  type: "interior", rent: 450, sqft: 64, tenant: "Lovana St. Louis", party: 0, status: "overdue" },
+  { id: "409", x: 310, y: 540, w: 110, h: 80,  type: "interior", rent: 700, sqft: 92, tenant: "Bobby Sam/Bayleen T.", party: 0, status: "paid" },
+  { id: "443", x: 600, y: 540, w: 95,  h: 80,  type: "window", rent: 525,  sqft: 74, tenant: "Nicholas Hammond", party: 3, status: "paid" },
+  { id: "444", x: 695, y: 540, w: 95,  h: 80,  type: "window", rent: 800,  sqft: 92, tenant: "Nicholas Hammer", party: 3, status: "paid" },
+
+  // Bottom row (south) — window suites
+  { id: "406", x: 60,  y: 720, w: 80,  h: 90,  type: "window", rent: 1200, sqft: 131, tenant: "Omarra Gordon", party: 3, status: "paid" },
+  { id: "405", x: 140, y: 720, w: 80,  h: 90,  type: "window", rent: 850,  sqft: 116, tenant: "—", party: 3, status: "vacant" },
+  { id: "404", x: 220, y: 720, w: 80,  h: 90,  type: "window", rent: 1000, sqft: 119, tenant: "—", party: 4, status: "vacant" },
+  { id: "403", x: 300, y: 720, w: 80,  h: 90,  type: "window", rent: 1000, sqft: 126, tenant: "Brian Halderman", party: 3, status: "overdue" },
+  { id: "402", x: 380, y: 720, w: 80,  h: 90,  type: "window", rent: 1000, sqft: 121, tenant: "—", party: 3, status: "vacant" },
+  { id: "401", x: 460, y: 720, w: 80,  h: 90,  type: "window", rent: 1000, sqft: 160, tenant: "—", party: 3, status: "reserved" },
+  { id: "449", x: 560, y: 720, w: 80,  h: 90,  type: "window", rent: 1000, sqft: 128, tenant: "Parchell Nickolas", party: 3, status: "paid", newTenant: true },
+  { id: "448", x: 640, y: 720, w: 80,  h: 90,  type: "window", rent: 1000, sqft: 111, tenant: "—", party: 3, status: "vacant" },
+  { id: "447", x: 720, y: 720, w: 80,  h: 90,  type: "window", rent: 1000, sqft: 113, tenant: "—", party: 3, status: "vacant" },
+  { id: "446", x: 800, y: 720, w: 80,  h: 90,  type: "window", rent: 1200, sqft: 112, tenant: "—", party: 3, status: "vacant" },
+  { id: "445", x: 880, y: 720, w: 100, h: 90,  type: "window", rent: 630,  sqft: 82, tenant: "Jasmine Kennedy", party: 3, status: "paid", newTenant: true },
+];
+
+// Common / non-leasable areas (shown as gray shapes)
+let COMMON_AREAS = [
+  { id: "stairs-nw",  x: 390, y: 170, w: 50, h: 130, label: "STAIRS" },
+  { id: "stairs-sw",  x: 300, y: 630, w: 70, h: 85,  label: "STAIRS" },
+  { id: "hallway-n",  x: 60,  y: 150, w: 790, h: 20, label: "" },
+  { id: "hallway-s",  x: 60,  y: 700, w: 920, h: 20, label: "" },
+  { id: "atrium",     x: 310, y: 360, w: 130, h: 260, label: "ATRIUM" },
+  { id: "mechanical-1", x: 60, y: 450, w: 95, h: 85, label: "MECHANICAL" },
+  { id: "restroom-1",   x: 155, y: 450, w: 65, h: 85, label: "RESTROOM" },
+  { id: "restroom-2",   x: 220, y: 450, w: 65, h: 85, label: "RESTROOM" },
+  { id: "kitchen",      x: 285, y: 450, w: 90, h: 85, label: "KITCHEN" },
+  { id: "elevator-1",   x: 440, y: 450, w: 45, h: 85, label: "ELEV." },
+  { id: "elevator-2",   x: 485, y: 450, w: 45, h: 85, label: "ELEV." },
+  { id: "storage-1",    x: 440, y: 540, w: 60, h: 80, label: "STORAGE" },
+  { id: "storage-2",    x: 500, y: 540, w: 100, h: 80, label: "STORAGE" },
+];
+
+// Floor summary data
+let FLOORS = [
+  { id: 1, name: "1st Floor",  occupied: 0,  total: 0,  revenue: 0 },
+  { id: 2, name: "2nd Floor",  occupied: 0,  total: 25, revenue: 0 },
+  { id: 3, name: "3rd Floor",  occupied: 30, total: 66, revenue: 23050 },
+  { id: 4, name: "4th Floor",  occupied: 27, total: 48, revenue: 20370, active: true },
+];
+
+window.SUITES = SUITES;
+window.COMMON_AREAS = COMMON_AREAS;
+window.FLOORS = FLOORS;
+
+// ─── Live-data adapter ─────────────────────────────────────────────
+// Derives SUITES/COMMON_AREAS/FLOORS from window.LiveData (Firestore state +
+// Stripe invoices). Called by the App component on every LiveData change.
+// Returns the new SUITES/COMMON_AREAS/FLOORS arrays AND also mutates the
+// top-level `let`s so legacy consumers that read them directly (via
+// window.*) still see fresh data.
+//
+// Shape expected on LiveData.state:
+//   buildings[0].floors[].units[] with { id, x, y, w, h, sqft, rent,
+//     window, cap, status:'occupied'|'vacant'|'reserved',
+//     type:'office'|'stairs'|'atrium'|..., tenant?:string }
+//   tenants[] with { id, name, company }
+//   leases[] with { unitId, tenantId, envelope?:{status}, envelopeStatus?, signedAt? }
+//
+// Shape expected on LiveData.invoices (Stripe rows):
+//   { id, status, bucket, total, amountRemaining, amountPaid, created, dueDate,
+//     hostedUrl, metadata:{unitId, ym, purpose, floorId, buildingId} }
+//
+// Returns:
+//   {
+//     suites:       Array<Suite>,
+//     commonAreas:  Array<Area>,
+//     floors:       Array<FloorSummary>,
+//     invByUnit:    { [unitId]: InvoiceRow[] sorted newest-first },
+//     targetFloorId: number | null,
+//     dataSource:   'live' | 'mock',
+//   }
+
+const AREA_LABELS = {
+  stairs: 'STAIRS', stair: 'STAIRS',
+  atrium: 'ATRIUM', lobby: 'LOBBY',
+  mechanical: 'MECHANICAL', mech: 'MECHANICAL',
+  restroom: 'RESTROOM', bathroom: 'RESTROOM', toilet: 'RESTROOM',
+  kitchen: 'KITCHEN', breakroom: 'BREAK',
+  elev: 'ELEV.', elevator: 'ELEV.',
+  storage: 'STORAGE',
+  corridor: 'CORRIDOR', hallway: 'CORRIDOR', hall: 'CORRIDOR',
+  common: 'COMMON', utility: 'UTILITY',
+};
+
+// Format today as "YYYY-MM" — the key Stripe invoices carry in metadata.ym.
+function currentYm(now) {
+  const d = new Date(now || Date.now());
+  return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0');
+}
+
+// Derive a per-unit payment status from a list of Stripe invoices for that
+// unit. Bucketing rules mirror the legacy app's _collectUnitInvoices:
+//   - paid   : most-recent rent invoice for current ym is fully paid
+//   - due    : rent invoice exists, unpaid, still within due date
+//   - overdue: rent invoice exists, unpaid, past due date
+//   - null   : no rent invoice for this month — fall back to occupancy
+function deriveStatusFromInvoices(unitInvoices, nowMs) {
+  if (!unitInvoices || !unitInvoices.length) return null;
+  const ym = currentYm(nowMs);
+  // Prefer the CURRENT month's rent invoice.
+  const thisMonth = unitInvoices.find(r =>
+    (r.metadata && r.metadata.purpose === 'rent') &&
+    (r.metadata.ym === ym)
+  );
+  if (thisMonth) {
+    const bucket = String(thisMonth.bucket || thisMonth.status || '').toLowerCase();
+    if (bucket === 'paid') return 'paid';
+    if (bucket === 'void' || bucket === 'uncollectible') return null;
+    // Unpaid — check due date.
+    const due = Number(thisMonth.dueDate || 0);
+    if (due && due < nowMs) return 'overdue';
+    return 'due';
+  }
+  // No current-month rent invoice. Check if last month is still unpaid.
+  const lastUnpaid = unitInvoices.find(r => {
+    const b = String(r.bucket || r.status || '').toLowerCase();
+    return (r.metadata && r.metadata.purpose === 'rent') && (b === 'open' || b === 'past_due');
+  });
+  if (lastUnpaid) {
+    const due = Number(lastUnpaid.dueDate || 0);
+    return (due && due < nowMs) ? 'overdue' : 'due';
+  }
+  return null;
+}
+
+function rebuildFromLiveData(requestedFloorNumber) {
+  const LD = window.LiveData;
+  const state = LD && LD.state;
+
+  // If we have no state yet, keep the mock arrays so the UI doesn't go blank
+  // during first paint. The App gates on LD.status so the sign-in or loader
+  // screen hides these anyway.
+  if (!state || !state.buildings || !state.buildings[0]) {
+    return { suites: SUITES, commonAreas: COMMON_AREAS, floors: FLOORS, invByUnit: {}, targetFloorId: null, dataSource: 'mock' };
+  }
+
+  const building = state.buildings[0];
+  const floors = building.floors || [];
+  // Prefer the caller-requested floor; fall back to the 4th floor if it has
+  // units; finally the largest floor. This keeps the UI usable even if the
+  // requested floor has no rentable units yet.
+  const targetFloor = (requestedFloorNumber != null && floors.find(f => f.number === requestedFloorNumber && (f.units || []).length))
+                   || floors.find(f => f.number === 4 && (f.units || []).length)
+                   || floors.reduce((a, b) => ((b.units || []).length > ((a && a.units || []).length) ? b : a), null);
+
+  if (!targetFloor || !(targetFloor.units || []).length) {
+    return { suites: [], commonAreas: [], floors: [], invByUnit: {}, targetFloorId: null, dataSource: 'live' };
+  }
+
+  const tenantsById = new Map((state.tenants || []).map(t => [t.id, t]));
+  const leasesByUnit = new Map();
+  for (const l of (state.leases || [])) {
+    const cur = leasesByUnit.get(l.unitId);
+    if (!cur || (l.updatedAt || 0) > (cur.updatedAt || 0)) leasesByUnit.set(l.unitId, l);
+  }
+
+  // Bucket Stripe invoices by unitId, newest-first.
+  const invByUnit = {};
+  for (const r of (LD.invoices || [])) {
+    const uid = r && r.metadata && r.metadata.unitId;
+    if (!uid) continue;
+    (invByUnit[uid] || (invByUnit[uid] = [])).push(r);
+  }
+  for (const k of Object.keys(invByUnit)) {
+    invByUnit[k].sort((a, b) => (b.created || 0) - (a.created || 0));
+  }
+
+  const nowMs = Date.now();
+  const THIRTY_DAYS = 30 * 864e5;
+  const mappedSuites = [];
+  const mappedAreas = [];
+
+  for (const u of (targetFloor.units || [])) {
+    const type = String(u.type || 'office').toLowerCase();
+    const isOffice = (type === 'office' || type === 'suite' || type === 'unit') && u.rentable !== false;
+    if (!isOffice) {
+      mappedAreas.push({
+        id: u.id || ('area_' + mappedAreas.length),
+        x: u.x, y: u.y, w: u.w, h: u.h,
+        label: AREA_LABELS[type] || type.toUpperCase(),
+      });
+      continue;
+    }
+
+    const lease = leasesByUnit.get(u.id);
+    const tenant = lease ? tenantsById.get(lease.tenantId) : null;
+    const tenantName = (tenant && (tenant.name || tenant.company)) || u.tenant || '—';
+
+    // Vacancy check: primary signal is u.status. Units with no tenant
+    // reference at all also count as vacant.
+    const hasTenant = !!(tenant || u.tenant);
+    const isVacant = u.status === 'vacant' || (!hasTenant && u.status !== 'occupied');
+
+    // Envelope still awaiting signature? Check both envelope.status (newer
+    // shape) and envelopeStatus (legacy flat field).
+    const envStatus = lease && (
+      (lease.envelope && lease.envelope.status) ||
+      lease.envelopeStatus
+    );
+    const awaitingSig = envStatus && ['sent', 'delivered', 'pending', 'created'].includes(String(envStatus).toLowerCase());
+
+    let status;
+    if (isVacant) {
+      status = 'vacant';
+    } else if (u.status === 'reserved') {
+      status = 'reserved';
+    } else if (awaitingSig) {
+      status = 'pending-signature';
+    } else {
+      // Real payment status from Stripe, falling back to 'paid' (the operator's
+      // implicit assumption when a tenant is seated but no billing signal exists).
+      const derived = deriveStatusFromInvoices(invByUnit[u.id], nowMs);
+      status = derived || 'paid';
+    }
+
+    const isNew = lease && lease.signedAt && (nowMs - Date.parse(lease.signedAt) < THIRTY_DAYS);
+
+    mappedSuites.push({
+      id: u.id,
+      x: u.x, y: u.y, w: u.w, h: u.h,
+      sqft: u.sqft || 0, rent: u.rent || 0,
+      tenant: tenantName,
+      party: u.cap || 3,
+      type: u.window ? 'window' : 'interior',
+      status,
+      newTenant: !!isNew,
+      // Attach tenant + latest invoice for the right panel action lists.
+      _invoice: (invByUnit[u.id] || [])[0] || null,
+      _email: (tenant && tenant.email) || (u.tenantEmail) || null,
+    });
+  }
+
+  // Floor roll-up used by the Left Rail and Dashboard.
+  const isOccupiedUnit = (x) => {
+    if (x.status === 'vacant') return false;
+    if (x.status === 'occupied') return true;
+    return !!(x.tenant || leasesByUnit.get(x.id));
+  };
+  const floorsSummary = floors.map(f => {
+    const units = (f.units || []).filter(x => {
+      const tt = String(x.type || 'office').toLowerCase();
+      return (tt === 'office' || tt === 'suite' || tt === 'unit') && x.rentable !== false;
+    });
+    const occupied = units.filter(isOccupiedUnit).length;
+    const revenue  = units.filter(isOccupiedUnit).reduce((s, x) => s + (x.rent || 0), 0);
+    return {
+      id: f.number,
+      name: f.name || (f.number + 'th Floor'),
+      occupied,
+      total: units.length,
+      revenue,
+      active: f.number === targetFloor.number,
+    };
+  });
+
+  // Mutate the legacy top-level `let`s so any consumer reading them directly
+  // picks up the new data (Floorplan reads `suites` prop via App, but the
+  // window.* mirrors keep debugging easy).
+  SUITES = mappedSuites;
+  COMMON_AREAS = mappedAreas;
+  FLOORS = floorsSummary;
+  window.SUITES = SUITES;
+  window.COMMON_AREAS = COMMON_AREAS;
+  window.FLOORS = FLOORS;
+  window.__redesignDataSource = 'live';
+  window.__redesignTargetFloor = targetFloor.number;
+
+  return {
+    suites: mappedSuites,
+    commonAreas: mappedAreas,
+    floors: floorsSummary,
+    invByUnit,
+    targetFloorId: targetFloor.number,
+    dataSource: 'live',
+  };
+}
+
+window.rebuildFromLiveData = rebuildFromLiveData;
+
+</script>
+<script>
+// === inlined from src/theme.js ===
+// SuitesForAll design tokens
+// Direction: minimal premium B2B SaaS (Linear/Notion-adjacent) with warm neutral surfaces
+// and semantic status colors optimized for property-manager workflow.
+
+const THEME = {
+  // Surfaces — warm neutrals (slight beige) instead of pure gray
+  bg:        "#FAF9F7",
+  surface:   "#FFFFFF",
+  surfaceAlt:"#F4F2EE",
+  border:    "#E8E5DF",
+  borderStrong: "#D6D2CA",
+  gridLine:  "#EDEAE3",
+
+  // Text
+  ink:       "#14120F",
+  inkMuted:  "#6B665C",
+  inkSubtle: "#94908A",
+
+  // Accent — single brand accent (indigo-ish, desaturated)
+  accent:    "#3D3BE8",
+  accentSoft:"#EEEDFC",
+  accentInk: "#1F1D9E",
+
+  // Status colors (for lease workflow)
+  paid:      "#10B981",   // emerald — current
+  paidSoft:  "#E3F6EE",
+  paidInk:   "#065F46",
+
+  due:       "#F59E0B",   // amber — due soon
+  dueSoft:   "#FDF3E0",
+  dueInk:    "#92400E",
+
+  overdue:   "#E11D48",   // rose — alert
+  overdueSoft:"#FDE7EC",
+  overdueInk:"#9F1239",
+
+  vacant:    "#FFFFFF",   // white w/ dashed border
+  vacantInk: "#6B665C",
+
+  reserved:  "#8B7FF5",   // lavender — held
+  reservedSoft:"#EFEBFD",
+  reservedInk:"#4C3DB8",
+
+  pending:   "#0EA5E9",   // sky — awaiting signature
+  pendingSoft:"#E0F2FE",
+  pendingInk:"#075985",
+
+  common:    "#EBE8E2",   // gray — non-leasable areas
+  commonInk: "#6B665C",
+
+  // New tenant highlight (30d)
+  newStar:   "#F59E0B",
+
+  // Shadows
+  shadowSm:  "0 1px 2px rgba(20, 18, 15, 0.04)",
+  shadowMd:  "0 4px 12px rgba(20, 18, 15, 0.06), 0 1px 2px rgba(20, 18, 15, 0.04)",
+  shadowLg:  "0 16px 40px rgba(20, 18, 15, 0.10), 0 4px 12px rgba(20, 18, 15, 0.06)",
+
+  // Radii
+  rXs: 4, rSm: 6, rMd: 8, rLg: 12, rXl: 16,
+};
+
+// Status display metadata
+const STATUS_META = {
+  paid:     { label: "Paid",          dot: THEME.paid,     bg: THEME.paidSoft,     ink: THEME.paidInk },
+  due:      { label: "Due",           dot: THEME.due,      bg: THEME.dueSoft,      ink: THEME.dueInk },
+  overdue:  { label: "Overdue",       dot: THEME.overdue,  bg: THEME.overdueSoft,  ink: THEME.overdueInk },
+  vacant:   { label: "Vacant",        dot: "#C4C0B8",      bg: "#FFFFFF",          ink: THEME.inkMuted },
+  reserved: { label: "Reserved",      dot: THEME.reserved, bg: THEME.reservedSoft, ink: THEME.reservedInk },
+  "pending-signature": { label: "Awaiting signature", dot: THEME.pending, bg: THEME.pendingSoft, ink: THEME.pendingInk },
+};
+
+// Currency formatter
+function fmt$(n) {
+  return "$" + n.toLocaleString("en-US");
+}
+
+window.THEME = THEME;
+window.STATUS_META = STATUS_META;
+window.fmt$ = fmt$;
+
+</script>
+<script type="text/babel">
+// === inlined from src/Icons.jsx ===
+// Inline SVG icons — 16x16 viewBox, currentColor stroke
+// Lightweight hand-rolled set, no external deps
+
+const Icon = ({ name, size = 16, stroke = 1.5, className = "", style = {} }) => {
+  const paths = ICONS[name];
+  if (!paths) return null;
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={stroke}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      style={style}
+      aria-hidden="true"
+    >
+      {paths}
+    </svg>
+  );
+};
+
+const ICONS = {
+  grid:   <><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></>,
+  map:    <><path d="M2 4l4-2 4 2 4-2v10l-4 2-4-2-4 2V4z"/><path d="M6 2v12M10 4v12"/></>,
+  file:   <><path d="M4 2h5l3 3v9H4V2z"/><path d="M9 2v3h3"/></>,
+  people: <><circle cx="6" cy="6" r="2.5"/><path d="M2 14c0-2.2 1.8-4 4-4s4 1.8 4 4"/><path d="M11 7a2 2 0 100-4M14 13c0-1.5-1-3-3-3"/></>,
+  dollar: <><path d="M8 2v12M11 5c0-1.1-1.3-2-3-2s-3 .9-3 2 1.3 2 3 2 3 .9 3 2-1.3 2-3 2-3-.9-3-2"/></>,
+  pulse:  <><path d="M2 8h3l2-5 2 10 2-5h3"/></>,
+  printer:<><rect x="3" y="8" width="10" height="5"/><path d="M4 8V3h8v5M4 13v2h8v-2"/></>,
+  trophy: <><path d="M5 2h6v4a3 3 0 01-6 0V2zM3 3H2v2a2 2 0 002 2M13 3h1v2a2 2 0 01-2 2M6 10h4l-1 4H7l-1-4z"/></>,
+  search: <><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></>,
+  plus:   <><path d="M8 3v10M3 8h10"/></>,
+  chevronDown: <><path d="M4 6l4 4 4-4"/></>,
+  chevronRight: <><path d="M6 4l4 4-4 4"/></>,
+  chevronLeft: <><path d="M10 4l-4 4 4 4"/></>,
+  x:      <><path d="M4 4l8 8M12 4l-8 8"/></>,
+  dot:    <><circle cx="8" cy="8" r="2" fill="currentColor" stroke="none"/></>,
+  bell:   <><path d="M4 11V7a4 4 0 018 0v4l1 2H3l1-2zM6 13a2 2 0 004 0"/></>,
+  signature: <><path d="M2 12s2-6 4-6 2 6 4 6 2-3 4-3"/><path d="M2 14h12"/></>,
+  send:   <><path d="M14 2L2 7l5 2 2 5 5-12z"/></>,
+  message:<><path d="M2 4h12v8H5l-3 2V4z"/></>,
+  calendar:<><rect x="2" y="3" width="12" height="11" rx="1"/><path d="M2 6h12M5 2v2M11 2v2"/></>,
+  window: <><rect x="2" y="3" width="12" height="10" rx="1"/><path d="M8 3v10M2 8h12"/></>,
+  wrench: <><path d="M10 2a3 3 0 00-2.8 4L2 11.2V14h2.8L10 8.8A3 3 0 1010 2z"/></>,
+  layers: <><path d="M8 2l6 3-6 3-6-3 6-3z"/><path d="M2 8l6 3 6-3M2 11l6 3 6-3"/></>,
+  filter: <><path d="M2 3h12l-4 6v4l-4 1V9L2 3z"/></>,
+  eye:    <><path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5z"/><circle cx="8" cy="8" r="2"/></>,
+  star:   <><path d="M8 2l2 4 4 .5-3 3 .8 4L8 11.5 4.2 13.5l.8-4-3-3 4-.5L8 2z"/></>,
+  sun:    <><circle cx="8" cy="8" r="3"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4"/></>,
+  moon:   <><path d="M12 10A5 5 0 116 4a4 4 0 006 6z"/></>,
+  settings: <><circle cx="8" cy="8" r="2"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.5 1.5M11.5 11.5L13 13M3 13l1.5-1.5M11.5 4.5L13 3"/></>,
+  zoomIn: <><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14M7 5v4M5 7h4"/></>,
+  zoomOut:<><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14M5 7h4"/></>,
+  sync:   <><path d="M13 3v3h-3M3 13v-3h3"/><path d="M13 6a5 5 0 00-9-1M3 10a5 5 0 009 1"/></>,
+  building: <><rect x="3" y="2" width="10" height="12"/><path d="M6 5h1M9 5h1M6 8h1M9 8h1M6 11h4"/></>,
+  key:    <><circle cx="11" cy="6" r="3"/><path d="M8.5 8L3 13.5V15h2v-1.5h1.5V12H8L8.5 8z"/></>,
+  trash:  <><path d="M3 5h10M6 5V3h4v2M5 5l1 9h4l1-9"/></>,
+  check:  <><path d="M3 8l3 3 7-7"/></>,
+  alert:  <><path d="M8 2l7 12H1L8 2z"/><path d="M8 7v3M8 12v.5"/></>,
+  move:   <><path d="M8 1v14M1 8h14M5 4l3-3 3 3M5 12l3 3 3-3M4 5l-3 3 3 3M12 5l3 3-3 3"/></>,
+  sink:   <><circle cx="8" cy="8" r="5"/><path d="M8 3v5l2.5 2.5"/></>,
+};
+
+window.Icon = Icon;
+
+</script>
+<script type="text/babel">
+// === inlined from src/Topbar.jsx ===
+// Topbar — contextual, compact. Only what the property manager needs to orient:
+// building + floor selector, search, notifications, user.
+// Removed from previous: standalone "Info" pill, generic "+" button, "Live sync" button,
+// "$8,225" floating number without context.
+
+const Topbar = ({
+  route, onRouteChange,
+  currentFloor, floors, onFloorChange,
+  overdueAmount, overdueCount, onOpenOverdue,
+  onSearchFocus, query, setQuery,
+  density, onToggleDensity,
+  dark, onToggleDark,
+}) => {
+  const onMap = !route || route === '/' || route === '/floorplan';
+  const onRentRoll = route === '/rent-roll';
+  return (
+    <header style={topbarStyles.root}>
+      {/* Brand + building */}
+      <div style={topbarStyles.brand}>
+        <div style={topbarStyles.logo}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <rect x="2" y="2" width="5" height="5" rx="1" fill={THEME.accent}/>
+            <rect x="9" y="2" width="5" height="5" rx="1" fill={THEME.accent} opacity="0.5"/>
+            <rect x="2" y="9" width="5" height="5" rx="1" fill={THEME.accent} opacity="0.5"/>
+            <rect x="9" y="9" width="5" height="5" rx="1" fill={THEME.accent}/>
+          </svg>
+        </div>
+        <div style={topbarStyles.buildingBtn}>
+          <div style={topbarStyles.buildingThumb}>
+            <svg width="100%" height="100%" viewBox="0 0 40 28" preserveAspectRatio="xMidYMid slice">
+              <rect width="40" height="28" fill="#C9D4C4"/>
+              <rect x="6" y="10" width="28" height="14" fill="#6B7E68"/>
+              <rect x="9" y="13" width="3" height="3" fill="#FAF9F7"/>
+              <rect x="14" y="13" width="3" height="3" fill="#FAF9F7"/>
+              <rect x="19" y="13" width="3" height="3" fill="#FAF9F7"/>
+              <rect x="24" y="13" width="3" height="3" fill="#FAF9F7"/>
+              <rect x="29" y="13" width="3" height="3" fill="#FAF9F7"/>
+              <rect x="9" y="18" width="3" height="3" fill="#FAF9F7"/>
+              <rect x="14" y="18" width="3" height="3" fill="#FAF9F7"/>
+              <rect x="19" y="18" width="3" height="3" fill="#FAF9F7"/>
+              <rect x="24" y="18" width="3" height="3" fill="#FAF9F7"/>
+              <rect x="29" y="18" width="3" height="3" fill="#FAF9F7"/>
+            </svg>
+          </div>
+          <div style={topbarStyles.buildingText}>
+            <div style={topbarStyles.buildingName}>SuitesForAll</div>
+            <div style={topbarStyles.buildingAddr}>6698 68th Ave N · Pinellas Park, FL</div>
+          </div>
+          <Icon name="chevronDown" size={14} style={{ color: THEME.inkSubtle, marginLeft: 4 }}/>
+        </div>
+      </div>
+
+      {/* Route nav — switches between floorplan and full-screen pages */}
+      <div style={topbarStyles.navTabs}>
+        <button
+          onClick={() => onRouteChange && onRouteChange('/')}
+          style={{ ...topbarStyles.navTab, ...(onMap ? topbarStyles.navTabActive : {}) }}
+          title="Floorplan view"
+        >
+          <Icon name="map" size={13}/>
+          <span>Map</span>
+        </button>
+        <button
+          onClick={() => onRouteChange && onRouteChange('/rent-roll')}
+          style={{ ...topbarStyles.navTab, ...(onRentRoll ? topbarStyles.navTabActive : {}) }}
+          title="Rent roll"
+        >
+          <Icon name="grid" size={13}/>
+          <span>Rent Roll</span>
+        </button>
+      </div>
+
+      {/* Floor tabs — only meaningful on the Map route */}
+      {onMap && (
+      <div style={topbarStyles.floorTabs}>
+        {floors.map(f => {
+          const active = f.id === currentFloor;
+          return (
+            <button
+              key={f.id}
+              onClick={() => onFloorChange(f.id)}
+              style={{
+                ...topbarStyles.floorTab,
+                ...(active ? topbarStyles.floorTabActive : {}),
+              }}
+            >
+              <span style={topbarStyles.floorTabNum}>{f.id}</span>
+              <span style={topbarStyles.floorTabLabel}>Floor</span>
+            </button>
+          );
+        })}
+        <div style={topbarStyles.floorTabDivider}/>
+        <button style={topbarStyles.stackingBtn} title="Stacking view">
+          <Icon name="layers" size={14}/>
+          <span>Stacking</span>
+        </button>
+      </div>
+      )}
+
+      {/* Search */}
+      <div style={topbarStyles.searchWrap}>
+        <Icon name="search" size={14} style={{ color: THEME.inkSubtle }}/>
+        <input
+          type="text"
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          onFocus={onSearchFocus}
+          placeholder="Search suite or tenant…"
+          style={topbarStyles.search}
+        />
+        <kbd style={topbarStyles.kbd}>⌘K</kbd>
+      </div>
+
+      {/* Right side: alert + density + dark + user */}
+      <div style={topbarStyles.right}>
+        {overdueCount > 0 && (
+          <button onClick={onOpenOverdue} style={topbarStyles.alert}>
+            <span style={topbarStyles.alertDot}/>
+            <span style={topbarStyles.alertLabel}>{overdueCount} overdue</span>
+            <span style={topbarStyles.alertAmount}>{fmt$(overdueAmount)}</span>
+          </button>
+        )}
+        <button style={topbarStyles.iconBtn} title="Toggle density" onClick={onToggleDensity}>
+          <Icon name={density === "compact" ? "grid" : "move"} size={15}/>
+        </button>
+        <button style={topbarStyles.iconBtn} title="Toggle theme" onClick={onToggleDark}>
+          <Icon name={dark ? "sun" : "moon"} size={15}/>
+        </button>
+        <button style={topbarStyles.iconBtn} title="Notifications">
+          <Icon name="bell" size={15}/>
+          <span style={topbarStyles.bellDot}/>
+        </button>
+        <div style={topbarStyles.user} title={window.LiveData?.user?.email || ''}>
+          <div style={topbarStyles.avatar}>
+            {((window.LiveData?.user?.email || 'U').trim()[0] || 'U').toUpperCase()}
+          </div>
+          <div style={{
+            display: "flex", flexDirection: "column",
+            lineHeight: 1.1,
+            minWidth: 0, // let the email truncate inside the flex row
+          }}>
+            {/* Email: single line with ellipsis. Hyphens in addresses like
+                "tony@al-en.com" otherwise break mid-word and wrap.              */}
+            <span style={{
+              fontSize: 12, fontWeight: 600, color: THEME.ink,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              maxWidth: 160,
+            }}>
+              {window.LiveData?.user?.email || 'Signed in'}
+            </span>
+            <span style={{ fontSize: 10, color: THEME.inkSubtle, letterSpacing: 0.4 }}>ADMIN</span>
+          </div>
+          <button
+            onClick={() => window.LiveData && window.LiveData.signOut()}
+            title="Sign out"
+            style={{
+              marginLeft: 8,
+              padding: "4px 8px",
+              fontSize: 11,
+              border: `1px solid ${THEME.border}`,
+              background: THEME.surface,
+              color: THEME.inkMuted,
+              borderRadius: 5,
+              cursor: "pointer",
+              fontFamily: "inherit",
+              whiteSpace: "nowrap", // keep "Sign out" on one line
+              flexShrink: 0,
+            }}
+          >Sign out</button>
+        </div>
+      </div>
+    </header>
+  );
+};
+
+const topbarStyles = {
+  root: {
+    height: 56,
+    display: "flex",
+    alignItems: "center",
+    gap: 14,
+    padding: "0 16px",
+    background: THEME.surface,
+    borderBottom: `1px solid ${THEME.border}`,
+    flexShrink: 0,
+    // Explicit so topbar always renders in Inter Tight regardless of
+    // inherited context (helps Firefox fallback while the web font loads).
+    fontFamily: '"Inter Tight", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+  },
+  brand: { display: "flex", alignItems: "center", gap: 10, flexShrink: 0 },
+  logo: {
+    width: 28, height: 28, borderRadius: 8,
+    background: THEME.accentSoft,
+    display: "grid", placeItems: "center",
+    flexShrink: 0,
+  },
+  buildingBtn: {
+    display: "flex", alignItems: "center", gap: 8,
+    padding: "4px 8px 4px 4px",
+    border: `1px solid ${THEME.border}`,
+    borderRadius: 10,
+    cursor: "pointer",
+    background: THEME.surface,
+    flexShrink: 0,
+  },
+  buildingThumb: { width: 34, height: 26, borderRadius: 6, overflow: "hidden", flexShrink: 0 },
+  buildingText: { display: "flex", flexDirection: "column", lineHeight: 1.1 },
+  buildingName: { fontSize: 12, fontWeight: 600, color: THEME.ink, whiteSpace: "nowrap" },
+  buildingAddr: { fontSize: 10, color: THEME.inkSubtle, whiteSpace: "nowrap" },
+
+  navTabs: {
+    display: "flex", alignItems: "center", gap: 2,
+    padding: 3,
+    background: THEME.surfaceAlt,
+    borderRadius: 10,
+    flexShrink: 0,
+  },
+  navTab: {
+    display: "flex", alignItems: "center", gap: 6,
+    padding: "6px 10px",
+    border: "none",
+    background: "transparent",
+    borderRadius: 7,
+    cursor: "pointer",
+    color: THEME.inkMuted,
+    fontSize: 12, fontWeight: 500,
+    fontFamily: "inherit",
+    whiteSpace: "nowrap",
+    flexShrink: 0,
+  },
+  navTabActive: {
+    background: THEME.surface,
+    color: THEME.ink,
+    boxShadow: THEME.shadowSm,
+  },
+
+  floorTabs: {
+    display: "flex", alignItems: "center", gap: 2,
+    padding: 3,
+    background: THEME.surfaceAlt,
+    borderRadius: 10,
+    flexShrink: 0,
+  },
+  floorTab: {
+    display: "flex", flexDirection: "column", alignItems: "center",
+    padding: "4px 10px",
+    border: "none",
+    background: "transparent",
+    borderRadius: 7,
+    cursor: "pointer",
+    color: THEME.inkMuted,
+    lineHeight: 1,
+  },
+  floorTabActive: {
+    background: THEME.surface,
+    color: THEME.ink,
+    boxShadow: THEME.shadowSm,
+  },
+  floorTabNum: { fontSize: 13, fontWeight: 600 },
+  floorTabLabel: { fontSize: 9, textTransform: "uppercase", letterSpacing: 0.5, marginTop: 2, color: THEME.inkSubtle },
+
+  floorTabDivider: { width: 1, height: 20, background: THEME.border, margin: "0 4px" },
+  stackingBtn: {
+    display: "flex", alignItems: "center", gap: 6,
+    padding: "6px 10px",
+    border: "none", background: "transparent",
+    borderRadius: 7, cursor: "pointer",
+    color: THEME.inkMuted,
+    fontSize: 12, fontWeight: 500,
+    whiteSpace: "nowrap",
+    flexShrink: 0,
+  },
+
+  searchWrap: {
+    flex: 1,
+    display: "flex", alignItems: "center", gap: 8,
+    padding: "6px 10px",
+    background: THEME.surfaceAlt,
+    border: `1px solid transparent`,
+    borderRadius: 8,
+    maxWidth: 320,
+  },
+  search: {
+    flex: 1,
+    border: "none", outline: "none", background: "transparent",
+    fontSize: 13, color: THEME.ink,
+    fontFamily: "inherit",
+  },
+  kbd: {
+    fontSize: 10, fontFamily: "ui-monospace, monospace",
+    color: THEME.inkSubtle,
+    padding: "2px 6px",
+    border: `1px solid ${THEME.border}`,
+    borderRadius: 4,
+    background: THEME.surface,
+  },
+
+  right: {
+    display: "flex", alignItems: "center", gap: 8,
+    marginLeft: "auto",
+    flexShrink: 0, // don't let the right-side tray get squeezed
+  },
+
+  alert: {
+    display: "flex", alignItems: "center", gap: 8,
+    padding: "5px 10px 5px 8px",
+    background: THEME.overdueSoft,
+    border: `1px solid ${THEME.overdueSoft}`,
+    borderRadius: 8,
+    cursor: "pointer",
+    color: THEME.overdueInk,
+    whiteSpace: "nowrap",
+    flexShrink: 0,
+  },
+  alertDot: {
+    width: 6, height: 6, borderRadius: 3, background: THEME.overdue,
+    boxShadow: `0 0 0 3px ${THEME.overdueSoft}`,
+    flexShrink: 0,
+  },
+  alertLabel: { fontSize: 12, fontWeight: 500, whiteSpace: "nowrap" },
+  alertAmount: { fontSize: 12, fontWeight: 600, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" },
+
+  iconBtn: {
+    position: "relative",
+    width: 32, height: 32,
+    display: "grid", placeItems: "center",
+    border: "none", background: "transparent",
+    borderRadius: 7, cursor: "pointer",
+    color: THEME.inkMuted,
+    flexShrink: 0,
+  },
+  bellDot: {
+    position: "absolute", top: 7, right: 8,
+    width: 6, height: 6, borderRadius: 3,
+    background: THEME.overdue,
+    border: `1.5px solid ${THEME.surface}`,
+  },
+  user: {
+    display: "flex", alignItems: "center", gap: 8,
+    padding: "4px 10px 4px 4px",
+    border: `1px solid ${THEME.border}`,
+    borderRadius: 8,
+    cursor: "pointer",
+    minWidth: 0,
+    flexShrink: 0,
+  },
+  avatar: {
+    width: 26, height: 26, borderRadius: 6,
+    background: THEME.accent,
+    color: "#fff",
+    display: "grid", placeItems: "center",
+    fontSize: 10, fontWeight: 600,
+  },
+};
+
+window.Topbar = Topbar;
+
+</script>
+<script type="text/babel">
+// === inlined from src/LeftRail.jsx ===
+// Left rail — navigation only (no duplicates of topbar actions)
+// Collapsed icon rail with tooltip labels.
+
+const LeftRail = ({ current, onChange }) => {
+  const items = [
+    { id: "overview",  icon: "grid",     label: "Overview" },
+    { id: "leases",    icon: "file",     label: "Leases" },
+    { id: "tenants",   icon: "people",   label: "Tenants" },
+    { id: "billing",   icon: "dollar",   label: "Billing" },
+    { id: "activity",  icon: "pulse",    label: "Activity" },
+    { id: "reports",   icon: "printer",  label: "Reports" },
+  ];
+  const bottom = [
+    { id: "goals",    icon: "trophy",   label: "Goals" },
+    { id: "settings", icon: "settings", label: "Settings" },
+  ];
+  return (
+    <aside style={railStyles.root}>
+      <div style={railStyles.group}>
+        {items.map(it => (
+          <RailBtn key={it.id} item={it} active={current === it.id} onClick={() => onChange(it.id)}/>
+        ))}
+      </div>
+      <div style={{ flex: 1 }}/>
+      <div style={railStyles.group}>
+        {bottom.map(it => (
+          <RailBtn key={it.id} item={it} active={current === it.id} onClick={() => onChange(it.id)}/>
+        ))}
+      </div>
+    </aside>
+  );
+};
+
+const RailBtn = ({ item, active, onClick }) => {
+  const [hover, setHover] = React.useState(false);
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        ...railStyles.btn,
+        background: active ? THEME.accentSoft : (hover ? THEME.surfaceAlt : "transparent"),
+        color: active ? THEME.accentInk : THEME.inkMuted,
+      }}
+    >
+      <Icon name={item.icon} size={16}/>
+      {hover && (
+        <span style={railStyles.tooltip}>{item.label}</span>
+      )}
+    </button>
+  );
+};
+
+const railStyles = {
+  root: {
+    width: 48,
+    display: "flex", flexDirection: "column",
+    padding: "10px 6px",
+    background: THEME.surface,
+    borderRight: `1px solid ${THEME.border}`,
+    flexShrink: 0,
+  },
+  group: { display: "flex", flexDirection: "column", gap: 2 },
+  btn: {
+    position: "relative",
+    width: 36, height: 36,
+    display: "grid", placeItems: "center",
+    border: "none", borderRadius: 8,
+    cursor: "pointer",
+    transition: "background 0.12s",
+  },
+  tooltip: {
+    position: "absolute",
+    left: "calc(100% + 10px)",
+    top: "50%",
+    transform: "translateY(-50%)",
+    padding: "4px 8px",
+    background: THEME.ink,
+    color: THEME.surface,
+    fontSize: 11, fontWeight: 500,
+    borderRadius: 5,
+    whiteSpace: "nowrap",
+    pointerEvents: "none",
+    zIndex: 100,
+  },
+};
+
+window.LeftRail = LeftRail;
+
+</script>
+<script type="text/babel">
+// === inlined from src/Floorplan.jsx ===
+// Floorplan — the hero. Renders suites with status-based coloring.
+// Hover shows a richer tooltip; click selects.
+
+const Floorplan = ({
+  suites, commonAreas,
+  selectedId, onSelect,
+  hoveredId, onHover,
+  colorMode, // "status" | "type" | "rent"
+  overlays,  // { overdue, pendingSignature, newTenant }
+  zoom, setZoom,
+  layers,    // { labels, tenants, rent, windows, common, ... }
+}) => {
+  // Safe fallback so existing callers (if any) don't crash.
+  layers = layers || {};
+  const svgRef = React.useRef(null);
+
+  // Viewport — compute a tight bounding box around all rendered shapes.
+  // Mock data fits within 1040x880, but real buildings from localStorage
+  // span larger coordinate ranges. Padding keeps the outline off the edge.
+  const VB = React.useMemo(() => {
+    const all = [...(suites || []), ...(commonAreas || [])];
+    if (!all.length) return { minX: 0, minY: 0, W: 1040, H: 880, pad: 40 };
+    const minX = Math.min(...all.map(s => s.x));
+    const minY = Math.min(...all.map(s => s.y));
+    const maxX = Math.max(...all.map(s => s.x + s.w));
+    const maxY = Math.max(...all.map(s => s.y + s.h));
+    const pad = 40;
+    return { minX, minY, maxX, maxY, pad, W: (maxX - minX) + pad * 2, H: (maxY - minY) + pad * 2 };
+  }, [suites, commonAreas]);
+  const VB_W = VB.W, VB_H = VB.H;
+
+  const getFill = (s) => {
+    if (colorMode === "type") {
+      return s.type === "window" ? "#E8EFE4" : "#F4F2EE";
+    }
+    if (colorMode === "rent") {
+      // Heatmap by $/sqft
+      const perSqft = s.rent / s.sqft;
+      // normalize 2..12
+      const t = Math.max(0, Math.min(1, (perSqft - 2) / 10));
+      const hue = 145 - t * 145; // green→red
+      return `oklch(0.92 0.05 ${hue})`;
+    }
+    // status mode
+    const meta = STATUS_META[s.status];
+    return meta ? meta.bg : "#fff";
+  };
+
+  const getStroke = (s) => {
+    if (selectedId === s.id) return THEME.accent;
+    if (hoveredId === s.id) return THEME.borderStrong;
+    if (s.status === "vacant") return THEME.borderStrong;
+    return THEME.border;
+  };
+
+  const getStrokeWidth = (s) => {
+    if (selectedId === s.id) return 2;
+    return 1;
+  };
+
+  const getDash = (s) => {
+    if (colorMode === "status" && s.status === "vacant") return "3 3";
+    return null;
+  };
+
+  // Overlay badges
+  const renderOverlay = (s) => {
+    const badges = [];
+    if (overlays.overdue && s.status === "overdue") {
+      badges.push(<circle key="ov" cx={s.x + s.w - 10} cy={s.y + 10} r={6} fill={THEME.overdue}/>);
+      badges.push(<text key="ov-t" x={s.x + s.w - 10} y={s.y + 13} textAnchor="middle" fontSize={9} fill="#fff" fontWeight={700}>!</text>);
+    }
+    if (overlays.pendingSignature && s.status === "pending-signature") {
+      badges.push(
+        <g key="sig" transform={`translate(${s.x + s.w - 18}, ${s.y + 4})`}>
+          <rect width={14} height={14} rx={3} fill={THEME.pending}/>
+          <path d="M3 9s1.5-4 3-4 1 4 2.5 4 1-2 2.5-2" stroke="#fff" strokeWidth={1.3} fill="none" strokeLinecap="round"/>
+        </g>
+      );
+    }
+    if (overlays.newTenant && s.newTenant) {
+      badges.push(
+        <g key="new" transform={`translate(${s.x + 4}, ${s.y + 4})`}>
+          <circle cx={6} cy={6} r={6} fill={THEME.newStar}/>
+          <path d="M6 2l1.2 2.4 2.6.3-1.9 1.8.5 2.6L6 7.9 3.6 9.1l.5-2.6L2.2 4.7l2.6-.3L6 2z" fill="#fff"/>
+        </g>
+      );
+    }
+    return badges;
+  };
+
+  return (
+    <div style={fpStyles.root}>
+      {/* Color-mode segmented control */}
+      <div style={fpStyles.topControls}>
+        <div style={fpStyles.segGroup}>
+          {[
+            { id: "status", label: "Lease status" },
+            { id: "type",   label: "Unit type" },
+            { id: "rent",   label: "Rent heatmap" },
+          ].map(m => (
+            <button
+              key={m.id}
+              onClick={() => window.__setColorMode?.(m.id)}
+              style={{
+                ...fpStyles.segBtn,
+                ...(colorMode === m.id ? fpStyles.segBtnActive : {}),
+              }}
+            >{m.label}</button>
+          ))}
+        </div>
+        <div style={{ flex: 1 }}/>
+        <div style={fpStyles.floorLabel}>
+          <Icon name="building" size={13} style={{ color: THEME.inkSubtle }}/>
+          <span>
+            {(() => {
+              const n = window.__redesignTargetFloor;
+              if (n == null) return "4th Floor · Floorplan";
+              // Ordinal suffix — handles the 11–13 exception properly.
+              const v = n % 100;
+              const suf = (v >= 11 && v <= 13) ? 'th'
+                : (n % 10 === 1) ? 'st'
+                : (n % 10 === 2) ? 'nd'
+                : (n % 10 === 3) ? 'rd' : 'th';
+              return `${n}${suf} Floor · Floorplan`;
+            })()}
+          </span>
+          <span style={{
+            marginLeft: 8, padding: "1px 7px", fontSize: 10, fontWeight: 600, borderRadius: 6,
+            background: window.__redesignDataSource === "real" ? THEME.paidSoft : THEME.surfaceAlt,
+            color:      window.__redesignDataSource === "real" ? THEME.paidInk  : THEME.inkSubtle,
+            letterSpacing: 0.4, textTransform: "uppercase",
+          }}>
+            {window.__redesignDataSource === "real" ? "Live" : "Mock"}
+          </span>
+        </div>
+      </div>
+
+      {/* Plan SVG */}
+      <div style={fpStyles.svgWrap}>
+        <svg
+          ref={svgRef}
+          viewBox={`${VB.minX - VB.pad} ${VB.minY - VB.pad} ${VB_W} ${VB_H}`}
+          preserveAspectRatio="xMidYMid meet"
+          style={{ width: "100%", height: "100%", display: "block" }}
+        >
+          {/* Subtle floor outline */}
+          <defs>
+            <pattern id="gridDots" width="16" height="16" patternUnits="userSpaceOnUse">
+              <circle cx="1" cy="1" r="0.5" fill={THEME.gridLine}/>
+            </pattern>
+          </defs>
+          <rect x={VB.minX - VB.pad} y={VB.minY - VB.pad} width={VB_W} height={VB_H} fill="url(#gridDots)"/>
+
+          {/* Building outline — tight bounding box around actual content */}
+          <rect
+            x={VB.minX - VB.pad / 2} y={VB.minY - VB.pad / 2}
+            width={(VB.maxX - VB.minX) + VB.pad} height={(VB.maxY - VB.minY) + VB.pad}
+            rx={6}
+            fill={THEME.surface} stroke={THEME.border} strokeWidth={1.5}
+          />
+
+          {/* Common areas */}
+          {layers.common !== false && commonAreas.map(ca => (
+            <g key={ca.id}>
+              <rect
+                x={ca.x} y={ca.y} width={ca.w} height={ca.h}
+                fill={THEME.common} stroke={THEME.border} strokeWidth={0.5}
+              />
+              {ca.label && (
+                <text
+                  x={ca.x + ca.w/2} y={ca.y + ca.h/2}
+                  textAnchor="middle" dominantBaseline="middle"
+                  fontSize={9} fill={THEME.commonInk}
+                  fontWeight={500}
+                  letterSpacing={0.5}
+                >{ca.label}</text>
+              )}
+            </g>
+          ))}
+
+          {/* Suites */}
+          {suites.map(s => {
+            const isSel = selectedId === s.id;
+            const isHover = hoveredId === s.id;
+            const showDetail = isSel || isHover || (s.w > 85 && s.h > 75);
+            return (
+              <g
+                key={s.id}
+                onMouseEnter={() => onHover(s.id)}
+                onMouseLeave={() => onHover(null)}
+                onClick={() => onSelect(s.id)}
+                style={{ cursor: "pointer" }}
+              >
+                <rect
+                  x={s.x} y={s.y} width={s.w} height={s.h}
+                  fill={getFill(s)}
+                  stroke={getStroke(s)}
+                  strokeWidth={getStrokeWidth(s)}
+                  strokeDasharray={getDash(s)}
+                  rx={2}
+                />
+                {/* Suite number — controlled by 'labels' layer */}
+                {layers.labels !== false && (
+                  <text
+                    x={s.x + 5} y={s.y + 13}
+                    fontSize={10} fontWeight={600}
+                    fill={THEME.ink}
+                  >{s.id}</text>
+                )}
+                {/* Rent — 'rent' layer + visible when big enough OR selected/hover */}
+                {layers.rent !== false && showDetail && (
+                  <text
+                    x={s.x + 5} y={s.y + 26}
+                    fontSize={9} fill={THEME.inkMuted}
+                    style={{ fontVariantNumeric: "tabular-nums" }}
+                  >${s.rent.toLocaleString()}</text>
+                )}
+                {/* Tenant name — 'tenants' layer + only when big or selected */}
+                {layers.tenants !== false && (isSel || isHover || (s.w > 85 && s.h > 85)) && s.tenant !== "—" && (
+                  <text
+                    x={s.x + 5} y={s.y + 38}
+                    fontSize={8.5} fill={THEME.inkSubtle}
+                    style={{ pointerEvents: "none" }}
+                  >
+                    {s.tenant.length > 14 ? s.tenant.slice(0, 13) + "…" : s.tenant}
+                  </text>
+                )}
+                {/* Window indicator — 'windows' layer */}
+                {layers.windows !== false && s.type === "window" && (
+                  <line
+                    x1={s.x + 12} y1={s.y - 0.5}
+                    x2={s.x + s.w - 12} y2={s.y - 0.5}
+                    stroke={THEME.pending} strokeWidth={2}
+                  />
+                )}
+                {/* Overlays */}
+                {renderOverlay(s)}
+              </g>
+            );
+          })}
+
+          {/* Compass */}
+          <g transform={`translate(${VB.maxX - 20}, ${VB.minY + 20})`}>
+            <circle r={18} fill={THEME.surface} stroke={THEME.border}/>
+            <path d="M0 -12 L4 0 L0 -4 L-4 0 Z" fill={THEME.ink}/>
+            <text x={0} y={-14} textAnchor="middle" fontSize={8} fill={THEME.inkMuted} fontWeight={600}>N</text>
+          </g>
+
+          {/* Scale bar */}
+          <g transform={`translate(${VB.minX + 20}, ${VB.maxY})`}>
+            <line x1={0} y1={0} x2={80} y2={0} stroke={THEME.ink} strokeWidth={1.5}/>
+            <line x1={0} y1={-3} x2={0} y2={3} stroke={THEME.ink} strokeWidth={1.5}/>
+            <line x1={40} y1={-3} x2={40} y2={3} stroke={THEME.ink} strokeWidth={1.5}/>
+            <line x1={80} y1={-3} x2={80} y2={3} stroke={THEME.ink} strokeWidth={1.5}/>
+            <text x={40} y={15} textAnchor="middle" fontSize={9} fill={THEME.inkMuted}>20 ft</text>
+          </g>
+        </svg>
+      </div>
+
+      {/* Bottom legend bar — compact, inline */}
+      <div style={fpStyles.legend}>
+        {colorMode === "status" && (
+          <>
+            <LegendItem color={THEME.paid}     label="Paid"/>
+            <LegendItem color={THEME.due}      label="Due"/>
+            <LegendItem color={THEME.overdue}  label="Overdue"/>
+            <LegendItem color={THEME.reserved} label="Reserved"/>
+            <LegendItem color={THEME.pending}  label="Awaiting signature"/>
+            <LegendItem color="#fff" border={THEME.borderStrong} dashed label="Vacant"/>
+          </>
+        )}
+        {colorMode === "type" && (
+          <>
+            <LegendItem color="#E8EFE4" label="Window"/>
+            <LegendItem color="#F4F2EE" label="Interior"/>
+            <LegendItem color={THEME.common} label="Common"/>
+          </>
+        )}
+        {colorMode === "rent" && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 11, color: THEME.inkSubtle }}>$/ft²</span>
+            <div style={{
+              width: 120, height: 10, borderRadius: 5,
+              background: "linear-gradient(90deg, oklch(0.92 0.05 145), oklch(0.92 0.05 75), oklch(0.92 0.05 0))",
+              border: `1px solid ${THEME.border}`,
+            }}/>
+            <span style={{ fontSize: 11, color: THEME.inkMuted }}>$2 – $12</span>
+          </div>
+        )}
+
+        <div style={{ flex: 1 }}/>
+
+        {/* Overlay toggles */}
+        <div style={fpStyles.overlayToggles}>
+          <OverlayToggle
+            active={overlays.overdue}
+            onClick={() => window.__toggleOverlay?.("overdue")}
+            color={THEME.overdue}
+            label="Overdue"
+          />
+          <OverlayToggle
+            active={overlays.pendingSignature}
+            onClick={() => window.__toggleOverlay?.("pendingSignature")}
+            color={THEME.pending}
+            label="Signatures"
+          />
+          <OverlayToggle
+            active={overlays.newTenant}
+            onClick={() => window.__toggleOverlay?.("newTenant")}
+            color={THEME.newStar}
+            label="New (30d)"
+          />
+        </div>
+      </div>
+
+      {/* Zoom controls (floating, bottom-left) */}
+      <div style={fpStyles.zoom}>
+        <button style={fpStyles.zoomBtn} onClick={() => setZoom(z => Math.min(2, z + 0.1))}>
+          <Icon name="zoomIn" size={14}/>
+        </button>
+        <div style={fpStyles.zoomReadout}>{Math.round(zoom * 100)}%</div>
+        <button style={fpStyles.zoomBtn} onClick={() => setZoom(z => Math.max(0.5, z - 0.1))}>
+          <Icon name="zoomOut" size={14}/>
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const LegendItem = ({ color, border, dashed, label }) => (
+  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+    <div style={{
+      width: 14, height: 10, borderRadius: 2,
+      background: color,
+      border: `1px ${dashed ? "dashed" : "solid"} ${border || color}`,
+    }}/>
+    <span style={{ fontSize: 11, color: THEME.inkMuted }}>{label}</span>
+  </div>
+);
+
+const OverlayToggle = ({ active, onClick, color, label }) => (
+  <button
+    onClick={onClick}
+    style={{
+      display: "flex", alignItems: "center", gap: 6,
+      padding: "4px 9px",
+      border: `1px solid ${active ? color : THEME.border}`,
+      background: active ? `${color}14` : "transparent",
+      color: active ? color : THEME.inkMuted,
+      borderRadius: 6,
+      fontSize: 11, fontWeight: 500,
+      cursor: "pointer",
+    }}
+  >
+    <span style={{ width: 6, height: 6, borderRadius: 3, background: active ? color : THEME.inkSubtle }}/>
+    {label}
+  </button>
+);
+
+const fpStyles = {
+  root: {
+    flex: 1,
+    display: "flex", flexDirection: "column",
+    background: THEME.bg,
+    minWidth: 0,
+    position: "relative",
+  },
+  topControls: {
+    display: "flex", alignItems: "center", gap: 12,
+    padding: "10px 16px",
+    borderBottom: `1px solid ${THEME.border}`,
+    background: THEME.surface,
+  },
+  segGroup: {
+    display: "flex",
+    padding: 2,
+    background: THEME.surfaceAlt,
+    borderRadius: 7,
+  },
+  segBtn: {
+    padding: "4px 10px",
+    border: "none", background: "transparent",
+    borderRadius: 5, cursor: "pointer",
+    fontSize: 11, fontWeight: 500,
+    color: THEME.inkMuted,
+  },
+  segBtnActive: {
+    background: THEME.surface,
+    color: THEME.ink,
+    boxShadow: THEME.shadowSm,
+  },
+  floorLabel: {
+    display: "flex", alignItems: "center", gap: 6,
+    fontSize: 11, color: THEME.inkMuted,
+    fontVariantNumeric: "tabular-nums",
+  },
+  svgWrap: {
+    flex: 1,
+    overflow: "hidden",
+    padding: 20,
+    position: "relative",
+  },
+  legend: {
+    display: "flex", alignItems: "center", gap: 14,
+    padding: "10px 16px",
+    borderTop: `1px solid ${THEME.border}`,
+    background: THEME.surface,
+    flexWrap: "wrap",
+  },
+  overlayToggles: { display: "flex", gap: 6 },
+  zoom: {
+    position: "absolute",
+    left: 16, bottom: 70,
+    display: "flex", flexDirection: "column", alignItems: "center",
+    background: THEME.surface,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: 8,
+    boxShadow: THEME.shadowMd,
+    overflow: "hidden",
+  },
+  zoomBtn: {
+    width: 28, height: 28,
+    display: "grid", placeItems: "center",
+    border: "none", background: "transparent",
+    cursor: "pointer", color: THEME.inkMuted,
+  },
+  zoomReadout: {
+    fontSize: 10, color: THEME.inkSubtle,
+    padding: "2px 0",
+    borderTop: `1px solid ${THEME.border}`,
+    borderBottom: `1px solid ${THEME.border}`,
+    width: "100%", textAlign: "center",
+    fontVariantNumeric: "tabular-nums",
+  },
+};
+
+window.Floorplan = Floorplan;
+
+</script>
+<script type="text/babel">
+// === inlined from src/RightPanel.jsx ===
+// Right panel — contextual
+// When nothing selected: Portfolio dashboard (KPIs, revenue, floor summary, action queues)
+// When a suite is selected: Unit detail with actions (send reminder, message tenant, etc.)
+
+const RightPanel = ({
+  tab, setTab,
+  suites, floors, currentFloor,
+  selectedId, onSelect,
+  onSendReminder, onMessageTenant, onMarkPaid,
+  messageToast,
+  layers, setLayers,
+}) => {
+  const selected = suites.find(s => s.id === selectedId);
+
+  return (
+    <aside style={rpStyles.root}>
+      {/* Tabs */}
+      <div style={rpStyles.tabs}>
+        {["Dashboard", "Unit", "Layers"].map(t => {
+          const active = tab === t.toLowerCase();
+          const enabled = t !== "Unit" || selected;
+          return (
+            <button
+              key={t}
+              onClick={() => enabled && setTab(t.toLowerCase())}
+              style={{
+                ...rpStyles.tab,
+                ...(active ? rpStyles.tabActive : {}),
+                opacity: enabled ? 1 : 0.4,
+                cursor: enabled ? "pointer" : "not-allowed",
+              }}
+            >
+              {t}
+              {t === "Unit" && selected && (
+                <span style={rpStyles.tabBadge}>{selected.id}</span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={rpStyles.scroll}>
+        {tab === "dashboard" && <DashboardTab suites={suites} floors={floors} currentFloor={currentFloor} onSelect={onSelect} setTab={setTab}/>}
+        {tab === "unit" && selected && <UnitTab suite={selected} onSendReminder={onSendReminder} onMessageTenant={onMessageTenant} onMarkPaid={onMarkPaid}/>}
+        {tab === "layers" && <LayersTab layers={layers} setLayers={setLayers}/>}
+      </div>
+
+      {messageToast && (
+        <div style={rpStyles.toast}>
+          <Icon name="check" size={13} style={{ color: THEME.paid }}/>
+          <span>{messageToast}</span>
+        </div>
+      )}
+    </aside>
+  );
+};
+
+// ─── Dashboard Tab ────────────────────────────────────────────
+// Format YYYY-MM for the current month (UTC).
+function _currentYm(nowMs) {
+  const d = new Date(nowMs || Date.now());
+  return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0');
+}
+// Sum paid rent for the current month across all units, from real Stripe invoices.
+function _collectedThisMonth(invoices, nowMs) {
+  const ym = _currentYm(nowMs);
+  let paid = 0, outstanding = 0;
+  for (const r of (invoices || [])) {
+    if (!r || !r.metadata || r.metadata.purpose !== 'rent' || r.metadata.ym !== ym) continue;
+    const b = String(r.bucket || r.status || '').toLowerCase();
+    if (b === 'paid') paid += Number(r.total || 0);
+    else if (b === 'void' || b === 'uncollectible') continue;
+    else outstanding += Number(r.amountRemaining || r.total || 0);
+  }
+  return { paid, outstanding };
+}
+// Average rent per ft² for a given unit type ('window' | 'interior' | 'all').
+// Pass 'all' (or any falsy value) for the overall portfolio average across
+// all rentable units. Uses sqft-weighted average — NOT a simple mean of
+// per-unit rates — so a 1,000 ft² suite at $20/ft² counts more than a
+// 100 ft² suite at $40/ft². This matches CRE convention and avoids
+// distortion from tiny outlier units.
+function _avgRentPerSqft(suites, type) {
+  const matches = (s) => {
+    if (!s || !(s.sqft > 0) || !(s.rent > 0)) return false;
+    if (!type || type === 'all') return true;
+    return s.type === type;
+  };
+  const subset = suites.filter(matches);
+  if (!subset.length) return null;
+  const totalRent = subset.reduce((sum, s) => sum + s.rent, 0);
+  const totalSqft = subset.reduce((sum, s) => sum + s.sqft, 0);
+  return totalSqft ? (totalRent * 12) / totalSqft : null; // annualized $/ft² (standard CRE convention)
+}
+
+const DashboardTab = ({ suites, floors, currentFloor, onSelect, setTab }) => {
+  const vacant = suites.filter(s => s.status === "vacant").length;
+  const occupied = suites.filter(s => s.status !== "vacant" && s.status !== "reserved").length;
+  const total = suites.length || 1; // avoid divide-by-zero on first render
+
+  // Monthly run-rate = rent committed by leases on occupied units.
+  const monthlyCommitted = suites.reduce((sum, s) => s.status !== "vacant" && s.status !== "reserved" ? sum + s.rent : sum, 0);
+  const potential = suites.reduce((sum, s) => sum + s.rent, 0);
+
+  // Actual collected this month, from Stripe (in dollars — metadata amounts are in cents).
+  const live = (typeof window !== 'undefined' && window.LiveData) || null;
+  const { paid: collectedCents, outstanding: outstandingCents } = _collectedThisMonth(live && live.invoices, Date.now());
+  const collected = collectedCents / 100;
+  const outstanding = outstandingCents / 100;
+  const pctCollected = monthlyCommitted > 0 ? Math.min(100, Math.round((collected / monthlyCommitted) * 100)) : 0;
+
+  const occupiedPct = Math.round((occupied / total) * 100);
+
+  const overdueList = suites.filter(s => s.status === "overdue");
+  const pendingList = suites.filter(s => s.status === "pending-signature");
+  const dueList     = suites.filter(s => s.status === "due");
+
+  const rentableSqft = suites.reduce((sum, s) => sum + s.sqft, 0);
+  const occupiedSqft = suites.filter(s => s.status !== "vacant" && s.status !== "reserved").reduce((sum, s) => sum + s.sqft, 0);
+
+  // Live floor + building name — no more hardcoded "SuitesForAll · 4th Floor".
+  const activeFloor = (floors || []).find(f => f.id === currentFloor) || (floors || [])[0] || null;
+  const building = (live && live.state && live.state.buildings && live.state.buildings[0]) || null;
+  const buildingName = (building && (building.name || building.label)) || 'SuitesForAll';
+  const floorName = (activeFloor && activeFloor.name) || 'Floor';
+
+  // Real per-ft² averages — by type and overall. Annualized so the
+  // numbers read like commercial-RE asking rates ($25/ft²/yr style),
+  // not residential per-month figures.
+  const windowRate   = _avgRentPerSqft(suites, 'window');
+  const interiorRate = _avgRentPerSqft(suites, 'interior');
+  const overallRate  = _avgRentPerSqft(suites, 'all');
+
+  // Hero metric is run-rate revenue (sum of rent on every leased unit),
+  // shown alongside potential (sum of asking rents on every rentable
+  // unit, leased or not). pct = run-rate / potential — i.e. occupancy
+  // weighted by dollars, which is the property manager's headline KPI.
+  // Stripe collected/outstanding still gets surfaced below, but only as
+  // a secondary line so the primary number matches what an owner sees
+  // on every other rent roll in the industry.
+  const pctRevenue = potential > 0 ? Math.min(100, Math.round((monthlyCommitted / potential) * 100)) : 0;
+
+  return (
+    <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* Context */}
+      <div>
+        <div style={rpStyles.contextLabel}>FLOOR</div>
+        <div style={rpStyles.contextValue}>{buildingName} · {floorName}</div>
+      </div>
+
+      {/* Revenue — hero metric. Big = monthly run-rate (industry standard);
+          Stripe collected appears as a secondary live-data line below. */}
+      <div style={rpStyles.heroCard}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+          <span style={rpStyles.heroNum}>{fmt$(monthlyCommitted)}</span>
+          <span style={rpStyles.heroUnit}>/ month</span>
+        </div>
+        <div style={rpStyles.heroSub}>
+          Monthly revenue ({pctRevenue}% of potential {fmt$(potential)})
+        </div>
+        <div style={rpStyles.progressTrack}>
+          <div style={{ ...rpStyles.progressFill, width: `${pctRevenue}%`, background: THEME.paid }}/>
+        </div>
+        {(collected > 0 || outstanding > 0) && (
+          <div style={{ fontSize: 11, color: THEME.inkSubtle, fontVariantNumeric: 'tabular-nums' }}>
+            {fmt$(collected)} collected this month
+            {outstanding > 0 ? ` · ${fmt$(outstanding)} outstanding` : ''}
+          </div>
+        )}
+        <div style={rpStyles.heroGrid}>
+          <MiniStat label="Occupied" value={`${occupied}/${suites.length || 0}`} sub={`${occupiedPct}%`}/>
+          <MiniStat label="Vacant"   value={vacant}  sub={`${suites.length ? Math.round(vacant/suites.length*100) : 0}%`}/>
+          <MiniStat label="Rentable" value={`${occupiedSqft.toLocaleString()} / ${rentableSqft.toLocaleString()}`} sub="ft² rentable"/>
+        </div>
+      </div>
+
+      {/* Action queues — the property manager's to-do list */}
+      <Section title="Needs attention" count={overdueList.length + pendingList.length + dueList.length}>
+        {overdueList.length > 0 && (
+          <ActionGroup
+            title={`${overdueList.length} overdue`}
+            amount={overdueList.reduce((a,s)=>a+s.rent, 0)}
+            color={THEME.overdue}
+            items={overdueList}
+            onSelect={(s) => { onSelect(s.id); setTab("unit"); }}
+            actionLabel="Send reminder"
+          />
+        )}
+        {pendingList.length > 0 && (
+          <ActionGroup
+            title={`${pendingList.length} awaiting signature`}
+            color={THEME.pending}
+            items={pendingList}
+            onSelect={(s) => { onSelect(s.id); setTab("unit"); }}
+            actionLabel="Resend"
+          />
+        )}
+        {dueList.length > 0 && (
+          <ActionGroup
+            title={`${dueList.length} due this week`}
+            color={THEME.due}
+            items={dueList}
+            onSelect={(s) => { onSelect(s.id); setTab("unit"); }}
+            actionLabel="Remind"
+          />
+        )}
+      </Section>
+
+      {/* Floor summary */}
+      <Section title="Floors in building">
+        {floors.map(f => (
+          <FloorRow key={f.id} floor={f} active={f.id === currentFloor}/>
+        ))}
+      </Section>
+
+      {/* Rates summary — three sqft-weighted, annualized averages so the
+          property manager can compare asking rents at a glance. Window
+          units typically command a premium; the overall "Average" is a
+          weighted blend across both pools. Annualized $/ft²/yr is the
+          standard CRE quoting convention. */}
+      <Section title="Average rent">
+        <div style={{ display: "flex", gap: 8 }}>
+          <RateCard label="Window"   value={windowRate   ? `$${windowRate.toFixed(0)}`   : '—'} sub="per ft² / yr" icon="window"/>
+          <RateCard label="Interior" value={interiorRate ? `$${interiorRate.toFixed(0)}` : '—'} sub="per ft² / yr" icon="wrench"/>
+          <RateCard label="Average"  value={overallRate  ? `$${overallRate.toFixed(0)}`  : '—'} sub="per ft² / yr" icon="dollar"/>
+        </div>
+      </Section>
+    </div>
+  );
+};
+
+// ─── Unit Tab ────────────────────────────────────────────
+// Helpers for the live Unit tab
+const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+// Return the lease record for a given unit id (newest wins on updatedAt).
+function getLeaseForUnit(unitId) {
+  const leases = (window.LiveData?.state?.leases || []);
+  let best = null;
+  for (const l of leases) {
+    if (String(l.unitId) !== String(unitId)) continue;
+    if (!best || (l.updatedAt || 0) > (best.updatedAt || 0)) best = l;
+  }
+  return best;
+}
+
+// Return all Stripe invoices for a given unit id, newest-first.
+function getInvoicesForUnit(unitId) {
+  const all = (window.LiveData?.invoices || []);
+  return all
+    .filter(r => r && r.metadata && String(r.metadata.unitId) === String(unitId))
+    .sort((a, b) => (b.created || 0) - (a.created || 0));
+}
+
+// Roll up invoice history into paid-on-time / paid-late / missing counts.
+function summarizeInvoices(invoices) {
+  let paid = 0, late = 0, open = 0, overdue = 0;
+  const now = Date.now();
+  for (const r of invoices) {
+    const b = String(r.bucket || r.status || '').toLowerCase();
+    if (b === 'paid') paid++;
+    else if (b === 'void' || b === 'uncollectible') {}
+    else {
+      // open / past_due / draft
+      const due = Number(r.dueDate || 0);
+      if (due && due < now) overdue++;
+      else open++;
+    }
+  }
+  return { paid, late, open, overdue, total: paid + open + overdue };
+}
+
+// Days between two ms timestamps (positive if a > b).
+function daysBetween(a, b) {
+  return Math.round((a - b) / 864e5);
+}
+
+const UnitTab = ({ suite, onSendReminder, onMessageTenant, onMarkPaid }) => {
+  const isEmpty = suite.tenant === "—" || suite.status === 'vacant';
+  const lease = getLeaseForUnit(suite.id);
+  const invoices = getInvoicesForUnit(suite.id);
+  const summary = summarizeInvoices(invoices);
+  const latest = invoices[0] || null;
+  const now = Date.now();
+
+  // Parse lease.signedAt into a friendly "since MMM YYYY" string.
+  const leaseSince = React.useMemo(() => {
+    const raw = lease && lease.signedAt;
+    if (!raw) return null;
+    const d = new Date(raw);
+    if (isNaN(d)) return null;
+    return `${MONTH_SHORT[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+  }, [lease]);
+
+  // Lease end / expiry display.
+  const leaseExpires = React.useMemo(() => {
+    const raw = lease && (lease.endDate || lease.leaseEnd);
+    if (!raw) return null;
+    const d = new Date(raw);
+    if (isNaN(d)) return null;
+    return `${MONTH_SHORT[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+  }, [lease]);
+
+  // "X days past due" for overdue / "Due in X days" for due.
+  const dueSubtitle = React.useMemo(() => {
+    if (!latest || !latest.dueDate) return null;
+    const d = daysBetween(latest.dueDate, now);
+    if (suite.status === 'overdue') return `${Math.abs(d)} days past due · ${fmt$(latest.amountRemaining || suite.rent)}`;
+    if (suite.status === 'due')     return `Due in ${Math.max(d, 0)} days · ${fmt$(latest.amountRemaining || suite.rent)}`;
+    return null;
+  }, [latest, suite.status, suite.rent, now]);
+
+  // Envelope status string for the "resend lease" action subtitle.
+  const envSub = React.useMemo(() => {
+    const envStatus = lease && ((lease.envelope && lease.envelope.status) || lease.envelopeStatus);
+    const sentAt = lease && (lease.sentAt || (lease.envelope && lease.envelope.sentAt));
+    if (!envStatus) return 'Not yet sent';
+    const t = sentAt ? Date.parse(sentAt) : null;
+    const d = t ? daysBetween(now, t) : null;
+    const status = String(envStatus).toUpperCase();
+    return d != null ? `${status} · ${d}d ago via DocuSign` : `${status} via DocuSign`;
+  }, [lease, now]);
+
+  // Build the 12-month payment strip from REAL invoice history.
+  // Each cell is a calendar month (UTC), colored by what happened for that ym:
+  //   paid on time  → green (solid)
+  //   paid late     → amber
+  //   open / overdue→ rose
+  //   no invoice    → neutral outline
+  const monthCells = React.useMemo(() => {
+    const cells = [];
+    const d = new Date();
+    // Start 11 months ago, end at current month.
+    for (let i = 11; i >= 0; i--) {
+      const dt = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - i, 1));
+      const ym = dt.getUTCFullYear() + '-' + String(dt.getUTCMonth() + 1).padStart(2, '0');
+      const inv = invoices.find(r =>
+        (r.metadata && r.metadata.purpose === 'rent') && (r.metadata.ym === ym)
+      );
+      let color = null;
+      let tip = `${MONTH_SHORT[dt.getUTCMonth()]} ${dt.getUTCFullYear()}`;
+      if (inv) {
+        const b = String(inv.bucket || inv.status || '').toLowerCase();
+        if (b === 'paid') { color = THEME.paid; tip += ' · paid ' + fmt$(inv.total || 0); }
+        else if (b === 'void' || b === 'uncollectible') { tip += ' · ' + b; }
+        else {
+          const due = Number(inv.dueDate || 0);
+          if (due && due < now) { color = THEME.overdue; tip += ' · overdue'; }
+          else { color = THEME.due; tip += ' · open'; }
+        }
+      } else {
+        tip += ' · no invoice';
+      }
+      cells.push({ ym, color, tip });
+    }
+    return cells;
+  }, [invoices, now]);
+
+  return (
+    <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* Header */}
+      <div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+          <span style={rpStyles.unitId}>Suite {suite.id}</span>
+          <StatusPill status={suite.status}/>
+          {suite.newTenant && (
+            <span style={{ ...rpStyles.ghostChip, color: THEME.newStar, borderColor: THEME.newStar }}>
+              <Icon name="star" size={10}/> New
+            </span>
+          )}
+        </div>
+        <div style={{ fontSize: 12, color: THEME.inkSubtle }}>
+          {window.__redesignTargetFloor ? `${window.__redesignTargetFloor}th Floor · ` : ''}
+          {suite.type === "window" ? "Window unit" : "Interior unit"} · {suite.sqft} ft² · {suite.party}-person capacity
+        </div>
+      </div>
+
+      {/* Rent breakdown */}
+      <div style={rpStyles.unitCard}>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+          <span style={rpStyles.unitCardLabel}>Monthly rent</span>
+          <span style={rpStyles.unitCardNum}>{fmt$(suite.rent)}</span>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: THEME.inkSubtle, marginTop: 4 }}>
+          <span>Effective rate</span>
+          <span style={{ fontVariantNumeric: "tabular-nums" }}>
+            {suite.sqft ? `$${(suite.rent / suite.sqft).toFixed(2)} / ft²` : '—'}
+          </span>
+        </div>
+      </div>
+
+      {/* Tenant */}
+      {!isEmpty ? (
+        <div>
+          <div style={rpStyles.sectionTitle}><span>Tenant</span></div>
+          <div style={rpStyles.tenantCard}>
+            <div style={rpStyles.tenantAvatar}>{suite.tenant.split(/\s+/).map(p=>p[0]).slice(0,2).join("")}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: THEME.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{suite.tenant}</div>
+              <div style={{ fontSize: 11, color: THEME.inkSubtle }}>
+                Tenant{leaseSince ? ` · since ${leaseSince}` : ''}
+              </div>
+            </div>
+            <button style={rpStyles.iconBtn} title="Message" onClick={() => onMessageTenant(suite)}>
+              <Icon name="message" size={14}/>
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div style={rpStyles.emptyTenant}>
+          <div style={{ fontSize: 13, fontWeight: 500, color: THEME.ink, marginBottom: 2 }}>Unit is vacant</div>
+          <div style={{ fontSize: 11, color: THEME.inkSubtle, marginBottom: 10 }}>Available immediately · list rate {fmt$(suite.rent)}/mo</div>
+          <button style={rpStyles.primaryBtn}>
+            <Icon name="plus" size={13}/> Add to listing
+          </button>
+        </div>
+      )}
+
+      {/* Contextual actions — all derived from real invoice / lease state. */}
+      {!isEmpty && (
+        <div>
+          <div style={rpStyles.sectionTitle}><span>Actions</span></div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {suite.status === "overdue" && (
+              <ActionRow icon="send" label="Send payment reminder" sub={dueSubtitle || `Past due · ${fmt$(suite.rent)}`} onClick={() => onSendReminder(suite)} color={THEME.overdue}/>
+            )}
+            {suite.status === "due" && (
+              <ActionRow icon="send" label="Send gentle reminder" sub={dueSubtitle || `Due soon`} onClick={() => onSendReminder(suite)} color={THEME.due}/>
+            )}
+            {suite.status === "pending-signature" && (
+              <ActionRow icon="signature" label="Resend lease for signature" sub={envSub} onClick={() => onSendReminder(suite)} color={THEME.pending}/>
+            )}
+            {(suite.status === "overdue" || suite.status === "due") && (
+              <ActionRow icon="check" label="Mark as paid" onClick={() => onMarkPaid(suite)}/>
+            )}
+            {latest && latest.hostedUrl && (
+              <ActionRow
+                icon="dollar"
+                label="Open latest invoice"
+                sub={`${(latest.number || latest.id || '').toString().slice(0, 24)} · ${fmt$(latest.total || 0)}`}
+                onClick={() => window.open(latest.hostedUrl, '_blank', 'noopener')}
+              />
+            )}
+            <ActionRow
+              icon="file"
+              label="View lease agreement"
+              sub={leaseExpires ? `Expires ${leaseExpires}` : (lease ? 'Lease on file' : 'No lease on file')}
+            />
+            <ActionRow
+              icon="dollar"
+              label="Invoice history"
+              sub={summary.total
+                ? `${summary.paid}/${summary.total} paid${summary.overdue ? ` · ${summary.overdue} overdue` : ''}${summary.open ? ` · ${summary.open} open` : ''}`
+                : 'No invoices yet'
+              }
+            />
+          </div>
+        </div>
+      )}
+
+      {/* 12-month payment strip — real Stripe invoices keyed by metadata.ym. */}
+      {!isEmpty && (
+        <div>
+          <div style={rpStyles.sectionTitle}><span>Payment history · 12 mo</span></div>
+          <div style={{ display: "flex", gap: 3, marginTop: 6 }}>
+            {monthCells.map((c, i) => (
+              <div key={i} title={c.tip} style={{
+                flex: 1,
+                height: 22,
+                borderRadius: 3,
+                background: c.color ? `${c.color}28` : 'transparent',
+                border: `1px solid ${c.color || THEME.border}`,
+              }}/>
+            ))}
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+            <span style={{ fontSize: 10, color: THEME.inkSubtle }}>{monthCells[0]?.tip.split(' · ')[0]}</span>
+            <span style={{ fontSize: 10, color: THEME.inkSubtle }}>{monthCells[monthCells.length - 1]?.tip.split(' · ')[0]}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ─── Layers Tab ────────────────────────────────────────────
+// Controlled toggle panel. Each switch flips a boolean in the parent's
+// `layers` record; the Floorplan reads the same record to decide what to
+// render. Persistence happens in AppInner via localStorage.
+//
+// `enabled` layers have real data and render on the plan. `disabled` layers
+// are UI-only placeholders kept visible so operators know what's coming
+// (dimensions, HVAC zones, network drops) — clicking them is a no-op for now.
+const LAYER_DEFS = [
+  { id: "labels",     label: "Suite numbers",     enabled: true  },
+  { id: "tenants",    label: "Tenant names",      enabled: true  },
+  { id: "rent",       label: "Monthly rent",      enabled: true  },
+  { id: "windows",    label: "Window indicators", enabled: true  },
+  { id: "common",     label: "Common areas",      enabled: true  },
+  { id: "dimensions", label: "Room dimensions",   enabled: false },
+  { id: "hvac",       label: "HVAC zones",        enabled: false },
+  { id: "network",    label: "Network drops",     enabled: false },
+];
+const DEFAULT_LAYERS = LAYER_DEFS.reduce((a, l) => (a[l.id] = l.enabled, a), {});
+
+const LayersTab = ({ layers, setLayers }) => {
+  const toggle = (id) => setLayers(cur => ({ ...cur, [id]: !cur[id] }));
+  return (
+    <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ fontSize: 11, color: THEME.inkSubtle, marginBottom: 4 }}>Show on floorplan</div>
+      {LAYER_DEFS.map(l => {
+        const checked = !!layers[l.id];
+        const disabled = !l.enabled;
+        return (
+          <label
+            key={l.id}
+            style={{
+              display: "flex", alignItems: "center", gap: 10,
+              padding: "8px 10px",
+              border: `1px solid ${THEME.border}`, borderRadius: 8,
+              cursor: disabled ? "not-allowed" : "pointer",
+              opacity: disabled ? 0.45 : 1,
+            }}
+            title={disabled ? "Coming soon" : undefined}
+          >
+            <input
+              type="checkbox"
+              checked={checked}
+              disabled={disabled}
+              onChange={() => !disabled && toggle(l.id)}
+              style={{ accentColor: THEME.accent }}
+            />
+            <span style={{ fontSize: 13, color: THEME.ink }}>{l.label}</span>
+            {disabled && (
+              <span style={{ marginLeft: "auto", fontSize: 10, color: THEME.inkSubtle, textTransform: "uppercase", letterSpacing: 0.4 }}>soon</span>
+            )}
+          </label>
+        );
+      })}
+    </div>
+  );
+};
+window.LAYER_DEFS = LAYER_DEFS;
+window.DEFAULT_LAYERS = DEFAULT_LAYERS;
+window.LayersTab = LayersTab;
+
+// ─── Sub-components ────────────────────────────────────────────
+const Section = ({ title, count, children }) => (
+  <div>
+    <div style={rpStyles.sectionTitle}>
+      <span>{title}</span>
+      {count != null && <span style={rpStyles.sectionCount}>{count}</span>}
+    </div>
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>{children}</div>
+  </div>
+);
+
+const MiniStat = ({ label, value, sub }) => (
+  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+    <span style={{ fontSize: 10, color: THEME.inkSubtle, textTransform: "uppercase", letterSpacing: 0.4 }}>{label}</span>
+    <span style={{ fontSize: 14, fontWeight: 600, color: THEME.ink, fontVariantNumeric: "tabular-nums" }}>{value}</span>
+    {sub && <span style={{ fontSize: 10, color: THEME.inkSubtle }}>{sub}</span>}
+  </div>
+);
+
+const ActionGroup = ({ title, amount, color, items, onSelect, actionLabel }) => {
+  const [expanded, setExpanded] = React.useState(true);
+  return (
+    <div style={{ border: `1px solid ${THEME.border}`, borderRadius: 8, overflow: "hidden" }}>
+      <button onClick={() => setExpanded(e => !e)} style={rpStyles.actionGroupHeader}>
+        <span style={{ width: 6, height: 6, borderRadius: 3, background: color }}/>
+        <span style={{ flex: 1, textAlign: "left", fontSize: 12, fontWeight: 500, color: THEME.ink }}>{title}</span>
+        {amount != null && <span style={{ fontSize: 12, fontWeight: 600, color, fontVariantNumeric: "tabular-nums" }}>{fmt$(amount)}</span>}
+        <Icon name={expanded ? "chevronDown" : "chevronRight"} size={12} style={{ color: THEME.inkSubtle }}/>
+      </button>
+      {expanded && (
+        <div>
+          {items.slice(0, 4).map(s => (
+            <button key={s.id} onClick={() => onSelect(s)} style={rpStyles.actionGroupItem}>
+              <div style={{ flex: 1, textAlign: "left", minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 500, color: THEME.ink }}>
+                  Suite {s.id} · <span style={{ color: THEME.inkMuted, fontWeight: 400 }}>{s.tenant !== "—" ? s.tenant : "vacant"}</span>
+                </div>
+                <div style={{ fontSize: 10, color: THEME.inkSubtle, fontVariantNumeric: "tabular-nums" }}>
+                  {fmt$(s.rent)} / mo
+                </div>
+              </div>
+              <span style={rpStyles.ghostChip}>{actionLabel}</span>
+            </button>
+          ))}
+          {items.length > 4 && (
+            <div style={{ padding: "6px 10px", fontSize: 11, color: THEME.inkSubtle, textAlign: "center", borderTop: `1px solid ${THEME.border}` }}>
+              + {items.length - 4} more
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const FloorRow = ({ floor, active }) => {
+  const pct = floor.total ? Math.round((floor.occupied / floor.total) * 100) : 0;
+  return (
+    <div style={{
+      padding: "8px 10px",
+      border: `1px solid ${active ? THEME.accent : THEME.border}`,
+      background: active ? THEME.accentSoft : THEME.surface,
+      borderRadius: 8,
+      display: "flex", alignItems: "center", gap: 10,
+    }}>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 12, fontWeight: 500, color: active ? THEME.accentInk : THEME.ink }}>{floor.name}</div>
+        <div style={{ fontSize: 10, color: THEME.inkSubtle, fontVariantNumeric: "tabular-nums" }}>
+          {floor.occupied}/{floor.total} suites · {fmt$(floor.revenue)}
+        </div>
+      </div>
+      <div style={{ width: 48, textAlign: "right" }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: active ? THEME.accentInk : THEME.ink, fontVariantNumeric: "tabular-nums" }}>{pct}%</div>
+        <div style={{ width: "100%", height: 3, background: THEME.surfaceAlt, borderRadius: 2, marginTop: 2 }}>
+          <div style={{ width: `${pct}%`, height: "100%", background: active ? THEME.accent : THEME.borderStrong, borderRadius: 2 }}/>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const RateCard = ({ label, value, sub, icon }) => (
+  <div style={{
+    flex: 1,
+    minWidth: 0,                 // allow flex children to shrink below content width
+    padding: "10px 8px",
+    border: `1px solid ${THEME.border}`,
+    borderRadius: 8,
+    background: THEME.surface,
+  }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 4, color: THEME.inkSubtle }}>
+      <Icon name={icon} size={11}/>
+      <span style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 0.4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{label}</span>
+    </div>
+    <div style={{ fontSize: 18, fontWeight: 600, color: THEME.ink, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+    <div style={{ fontSize: 10, color: THEME.inkSubtle }}>{sub}</div>
+  </div>
+);
+
+const StatusPill = ({ status }) => {
+  const meta = STATUS_META[status];
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: 5,
+      padding: "2px 7px",
+      background: meta.bg,
+      color: meta.ink,
+      borderRadius: 10,
+      fontSize: 10, fontWeight: 500,
+      textTransform: "capitalize",
+    }}>
+      <span style={{ width: 5, height: 5, borderRadius: 3, background: meta.dot }}/>
+      {meta.label}
+    </span>
+  );
+};
+
+const ActionRow = ({ icon, label, sub, onClick, color }) => (
+  <button onClick={onClick} style={{
+    display: "flex", alignItems: "center", gap: 10,
+    padding: "8px 10px",
+    border: `1px solid ${THEME.border}`,
+    borderRadius: 8,
+    background: THEME.surface,
+    cursor: "pointer",
+    textAlign: "left",
+  }}>
+    <div style={{
+      width: 28, height: 28, borderRadius: 6,
+      background: color ? `${color}14` : THEME.surfaceAlt,
+      color: color || THEME.inkMuted,
+      display: "grid", placeItems: "center",
+      flexShrink: 0,
+    }}>
+      <Icon name={icon} size={14}/>
+    </div>
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ fontSize: 12, fontWeight: 500, color: THEME.ink }}>{label}</div>
+      {sub && <div style={{ fontSize: 10, color: THEME.inkSubtle, marginTop: 1 }}>{sub}</div>}
+    </div>
+    <Icon name="chevronRight" size={12} style={{ color: THEME.inkSubtle }}/>
+  </button>
+);
+
+const rpStyles = {
+  root: {
+    width: 360,
+    display: "flex", flexDirection: "column",
+    background: THEME.surface,
+    borderLeft: `1px solid ${THEME.border}`,
+    flexShrink: 0,
+    position: "relative",
+  },
+  tabs: {
+    display: "flex",
+    padding: "8px 10px 0",
+    gap: 2,
+    borderBottom: `1px solid ${THEME.border}`,
+  },
+  tab: {
+    flex: 1,
+    display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+    padding: "8px 10px",
+    border: "none", background: "transparent",
+    borderBottom: "2px solid transparent",
+    fontSize: 12, fontWeight: 500,
+    color: THEME.inkMuted,
+    marginBottom: -1,
+    cursor: "pointer",
+  },
+  tabActive: {
+    color: THEME.accentInk,
+    borderBottomColor: THEME.accent,
+  },
+  tabBadge: {
+    fontSize: 10,
+    padding: "1px 5px",
+    background: THEME.accentSoft,
+    color: THEME.accentInk,
+    borderRadius: 4,
+    fontWeight: 600,
+  },
+  scroll: { flex: 1, overflowY: "auto" },
+
+  contextLabel: { fontSize: 10, color: THEME.inkSubtle, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 },
+  contextValue: { fontSize: 13, fontWeight: 500, color: THEME.ink },
+
+  heroCard: {
+    padding: 14,
+    background: `linear-gradient(180deg, ${THEME.paidSoft}, ${THEME.surface})`,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: 10,
+    display: "flex", flexDirection: "column", gap: 8,
+  },
+  heroNum: {
+    fontSize: 28, fontWeight: 700, color: THEME.paidInk,
+    fontVariantNumeric: "tabular-nums",
+    letterSpacing: -0.5,
+  },
+  heroUnit: { fontSize: 11, color: THEME.inkSubtle },
+  heroSub: { fontSize: 11, color: THEME.inkMuted },
+  progressTrack: {
+    width: "100%", height: 4, background: THEME.surfaceAlt,
+    borderRadius: 2, overflow: "hidden",
+  },
+  progressFill: { height: "100%", borderRadius: 2 },
+  heroGrid: {
+    display: "grid", gridTemplateColumns: "1fr 1fr 1fr",
+    gap: 10,
+    paddingTop: 10,
+    borderTop: `1px solid ${THEME.border}`,
+  },
+
+  sectionTitle: {
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    fontSize: 11, fontWeight: 600, color: THEME.inkMuted,
+    textTransform: "uppercase", letterSpacing: 0.5,
+    marginBottom: 8,
+  },
+  sectionCount: {
+    fontSize: 10, fontWeight: 600,
+    padding: "1px 6px",
+    background: THEME.surfaceAlt,
+    color: THEME.inkMuted,
+    borderRadius: 8,
+  },
+
+  actionGroupHeader: {
+    display: "flex", alignItems: "center", gap: 8,
+    padding: "8px 10px",
+    border: "none", background: THEME.surfaceAlt,
+    width: "100%", cursor: "pointer",
+    borderBottom: `1px solid ${THEME.border}`,
+  },
+  actionGroupItem: {
+    display: "flex", alignItems: "center", gap: 8,
+    padding: "8px 10px",
+    border: "none", background: THEME.surface,
+    borderBottom: `1px solid ${THEME.border}`,
+    width: "100%", cursor: "pointer",
+  },
+  ghostChip: {
+    display: "inline-flex", alignItems: "center", gap: 4,
+    fontSize: 10, fontWeight: 500,
+    padding: "2px 7px",
+    border: `1px solid ${THEME.border}`,
+    borderRadius: 10,
+    color: THEME.inkMuted,
+    background: THEME.surface,
+  },
+
+  unitId: { fontSize: 18, fontWeight: 700, color: THEME.ink, letterSpacing: -0.2 },
+  unitCard: {
+    padding: 12,
+    background: THEME.surfaceAlt,
+    borderRadius: 8,
+  },
+  unitCardLabel: { fontSize: 11, color: THEME.inkMuted },
+  unitCardNum: { fontSize: 22, fontWeight: 700, color: THEME.ink, fontVariantNumeric: "tabular-nums" },
+
+  tenantCard: {
+    display: "flex", alignItems: "center", gap: 10,
+    padding: 10,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: 8,
+  },
+  tenantAvatar: {
+    width: 32, height: 32, borderRadius: 8,
+    background: THEME.accentSoft,
+    color: THEME.accentInk,
+    display: "grid", placeItems: "center",
+    fontSize: 11, fontWeight: 600,
+    flexShrink: 0,
+  },
+  iconBtn: {
+    width: 28, height: 28,
+    display: "grid", placeItems: "center",
+    border: `1px solid ${THEME.border}`,
+    borderRadius: 6, background: THEME.surface,
+    cursor: "pointer", color: THEME.inkMuted,
+  },
+  emptyTenant: {
+    padding: 14,
+    border: `1px dashed ${THEME.borderStrong}`,
+    borderRadius: 8,
+    textAlign: "center",
+  },
+  primaryBtn: {
+    display: "inline-flex", alignItems: "center", gap: 6,
+    padding: "6px 12px",
+    background: THEME.accent,
+    color: "#fff",
+    border: "none", borderRadius: 6,
+    fontSize: 12, fontWeight: 500,
+    cursor: "pointer",
+  },
+
+  toast: {
+    position: "absolute",
+    left: 16, right: 16, bottom: 16,
+    padding: "10px 12px",
+    background: THEME.ink,
+    color: THEME.surface,
+    borderRadius: 8,
+    fontSize: 12,
+    display: "flex", alignItems: "center", gap: 8,
+    boxShadow: THEME.shadowLg,
+    animation: "slideUp 0.25s ease-out",
+  },
+};
+
+window.RightPanel = RightPanel;
+window.StatusPill = StatusPill;
+
+</script>
+
+<script type="text/babel">
+const TWEAKS = /*EDITMODE-BEGIN*/{
+  "density": "comfortable",
+  "dark": false,
+  "colorMode": "status",
+  "showOverdue": true,
+  "showSignatures": true,
+  "showNew": true
+}/*EDITMODE-END*/;
+
+// ─── Sign-in gate ────────────────────────────────────────────────────
+// Shown whenever LiveData.user is null. Submits to LiveData.signIn which
+// wraps firebase.auth().signInWithEmailAndPassword. Errors are surfaced
+// inline. Admin whitelist check happens server-side-ish in LiveData's
+// onAuthStateChanged — unauthorized users get bounced back here.
+const SignInScreen = ({ live }) => {
+  const [email, setEmail] = React.useState('');
+  const [password, setPassword] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const [googleBusy, setGoogleBusy] = React.useState(false);
+  const [err, setErr] = React.useState(null);
+
+  React.useEffect(() => {
+    if (live.authError || live.lastError) setErr(live.authError || live.lastError);
+    else if (live.status === 'error') setErr('Could not connect to server. Check your internet connection.');
+  }, [live.authError, live.lastError, live.status]);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!email || !password) { setErr('Enter both email and password.'); return; }
+    setBusy(true); setErr(null);
+    try { await window.LiveData.signIn(email.trim(), password); }
+    catch (ex) { setErr(ex.message || String(ex)); }
+    finally { setBusy(false); }
+  };
+
+  const signInGoogle = async () => {
+    setGoogleBusy(true); setErr(null);
+    try { await window.LiveData.signInWithGoogle(); }
+    catch (ex) {
+      // signInWithGoogle already sets LiveData.authError with a friendly
+      // message; the effect above will surface it. Fall back if somehow empty.
+      if (!window.LiveData.authError) setErr(ex.message || String(ex));
+    }
+    finally { setGoogleBusy(false); }
+  };
+
+  const isBootError = live.status === 'error';
+  const anyBusy = busy || googleBusy || isBootError;
+
+  return (
+    <div style={{
+      height: '100vh', display: 'grid', placeItems: 'center',
+      background: THEME.bg,
+    }}>
+      <form onSubmit={submit} style={{
+        width: 360,
+        background: THEME.surface,
+        border: '1px solid ' + THEME.border,
+        borderRadius: 12,
+        boxShadow: THEME.shadowLg,
+        padding: 28,
+        display: 'flex', flexDirection: 'column', gap: 16,
+      }}>
+        <div>
+          <div style={{ fontSize: 18, fontWeight: 600, color: THEME.ink }}>SuitesForAll</div>
+          <div style={{ fontSize: 12, color: THEME.inkMuted, marginTop: 4 }}>Sign in to continue</div>
+        </div>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, color: THEME.inkSubtle }}>Email</span>
+          <input
+            type="email"
+            autoComplete="username"
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            disabled={anyBusy}
+            style={{
+              padding: '8px 10px',
+              border: '1px solid ' + THEME.border,
+              borderRadius: 6,
+              fontSize: 13,
+              background: THEME.bg,
+              color: THEME.ink,
+              fontFamily: 'inherit',
+            }}
+          />
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, color: THEME.inkSubtle }}>Password</span>
+          <input
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            disabled={anyBusy}
+            style={{
+              padding: '8px 10px',
+              border: '1px solid ' + THEME.border,
+              borderRadius: 6,
+              fontSize: 13,
+              background: THEME.bg,
+              color: THEME.ink,
+              fontFamily: 'inherit',
+            }}
+          />
+        </label>
+        {err && (
+          <div style={{
+            fontSize: 12, color: THEME.overdueInk || '#7f1d1d',
+            background: THEME.overdueSoft || '#FEE7EC',
+            border: '1px solid ' + (THEME.overdue || '#E11D48'),
+            borderRadius: 6, padding: '8px 10px',
+          }}>{err}</div>
+        )}
+        <button
+          type="submit"
+          disabled={anyBusy}
+          style={{
+            padding: '10px 14px',
+            border: 'none',
+            borderRadius: 6,
+            background: THEME.accent,
+            color: '#fff',
+            fontSize: 13, fontWeight: 600,
+            cursor: anyBusy ? 'not-allowed' : 'pointer',
+            opacity: anyBusy ? 0.6 : 1,
+          }}
+        >{busy ? 'Signing in…' : 'Sign in'}</button>
+
+        {/* OR divider */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          fontSize: 10, color: THEME.inkSubtle,
+          textTransform: 'uppercase', letterSpacing: 0.5,
+        }}>
+          <div style={{ flex: 1, height: 1, background: THEME.border }}/>
+          <span>or</span>
+          <div style={{ flex: 1, height: 1, background: THEME.border }}/>
+        </div>
+
+        {/* Google sign-in — uses Firebase signInWithPopup + GoogleAuthProvider. */}
+        <button
+          type="button"
+          onClick={signInGoogle}
+          disabled={anyBusy}
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+            padding: '10px 14px',
+            border: '1px solid ' + THEME.border,
+            borderRadius: 6,
+            background: THEME.surface,
+            color: THEME.ink,
+            fontSize: 13, fontWeight: 500,
+            cursor: anyBusy ? 'not-allowed' : 'pointer',
+            opacity: anyBusy ? 0.6 : 1,
+            fontFamily: 'inherit',
+          }}
+        >
+          {/* Inline Google "G" logo. */}
+          <svg width="16" height="16" viewBox="0 0 18 18" aria-hidden="true">
+            <path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844a4.14 4.14 0 01-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.875 2.684-6.615z"/>
+            <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 009 18z"/>
+            <path fill="#FBBC05" d="M3.964 10.706A5.41 5.41 0 013.682 9c0-.593.102-1.17.282-1.706V4.962H.957A8.997 8.997 0 000 9c0 1.452.348 2.827.957 4.038l3.007-2.332z"/>
+            <path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 00.957 4.962L3.964 7.294C4.672 5.167 6.656 3.58 9 3.58z"/>
+          </svg>
+          <span>{googleBusy ? 'Opening Google…' : 'Continue with Google'}</span>
+        </button>
+      </form>
+    </div>
+  );
+};
+
+// Loading screen — shown briefly between sign-in and first state/invoice payload.
+const LoadingScreen = ({ live }) => (
+  <div style={{
+    height: '100vh', display: 'grid', placeItems: 'center',
+    background: THEME.bg, color: THEME.inkMuted, fontSize: 13,
+  }}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+      <div style={{
+        width: 18, height: 18, borderRadius: '50%',
+        border: '2px solid ' + THEME.border,
+        borderTopColor: THEME.accent,
+        animation: 'spin 0.8s linear infinite',
+      }}/>
+      <div>
+        {live.status === 'loading-state' && 'Loading state…'}
+        {live.status === 'loading-invoices' && 'Loading invoices…'}
+        {live.status === 'boot' && 'Connecting…'}
+      </div>
+    </div>
+    <style>{'@keyframes spin{to{transform:rotate(360deg)}}'}</style>
+  </div>
+);
+
+// ─── Router ──────────────────────────────────────────────────────
+// Tiny hash-based router. Routes:
+//   #/               → floorplan workspace (default)
+//   #/rent-roll      → full-screen Rent Roll page
+// We deliberately avoid history.pushState to keep the hosting setup simple
+// (no server-side rewrite config needed beyond the existing /redesign/** rule).
+function useHashRoute() {
+  const read = () => {
+    const h = (typeof location !== 'undefined' && location.hash) || '';
+    const p = h.replace(/^#/, '') || '/';
+    return p;
+  };
+  const [path, setPath] = React.useState(read);
+  React.useEffect(() => {
+    const onChange = () => setPath(read());
+    window.addEventListener('hashchange', onChange);
+    return () => window.removeEventListener('hashchange', onChange);
+  }, []);
+  const navigate = React.useCallback((p) => { location.hash = p; }, []);
+  return { path, navigate };
+}
+
+// Build full cross-floor unit roster for Rent Roll.
+// Columns computed: id, floor, status, tenant, rent, sqft, balance (outstanding
+// from all unpaid invoices), lastPaidAt (ms), leaseSignedAt, leaseEndDate, type.
+// All figures in dollars (Stripe cents are converted here).
+function buildAllUnitRows(LD) {
+  if (!LD || !LD.state || !LD.state.buildings || !LD.state.buildings[0]) return [];
+  const building = LD.state.buildings[0];
+  const floors = building.floors || [];
+  const tenantsById = new Map((LD.state.tenants || []).map(t => [t.id, t]));
+  const leasesByUnit = new Map();
+  for (const l of (LD.state.leases || [])) {
+    const cur = leasesByUnit.get(l.unitId);
+    if (!cur || (l.updatedAt || 0) > (cur.updatedAt || 0)) leasesByUnit.set(l.unitId, l);
+  }
+  const invByUnit = {};
+  for (const r of (LD.invoices || [])) {
+    const uid = r && r.metadata && r.metadata.unitId;
+    if (!uid) continue;
+    (invByUnit[uid] || (invByUnit[uid] = [])).push(r);
+  }
+  for (const k of Object.keys(invByUnit)) {
+    invByUnit[k].sort((a, b) => (b.created || 0) - (a.created || 0));
+  }
+
+  const nowMs = Date.now();
+  const dNow = new Date(nowMs);
+  const ym = dNow.getUTCFullYear() + '-' + String(dNow.getUTCMonth() + 1).padStart(2, '0');
+  const rows = [];
+
+  for (const f of floors) {
+    for (const u of (f.units || [])) {
+      const type = String(u.type || 'office').toLowerCase();
+      if (!(type === 'office' || type === 'suite' || type === 'unit') || u.rentable === false) continue;
+
+      const lease = leasesByUnit.get(u.id) || null;
+      const tenantId = u.tenantId || (lease && lease.tenantId);
+      const tenantRec = tenantId ? tenantsById.get(tenantId) : null;
+      const hasTenant = !!(tenantRec || (u.tenant && u.tenant !== '—') || u.status === 'occupied');
+      const tenantName = (tenantRec && tenantRec.name) || u.tenant || (hasTenant ? 'Occupied' : '—');
+
+      const inv = invByUnit[u.id] || [];
+
+      // Status derivation — matches rebuildFromLiveData.
+      let status;
+      if (!hasTenant) {
+        status = 'vacant';
+      } else if (lease && lease.envelope && ['sent', 'delivered'].includes(String(lease.envelope.status || '').toLowerCase())) {
+        status = 'pending-signature';
+      } else {
+        const thisMonth = inv.find(r => r.metadata && r.metadata.purpose === 'rent' && r.metadata.ym === ym);
+        if (thisMonth) {
+          const b = String(thisMonth.bucket || thisMonth.status || '').toLowerCase();
+          if (b === 'paid') status = 'paid';
+          else if (b === 'void' || b === 'uncollectible') status = 'paid';
+          else {
+            const due = Number(thisMonth.dueDate || 0);
+            status = (due && due < nowMs) ? 'overdue' : 'due';
+          }
+        } else {
+          status = 'paid'; // tenant present but no invoice this month yet → treat as current
+        }
+      }
+
+      // Outstanding balance across all unpaid invoices (in cents → dollars).
+      let balanceCents = 0;
+      for (const r of inv) {
+        const b = String(r.bucket || r.status || '').toLowerCase();
+        if (b !== 'paid' && b !== 'void' && b !== 'uncollectible') {
+          balanceCents += Number(r.amountRemaining || r.total || 0);
+        }
+      }
+
+      // Most recent paid invoice.
+      const lastPaid = inv.find(r => String(r.bucket || r.status || '').toLowerCase() === 'paid');
+      const lastPaidAt = lastPaid
+        ? ((lastPaid.statusTransitions && lastPaid.statusTransitions.paidAt)
+          || (lastPaid.created ? lastPaid.created * (lastPaid.created < 1e12 ? 1000 : 1) : null))
+        : null;
+
+      rows.push({
+        id: u.id,
+        floor: f.number,
+        floorName: f.name || (f.number + 'th Floor'),
+        status,
+        tenant: tenantName,
+        rent: Number(u.rent || 0),
+        sqft: Number(u.sqft || 0),
+        balance: balanceCents / 100,
+        lastPaidAt,
+        leaseSignedAt: lease && lease.signedAt,
+        leaseEndDate: lease && (lease.endDate || lease.leaseEnd),
+        type: (u.type === 'window') ? 'window' : 'interior',
+      });
+    }
+  }
+  return rows;
+}
+
+const App = () => {
+  // Subscribe to LiveData — any auth, state, or invoice change triggers re-render.
+  const [live, setLive] = React.useState(() => ({
+    user: window.LiveData?.user || null,
+    status: window.LiveData?.status || 'boot',
+    state: window.LiveData?.state || null,
+    invoices: window.LiveData?.invoices || [],
+    invoicesAt: window.LiveData?.invoicesAt || 0,
+    authError: window.LiveData?.authError || null,
+    lastError: window.LiveData?.lastError || null,
+  }));
+  const [dataVersion, setDataVersion] = React.useState(0);
+  // currentFloor lives at the App level so derived data (liveSuites) can
+  // react to it — switching floors in the topbar rebuilds the floorplan.
+  const [currentFloor, setCurrentFloor] = React.useState(4);
+
+  React.useEffect(() => {
+    if (!window.LiveData) return;
+    const apply = () => {
+      setLive({
+        user: window.LiveData.user,
+        status: window.LiveData.status,
+        state: window.LiveData.state,
+        invoices: window.LiveData.invoices,
+        invoicesAt: window.LiveData.invoicesAt,
+        authError: window.LiveData.authError,
+        lastError: window.LiveData.lastError,
+      });
+      setDataVersion(v => v + 1);
+    };
+    apply(); // pick up any state set before mount
+    return window.LiveData.subscribe(apply);
+  }, []);
+
+  // Derive SUITES/COMMON_AREAS/FLOORS from LiveData for the currently-selected floor.
+  const derived = React.useMemo(
+    () => window.rebuildFromLiveData(currentFloor),
+    [dataVersion, currentFloor]
+  );
+  const liveSuites = derived.suites;
+  const liveCommonAreas = derived.commonAreas;
+  const liveFloors = derived.floors;
+
+  // If state loads and the default floor (4) has no rentable units, snap to
+  // whichever floor was actually picked by the derivation.
+  React.useEffect(() => {
+    if (derived.targetFloorId != null && derived.targetFloorId !== currentFloor) {
+      setCurrentFloor(derived.targetFloorId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [derived.targetFloorId]);
+
+  // Gate: if Firebase isn't wired or user not signed in, show sign-in.
+  if (live.status === 'boot' || live.status === 'signin' || live.status === 'error' || !live.user) {
+    return <SignInScreen live={live}/>;
+  }
+  // Gate: signed in but data still loading.
+  if (live.status === 'loading-state') {
+    return <LoadingScreen live={live}/>;
+  }
+  // Ready — render the full app.
+  return <AppInner
+    liveSuites={liveSuites}
+    liveCommonAreas={liveCommonAreas}
+    liveFloors={liveFloors}
+    currentFloor={currentFloor}
+    setCurrentFloor={setCurrentFloor}
+    liveStatus={live.status}
+    liveUser={live.user}
+    liveInvoicesAt={live.invoicesAt}
+  />;
+};
+
+const AppInner = ({ liveSuites, liveCommonAreas, liveFloors, currentFloor, setCurrentFloor, liveStatus, liveUser, liveInvoicesAt }) => {
+  const { path: route, navigate } = useHashRoute();
+  const [tab, setTab] = React.useState("dashboard");
+  const [selectedId, setSelectedId] = React.useState(null);
+  const [hoveredId, setHoveredId] = React.useState(null);
+  const [query, setQuery] = React.useState("");
+  const [rail, setRail] = React.useState("overview");
+  const [colorMode, setColorMode] = React.useState(TWEAKS.colorMode);
+  const [overlays, setOverlays] = React.useState({
+    overdue: TWEAKS.showOverdue,
+    pendingSignature: TWEAKS.showSignatures,
+    newTenant: TWEAKS.showNew,
+  });
+  const [zoom, setZoom] = React.useState(1);
+  const [density, setDensity] = React.useState(TWEAKS.density);
+  const [dark, setDark] = React.useState(TWEAKS.dark);
+  const [toast, setToast] = React.useState(null);
+  const [tweaksOpen, setTweaksOpen] = React.useState(false);
+
+  // Layer toggles — which floorplan elements are visible. Persisted per
+  // browser so returning users keep their view. Shape is a flat record of
+  // booleans keyed by LAYER_DEFS id.
+  const [layers, setLayers] = React.useState(() => {
+    try {
+      const raw = typeof localStorage !== 'undefined' && localStorage.getItem('__suitesForAllLayers');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        // Merge against defaults so new layer keys we ship later are picked up.
+        return { ...window.DEFAULT_LAYERS, ...parsed };
+      }
+    } catch (_) { /* storage blocked or corrupt — fall through */ }
+    return { ...window.DEFAULT_LAYERS };
+  });
+  React.useEffect(() => {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('__suitesForAllLayers', JSON.stringify(layers));
+      }
+    } catch (_) { /* quota or privacy mode — ignore */ }
+  }, [layers]);
+
+  // Hook up global color mode toggles from Floorplan
+  React.useEffect(() => {
+    window.__setColorMode = setColorMode;
+    window.__toggleOverlay = (k) => setOverlays(o => ({ ...o, [k]: !o[k] }));
+  }, []);
+
+  // Dev-mode gate for the Tweaks panel (internal styling tools). Off by
+  // default for end-users; enabled by `localStorage.__suitesForAllDev = "1"`
+  // or the `?dev=1` URL flag. The postMessage protocol from the edit-mode
+  // host still overrides this when present.
+  const isDevUser = React.useMemo(() => {
+    try {
+      if (typeof location !== 'undefined' && /[?&]dev=1\b/.test(location.search)) return true;
+      if (typeof localStorage !== 'undefined' && localStorage.getItem('__suitesForAllDev') === '1') return true;
+    } catch (_) { /* storage may be blocked */ }
+    return false;
+  }, []);
+
+  // Topbar floor pills — derived from the live building so labels and order
+  // follow whatever floors actually exist. Falls back to the hardcoded
+  // 1st–4th set while data is still loading (keeps the chrome non-empty).
+  const topbarFloors = React.useMemo(() => {
+    const ordSuffix = (n) => {
+      const v = n % 100;
+      if (v >= 11 && v <= 13) return 'th';
+      switch (n % 10) {
+        case 1: return 'st';
+        case 2: return 'nd';
+        case 3: return 'rd';
+        default: return 'th';
+      }
+    };
+    if (!Array.isArray(liveFloors) || !liveFloors.length) {
+      return [
+        { id: 1, label: '1st' },
+        { id: 2, label: '2nd' },
+        { id: 3, label: '3rd' },
+        { id: 4, label: '4th' },
+      ];
+    }
+    // Preserve numeric order; expose id (floor number) + short label.
+    return liveFloors
+      .slice()
+      .sort((a, b) => (a.id || 0) - (b.id || 0))
+      .map(f => ({ id: f.id, label: f.id + ordSuffix(f.id) }));
+  }, [liveFloors]);
+
+  // Overdue stats for topbar alert
+  const overdueSuites = liveSuites.filter(s => s.status === "overdue");
+  const overdueAmount = overdueSuites.reduce((a, s) => a + s.rent, 0);
+
+  const handleSelect = (id) => {
+    if (id == null) { setSelectedId(null); return; }
+    setSelectedId(id);
+    if (tab === "dashboard") setTab("unit");
+  };
+
+  const showToast = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 2400);
+  };
+
+  const onSendReminder = (s) => showToast(`Reminder sent to ${s.tenant}`);
+  const onMessageTenant = (s) => showToast(`Message draft opened for ${s.tenant}`);
+  const onMarkPaid = (s) => showToast(`Suite ${s.id} marked as paid`);
+
+  React.useEffect(() => {
+    document.body.classList.toggle("dark", dark);
+  }, [dark]);
+
+  // Tweaks protocol
+  React.useEffect(() => {
+    const listener = (e) => {
+      if (e.data?.type === "__activate_edit_mode") setTweaksOpen(true);
+      if (e.data?.type === "__deactivate_edit_mode") setTweaksOpen(false);
+    };
+    window.addEventListener("message", listener);
+    window.parent.postMessage({ type: "__edit_mode_available" }, "*");
+    return () => window.removeEventListener("message", listener);
+  }, []);
+
+  const updateTweak = (key, value) => {
+    const next = { ...TWEAKS, [key]: value };
+    window.parent.postMessage({ type: "__edit_mode_set_keys", edits: { [key]: value } }, "*");
+    if (key === "density") setDensity(value);
+    if (key === "dark") setDark(value);
+    if (key === "colorMode") setColorMode(value);
+    if (key === "showOverdue") setOverlays(o => ({ ...o, overdue: value }));
+    if (key === "showSignatures") setOverlays(o => ({ ...o, pendingSignature: value }));
+    if (key === "showNew") setOverlays(o => ({ ...o, newTenant: value }));
+  };
+
+  return (
+    <div style={{
+      height: "100vh",
+      display: "flex", flexDirection: "column",
+      background: dark ? "#0F0E0C" : THEME.bg,
+    }}>
+      <Topbar
+        route={route}
+        onRouteChange={navigate}
+        currentFloor={currentFloor}
+        floors={topbarFloors}
+        onFloorChange={setCurrentFloor}
+        overdueAmount={overdueAmount}
+        overdueCount={overdueSuites.length}
+        onOpenOverdue={() => { navigate('/'); setTab("dashboard"); setSelectedId(null); }}
+        query={query} setQuery={setQuery}
+        density={density}
+        onToggleDensity={() => setDensity(d => d === "compact" ? "comfortable" : "compact")}
+        dark={dark}
+        onToggleDark={() => setDark(d => !d)}
+      />
+      {route === '/rent-roll' ? (
+        <RentRollPage
+          onOpenUnit={(s) => {
+            // Deep-link into the floorplan view with that unit selected.
+            navigate('/');
+            setCurrentFloor(s.floor);
+            setSelectedId(s.id);
+            setTab('unit');
+          }}
+          onSendReminder={onSendReminder}
+          onMarkPaid={onMarkPaid}
+          liveInvoicesAt={liveInvoicesAt}
+        />
+      ) : (
+        <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+          <LeftRail current={rail} onChange={setRail}/>
+          <Floorplan
+            suites={liveSuites}
+            commonAreas={liveCommonAreas}
+            selectedId={selectedId}
+            onSelect={handleSelect}
+            hoveredId={hoveredId}
+            onHover={setHoveredId}
+            colorMode={colorMode}
+            overlays={overlays}
+            zoom={zoom}
+            setZoom={setZoom}
+            layers={layers}
+          />
+          <RightPanel
+            tab={tab} setTab={setTab}
+            suites={liveSuites}
+            floors={liveFloors}
+            currentFloor={currentFloor}
+            selectedId={selectedId}
+            onSelect={handleSelect}
+            onSendReminder={onSendReminder}
+            onMessageTenant={onMessageTenant}
+            onMarkPaid={onMarkPaid}
+            messageToast={toast}
+            layers={layers}
+            setLayers={setLayers}
+          />
+        </div>
+      )}
+
+      {tweaksOpen && isDevUser && (
+        <TweaksPanel
+          values={{ density, dark, colorMode, overlays }}
+          update={updateTweak}
+          onClose={() => setTweaksOpen(false)}
+        />
+      )}
+    </div>
+  );
+};
+
+// ─── Rent Roll page ──────────────────────────────────────────────────
+// Full-screen table view of every rentable unit across every floor.
+// Columns: Suite · Floor · Status · Tenant · Monthly rent · Last paid · Balance.
+// Filters: status, floor, search (tenant name / suite id).
+// Row click deep-links back into the floorplan view with that unit selected.
+//
+// Data source: window.LiveData.state.buildings[0].floors[].units[] joined with
+// tenants + leases + Stripe invoices via buildAllUnitRows(). Re-runs whenever
+// liveInvoicesAt changes.
+const RentRollPage = ({ onOpenUnit, onSendReminder, onMarkPaid, liveInvoicesAt }) => {
+  const [statusFilter, setStatusFilter] = React.useState('all');
+  const [floorFilter, setFloorFilter] = React.useState('all');
+  const [search, setSearch] = React.useState('');
+  const [sortKey, setSortKey] = React.useState('id');
+  const [sortDir, setSortDir] = React.useState('asc');
+
+  // Recompute rows whenever invoices or state change.
+  const allRows = React.useMemo(
+    () => buildAllUnitRows(window.LiveData),
+    [liveInvoicesAt]
+  );
+
+  const floors = React.useMemo(() => {
+    const s = new Set();
+    for (const r of allRows) s.add(r.floor);
+    return Array.from(s).sort((a, b) => a - b);
+  }, [allRows]);
+
+  // Apply filters + search + sort.
+  const rows = React.useMemo(() => {
+    const q = search.trim().toLowerCase();
+    let out = allRows.filter(r => {
+      if (statusFilter !== 'all' && r.status !== statusFilter) return false;
+      if (floorFilter !== 'all' && r.floor !== floorFilter) return false;
+      if (q && !(String(r.id).toLowerCase().includes(q) || String(r.tenant).toLowerCase().includes(q))) return false;
+      return true;
+    });
+    out = out.slice().sort((a, b) => {
+      const av = a[sortKey]; const bv = b[sortKey];
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (typeof av === 'number' && typeof bv === 'number') return sortDir === 'asc' ? av - bv : bv - av;
+      return sortDir === 'asc' ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
+    });
+    return out;
+  }, [allRows, statusFilter, floorFilter, search, sortKey, sortDir]);
+
+  // Summary stats below the filter bar.
+  const totals = React.useMemo(() => {
+    let rent = 0, balance = 0;
+    const counts = { paid: 0, due: 0, overdue: 0, 'pending-signature': 0, vacant: 0 };
+    for (const r of rows) {
+      rent += r.rent;
+      balance += r.balance;
+      counts[r.status] = (counts[r.status] || 0) + 1;
+    }
+    return { rent, balance, counts };
+  }, [rows]);
+
+  const toggleSort = (key) => {
+    if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortKey(key); setSortDir('asc'); }
+  };
+
+  const exportCSV = () => {
+    const header = ['Suite','Floor','Status','Tenant','MonthlyRent','LastPaid','Balance','LeaseStart','LeaseEnd','Type'];
+    const lines = [header.join(',')];
+    for (const r of rows) {
+      const lp = r.lastPaidAt ? new Date(r.lastPaidAt).toISOString().slice(0,10) : '';
+      const ls = r.leaseSignedAt ? new Date(r.leaseSignedAt).toISOString().slice(0,10) : '';
+      const le = r.leaseEndDate ? new Date(r.leaseEndDate).toISOString().slice(0,10) : '';
+      const tenant = '"' + String(r.tenant || '').replace(/"/g, '""') + '"';
+      lines.push([r.id, r.floor, r.status, tenant, r.rent, lp, r.balance.toFixed(2), ls, le, r.type].join(','));
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'rent-roll-' + new Date().toISOString().slice(0,10) + '.csv';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  return (
+    <div style={rentRollStyles.root}>
+      {/* Filter bar */}
+      <div style={rentRollStyles.filterBar}>
+        <input
+          type="text"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Search suite or tenant…"
+          style={rentRollStyles.search}
+        />
+        <select
+          value={statusFilter}
+          onChange={e => setStatusFilter(e.target.value)}
+          style={rentRollStyles.select}
+        >
+          <option value="all">All statuses</option>
+          <option value="paid">Paid</option>
+          <option value="due">Due</option>
+          <option value="overdue">Overdue</option>
+          <option value="pending-signature">Pending signature</option>
+          <option value="vacant">Vacant</option>
+        </select>
+        <select
+          value={floorFilter}
+          onChange={e => setFloorFilter(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+          style={rentRollStyles.select}
+        >
+          <option value="all">All floors</option>
+          {floors.map(f => <option key={f} value={f}>{f} Floor</option>)}
+        </select>
+        <div style={{ flex: 1 }}/>
+        <button onClick={exportCSV} style={rentRollStyles.exportBtn}>
+          <Icon name="file" size={12}/>
+          <span>Export CSV</span>
+        </button>
+      </div>
+
+      {/* Summary strip */}
+      <div style={rentRollStyles.summary}>
+        <span><strong style={{ color: THEME.ink }}>{rows.length}</strong> units</span>
+        <span>·</span>
+        <span><strong style={{ color: THEME.ink }}>{fmt$(totals.rent)}</strong> monthly rent</span>
+        {totals.balance > 0 && (<>
+          <span>·</span>
+          <span style={{ color: THEME.overdue }}>
+            <strong>{fmt$(totals.balance)}</strong> outstanding
+          </span>
+        </>)}
+        <span style={{ marginLeft: 'auto', display: 'flex', gap: 12 }}>
+          {totals.counts.overdue > 0 && <span style={{ color: THEME.overdue }}>{totals.counts.overdue} overdue</span>}
+          {totals.counts.due > 0 && <span style={{ color: THEME.due }}>{totals.counts.due} due</span>}
+          {totals.counts['pending-signature'] > 0 && <span style={{ color: THEME.pending }}>{totals.counts['pending-signature']} pending</span>}
+          {totals.counts.vacant > 0 && <span style={{ color: THEME.inkMuted }}>{totals.counts.vacant} vacant</span>}
+        </span>
+      </div>
+
+      {/* Table */}
+      <div style={rentRollStyles.tableWrap}>
+        <table style={rentRollStyles.table}>
+          <thead>
+            <tr>
+              <RRHeader label="Suite" col="id" sortKey={sortKey} sortDir={sortDir} onClick={toggleSort} align="left"/>
+              <RRHeader label="Floor" col="floor" sortKey={sortKey} sortDir={sortDir} onClick={toggleSort} align="left"/>
+              <RRHeader label="Status" col="status" sortKey={sortKey} sortDir={sortDir} onClick={toggleSort} align="left"/>
+              <RRHeader label="Tenant" col="tenant" sortKey={sortKey} sortDir={sortDir} onClick={toggleSort} align="left"/>
+              <RRHeader label="Rent" col="rent" sortKey={sortKey} sortDir={sortDir} onClick={toggleSort} align="right"/>
+              <RRHeader label="Last paid" col="lastPaidAt" sortKey={sortKey} sortDir={sortDir} onClick={toggleSort} align="left"/>
+              <RRHeader label="Balance" col="balance" sortKey={sortKey} sortDir={sortDir} onClick={toggleSort} align="right"/>
+              <th style={{ ...rentRollStyles.th, textAlign: 'right', cursor: 'default' }}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && (
+              <tr><td colSpan={8} style={rentRollStyles.emptyCell}>No units match these filters.</td></tr>
+            )}
+            {rows.map(r => (
+              <tr key={r.id} style={rentRollStyles.tr} onClick={() => onOpenUnit(r)}>
+                <td style={{ ...rentRollStyles.td, fontWeight: 600, color: THEME.ink }}>{r.id}</td>
+                <td style={rentRollStyles.td}>{r.floorName}</td>
+                <td style={rentRollStyles.td}><StatusPill status={r.status}/></td>
+                <td style={{ ...rentRollStyles.td, color: r.tenant === '—' ? THEME.inkSubtle : THEME.ink }}>{r.tenant}</td>
+                <td style={{ ...rentRollStyles.td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{r.rent ? fmt$(r.rent) : '—'}</td>
+                <td style={rentRollStyles.td}>{r.lastPaidAt ? formatDate(r.lastPaidAt) : '—'}</td>
+                <td style={{
+                  ...rentRollStyles.td,
+                  textAlign: 'right',
+                  fontVariantNumeric: 'tabular-nums',
+                  color: r.balance > 0 ? THEME.overdue : THEME.inkSubtle,
+                  fontWeight: r.balance > 0 ? 600 : 400,
+                }}>{r.balance > 0 ? fmt$(r.balance) : '—'}</td>
+                <td style={{ ...rentRollStyles.td, textAlign: 'right' }} onClick={e => e.stopPropagation()}>
+                  {(r.status === 'overdue' || r.status === 'due') && (
+                    <button style={rentRollStyles.rowBtn} onClick={() => onSendReminder(r)}>Remind</button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+// Friendly short date — "Apr 3", or "Apr 3, 2025" if > 9 months ago.
+function formatDate(ms) {
+  if (!ms) return '—';
+  const d = new Date(ms);
+  if (isNaN(d)) return '—';
+  const M = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const now = new Date();
+  const sameYear = d.getUTCFullYear() === now.getUTCFullYear();
+  return sameYear
+    ? `${M[d.getUTCMonth()]} ${d.getUTCDate()}`
+    : `${M[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`;
+}
+
+const RRHeader = ({ label, col, sortKey, sortDir, onClick, align }) => {
+  const active = sortKey === col;
+  return (
+    <th
+      onClick={() => onClick(col)}
+      style={{ ...rentRollStyles.th, textAlign: align, cursor: 'pointer', color: active ? THEME.ink : THEME.inkMuted }}
+    >
+      {label}
+      {active && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDir === 'asc' ? '▲' : '▼'}</span>}
+    </th>
+  );
+};
+
+const rentRollStyles = {
+  root: {
+    flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0,
+    background: THEME.bg,
+  },
+  filterBar: {
+    display: 'flex', alignItems: 'center', gap: 8,
+    padding: '12px 16px',
+    borderBottom: `1px solid ${THEME.border}`,
+    background: THEME.surface,
+  },
+  search: {
+    flex: '0 0 280px',
+    padding: '7px 10px',
+    background: THEME.surfaceAlt,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: 8,
+    fontSize: 13,
+    fontFamily: 'inherit',
+    color: THEME.ink,
+    outline: 'none',
+  },
+  select: {
+    padding: '7px 10px',
+    background: THEME.surfaceAlt,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: 8,
+    fontSize: 13,
+    fontFamily: 'inherit',
+    color: THEME.ink,
+    cursor: 'pointer',
+    outline: 'none',
+  },
+  exportBtn: {
+    display: 'flex', alignItems: 'center', gap: 6,
+    padding: '7px 12px',
+    background: THEME.surface,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: 8,
+    fontSize: 12, fontWeight: 500,
+    color: THEME.ink,
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+  },
+  summary: {
+    display: 'flex', alignItems: 'center', gap: 10,
+    padding: '10px 16px',
+    fontSize: 12,
+    color: THEME.inkMuted,
+    background: THEME.surfaceAlt,
+    borderBottom: `1px solid ${THEME.border}`,
+  },
+  tableWrap: {
+    flex: 1, overflow: 'auto',
+    background: THEME.surface,
+  },
+  table: {
+    width: '100%',
+    borderCollapse: 'collapse',
+    fontSize: 13,
+    fontFamily: 'inherit',
+  },
+  th: {
+    position: 'sticky', top: 0,
+    background: THEME.surface,
+    padding: '10px 14px',
+    textAlign: 'left',
+    fontSize: 11,
+    fontWeight: 600,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    color: THEME.inkMuted,
+    borderBottom: `1px solid ${THEME.border}`,
+    userSelect: 'none',
+  },
+  tr: {
+    cursor: 'pointer',
+    borderBottom: `1px solid ${THEME.border}`,
+  },
+  td: {
+    padding: '10px 14px',
+    color: THEME.inkMuted,
+  },
+  emptyCell: {
+    padding: '40px 16px',
+    textAlign: 'center',
+    color: THEME.inkSubtle,
+    fontSize: 13,
+  },
+  rowBtn: {
+    padding: '4px 10px',
+    background: THEME.surface,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: 6,
+    fontSize: 11,
+    fontWeight: 500,
+    color: THEME.ink,
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+  },
+};
+
+const TweaksPanel = ({ values, update, onClose }) => (
+  <div style={{
+    position: "fixed",
+    right: 16, bottom: 16,
+    width: 260,
+    background: THEME.surface,
+    border: `1px solid ${THEME.border}`,
+    borderRadius: 12,
+    boxShadow: THEME.shadowLg,
+    zIndex: 200,
+    overflow: "hidden",
+  }}>
+    <div style={{
+      display: "flex", alignItems: "center", justifyContent: "space-between",
+      padding: "10px 14px",
+      borderBottom: `1px solid ${THEME.border}`,
+      background: THEME.surfaceAlt,
+    }}>
+      <span style={{ fontSize: 12, fontWeight: 600, color: THEME.ink }}>Tweaks</span>
+      <button onClick={onClose} style={{ border: "none", background: "transparent", cursor: "pointer", color: THEME.inkMuted, padding: 4, display: "grid", placeItems: "center" }}>
+        <Icon name="x" size={13}/>
+      </button>
+    </div>
+    <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 14 }}>
+      <TweakRow label="Theme">
+        <Seg value={values.dark ? "dark" : "light"} options={[
+          { id: "light", label: "Light" },
+          { id: "dark", label: "Dark" },
+        ]} onChange={v => update("dark", v === "dark")}/>
+      </TweakRow>
+      <TweakRow label="Color mode">
+        <Seg value={values.colorMode} options={[
+          { id: "status", label: "Status" },
+          { id: "type", label: "Type" },
+          { id: "rent", label: "Rent" },
+        ]} onChange={v => update("colorMode", v)}/>
+      </TweakRow>
+      <TweakRow label="Overlays">
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <Check label="Overdue alerts"       value={values.overlays.overdue}          onChange={v => update("showOverdue", v)}/>
+          <Check label="Pending signatures"   value={values.overlays.pendingSignature}  onChange={v => update("showSignatures", v)}/>
+          <Check label="New tenants (30d)"    value={values.overlays.newTenant}         onChange={v => update("showNew", v)}/>
+        </div>
+      </TweakRow>
+    </div>
+  </div>
+);
+
+const TweakRow = ({ label, children }) => (
+  <div>
+    <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5, color: THEME.inkSubtle, marginBottom: 6 }}>{label}</div>
+    {children}
+  </div>
+);
+
+const Seg = ({ value, options, onChange }) => (
+  <div style={{ display: "flex", padding: 2, background: THEME.surfaceAlt, borderRadius: 7 }}>
+    {options.map(o => (
+      <button key={o.id} onClick={() => onChange(o.id)}
+        style={{
+          flex: 1,
+          padding: "4px 8px",
+          border: "none",
+          background: value === o.id ? THEME.surface : "transparent",
+          color: value === o.id ? THEME.ink : THEME.inkMuted,
+          boxShadow: value === o.id ? THEME.shadowSm : "none",
+          borderRadius: 5,
+          fontSize: 11, fontWeight: 500,
+          cursor: "pointer",
+        }}>{o.label}</button>
+    ))}
+  </div>
+);
+
+const Check = ({ label, value, onChange }) => (
+  <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: THEME.ink, cursor: "pointer" }}>
+    <input type="checkbox" checked={value} onChange={e => onChange(e.target.checked)} style={{ accentColor: THEME.accent }}/>
+    {label}
+  </label>
+);
+
+// ─── Topbar wrapper: convert simple floor array into the shape Topbar expects ──
+const OriginalTopbar = Topbar;
+window.Topbar = (props) => {
+  return <OriginalTopbar {...props}/>;
+};
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>

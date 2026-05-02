@@ -1,0 +1,280 @@
+rules_version = '2';
+
+// =============================================================================
+// SuitesForAll — Firestore Security Rules
+// =============================================================================
+// Layered defense: the client-side role helpers (canEdit, canManageMembers,
+// etc.) drive UX visibility; these rules enforce the same contract at the
+// server so a technically-grounded user can't bypass the UI with direct API
+// calls. Mirrors ROOT_ADMINS in floor-map-editor.html.
+//
+// Deploy with: `firebase deploy --only firestore:rules`
+// or bundled: `firebase deploy` (pushes hosting + rules together).
+// =============================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ----- Helper functions ------------------------------------------------
+
+    // Hardcoded owner emails — mirror of ROOT_ADMINS in the client code.
+    // These accounts always pass as admin regardless of member-doc state,
+    // so the owner can never lock themselves out.
+    function isRootAdmin() {
+      return request.auth != null
+        && request.auth.token.email != null
+        && request.auth.token.email.lower() in ['tony@al-en.com'];
+    }
+
+    function hasMemberDoc(wid) {
+      return exists(/databases/$(database)/documents/workspaces/$(wid)/members/$(request.auth.uid));
+    }
+
+    function memberRole(wid) {
+      return get(/databases/$(database)/documents/workspaces/$(wid)/members/$(request.auth.uid)).data.role;
+    }
+
+    // Archived members lose all workspace privileges. Their member doc
+    // is preserved for audit-trail history (who edited what, who marked
+    // an invoice paid) but reads/writes go through the same `isMember /
+    // isAdmin / isEditor` gates as if the doc didn't exist. Root admins
+    // bypass — their status is hardcoded above and can't be archived.
+    // Note: get() results are cached per-rule-evaluation, so adding
+    // this check on top of memberRole costs nothing extra.
+    function memberArchived(wid) {
+      return hasMemberDoc(wid)
+        && get(/databases/$(database)/documents/workspaces/$(wid)/members/$(request.auth.uid)).data.get('archived', false) == true;
+    }
+
+    function isMember(wid) {
+      return request.auth != null
+        && (isRootAdmin() || (hasMemberDoc(wid) && !memberArchived(wid)));
+    }
+
+    function isAdmin(wid) {
+      return request.auth != null
+        && (isRootAdmin()
+            || (hasMemberDoc(wid) && !memberArchived(wid) && memberRole(wid) == 'admin'));
+    }
+
+    // Editor = anyone whose role lets them write the shared state document.
+    // admin + manager see everything; mapeditor edits the plan but client-side
+    // gating hides finance UI from them. Server cannot cheaply enforce
+    // per-field restrictions in one big state doc, so we accept mapeditor
+    // writes and rely on client role gating to keep them on-map.
+    function isEditor(wid) {
+      return isAdmin(wid)
+        || (hasMemberDoc(wid) && !memberArchived(wid) && memberRole(wid) in ['manager', 'mapeditor']);
+    }
+
+    // ----- Workspaces ------------------------------------------------------
+
+    // Workspace meta doc (/workspaces/{wid}) — read by any authenticated user
+    // (the app probes this to decide if a workspace already exists), written
+    // only by admins.
+    match /workspaces/{wid} {
+      allow read:   if request.auth != null;
+      allow create: if request.auth != null;   // first user creates the workspace
+      allow update, delete: if isAdmin(wid);
+
+      // State document (/workspaces/{wid}/data/state) — the big shared state.
+      // Read by any member; written only by admin or manager.
+      match /data/{docId} {
+        allow read:  if isMember(wid);
+        allow write: if isEditor(wid);
+      }
+
+      // Members collection — roster of everyone in the workspace.
+      // Read by any member (so the members panel can list roles).
+      // Create: a user can create their OWN member doc on first sign-in
+      // (bootstrap). Admins can create/update/delete any member doc.
+      match /members/{uid} {
+        allow read:   if isMember(wid) || (request.auth != null && request.auth.uid == uid);
+        allow create: if request.auth != null && request.auth.uid == uid;
+        allow update: if isAdmin(wid)
+                        || (request.auth != null && request.auth.uid == uid
+                            && (
+                              // Self-updates without role change: profile fields
+                              // ONLY (name, photo, displayName, lastSignedInAt).
+                              // PRIVILEGE-ESCALATION CLOSED: previously this only
+                              // checked role-equality, which meant a mapeditor
+                              // restricted to building X could grant themselves
+                              // access to ALL buildings by self-updating their
+                              // member doc with `buildings: []` (= unrestricted
+                              // scope). The hasOnly() whitelist below restricts
+                              // which fields can change in a self-update — role,
+                              // buildings, archived, and any other authoritative
+                              // fields stay locked. Admin path above is unaffected.
+                              (resource.data.get('archived', false) != true
+                                && request.resource.data.role == resource.data.role
+                                && request.resource.data.diff(resource.data).affectedKeys()
+                                    .hasOnly(['name', 'displayName', 'photoURL', 'photo',
+                                              'lastSignedInAt', 'lastSeenAt', 'updatedAt',
+                                              'preferences', 'profile', 'phone']))
+                              // OR the new role matches what an admin
+                              // pre-authorized in /emailAllowlist/{email}. This
+                              // covers two cases at once:
+                              //   1. Brand-new sign-in upgrading from default
+                              //      'viewer' to the role admin chose.
+                              //   2. Archived member restored when admin
+                              //      re-invites them via allowlist. The diff
+                              //      check below guarantees only role + the
+                              //      housekeeping fields move — `buildings`
+                              //      can't be silently rewritten through this
+                              //      path either.
+                              || (
+                                request.auth.token.email != null
+                                && exists(/databases/$(database)/documents/workspaces/$(wid)/emailAllowlist/$(request.auth.token.email.lower()))
+                                && request.resource.data.role == get(/databases/$(database)/documents/workspaces/$(wid)/emailAllowlist/$(request.auth.token.email.lower())).data.role
+                                && request.resource.data.diff(resource.data).affectedKeys()
+                                    .hasOnly(['role', 'archived', 'name', 'displayName',
+                                              'photoURL', 'photo', 'lastSignedInAt',
+                                              'lastSeenAt', 'updatedAt'])
+                              )
+                            ));
+        allow delete: if isAdmin(wid)
+                        || (request.auth != null && request.auth.uid == uid);  // user can leave
+      }
+
+      // Email allowlist — admin-only. Read by any member so the panel can list.
+      // ALSO readable by an authenticated user looking up THEIR OWN email
+      // (document id == auth email lowercased) — needed during first sign-in
+      // when the user's member doc doesn't exist yet, so the init code can
+      // preload the right role for create() instead of dropping to 'viewer'
+      // and trying to upgrade afterwards (which fails when rules don't
+      // recognize the self-update path).
+      match /emailAllowlist/{email} {
+        allow read:  if isMember(wid)
+                     || (request.auth != null
+                         && request.auth.token.email != null
+                         && request.auth.token.email.lower() == email);
+        // Create / update — admin only. Pre-authorizing someone else
+        // is a privileged operation.
+        allow create, update: if isAdmin(wid);
+        // Delete — admin OR the user whose email IS the allowlist
+        // doc id. This lets fbConsumeEmailAllowlist remove the entry
+        // after upgrading a new manager's role; without it the entry
+        // permanently sticks around as a "PENDING" duplicate next to
+        // the now-real member.
+        allow delete: if isAdmin(wid)
+                      || (request.auth != null
+                          && request.auth.token.email != null
+                          && request.auth.token.email.lower() == email);
+      }
+
+      // Invite links — admin creates/revokes; invitee reads the token to
+      // consume it (they might not be a member yet, so isMember can't apply).
+      // SECURITY: previously `allow read: if request.auth != null` let
+      // ANY signed-in user enumerate every invite token + role. An
+      // archived viewer (still has a Firebase Auth session) could list
+      // pending admin invites, then consume them. Now read is gated
+      // by knowing the exact token id (Firestore enforces "doc-id-only"
+      // reads when the rule references {token} but not list scope) AND
+      // either the user is admin OR they're the invitee whose email
+      // matches the doc's `email` field. List queries fail because
+      // collection-level read isn't granted.
+      match /invites/{token} {
+        // Reject reads of expired invites (expiresAt past). Without
+        // this check, a leaked invite link works forever — an
+        // attacker who got a Slack message containing an invite
+        // link from 6 months ago can still consume it. Admin still
+        // sees expired invites via the list path so they can prune.
+        allow get: if (
+                       isAdmin(wid)
+                       || (request.auth != null
+                           && request.auth.token.email != null
+                           && resource.data.email != null
+                           && request.auth.token.email.lower() == resource.data.email.lower())
+                       || (request.auth != null
+                           && resource.data.email == null)
+                     )
+                   && (resource.data.get('expiresAt', null) == null
+                       || resource.data.expiresAt > request.time);
+        allow list: if isAdmin(wid);
+        allow create, delete: if isAdmin(wid);
+        // Update only allowed if the diff is limited to used/usedBy/usedAt
+        // fields — prevents token-role tampering by the invitee. The
+        // invitee additionally must claim themselves as the consumer
+        // (usedBy = their uid) — closes "invitee tampering with audit
+        // trail" by writing someone else's uid.
+        allow update: if isAdmin(wid)
+                        || (request.auth != null
+                            && request.resource.data.diff(resource.data)
+                                .affectedKeys()
+                                .hasOnly(['used', 'usedBy', 'usedByEmail', 'usedAt'])
+                            && request.resource.data.usedBy == request.auth.uid);
+      }
+
+      // Daily backups — admin + manager only (they can restore; viewers
+      // cannot). Reads are kept open so the in-app backup UI can list
+      // available snapshots without going through a Cloud Function for
+      // every operator session. WRITES are server-only: only the daily
+      // cron (dailyBackupSnapshot), the manual trigger (takeManualBackup),
+      // and the pre-restore safety snapshot (inside restoreBackup) should
+      // be creating these — all run as admin SDK, which bypasses rules.
+      // Closing client-side writes prevents an editor from corrupting
+      // backups directly (deleting them, replacing the body with junk).
+      match /backups/{date} {
+        allow read:  if isEditor(wid);
+        allow write: if false;
+      }
+
+      // Audit log — append-only via the recordAudit Cloud Function. Any
+      // editor can read (the Settings → Audit viewer needs it), but
+      // direct client writes are forbidden so the log can never be
+      // forged or tampered with from the browser. recordAudit runs as
+      // admin SDK so it bypasses these rules.
+      match /audit/{entryId} {
+        allow read:  if isEditor(wid);
+        allow write: if false;
+      }
+
+      // Rate-limit counters — server-side only. Clients must not be
+      // able to read (could probe quotas) or write (could reset their
+      // own counter to bypass limits) these documents. The Cloud
+      // Functions that increment them run as admin SDK so they bypass
+      // the deny rule below.
+      match /rateLimits/{counter} {
+        allow read, write: if false;
+      }
+
+      // Webhook event-id ledger — written only by stripeWebhook for
+      // event-level idempotency (so Stripe Smart Retries don't cause
+      // double-processing). Server-only.
+      match /webhookEvents/{eventId} {
+        allow read, write: if false;
+      }
+
+      // Integration tokens — DocuSign access/refresh tokens shared at
+      // workspace level. RESTRICTED TO ADMIN ONLY (previously also
+      // open to managers — a too-broad scope for raw OAuth tokens
+      // that, if exfiltrated, could be used to send leases as the
+      // owning Stripe / DocuSign account from outside our app).
+      // Managers retain ability to SEND leases via the existing CFs;
+      // they just don't get the raw bearer tokens in their browser.
+      // Archived members blocked even if they had the role.
+      match /integrations/{name} {
+        allow read, write: if isAdmin(wid);
+      }
+    }
+
+    // ----- Legacy per-user state (pre-Stage-2 storage) --------------------
+    // Kept readable/writable by the user themselves so old clients don't
+    // break mid-migration. Can be deleted entirely once you've cleaned the
+    // `users` collection from Firebase Console.
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Global root-admin extension allowlist. Read-only from clients (so
+    // the UI can show "additional root admins" if it ever needs to);
+    // writes are deliberately CLOSED to clients — to add a new root
+    // admin, an existing root admin runs a Cloud Function (or writes
+    // via Firebase Console manually). This avoids accidental privilege
+    // escalation through the UI.
+    match /workspaces/_config/rootAdminAllowlist/{email} {
+      allow read:  if request.auth != null;
+      allow write: if false;
+    }
+  }
+}

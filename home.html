@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SuitesForAll · Home</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<style>
+  :root {
+    --paper:#f6f3ec; --paper-2:#efeadf; --paper-3:#e6dfd1;
+    --ink:#1a1815; --ink-2:#2e2a25; --ink-3:#4a453d; --ink-4:#6b655b; --ink-5:#8f887c;
+    --line:#d9d2c3; --line-2:#c7bfae;
+    --surface:#fffdf8;
+    --accent:#1a3a5c; --accent-wash:#e8eef5;
+    --paid:#3d6b4a; --paid-wash:#e3ebdf;
+    --due:#a86b1c; --due-wash:#f4e9d4;
+    --overdue:#a8332a; --overdue-wash:#f0d9d5;
+    --sans:'Geist',system-ui,sans-serif;
+    --mono:'Geist Mono',monospace;
+    --serif:'Instrument Serif',Georgia,serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:var(--sans);color:var(--ink);background:var(--paper);-webkit-font-smoothing:antialiased;font-feature-settings:'ss01','cv11'}
+  html,body{height:100%}
+  .tab{font-variant-numeric:tabular-nums}
+  button,input{font-family:inherit}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:#c7bfae;border-radius:5px;border:2px solid var(--paper)}
+  a{color:inherit;text-decoration:none}
+  kbd{padding:1px 5px;background:var(--paper-2);border:1px solid var(--line);border-bottom-width:2px;border-radius:3px;font-family:var(--mono);font-size:10.5px;color:var(--ink-3)}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const C = {
+  paper:'#f6f3ec', paper2:'#efeadf', paper3:'#e6dfd1',
+  ink:'#1a1815', ink2:'#2e2a25', ink3:'#4a453d', ink4:'#6b655b', ink5:'#8f887c',
+  line:'#d9d2c3', line2:'#c7bfae', surface:'#fffdf8',
+  accent:'#1a3a5c', accent2:'#2a5080', accentWash:'#e8eef5',
+  paid:'#3d6b4a', paidWash:'#e3ebdf',
+  due:'#a86b1c', dueWash:'#f4e9d4',
+  overdue:'#a8332a', overdueWash:'#f0d9d5',
+};
+
+const Icon = ({ n, s=16 }) => {
+  const p = {
+    home:<><path d="M3 8l7-5 7 5v9H3z"/><path d="M8 17v-5h4v5"/></>,
+    map:<><path d="M2 5l5-2 6 2 5-2v12l-5 2-6-2-5 2zM7 3v12M13 5v12"/></>,
+    building:<><path d="M3 17V4a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v13"/><path d="M1 17h18M7 7h2M11 7h2M7 10h2M11 10h2M7 13h2M11 13h2"/></>,
+    grid:<><rect x="3" y="3" width="6" height="6"/><rect x="11" y="3" width="6" height="6"/><rect x="3" y="11" width="6" height="6"/><rect x="11" y="11" width="6" height="6"/></>,
+    dollar:<><path d="M10 2v16M14 5H8.5a2.5 2.5 0 0 0 0 5h3a2.5 2.5 0 0 1 0 5H5"/></>,
+    layers:<><path d="M10 3l7 4-7 4-7-4 7-4zM3 11l7 4 7-4M3 15l7 4 7-4"/></>,
+    bell:<><path d="M5 8a5 5 0 0 1 10 0c0 5 2 6 2 6H3s2-1 2-6z"/><path d="M8 17a2 2 0 0 0 4 0"/></>,
+    search:<><circle cx="8" cy="8" r="5"/><path d="M12 12l5 5"/></>,
+    user:<><circle cx="10" cy="7" r="3.5"/><path d="M3 18c0-4 3-6 7-6s7 2 7 6"/></>,
+    plus:<><path d="M10 4v12M4 10h12"/></>,
+    chevronR:<><path d="M8 6l4 4-4 4"/></>,
+    chevronU:<><path d="M6 12l4-4 4 4"/></>,
+    chevronD:<><path d="M6 8l4 4 4-4"/></>,
+    arrow:<><path d="M4 10h12M12 6l4 4-4 4"/></>,
+    mail:<><rect x="2" y="4" width="16" height="12" rx="1"/><path d="M2 5l8 6 8-6"/></>,
+    calendar:<><rect x="2" y="4" width="16" height="14" rx="1"/><path d="M2 8h16M6 2v4M14 2v4"/></>,
+    signature:<><path d="M3 15c3-4 5-8 7-8s0 8 3 8 4-4 4-4"/></>,
+    warn:<><path d="M10 2L2 17h16L10 2zM10 8v4M10 14v.5"/></>,
+    check:<><path d="M4 10l4 4 8-8"/></>,
+    clock:<><circle cx="10" cy="10" r="7"/><path d="M10 6v4l3 2"/></>,
+    doc:<><path d="M5 2h8l4 4v12H5z"/></>,
+    moveout:<><path d="M4 17V3h8v14M12 10h5M15 7l3 3-3 3"/></>,
+    wrench:<><path d="M14 2a4 4 0 0 1 3 7l-9 9-4-1 1-4 9-9a4 4 0 0 1 0 0z" transform="rotate(45 10 10)"/></>,
+    sparkle:<><path d="M10 2l2 6 6 2-6 2-2 6-2-6-6-2 6-2z"/></>,
+    flame:<><path d="M10 2s4 4 4 8a4 4 0 1 1-8 0c0-2 2-3 2-5 0 2 2 2 2-3z"/></>,
+    activity:<><path d="M2 10h4l3-6 4 12 3-6h2"/></>,
+  };
+  return <svg width={s} height={s} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{display:'block',flexShrink:0}}>{p[n]}</svg>;
+};
+
+// ═════ APP SHELL ═════
+const NAV = [
+  { id:'home', label:'Home', icon:'home', href:'home.html' },
+  { id:'portfolio', label:'Portfolio', icon:'map', href:'portfolio.html' },
+  { id:'floorplan', label:'Floor plan', icon:'grid', href:'SuitesForAll Redesign.html' },
+  { id:'stacking', label:'Stacking', icon:'layers', href:'stacking.html' },
+  { id:'rent-roll', label:'Rent roll', icon:'building', href:'rent-roll.html' },
+  { id:'billing', label:'Billing', icon:'dollar', href:'billing.html' },
+];
+
+const SideRail = ({ active='home' }) => (
+  <div style={{ width:220, flexShrink:0, background:C.surface, borderRight:`1px solid ${C.line}`, display:'flex', flexDirection:'column', height:'100vh', position:'sticky', top:0 }}>
+    <div style={{ padding:'18px 18px 14px', display:'flex', alignItems:'center', gap:10 }}>
+      <div style={{ width:30, height:30, background:C.ink, borderRadius:6, color:C.paper, display:'flex', alignItems:'center', justifyContent:'center', fontFamily:'var(--serif)', fontSize:18, letterSpacing:-0.5 }}>S</div>
+      <div>
+        <div style={{ fontFamily:'var(--serif)', fontSize:16, letterSpacing:-0.3, lineHeight:1 }}>SuitesForAll</div>
+        <div style={{ fontSize:10.5, color:C.ink5, marginTop:2, fontFamily:'var(--mono)', letterSpacing:0.3 }}>Maya's workspace</div>
+      </div>
+    </div>
+
+    <div style={{ padding:'8px 12px', borderBottom:`1px solid ${C.line}` }}>
+      <button style={{ width:'100%', height:34, padding:'0 10px', display:'flex', alignItems:'center', gap:8, background:C.paper, border:`1px solid ${C.line}`, borderRadius:5, color:C.ink4, cursor:'pointer', fontSize:12.5 }}>
+        <Icon n="search" s={14}/>
+        <span style={{ flex:1, textAlign:'left' }}>Search…</span>
+        <kbd>⌘K</kbd>
+      </button>
+    </div>
+
+    <div style={{ flex:1, overflow:'auto', padding:'10px 8px' }}>
+      <div style={{ fontFamily:'var(--mono)', fontSize:9.5, color:C.ink5, letterSpacing:0.8, textTransform:'uppercase', padding:'6px 10px' }}>Workspace</div>
+      {NAV.map(n => (
+        <a key={n.id} href={n.href} style={{
+          display:'flex', alignItems:'center', gap:10, padding:'8px 10px', borderRadius:5, cursor:'pointer',
+          fontSize:13, fontWeight: active===n.id?600:500,
+          color: active===n.id?C.ink:C.ink3,
+          background: active===n.id?C.paper2:'transparent',
+          marginBottom:1,
+        }}>
+          <Icon n={n.icon} s={15}/>{n.label}
+        </a>
+      ))}
+
+      <div style={{ fontFamily:'var(--mono)', fontSize:9.5, color:C.ink5, letterSpacing:0.8, textTransform:'uppercase', padding:'14px 10px 6px' }}>Properties</div>
+      {[
+        ['Pinellas Park','89%'],
+        ['Harbor Terminal','72%'],
+        ['Oldsmar Flex','100%'],
+      ].map(([n,occ]) => (
+        <a key={n} href="SuitesForAll Redesign.html" style={{ display:'flex', alignItems:'center', gap:10, padding:'7px 10px', borderRadius:5, cursor:'pointer', fontSize:12.5, color:C.ink3 }}>
+          <div style={{ width:6, height:6, background:C.line2, borderRadius:3 }}/>
+          <span style={{ flex:1 }}>{n}</span>
+          <span style={{ fontFamily:'var(--mono)', fontSize:10.5, color:C.ink5 }} className="tab">{occ}</span>
+        </a>
+      ))}
+    </div>
+
+    <div style={{ padding:12, borderTop:`1px solid ${C.line}`, display:'flex', alignItems:'center', gap:10 }}>
+      <div style={{ width:32, height:32, borderRadius:16, background:C.paid, color:'#fff', display:'flex', alignItems:'center', justifyContent:'center', fontSize:12, fontWeight:600 }}>MC</div>
+      <div style={{ flex:1, minWidth:0 }}>
+        <div style={{ fontSize:12.5, fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>Maya Chen</div>
+        <div style={{ fontSize:10.5, color:C.ink5, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>Owner · maya@...</div>
+      </div>
+      <a href="modals-admin.html" style={{ color:C.ink4 }}><Icon n="chevronR" s={14}/></a>
+    </div>
+  </div>
+);
+
+// ═════ TOPBAR ═════
+const Topbar = () => {
+  const d = new Date();
+  const dateStr = d.toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric' });
+  return (
+    <div style={{ height:56, padding:'0 28px', display:'flex', alignItems:'center', borderBottom:`1px solid ${C.line}`, background:C.paper, position:'sticky', top:0, zIndex:10 }}>
+      <div style={{ flex:1 }}>
+        <div style={{ fontFamily:'var(--mono)', fontSize:10.5, color:C.ink5, letterSpacing:0.7, textTransform:'uppercase' }}>{dateStr}</div>
+      </div>
+      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+        <button style={{ width:34, height:34, border:`1px solid ${C.line}`, background:C.surface, borderRadius:5, cursor:'pointer', color:C.ink3, display:'flex', alignItems:'center', justifyContent:'center', position:'relative' }}>
+          <Icon n="bell" s={15}/>
+          <span style={{ position:'absolute', top:6, right:7, width:6, height:6, borderRadius:3, background:C.overdue }}/>
+        </button>
+        <a href="modals.html" style={{ display:'inline-flex', alignItems:'center', gap:6, height:34, padding:'0 12px', border:`1px solid ${C.ink}`, background:C.ink, color:C.paper, borderRadius:5, fontSize:12.5, fontWeight:500 }}>
+          <Icon n="plus" s={13}/> New tenant
+        </a>
+      </div>
+    </div>
+  );
+};
+
+// ═════ HERO: TODAY ═════
+const Today = () => (
+  <div style={{ padding:'32px 28px 24px' }}>
+    <div style={{ fontFamily:'var(--mono)', fontSize:10.5, color:C.ink5, letterSpacing:0.8, textTransform:'uppercase', marginBottom:6 }}>Good morning, Maya</div>
+    <h1 style={{ margin:0, fontFamily:'var(--serif)', fontSize:44, fontWeight:400, letterSpacing:-1, lineHeight:1.05 }}>
+      Four things need you today, <span style={{ fontStyle:'italic', color:C.overdue }}>three are overdue</span>.
+    </h1>
+
+    <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:1, background:C.line, border:`1px solid ${C.line}`, borderRadius:10, overflow:'hidden', marginTop:24 }}>
+      {[
+        { k:'Collected today', v:'$18,420', d:'from 6 tenants', trend:'+22% vs yesterday', tc:C.paid, icon:'dollar' },
+        { k:'Overdue', v:'$8,225', d:'3 invoices · INV-40094, 40102, 40108', trend:'2 past 15d', tc:C.overdue, icon:'warn' },
+        { k:'Signatures pending', v:'2', d:'Northline · Suite 405, Rivet · Suite 212', trend:'Sent 2d ago', tc:C.due, icon:'signature' },
+        { k:'Expiring ≤ 90d', v:'5', d:'$14,620 / mo at stake', trend:'Next: Jun 30', tc:C.accent, icon:'calendar' },
+      ].map((x,i)=>(
+        <div key={i} style={{ padding:'20px 22px', background:C.surface, display:'flex', flexDirection:'column', gap:8 }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+            <div style={{ fontFamily:'var(--mono)', fontSize:10, color:C.ink5, letterSpacing:0.7, textTransform:'uppercase' }}>{x.k}</div>
+            <span style={{ color:x.tc }}><Icon n={x.icon} s={14}/></span>
+          </div>
+          <div style={{ fontFamily:'var(--serif)', fontSize:38, lineHeight:1, letterSpacing:-1, color:x.tc }} className="tab">{x.v}</div>
+          <div style={{ fontSize:12, color:C.ink4, lineHeight:1.4 }}>{x.d}</div>
+          <div style={{ fontSize:11, color:C.ink5, fontFamily:'var(--mono)', letterSpacing:0.2, marginTop:'auto', paddingTop:4 }}>{x.trend}</div>
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
+// ═════ NEEDS ATTENTION QUEUE ═════
+const Queue = () => {
+  const items = [
+    { kind:'overdue', unit:'Suite 302', tenant:'Morandi Studio', amt:'$3,240', meta:'Invoice INV-40094 · 18 days past due', action:'Send reminder', days:18, ic:'flame' },
+    { kind:'overdue', unit:'Suite 110', tenant:'Paragon Ins. Brokers', amt:'$4,150', meta:'INV-40102 · 8 days past due', action:'Send reminder', days:8, ic:'warn' },
+    { kind:'overdue', unit:'Suite 215', tenant:'Skyline Media', amt:'$835', meta:'INV-40108 · 3 days past due · partial', action:'Call tenant', days:3, ic:'warn' },
+    { kind:'signature', unit:'Suite 405', tenant:'Northline Accounting', amt:'$3,200/mo', meta:'Lease sent Apr 9 · no opens from signer', action:'Resend lease', ic:'signature' },
+    { kind:'signature', unit:'Suite 212', tenant:'Rivet Architects', amt:'$4,850/mo', meta:'Lease sent Apr 10 · viewed 1×', action:'Follow up', ic:'signature' },
+    { kind:'moveout', unit:'Suite 401', tenant:'Harbor Logistics', amt:'Apr 30', meta:'Inspection scheduled · Apr 28, 10 AM', action:'Prep checklist', ic:'moveout' },
+    { kind:'maint', unit:'Suite 108', tenant:'Halcyon Design', amt:'', meta:'HVAC complaint logged 2d ago · unassigned', action:'Assign tech', ic:'wrench' },
+  ];
+  const [filter, setFilter] = React.useState('all');
+  const filtered = filter==='all' ? items : items.filter(x=>x.kind===filter);
+  const counts = { all:items.length, overdue:3, signature:2, moveout:1, maint:1 };
+  const filters = [['all','All'],['overdue','Overdue'],['signature','Signatures'],['moveout','Move-outs'],['maint','Maintenance']];
+
+  const kindColor = { overdue:C.overdue, signature:C.due, moveout:C.accent, maint:'#6b4a7a' };
+  const kindLabel = { overdue:'OVERDUE', signature:'SIGNATURE', moveout:'MOVE-OUT', maint:'MAINT.' };
+
+  return (
+    <div>
+      <div style={{ display:'flex', alignItems:'flex-end', gap:16, marginBottom:14, flexWrap:'wrap' }}>
+        <div>
+          <div style={{ fontFamily:'var(--mono)', fontSize:10.5, color:C.ink5, letterSpacing:0.7, textTransform:'uppercase', marginBottom:4 }}>Queue</div>
+          <div style={{ fontFamily:'var(--serif)', fontSize:28, letterSpacing:-0.5, lineHeight:1 }}>Needs attention</div>
+        </div>
+        <div style={{ flex:1, minWidth:0 }}/>
+        <div style={{ display:'flex', gap:2, padding:3, background:C.paper2, borderRadius:6, flexWrap:'nowrap' }}>
+          {filters.map(([k, l]) => (
+            <button key={k} onClick={()=>setFilter(k)} style={{ padding:'6px 11px', fontSize:12, fontWeight:500, border:'none', borderRadius:4, cursor:'pointer', background: filter===k?C.surface:'transparent', color: filter===k?C.ink:C.ink4, boxShadow: filter===k?'0 1px 2px rgba(40,30,20,0.08)':'none', whiteSpace:'nowrap' }}>
+              {l} <span style={{ fontSize:10, fontFamily:'var(--mono)', color:C.ink5, marginLeft:2 }}>{counts[k]}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ background:C.surface, border:`1px solid ${C.line}`, borderRadius:8, overflow:'hidden' }}>
+        {filtered.map((it, i) => (
+          <div key={i} style={{ display:'grid', gridTemplateColumns:'auto 1fr auto auto', gap:16, padding:'14px 18px', borderBottom: i<filtered.length-1?`1px solid ${C.line}`:'none', alignItems:'center', cursor:'pointer', transition:'background 120ms' }}
+            onMouseEnter={e => e.currentTarget.style.background = C.paper2}
+            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+          >
+            <div style={{ width:36, height:36, borderRadius:8, background:kindColor[it.kind]+'22', color:kindColor[it.kind], display:'flex', alignItems:'center', justifyContent:'center', position:'relative' }}>
+              <Icon n={it.ic} s={16}/>
+              {it.days > 15 && <span style={{ position:'absolute', top:-3, right:-3, width:12, height:12, background:C.overdue, color:'#fff', borderRadius:6, fontSize:8, fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center', border:`2px solid ${C.surface}` }}>!</span>}
+            </div>
+            <div style={{ minWidth:0 }}>
+              <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                <span style={{ fontSize:10, fontFamily:'var(--mono)', letterSpacing:0.5, padding:'1px 6px', background:kindColor[it.kind]+'22', color:kindColor[it.kind], borderRadius:3, fontWeight:600 }}>{kindLabel[it.kind]}</span>
+                <span style={{ fontSize:13.5, fontWeight:600 }}>{it.unit}</span>
+                <span style={{ color:C.ink5, fontSize:12 }}>·</span>
+                <span style={{ fontSize:13, color:C.ink3 }}>{it.tenant}</span>
+              </div>
+              <div style={{ fontSize:12, color:C.ink5, marginTop:3 }}>{it.meta}</div>
+            </div>
+            {it.amt && <div style={{ fontFamily:'var(--mono)', fontSize:13.5, fontWeight:600, color: it.kind==='overdue'?C.overdue:C.ink }} className="tab">{it.amt}</div>}
+            <button style={{ height:30, padding:'0 12px', background:C.surface, border:`1px solid ${C.line2}`, borderRadius:5, fontSize:12, fontWeight:500, cursor:'pointer', display:'inline-flex', alignItems:'center', gap:5, color:C.ink }}>
+              {it.action} <Icon n="arrow" s={12}/>
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// ═════ REVENUE CHART (SVG) ═════
+const RevenueChart = () => {
+  // 12 months of data
+  const data = [
+    { m:'May', actual:118, budget:115 },
+    { m:'Jun', actual:121, budget:118 },
+    { m:'Jul', actual:124, budget:120 },
+    { m:'Aug', actual:122, budget:122 },
+    { m:'Sep', actual:128, budget:124 },
+    { m:'Oct', actual:131, budget:126 },
+    { m:'Nov', actual:134, budget:128 },
+    { m:'Dec', actual:130, budget:130 },
+    { m:'Jan', actual:136, budget:132 },
+    { m:'Feb', actual:138, budget:134 },
+    { m:'Mar', actual:141, budget:136 },
+    { m:'Apr', actual:142, budget:138 },
+  ];
+  const W=520, H=180, pad={t:10, b:24, l:36, r:12};
+  const maxV = 160, minV = 100;
+  const xFor = i => pad.l + (i * (W - pad.l - pad.r) / (data.length - 1));
+  const yFor = v => pad.t + (H - pad.t - pad.b) * (1 - (v - minV) / (maxV - minV));
+
+  const actualPath = data.map((d,i) => `${i===0?'M':'L'}${xFor(i)},${yFor(d.actual)}`).join(' ');
+  const actualFill = `${actualPath} L${xFor(data.length-1)},${H-pad.b} L${xFor(0)},${H-pad.b} Z`;
+  const budgetPath = data.map((d,i) => `${i===0?'M':'L'}${xFor(i)},${yFor(d.budget)}`).join(' ');
+
+  return (
+    <div style={{ background:C.surface, border:`1px solid ${C.line}`, borderRadius:8, padding:20 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:14 }}>
+        <div>
+          <div style={{ fontFamily:'var(--mono)', fontSize:10.5, color:C.ink5, letterSpacing:0.7, textTransform:'uppercase' }}>Revenue · 12 mo</div>
+          <div style={{ display:'flex', alignItems:'baseline', gap:10, marginTop:4 }}>
+            <div style={{ fontFamily:'var(--serif)', fontSize:32, letterSpacing:-0.8, lineHeight:1 }} className="tab">$142,380</div>
+            <span style={{ display:'inline-flex', alignItems:'center', gap:3, fontSize:12, fontWeight:600, color:C.paid, padding:'2px 6px', background:C.paidWash, borderRadius:3 }}>
+              <Icon n="chevronU" s={11}/> 3.1%
+            </span>
+          </div>
+          <div style={{ fontSize:11.5, color:C.ink5, marginTop:3 }}>Collected April · vs $138,000 budget</div>
+        </div>
+        <div style={{ display:'flex', gap:14 }}>
+          <LegendDot color={C.accent} label="Actual"/>
+          <LegendDot color={C.ink5} label="Budget" dashed/>
+        </div>
+      </div>
+      <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display:'block' }}>
+        {/* horizontal grid */}
+        {[100,120,140,160].map(v => (
+          <g key={v}>
+            <line x1={pad.l} y1={yFor(v)} x2={W-pad.r} y2={yFor(v)} stroke={C.line} strokeDasharray="2 3" strokeWidth="0.5"/>
+            <text x={pad.l - 8} y={yFor(v)+4} textAnchor="end" fontSize="10" fill={C.ink5} fontFamily="var(--mono)">${v}k</text>
+          </g>
+        ))}
+        {/* fill */}
+        <defs>
+          <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={C.accent} stopOpacity="0.18"/>
+            <stop offset="100%" stopColor={C.accent} stopOpacity="0"/>
+          </linearGradient>
+        </defs>
+        <path d={actualFill} fill="url(#g)"/>
+        <path d={actualPath} stroke={C.accent} strokeWidth="2" fill="none"/>
+        <path d={budgetPath} stroke={C.ink5} strokeWidth="1.2" strokeDasharray="4 3" fill="none"/>
+
+        {/* points */}
+        {data.map((d,i) => (
+          <g key={i}>
+            <circle cx={xFor(i)} cy={yFor(d.actual)} r={i===data.length-1 ? 4 : 2.5} fill={C.surface} stroke={C.accent} strokeWidth={i===data.length-1?2:1.5}/>
+          </g>
+        ))}
+
+        {/* x labels */}
+        {data.map((d,i) => (
+          <text key={i} x={xFor(i)} y={H-8} textAnchor="middle" fontSize="10" fill={C.ink4} fontFamily="var(--mono)" fontWeight={i===data.length-1?600:400}>{d.m}</text>
+        ))}
+      </svg>
+    </div>
+  );
+};
+
+const LegendDot = ({ color, label, dashed }) => (
+  <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+    {dashed
+      ? <svg width="14" height="2"><line x1="0" y1="1" x2="14" y2="1" stroke={color} strokeWidth="1.5" strokeDasharray="3 2"/></svg>
+      : <span style={{ width:10, height:10, borderRadius:5, background:color }}/>}
+    <span style={{ fontSize:11.5, color:C.ink4 }}>{label}</span>
+  </div>
+);
+
+// ═════ PORTFOLIO HEALTH ═════
+const PortfolioHealth = () => (
+  <div style={{ background:C.surface, border:`1px solid ${C.line}`, borderRadius:8, padding:20 }}>
+    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
+      <div>
+        <div style={{ fontFamily:'var(--mono)', fontSize:10.5, color:C.ink5, letterSpacing:0.7, textTransform:'uppercase' }}>Portfolio</div>
+        <div style={{ fontFamily:'var(--serif)', fontSize:22, letterSpacing:-0.4, lineHeight:1, marginTop:4 }}>3 properties · 144 suites</div>
+      </div>
+      <a href="portfolio.html" style={{ fontSize:12, color:C.accent, display:'inline-flex', alignItems:'center', gap:3, fontWeight:500 }}>View all <Icon n="chevronR" s={12}/></a>
+    </div>
+    <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+      {[
+        { name:'Pinellas Park', addr:'4950 Park Blvd', units:64, occ:89, rev:'$82,480', attn:2, color:C.paid },
+        { name:'Harbor Terminal', addr:'820 Bay St', units:48, occ:72, rev:'$44,200', attn:3, color:C.due },
+        { name:'Oldsmar Flex', addr:'2200 Curlew Rd', units:32, occ:100, rev:'$15,700', attn:0, color:C.paid },
+      ].map((p,i) => (
+        <div key={i} style={{ display:'flex', alignItems:'center', gap:14, padding:'10px 12px', background:C.paper, border:`1px solid ${C.line}`, borderRadius:6 }}>
+          <div style={{ width:36, height:36, borderRadius:6, background:C.paper2, color:C.ink3, display:'flex', alignItems:'center', justifyContent:'center' }}><Icon n="building" s={17}/></div>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ fontSize:13, fontWeight:600 }}>{p.name}</div>
+            <div style={{ fontSize:11, color:C.ink5, marginTop:2 }}>{p.addr} · {p.units} suites</div>
+          </div>
+          <div style={{ width:100 }}>
+            <div style={{ display:'flex', justifyContent:'space-between', fontSize:10.5, marginBottom:3, color:C.ink5, fontFamily:'var(--mono)' }}>
+              <span>Occ</span><span className="tab" style={{ color:C.ink3, fontWeight:600 }}>{p.occ}%</span>
+            </div>
+            <div style={{ height:4, background:C.paper3, borderRadius:2, overflow:'hidden' }}>
+              <div style={{ height:'100%', width:`${p.occ}%`, background:p.color }}/>
+            </div>
+          </div>
+          <div style={{ width:80, textAlign:'right', fontFamily:'var(--mono)', fontSize:13, fontWeight:600 }} className="tab">{p.rev}</div>
+          {p.attn > 0 && <span style={{ width:22, height:22, borderRadius:11, background:C.overdueWash, color:C.overdue, display:'inline-flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:700, fontFamily:'var(--mono)' }} className="tab">{p.attn}</span>}
+          {p.attn === 0 && <span style={{ width:22, height:22, borderRadius:11, background:C.paidWash, color:C.paid, display:'inline-flex', alignItems:'center', justifyContent:'center' }}><Icon n="check" s={12}/></span>}
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
+// ═════ ACTIVITY TIMELINE ═════
+const Activity = () => {
+  const items = [
+    { when:'2m ago', who:'Stripe', icon:'dollar', color:C.paid, text:<>Payment received · <b>$3,240</b> from Harbor Logistics · Suite 401</> },
+    { when:'14m ago', who:'Maya', icon:'user', color:C.accent, text:<>Sent invoice <b>INV-40118</b> for Suite 305 · due May 1</> },
+    { when:'1h ago', who:'DocuSign', icon:'signature', color:'#6b4a7a', text:<><b>Crest Dental Group</b> completed lease signature · Suite 311</> },
+    { when:'3h ago', who:'System', icon:'warn', color:C.overdue, text:<>Invoice <b>INV-40094</b> flagged · 18 days past due · Morandi Studio</> },
+    { when:'5h ago', who:'Jon', icon:'wrench', color:'#a86b1c', text:<>Maintenance request for Suite 108 · HVAC complaint logged</> },
+    { when:'Yesterday', who:'Maya', icon:'plus', color:C.ink3, text:<>Added new suite · <b>Suite 407</b> · 896 ft² · Pinellas Park</> },
+    { when:'Yesterday', who:'Stripe', icon:'dollar', color:C.paid, text:<>Payment received · <b>$4,850</b> from Rivet Architects · Suite 212</> },
+    { when:'2 days ago', who:'System', icon:'calendar', color:C.accent, text:<>Lease expiring soon · <b>Atrium & Co.</b> · Suite 203 · ends Jun 30</> },
+  ];
+  return (
+    <div style={{ background:C.surface, border:`1px solid ${C.line}`, borderRadius:8, padding:20 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
+        <div>
+          <div style={{ fontFamily:'var(--mono)', fontSize:10.5, color:C.ink5, letterSpacing:0.7, textTransform:'uppercase' }}>Activity</div>
+          <div style={{ fontFamily:'var(--serif)', fontSize:22, letterSpacing:-0.4, lineHeight:1, marginTop:4 }}>Recent events</div>
+        </div>
+        <button style={{ background:'transparent', border:'none', fontSize:12, color:C.ink4, cursor:'pointer', fontWeight:500 }}>All events →</button>
+      </div>
+      <div style={{ position:'relative' }}>
+        <div style={{ position:'absolute', left:15, top:6, bottom:6, width:1, background:C.line }}/>
+        {items.map((a,i)=>(
+          <div key={i} style={{ display:'flex', gap:12, marginBottom:12, position:'relative' }}>
+            <div style={{ width:30, height:30, borderRadius:15, background:a.color+'22', color:a.color, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, border:`2px solid ${C.surface}`, zIndex:1 }}>
+              <Icon n={a.icon} s={13}/>
+            </div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontSize:12.5, color:C.ink2, lineHeight:1.4 }}>{a.text}</div>
+              <div style={{ fontSize:11, color:C.ink5, marginTop:3, fontFamily:'var(--mono)' }}>{a.when} · {a.who}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// ═════ UPCOMING CALENDAR ═════
+const Upcoming = () => (
+  <div style={{ background:C.surface, border:`1px solid ${C.line}`, borderRadius:8, padding:20 }}>
+    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
+      <div>
+        <div style={{ fontFamily:'var(--mono)', fontSize:10.5, color:C.ink5, letterSpacing:0.7, textTransform:'uppercase' }}>Upcoming</div>
+        <div style={{ fontFamily:'var(--serif)', fontSize:22, letterSpacing:-0.4, lineHeight:1, marginTop:4 }}>Next 14 days</div>
+      </div>
+      <span style={{ padding:'3px 8px', fontFamily:'var(--mono)', fontSize:10.5, background:C.paper2, borderRadius:3, color:C.ink4 }}>8 events</span>
+    </div>
+
+    <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+      {[
+        { d:'16', mo:'APR', t:'Today', kind:'invoice', title:'5 invoices sending', sub:'Auto-batch · $16,750 total', color:C.accent },
+        { d:'22', mo:'APR', t:'Tue', kind:'calendar', title:'Lease renewal · Ferro Realty', sub:'Suite 204 · discuss terms', color:C.due },
+        { d:'28', mo:'APR', t:'Mon', kind:'moveout', title:'Move-out inspection · Suite 401', sub:'Harbor Logistics · 10 AM', color:'#a86b1c' },
+        { d:'30', mo:'APR', t:'Wed', kind:'moveout', title:'Harbor Logistics move-out', sub:'Suite 401 vacates', color:C.overdue },
+        { d:'01', mo:'MAY', t:'Fri', kind:'invoice', title:'Monthly rent batch · 42 tenants', sub:'Auto-sends 7 AM · $118k', color:C.accent },
+        { d:'12', mo:'MAY', t:'Tue', kind:'signature', title:'Lease expires · Tidepool Analytics', sub:'Suite 306 · auto-renew pending', color:C.due },
+      ].map((e,i) => (
+        <div key={i} style={{ display:'flex', alignItems:'center', gap:12, padding:'8px 10px', background: i===0?C.accentWash:'transparent', border: i===0?`1px solid ${C.accent}22`:`1px solid transparent`, borderRadius:5 }}>
+          <div style={{ width:42, textAlign:'center', padding:'4px 0', background:C.paper, border:`1px solid ${C.line}`, borderRadius:4, flexShrink:0 }}>
+            <div style={{ fontFamily:'var(--mono)', fontSize:9, color:C.ink5, letterSpacing:0.5 }}>{e.mo}</div>
+            <div style={{ fontFamily:'var(--serif)', fontSize:18, lineHeight:1, letterSpacing:-0.3, color: i===0?C.accent:C.ink2 }} className="tab">{e.d}</div>
+          </div>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ fontSize:12.5, fontWeight:600, display:'flex', alignItems:'center', gap:6 }}>
+              <span style={{ color:e.color, flexShrink:0 }}><Icon n={e.kind} s={12}/></span>
+              <span style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{e.title}</span>
+            </div>
+            <div style={{ fontSize:11, color:C.ink5, marginTop:2, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{e.sub}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
+// ═════ QUICK ACTIONS ═════
+const QuickActions = () => (
+  <div style={{ background:C.surface, border:`1px solid ${C.line}`, borderRadius:8, padding:20 }}>
+    <div style={{ fontFamily:'var(--mono)', fontSize:10.5, color:C.ink5, letterSpacing:0.7, textTransform:'uppercase', marginBottom:14 }}>Quick actions</div>
+    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+      {[
+        { ic:'plus', label:'New tenant', href:'modals.html' },
+        { ic:'doc', label:'Create invoice', href:'billing.html' },
+        { ic:'signature', label:'Send lease', href:'modals.html' },
+        { ic:'building', label:'Add suite', href:'modals-admin.html' },
+        { ic:'dollar', label:'Record payment', href:'modals.html' },
+        { ic:'mail', label:'Email tenants', href:'#' },
+      ].map((a,i)=>(
+        <a key={i} href={a.href} style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 12px', background:C.paper, border:`1px solid ${C.line}`, borderRadius:5, fontSize:12.5, fontWeight:500, color:C.ink, cursor:'pointer' }}>
+          <span style={{ color:C.ink4 }}><Icon n={a.ic} s={14}/></span>{a.label}
+        </a>
+      ))}
+    </div>
+  </div>
+);
+
+// ═════ APP ═════
+const App = () => (
+  <div style={{ display:'flex', minHeight:'100vh', background:C.paper }}>
+    <SideRail active="home"/>
+    <div style={{ flex:1, minWidth:0 }}>
+      <Topbar/>
+      <Today/>
+      <div style={{ padding:'0 28px 32px', display:'grid', gridTemplateColumns:'minmax(0,2fr) minmax(0, 1fr)', gap:20 }}>
+        <div style={{ display:'flex', flexDirection:'column', gap:20, minWidth:0 }}>
+          <Queue/>
+          <RevenueChart/>
+          <PortfolioHealth/>
+        </div>
+        <div style={{ display:'flex', flexDirection:'column', gap:20, minWidth:0 }}>
+          <QuickActions/>
+          <Upcoming/>
+          <Activity/>
+        </div>
+      </div>
+    </div>
+  </div>
+);
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>

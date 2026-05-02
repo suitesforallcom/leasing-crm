@@ -1,0 +1,79 @@
+{
+  "hosting": {
+    "site": "suitesforall",
+    "public": ".",
+    "ignore": [
+      "firebase.json",
+      ".firebaserc",
+      "**/.*",
+      "**/node_modules/**",
+      "functions/**",
+      "*.md",
+      "*.rules",
+      "index.html",
+      "blueprint-demo.html",
+      "pinellas-park-4th-floor.html"
+    ],
+    "rewrites": [
+      { "source": "/redesign/**", "destination": "/redesign/index.html" },
+      { "source": "**", "destination": "/floor-map-editor.html" }
+    ],
+    "headers": [
+      {
+        "source": "**/*.html",
+        "headers": [
+          { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate" }
+        ]
+      },
+      {
+        "source": "/redesign/src/**",
+        "headers": [
+          { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate" }
+        ]
+      },
+      {
+        "source": "**/*.@(jpg|jpeg|png|svg|webp|ico)",
+        "headers": [
+          { "key": "Cache-Control", "value": "max-age=604800" }
+        ]
+      },
+      {
+        "source": "/sw.js",
+        "headers": [
+          { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate" },
+          { "key": "Service-Worker-Allowed", "value": "/" }
+        ]
+      },
+      {
+        "source": "/manifest.webmanifest",
+        "headers": [
+          { "key": "Cache-Control", "value": "max-age=86400" },
+          { "key": "Content-Type", "value": "application/manifest+json" }
+        ]
+      }
+    ]
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "storage": {
+    "rules": "storage.rules"
+  },
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "ignore": [
+        "node_modules",
+        ".git",
+        "firebase-debug.log",
+        "firebase-debug.*.log",
+        "*.local"
+      ],
+      "predeploy": [
+        "npm --prefix \"$RESOURCE_DIR\" install"
+      ]
+    }
+  ]
+}

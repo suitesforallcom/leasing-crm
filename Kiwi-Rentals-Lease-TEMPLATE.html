@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Office Services Agreement — Kiwi Rentals LLC</title>
+<style>
+  /* ================================================================
+     TEMPLATE SETUP GUIDE (read before uploading to DocuSign)
+     -----------------------------------------------------------------
+     After uploading to DocuSign Template Editor:
+
+       1. For each cyan [label] tag, drag a "Text" field from the
+          left rail onto the underlined gray slot right after it.
+       2. In the field's right-side properties, set:
+            - Data Label  = the exact text inside the brackets
+            - Font        = Arial, 11pt
+            - Required    = ON
+            - Read-only   = ON (signer cannot edit pre-filled values)
+       3. For the Client signature block at the end:
+            - Drag "Signature" onto the orange [Client SignHere] box
+            - Drag "Date Signed" onto the orange [Client DateSigned] box
+          Both belong to the "Client" recipient role.
+
+     There are EXACTLY 9 Data Labels the template must carry:
+       client_company, tenant_name, building_address, suite,
+       rent, deposit, lease_start, lease_end, term
+
+     The landlord signatory (Ann Noel / Authorized Signatory) is
+     hardcoded in this template — not a tab. If the signer changes,
+     edit this HTML and re-upload.
+     ================================================================ */
+
+  @page { size: letter; margin: 1in; }
+  body {
+    font-family: "Times New Roman", Times, serif;
+    font-size: 11pt;
+    line-height: 1.5;
+    color: #000;
+    max-width: 6.5in;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 15pt;
+    font-weight: bold;
+    text-align: center;
+    text-transform: uppercase;
+    margin: 0 0 6pt 0;
+    letter-spacing: 0.6pt;
+  }
+  h1 + .subtitle {
+    text-align: center;
+    font-size: 10pt;
+    color: #555;
+    margin: 0 0 22pt 0;
+    letter-spacing: 0.4pt;
+  }
+  h2 {
+    font-size: 11.5pt;
+    font-weight: bold;
+    text-transform: uppercase;
+    margin: 16pt 0 6pt 0;
+    letter-spacing: 0.3pt;
+    border-bottom: 0.75pt solid #333;
+    padding-bottom: 2pt;
+  }
+  p { margin: 4pt 0; text-align: justify; }
+
+  /* ---- Dynamic-field visual tag --------------------------------
+     Tiny cyan superscript naming the Data Label the operator must
+     set in DocuSign Template Editor. Appears as a footnote-like
+     mark in the final PDF.
+  --------------------------------------------------------------- */
+  .tag {
+    font-family: "Courier New", monospace;
+    font-size: 6.5pt;
+    color: #0284c7;
+    background: #e0f2fe;
+    padding: 0 3px;
+    border-radius: 2px;
+    font-weight: bold;
+    vertical-align: super;
+    letter-spacing: 0.2pt;
+    margin-right: 2px;
+  }
+
+  /* ---- Empty drop-zone for a Text tab --------------------------
+     Thin gray solid underline with no content. The DocuSign Text
+     tab lands here; when the app fills it at send time the value
+     prints inside the slot with nothing underneath to clash with.
+  --------------------------------------------------------------- */
+  .val {
+    display: inline-block;
+    min-width: 90pt;
+    border-bottom: 0.5pt solid #888;
+    padding: 0 3pt;
+    vertical-align: baseline;
+    white-space: nowrap;
+  }
+  .val.narrow { min-width: 55pt; }
+  .val.wide   { min-width: 190pt; }
+
+  /* ---- Signature blocks ----------------------------------------
+     Two columns. Provider is pre-signed (script font, landlord
+     hardcoded). Client signs in DocuSign.
+  --------------------------------------------------------------- */
+  .sig-grid {
+    display: table;
+    width: 100%;
+    margin-top: 30pt;
+    border-top: 1pt solid #333;
+    padding-top: 18pt;
+    page-break-inside: avoid;
+  }
+  .sig-col {
+    display: table-cell;
+    width: 50%;
+    vertical-align: top;
+    padding-right: 14pt;
+  }
+  .sig-col + .sig-col { padding-right: 0; padding-left: 14pt; }
+  .sig-col h3 {
+    font-size: 10pt;
+    text-transform: uppercase;
+    letter-spacing: 0.6pt;
+    margin: 0 0 10pt 0;
+    color: #333;
+  }
+  .sig-row { margin: 5pt 0; font-size: 10.5pt; }
+  .sig-row .label {
+    display: inline-block;
+    width: 60pt;
+    color: #555;
+  }
+  .sig-line {
+    display: inline-block;
+    min-width: 180pt;
+    border-bottom: 0.75pt solid #888;
+    padding: 2pt 4pt;
+  }
+  .landlord-sig {
+    font-family: "Brush Script MT", "Lucida Handwriting", "Segoe Script", cursive;
+    font-size: 17pt;
+    color: #1e3a8a;
+    min-width: 180pt;
+    border-bottom: 0.75pt solid #888;
+    padding: 0 4pt;
+    display: inline-block;
+    line-height: 1;
+  }
+  .pre-signed-tag {
+    font-size: 8pt;
+    color: #16a34a;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5pt;
+    margin-left: 6px;
+    font-family: Arial, sans-serif;
+  }
+
+  /* Placeholders for DocuSign-managed tabs (client signature + date).
+     User drags SignHere and DateSigned tabs onto these boxes. */
+  .ds-sign {
+    color: #b45309;
+    font-family: "Courier New", monospace;
+    font-size: 9pt;
+    background: #fef3c7;
+    padding: 2pt 8pt;
+    border-radius: 2pt;
+    border: 0.5pt dashed #b45309;
+  }
+
+  /* Terms sheet — compact two-column facts block */
+  .facts {
+    border: 0.75pt solid #333;
+    padding: 10pt 14pt;
+    margin: 14pt 0;
+    background: #fafafa;
+  }
+  .facts h3 {
+    margin: 0 0 8pt 0;
+    font-size: 10.5pt;
+    text-transform: uppercase;
+    letter-spacing: 0.5pt;
+    color: #333;
+  }
+  .facts table { width: 100%; border-collapse: collapse; }
+  .facts td {
+    padding: 3pt 4pt;
+    font-size: 10.5pt;
+    vertical-align: top;
+  }
+  .facts td:first-child {
+    width: 35%;
+    color: #555;
+    font-weight: 600;
+  }
+
+  footer {
+    margin-top: 32pt;
+    font-size: 8.5pt;
+    color: #777;
+    text-align: center;
+    border-top: 0.25pt solid #ccc;
+    padding-top: 4pt;
+  }
+</style>
+</head>
+<body>
+
+<h1>Office Services Agreement</h1>
+<p class="subtitle">Kiwi Rentals LLC — Commercial Workspace License</p>
+
+<p>
+  This Office Services Agreement (&ldquo;Agreement&rdquo;) is entered into as of
+  <span class="tag">[lease_start]</span><span class="val">&nbsp;</span>
+  (&ldquo;Effective Date&rdquo;), by and between <b>KIWI RENTALS LLC</b>, a Delaware
+  limited liability company with its principal place of business at
+  108 West 13th Street, Wilmington, Delaware (&ldquo;Provider&rdquo;), and
+  <span class="tag">[client_company]</span><span class="val wide">&nbsp;</span>
+  (&ldquo;Client&rdquo;).
+</p>
+
+<h2>1. Premises</h2>
+<p>
+  Provider grants Client a revocable, non-exclusive license to use Suite
+  <span class="tag">[suite]</span><span class="val narrow">&nbsp;</span>
+  (the &ldquo;Space&rdquo;) located at
+  <span class="tag">[building_address]</span><span class="val wide">&nbsp;</span>
+  (the &ldquo;Building&rdquo;), together with shared common areas and the services
+  listed in Section 4. This is a license for temporary, non-exclusive use &mdash; not a
+  lease. Provider retains full possession and control of the Building.
+</p>
+
+<h2>2. Term</h2>
+<p>
+  The term of this Agreement begins on
+  <span class="tag">[lease_start]</span><span class="val">&nbsp;</span>
+  and ends on
+  <span class="tag">[lease_end]</span><span class="val">&nbsp;</span>
+  (initial term of
+  <span class="tag">[term]</span><span class="val narrow">&nbsp;</span>).
+  The Agreement renews automatically for successive terms of equal length unless
+  either party delivers at least sixty (60) days&rsquo; written notice of non-renewal.
+</p>
+
+<h2>3. Fees &amp; Deposit</h2>
+<div class="facts">
+  <h3>Financial Terms</h3>
+  <table>
+    <tr>
+      <td>Monthly Base Fee</td>
+      <td>$<span class="tag">[rent]</span><span class="val narrow">&nbsp;</span> payable in advance on the 1st of each month</td>
+    </tr>
+    <tr>
+      <td>Security Deposit</td>
+      <td>$<span class="tag">[deposit]</span><span class="val narrow">&nbsp;</span> held and refundable per Section 6</td>
+    </tr>
+    <tr>
+      <td>Late Fee</td>
+      <td>5% of the unpaid Base Fee if not received by the 5th of the month</td>
+    </tr>
+    <tr>
+      <td>NSF / Returned Payment</td>
+      <td>$35 per occurrence, plus late fee if applicable</td>
+    </tr>
+  </table>
+</div>
+
+<p>
+  Client authorizes Provider to invoice electronically and may, at Client&rsquo;s option,
+  set up automatic payment from a card or bank on file. Partial months prorate on
+  a 30-day basis. Taxes and governmental charges attributable to the Space or services
+  are the responsibility of Client.
+</p>
+
+<h2>4. Services Included</h2>
+<p>
+  Provider will furnish, at no additional charge: shared Wi-Fi internet (best-effort,
+  no uptime guarantee), climate control during posted business hours (Mon&ndash;Fri,
+  excluding federal holidays), routine cleaning of common areas, electricity, water,
+  and basic reception during business hours. Services not listed are available at
+  then-current rates on request.
+</p>
+
+<h2>5. Client Obligations</h2>
+<p>
+  Client shall: (a) pay all Fees when due; (b) use the Space only for lawful general
+  office purposes; (c) comply with House Rules, as reasonably updated by Provider with
+  notice; (d) not assign, sublicense, or share the Space without Provider&rsquo;s prior
+  written consent; (e) keep the Space in clean, undamaged condition and return it in
+  the same state at termination, ordinary wear excepted; (f) maintain Commercial
+  General Liability insurance of at least $1,000,000 per occurrence and name Provider
+  as an additional insured on request.
+</p>
+
+<h2>6. Security Deposit</h2>
+<p>
+  The deposit set forth in Section 3 is held as security for performance. Provider
+  may apply it against unpaid Fees, damage beyond ordinary wear, cleaning or
+  restoration costs, or other amounts owed. Any remaining balance is refunded within
+  thirty (30) days after the later of termination or Client&rsquo;s vacating of the Space.
+</p>
+
+<h2>7. Termination</h2>
+<p>
+  <b>By Client:</b> Client may terminate early with ninety (90) days&rsquo; written
+  notice, paying an Early Termination Fee equal to the lesser of three months&rsquo;
+  Base Fee or the remaining term&rsquo;s Base Fees, plus any unpaid charges.<br>
+  <b>By Provider:</b> Provider may terminate with written notice for non-payment,
+  uncured material breach after ten (10) days&rsquo; notice, insolvency of Client,
+  safety or legal violations, or if Provider ceases operating the Building.
+</p>
+
+<h2>8. Liability &amp; Indemnity</h2>
+<p>
+  Provider is not liable for loss of business, lost profits, or consequential damages.
+  Except for injury or death caused by a party&rsquo;s gross negligence or willful
+  misconduct, each party&rsquo;s aggregate liability is capped at the total Base Fees
+  paid by Client in the twelve (12) months preceding the event giving rise to the
+  claim. Client shall indemnify and hold Provider harmless from third-party claims
+  arising out of Client&rsquo;s use of the Space or breach of this Agreement.
+</p>
+
+<h2>9. Governing Law &amp; Disputes</h2>
+<p>
+  This Agreement is governed by the laws of the State of Florida, without regard to
+  conflict-of-laws rules. Any dispute shall first be subject to good-faith negotiation
+  and, if unresolved, resolved by binding arbitration in Pinellas County, Florida,
+  under the Commercial Arbitration Rules of the American Arbitration Association,
+  before one arbitrator. Either party may seek temporary injunctive relief in court
+  pending arbitration. No class or representative actions.
+</p>
+
+<h2>10. Entire Agreement</h2>
+<p>
+  This document constitutes the entire agreement between the parties regarding the
+  subject matter and supersedes all prior discussions or understandings. Amendments
+  must be in writing and signed by both parties. If any provision is held invalid,
+  the remainder continues in full force.
+</p>
+
+<div class="sig-grid">
+
+  <div class="sig-col">
+    <h3>Provider <span class="pre-signed-tag">&#10003; Pre-signed</span></h3>
+    <div class="sig-row"><span class="label">Entity:</span> KIWI RENTALS LLC</div>
+    <div class="sig-row"><span class="label">By:</span>
+      <span class="landlord-sig">Ann Noel</span>
+    </div>
+    <div class="sig-row"><span class="label">Name:</span>
+      <span class="sig-line">Ann Noel</span>
+    </div>
+    <div class="sig-row"><span class="label">Title:</span> Authorized Signatory</div>
+    <div class="sig-row"><span class="label">Date:</span>
+      <span class="sig-line"><span class="tag">[lease_start]</span>&nbsp;</span>
+    </div>
+  </div>
+
+  <div class="sig-col">
+    <h3>Client</h3>
+    <div class="sig-row"><span class="label">Entity:</span>
+      <span class="sig-line"><span class="tag">[client_company]</span>&nbsp;</span>
+    </div>
+    <div class="sig-row"><span class="label">By:</span>
+      <span class="ds-sign">[Client SignHere tab]</span>
+    </div>
+    <div class="sig-row"><span class="label">Name:</span>
+      <span class="sig-line"><span class="tag">[tenant_name]</span>&nbsp;</span>
+    </div>
+    <div class="sig-row"><span class="label">Title:</span>
+      <span class="sig-line">&nbsp;</span>
+    </div>
+    <div class="sig-row"><span class="label">Date:</span>
+      <span class="ds-sign">[Client DateSigned tab]</span>
+    </div>
+  </div>
+
+</div>
+
+<footer>
+  Office Services Agreement &bull; Kiwi Rentals LLC &bull; v2026-04
+</footer>
+
+</body>
+</html>

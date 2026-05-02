@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Notice of Termination, Collection Referral, and Demand for Retrieval — Kiwi Rentals LLC</title>
+<style>
+  /* ================================================================
+     POST-TERMINATION NOTICE — Kiwi Rentals LLC
+
+     Companion to the Office Services Agreement template. Used after a
+     tenant is moved out via "Send to Collections" or "Write-Off" path.
+     Florida-law-compliant. Conservative on the points that matter:
+
+       - Recites the contract section that authorizes termination
+         (Section 7) and the section that authorizes Provider to retain
+         possession (Section 1) — the license framing avoids tenant /
+         landlord self-help-eviction issues.
+       - Sets a clear retrieval window with a supervised-pickup
+         procedure naming the manager-on-record.
+       - Explicitly disclaims a possessory lien (Paragraph 6) — without
+         this disclaimer, holding personal property pending payment is
+         the textbook pattern for a conversion claim under Florida
+         common law.
+       - References dispute-resolution path from Section 9 of the
+         Agreement (binding AAA arbitration in Pinellas County).
+       - Cites criminal-trespass exposure under Fla. Stat. § 810.08
+         (revocation of license to enter) without making it a threat.
+       - Reserves all rights — does not waive any remedy.
+       - Documents service via certified mail + email (audit trail).
+
+     Placeholders use {{DOUBLE_BRACE}} format. The matching set in
+     floor-map-editor.html (POST_TERMINATION_NOTICE_TEMPLATE constant)
+     mirrors this file token-for-token; if you edit one, sync the other.
+
+     KEEP THIS FILE IN VERSION CONTROL. If a tenant ever sues, the
+     court will want to see what notice they were sent.
+     ================================================================ */
+
+  @page { size: letter; margin: 1in; }
+  body {
+    font-family: "Times New Roman", Times, serif;
+    font-size: 11pt;
+    line-height: 1.5;
+    color: #000;
+    max-width: 6.5in;
+    margin: 0 auto;
+  }
+  .letterhead {
+    text-align: center;
+    border-bottom: 1pt solid #333;
+    padding-bottom: 8pt;
+    margin-bottom: 14pt;
+  }
+  .letterhead .brand {
+    font-size: 14pt;
+    font-weight: bold;
+    letter-spacing: 0.6pt;
+    text-transform: uppercase;
+  }
+  .letterhead .addr {
+    font-size: 9pt;
+    color: #555;
+    margin-top: 3pt;
+  }
+  .delivery-line {
+    font-size: 9.5pt;
+    font-style: italic;
+    color: #555;
+    margin: 0 0 14pt 0;
+  }
+  .date-line {
+    text-align: right;
+    margin: 0 0 14pt 0;
+  }
+  .recipient {
+    margin-bottom: 14pt;
+    line-height: 1.35;
+  }
+  .recipient .name { font-weight: bold; }
+  .re-line {
+    font-weight: bold;
+    margin: 14pt 0 6pt 0;
+  }
+  h1 {
+    font-size: 12pt;
+    font-weight: bold;
+    text-align: center;
+    text-transform: uppercase;
+    margin: 18pt 0 14pt 0;
+    letter-spacing: 0.5pt;
+  }
+  p { margin: 6pt 0; text-align: justify; }
+  p.numbered b:first-child {
+    /* "1. Termination." style lead-in — sits left, bold */
+    font-weight: bold;
+  }
+  ul, ol { margin: 4pt 0 4pt 24pt; padding: 0; }
+  li { margin: 3pt 0; }
+  .balance-callout {
+    display: inline-block;
+    background: #fef3c7;
+    border: 0.5pt solid #b45309;
+    padding: 1pt 6pt;
+    font-weight: bold;
+  }
+  .deadline-callout {
+    display: inline-block;
+    background: #fee2e2;
+    border: 0.5pt solid #b91c1c;
+    padding: 1pt 6pt;
+    font-weight: bold;
+  }
+  .signature-block {
+    margin-top: 24pt;
+    page-break-inside: avoid;
+  }
+  .sig-line {
+    display: inline-block;
+    min-width: 220pt;
+    border-bottom: 0.75pt solid #888;
+    padding-bottom: 18pt;
+    margin-bottom: 4pt;
+  }
+  footer {
+    margin-top: 28pt;
+    font-size: 8.5pt;
+    color: #777;
+    border-top: 0.25pt solid #ccc;
+    padding-top: 4pt;
+  }
+  .enclosures {
+    margin-top: 14pt;
+    font-size: 9.5pt;
+    color: #444;
+  }
+</style>
+</head>
+<body>
+
+<div class="letterhead">
+  <div class="brand">Kiwi Rentals LLC</div>
+  <div class="addr">108 West 13th Street &bull; Wilmington, Delaware &bull; Operations: {{BUILDING_ADDRESS}}</div>
+</div>
+
+<p class="delivery-line">Sent via Certified Mail, Return Receipt Requested, and Electronic Mail</p>
+
+<p class="date-line">{{LETTER_DATE}}</p>
+
+<div class="recipient">
+  <div class="name">{{TENANT_NAME}}</div>
+  {{TENANT_COMPANY_LINE}}
+  {{TENANT_ADDRESS_LINE}}
+  <div>{{TENANT_EMAIL}}</div>
+</div>
+
+<p class="re-line">
+  Re: Office Services Agreement for Suite {{SUITE}} at {{BUILDING_ADDRESS}}, dated {{LEASE_START_DATE}}
+</p>
+
+<h1>Notice of Termination, Referral to Collections,<br>and Demand for Retrieval of Personal Property</h1>
+
+<p>Dear {{TENANT_NAME}}:</p>
+
+<p>
+  This letter is sent on behalf of <b>KIWI RENTALS LLC</b> (&ldquo;Provider&rdquo;) with
+  respect to the above-referenced Office Services Agreement (the &ldquo;Agreement&rdquo;).
+  Please read this letter carefully and retain it for your records.
+</p>
+
+<p class="numbered">
+  <b>1. Termination.</b> Pursuant to Section 7 of the Agreement, the Agreement is terminated
+  effective <b>{{TERMINATION_DATE}}</b> for non-payment of Fees as set forth in Section 3.
+  As of the date of this letter, the outstanding balance owed by Client to Provider is
+  <span class="balance-callout">${{BALANCE_OWED}}</span>, comprising unpaid Base Fees, late
+  fees as authorized by Section 3, and other charges itemized in the Statement of Account
+  enclosed with this letter.
+</p>
+
+<p class="numbered">
+  <b>2. Referral to Collection Agency.</b> Provider has referred the outstanding balance to
+  <b>{{AGENCY_NAME}}</b> ({{AGENCY_CONTACT}}) for collection. All payments and correspondence
+  regarding the balance must henceforth be directed to that agency. The agency is authorized
+  to take all lawful steps to recover the amounts owed, including, where applicable, reporting
+  to consumer credit reporting agencies and initiating legal proceedings. This referral does
+  not constitute a waiver of any other right or remedy available to Provider.
+</p>
+
+<p class="numbered">
+  <b>3. Continued Financial Obligation.</b> Termination does not relieve Client of liability
+  for unpaid amounts already accrued or for amounts that may accrue or become due under the
+  Agreement and applicable law, including without limitation amounts attributable to the
+  remainder of the term, costs of collection, and (where permitted by applicable law)
+  attorneys&rsquo; fees. The balance referenced in Paragraph 1 may be adjusted accordingly,
+  and the agency identified in Paragraph 2 will be notified of any such adjustment.
+</p>
+
+<p class="numbered">
+  <b>4. Deactivation of Building Access.</b> Effective immediately, all keys, access cards,
+  and electronic credentials previously issued to Client and Client&rsquo;s representatives
+  have been deactivated. Pursuant to Section 1 of the Agreement, Provider has at all times
+  retained possession and control of the Building. Any attempt by Client to enter the Suite
+  or any other portion of the Building without prior written authorization from Provider is
+  unauthorized and may constitute trespass under Florida law, including Fla. Stat. &sect; 810.08.
+</p>
+
+<p class="numbered">
+  <b>5. Retrieval of Personal Property.</b> Client has a period of
+  <b>{{RETRIEVAL_DAYS}} ({{RETRIEVAL_DAYS_WORDS}}) calendar days</b> from the date of this
+  letter &mdash; that is, until <span class="deadline-callout">{{RETRIEVAL_DEADLINE_DATE}}</span>
+  &mdash; within which to retrieve any personal property remaining in the Suite (the
+  &ldquo;Personal Property&rdquo;). Retrieval shall be conducted as follows:
+</p>
+
+<ul>
+  <li>
+    Client must contact <b>{{MANAGER_NAME}}</b> at <b>{{MANAGER_EMAIL}}</b> or
+    <b>{{MANAGER_PHONE}}</b> at least twenty-four (24) hours in advance to schedule a
+    supervised retrieval appointment.
+  </li>
+  <li>
+    Retrieval may take place only during normal business hours
+    (Monday through Friday, 9:00 a.m. to 5:00 p.m. local time, excluding federal holidays).
+  </li>
+  <li>
+    Client must present valid government-issued photo identification at the time of retrieval.
+    A representative of Provider will be present throughout.
+  </li>
+  <li>
+    Client is solely responsible for arranging transportation and labor for the removal of
+    any Personal Property. Provider does not provide moving services and disclaims liability
+    for damage or loss occurring during retrieval not attributable to Provider&rsquo;s gross
+    negligence or willful misconduct.
+  </li>
+</ul>
+
+<p class="numbered">
+  <b>6. Abandonment of Personal Property.</b> If Client does not retrieve the Personal
+  Property on or before <b>{{RETRIEVAL_DEADLINE_DATE}}</b>, the Personal Property will be
+  deemed abandoned. Provider may thereafter, in accordance with the Agreement and applicable
+  Florida law, dispose of the Personal Property by sale, donation, destruction, or any other
+  lawful means; recover from any disposition the reasonable costs of removal, storage, and
+  disposition; and apply any remaining net proceeds against amounts owed by Client under the
+  Agreement. <b>Provider does not assert a possessory lien over the Personal Property and
+  will not condition release of the Personal Property on payment of amounts owed.</b>
+</p>
+
+<p class="numbered">
+  <b>7. Security Deposit.</b> The security deposit referenced in Section 3 of the Agreement
+  will be applied first against unpaid Fees and other amounts owed by Client, including
+  damage beyond ordinary wear, cleaning or restoration costs, and reasonable costs of
+  removing or storing Personal Property, all as authorized by Section 6 of the Agreement.
+  Any remaining balance, if any, will be refunded in accordance with Section 6.
+</p>
+
+<p class="numbered">
+  <b>8. Reinstatement / Payment Arrangement.</b> If Client wishes to discuss reinstatement
+  of the Agreement or a payment arrangement, Client must contact Provider in writing within
+  seven (7) calendar days of the date of this letter. Provider is under no obligation to
+  agree to either and may decline at its sole discretion.
+</p>
+
+<p class="numbered">
+  <b>9. Reservation of Rights.</b> Nothing in this letter constitutes a waiver of, or election
+  among, any rights or remedies available to Provider under the Agreement, applicable law, or
+  in equity, all of which are expressly reserved. Without limitation, Provider reserves the
+  right to invoke the dispute-resolution procedures set forth in Section 9 of the Agreement,
+  to recover costs and attorneys&rsquo; fees where permitted, and to pursue any other lawful
+  remedy.
+</p>
+
+<p class="numbered">
+  <b>10. Contact.</b> All correspondence regarding this matter, other than payment (which
+  must be directed to the collection agency identified in Paragraph 2), should be sent to:
+</p>
+
+<p style="margin-left: 24pt;">
+  {{MANAGER_NAME}}, on behalf of KIWI RENTALS LLC<br>
+  {{MANAGER_EMAIL}}<br>
+  {{MANAGER_PHONE}}
+</p>
+
+<p>
+  This letter is delivered via certified mail, return receipt requested, and via electronic
+  mail to the address Client provided under the Agreement. Delivery is deemed effective on
+  the earlier of actual receipt or three (3) business days after deposit with the United
+  States Postal Service.
+</p>
+
+<div class="signature-block">
+  <p>Sincerely,</p>
+
+  <p>
+    <span class="sig-line">&nbsp;</span><br>
+    <b>{{SIGNATORY_NAME}}</b><br>
+    Authorized Signatory<br>
+    KIWI RENTALS LLC
+  </p>
+</div>
+
+<div class="enclosures">
+  <b>Enclosure:</b> Statement of Account (itemized balance)<br>
+  <b>cc:</b> {{AGENCY_NAME}}; File
+</div>
+
+<footer>
+  Notice of Termination, Collection Referral, and Demand for Retrieval &bull;
+  Kiwi Rentals LLC &bull; v2026-04 &bull;
+  Confidential &mdash; intended only for the named recipient
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>6698 68th Ave N — 4th Floor · 48 units</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --panel2: #0f172a;
+    --text: #e8ecf3;
+    --muted: #94a3b8;
+    --border: #334155;
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 14px;
+  }
+
+  .app { max-width: 1680px; margin: 0 auto; }
+
+  /* ===== Top strip (like the reference) ===== */
+  .top-strip {
+    display: grid;
+    grid-template-columns: auto 1fr 1fr 1fr;
+    gap: 0;
+    background: var(--panel);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 10px;
+    font-size: 13px;
+  }
+  .top-strip > div { padding: 10px 16px; border-right: 1px solid #0f172a; }
+  .top-strip > div:last-child { border-right: none; }
+  .top-strip .floor-tag { background: #064e3b; color: #d1fae5; font-weight: 700; }
+  .top-strip b { color: var(--text); margin-right: 6px; }
+  .top-strip span.v { color: var(--muted); }
+
+  /* ===== Header ===== */
+  header.main-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  h1 { font-size: 18px; font-weight: 600; }
+  .subtitle { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+  .toolbar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .btn-group { display: flex; background: var(--panel); border-radius: 9px; padding: 3px; gap: 2px; }
+  .ctrl-btn {
+    background: transparent; border: none;
+    padding: 6px 11px; color: var(--muted);
+    border-radius: 6px; font-size: 12px; cursor: pointer;
+    font-family: inherit; display: flex; align-items: center; gap: 5px;
+    transition: all 0.12s;
+  }
+  .ctrl-btn.active, .ctrl-btn:hover { background: #334155; color: white; }
+  .ctrl-btn .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .dot-free { background: #22c55e; }
+  .dot-busy { background: #ef4444; }
+  .dot-reserved { background: #eab308; }
+
+  /* ===== Layout ===== */
+  .main {
+    display: grid;
+    grid-template-columns: 1fr 360px;
+    gap: 14px;
+  }
+  @media (max-width: 1200px) { .main { grid-template-columns: 1fr; } }
+
+  /* ===== Floor plan ===== */
+  .plan-wrap {
+    background: #f4f1e8;
+    border-radius: 12px;
+    padding: 14px;
+    box-shadow: 0 16px 40px rgba(0,0,0,0.35);
+    overflow: auto;
+  }
+
+  .plan-container {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 1200 / 900;
+    min-height: 600px;
+    background-color: #f4f1e8;
+    background-image:
+      linear-gradient(rgba(100,116,139,0.07) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(100,116,139,0.07) 1px, transparent 1px);
+    background-size: 18px 18px;
+    border: 3px solid #0f172a;
+    border-radius: 4px;
+  }
+
+  /* Suite cell */
+  .cell {
+    position: absolute;
+    border: 1.5px solid #0f172a;
+    display: flex;
+    flex-direction: column;
+    padding: 4px 5px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 10px;
+    line-height: 1.15;
+    cursor: pointer;
+    transition: filter 0.12s, transform 0.1s;
+    overflow: hidden;
+    user-select: none;
+  }
+  .cell:hover:not(.non-rentable) { filter: brightness(0.92); z-index: 10; transform: scale(1.02); }
+  .cell.selected { outline: 2.5px solid #0ea5e9; outline-offset: -2.5px; z-index: 15; }
+
+  .cell .num { font-weight: 700; color: #0f172a; font-size: 10.5px; }
+  .cell .price { color: #0f172a; font-weight: 600; }
+  .cell .tag { color: #475569; font-size: 8.5px; }
+
+  /* Status colors */
+  .cell.status-vacant  { background: #c8ecc7; }
+  .cell.status-occupied { background: #e8ecd1; }
+  .cell.status-reserved { background: #fef3c7; }
+
+  /* Non-rentable */
+  .cell.non-rentable { cursor: default; background: #e5e7eb; border-color: #475569; color: #334155; font-size: 9px; }
+  .cell.kitchen { background: #fed7aa; }
+  .cell.storage { background: #d1d5db; }
+  .cell.atrium { background: repeating-linear-gradient(45deg, #fbbf24 0, #fbbf24 6px, #f59e0b 6px, #f59e0b 12px); color: #78350f; }
+  .cell.stairs { background: #cbd5e1; }
+  .cell.mechanical { background: #a8a29e; color: #fafaf9; }
+  .cell.toilet { background: #bae6fd; color: #0c4a6e; }
+  .cell.conf { background: #fbcfe8; color: #831843; }
+  .cell.elevator { background: #cbd5e1; }
+
+  .cell.window-badge::after {
+    content: '';
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 6px;
+    height: 6px;
+    background: #60a5fa;
+    border-radius: 50%;
+    box-shadow: 0 0 3px rgba(59,130,246,0.5);
+  }
+
+  /* Staircase pattern */
+  .cell.stairs::before {
+    content: '';
+    position: absolute;
+    left: 10%; right: 10%; top: 30%; bottom: 20%;
+    background-image: repeating-linear-gradient(180deg, transparent 0, transparent 4px, #475569 4px, #475569 5px);
+  }
+
+  /* ===== Sidebar ===== */
+  .sidebar {
+    background: var(--panel);
+    border-radius: 12px;
+    padding: 16px;
+    height: fit-content;
+    position: sticky;
+    top: 14px;
+  }
+
+  .stats-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .stat-card {
+    background: var(--panel2);
+    padding: 11px;
+    border-radius: 9px;
+  }
+  .stat-val { font-size: 20px; font-weight: 700; line-height: 1; margin-bottom: 2px; }
+  .stat-val.free { color: #22c55e; }
+  .stat-val.busy { color: #ef4444; }
+  .stat-val.money { color: #fbbf24; font-size: 18px; }
+  .stat-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
+
+  .revenue-block {
+    background: var(--panel2);
+    padding: 12px;
+    border-radius: 9px;
+    margin-bottom: 14px;
+  }
+  .revenue-big {
+    font-size: 24px;
+    font-weight: 700;
+    color: #22c55e;
+    line-height: 1;
+  }
+  .revenue-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .revenue-bar {
+    height: 7px; background: var(--panel);
+    border-radius: 4px; margin-top: 8px; overflow: hidden;
+    display: flex;
+  }
+  .revenue-bar > div { height: 100%; transition: width 0.3s; }
+
+  .panel-title {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+    margin-bottom: 7px;
+    margin-top: 14px;
+  }
+
+  .detail-card {
+    background: var(--panel2);
+    border-radius: 10px;
+    padding: 13px;
+  }
+  .detail-card.empty { color: #64748b; font-size: 12px; text-align: center; padding: 22px; }
+  .detail-num { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+  .detail-sub { font-size: 11px; color: var(--muted); margin-bottom: 10px; }
+  .detail-badges { display: flex; gap: 5px; margin-bottom: 10px; flex-wrap: wrap; }
+  .badge {
+    padding: 2px 8px; border-radius: 10px;
+    font-size: 10px; font-weight: 600;
+    background: #334155; color: #cbd5e1;
+  }
+  .badge.window { background: rgba(96,165,250,0.2); color: #60a5fa; }
+  .badge.interior { background: rgba(156,163,175,0.2); color: #9ca3af; }
+
+  .status-picker { display: flex; gap: 4px; margin-bottom: 12px; }
+  .status-pick {
+    flex: 1; padding: 6px; border-radius: 6px;
+    font-size: 11px; cursor: pointer;
+    border: 1px solid var(--border); background: transparent; color: var(--muted);
+    font-family: inherit; transition: all 0.1s;
+  }
+  .status-pick:hover { border-color: #64748b; color: var(--text); }
+  .status-pick.active.free { background: rgba(34,197,94,0.18); border-color: #22c55e; color: #22c55e; }
+  .status-pick.active.busy { background: rgba(239,68,68,0.18); border-color: #ef4444; color: #ef4444; }
+  .status-pick.active.reserved { background: rgba(234,179,8,0.18); border-color: #eab308; color: #eab308; }
+
+  .money-row {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 6px; margin-bottom: 10px;
+  }
+  .money-card {
+    background: var(--panel); padding: 8px; border-radius: 7px;
+  }
+  .money-val { font-size: 15px; font-weight: 700; color: #fbbf24; }
+  .money-lbl { font-size: 10px; color: var(--muted); }
+
+  .field { margin-bottom: 9px; }
+  .field label { display: block; font-size: 10px; color: var(--muted); margin-bottom: 3px; }
+  .field input, .field textarea {
+    width: 100%; padding: 6px 9px;
+    border: 1px solid var(--border); border-radius: 6px;
+    font-size: 12px; font-family: inherit;
+    background: var(--panel2); color: var(--text);
+  }
+  .field textarea { resize: vertical; min-height: 42px; }
+  .field input:focus, .field textarea:focus { outline: none; border-color: #3b82f6; }
+
+  .detail-row {
+    display: flex; justify-content: space-between;
+    padding: 5px 0; border-top: 1px solid var(--panel);
+    font-size: 11.5px;
+  }
+  .detail-row:first-of-type { border-top: none; }
+  .detail-row .lbl { color: var(--muted); }
+  .detail-row .val { color: var(--text); font-weight: 500; }
+
+  .save-btn {
+    padding: 8px 14px; background: #3b82f6; color: white;
+    border: none; border-radius: 7px; font-size: 12px;
+    font-weight: 600; cursor: pointer; margin-top: 6px;
+    font-family: inherit; width: 100%;
+  }
+  .save-btn:hover { background: #2563eb; }
+
+  .legend {
+    margin-top: 10px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 10px;
+  }
+  .legend-item {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 10.5px; color: #cbd5e1;
+  }
+  .legend-swatch {
+    width: 13px; height: 10px; border-radius: 2px;
+    border: 1px solid #0f172a; flex-shrink: 0;
+  }
+
+  .data-btns {
+    display: flex; gap: 5px; margin-top: 12px;
+  }
+  .data-btns button {
+    flex: 1; padding: 6px;
+    border-radius: 6px; font-size: 10.5px;
+    background: var(--panel2); border: 1px solid var(--border);
+    color: #cbd5e1; cursor: pointer; font-family: inherit;
+  }
+  .data-btns button:hover { background: #334155; }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <div class="top-strip">
+    <div class="floor-tag">4-й этаж · 48 units</div>
+    <div><b>Rentable:</b><span class="v" id="hdrRentable">— sq.ft.</span></div>
+    <div><b>Occupied:</b><span class="v" id="hdrOccupied">— sq.ft. · — % · $— / $— mnth</span></div>
+    <div><b>Avg Wnd/Int/Total:</b><span class="v" id="hdrAvgs">$— / $— / $—</span></div>
+  </div>
+
+  <header class="main-header">
+    <div>
+      <h1>🏛️ 6698 68th Ave N, Pinellas Park, FL 33781</h1>
+      <div class="subtitle">Интерактивная карта · клик по юниту открывает карточку</div>
+    </div>
+    <div class="toolbar">
+      <div class="btn-group" id="filters">
+        <button class="ctrl-btn active" data-f="all">Все</button>
+        <button class="ctrl-btn" data-f="vacant"><span class="dot dot-free"></span>Vacant</button>
+        <button class="ctrl-btn" data-f="occupied"><span class="dot dot-busy"></span>Occupied</button>
+        <button class="ctrl-btn" data-f="reserved"><span class="dot dot-reserved"></span>Бронь</button>
+      </div>
+      <div class="btn-group">
+        <button class="ctrl-btn" data-w="all">Все</button>
+        <button class="ctrl-btn" data-w="window">🌞 Window</button>
+        <button class="ctrl-btn" data-w="interior">Interior</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="main">
+    <div class="plan-wrap">
+      <div class="plan-container" id="plan"></div>
+    </div>
+
+    <aside class="sidebar">
+      <div class="stats-grid">
+        <div class="stat-card"><div class="stat-val free" id="sVac">0</div><div class="stat-lbl">Vacant</div></div>
+        <div class="stat-card"><div class="stat-val busy" id="sOcc">0</div><div class="stat-lbl">Occupied</div></div>
+        <div class="stat-card"><div class="stat-val money" id="sAvgW">$0</div><div class="stat-lbl">Avg Window $/ft</div></div>
+        <div class="stat-card"><div class="stat-val money" id="sAvgI">$0</div><div class="stat-lbl">Avg Interior $/ft</div></div>
+      </div>
+
+      <div class="revenue-block">
+        <div class="revenue-big" id="revActual">$0</div>
+        <div class="revenue-sub">Текущий мес. доход (<span id="revPct">0%</span> от <span id="revPot">$0</span> потенциала)</div>
+        <div class="revenue-bar">
+          <div id="revBarActual" style="background:#22c55e; width:0%"></div>
+          <div id="revBarLoss" style="background:#334155; width:100%"></div>
+        </div>
+        <div class="revenue-sub" style="display:flex; justify-content:space-between;">
+          <span><span id="occSqft">0</span> / <span id="totSqft">0</span> sq.ft.</span>
+          <span id="occPctText">0% занято</span>
+        </div>
+      </div>
+
+      <div class="panel-title" style="margin-top: 0">Детали юнита</div>
+      <div id="detail" class="detail-card empty">Кликните по юниту на плане →</div>
+
+      <div class="panel-title">Легенда</div>
+      <div class="legend">
+        <div class="legend-item"><span class="legend-swatch" style="background:#c8ecc7"></span>Vacant (свободно)</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#e8ecd1"></span>Occupied (занято)</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#fef3c7"></span>Reserved (бронь)</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#60a5fa; width:8px; height:8px; border-radius:50%;"></span>🌞 Window unit</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#fed7aa"></span>Kitchen</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#d1d5db"></span>Storage</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#bae6fd"></span>Toilet</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:repeating-linear-gradient(45deg,#fbbf24,#fbbf24 3px,#f59e0b 3px,#f59e0b 6px)"></span>Atrium</div>
+      </div>
+
+      <div class="data-btns">
+        <button onclick="exportData()">💾 Экспорт</button>
+        <button onclick="document.getElementById('impF').click()">📂 Импорт</button>
+        <button onclick="resetOverrides()">🔄 Сброс</button>
+        <input type="file" id="impF" style="display:none" accept=".json" onchange="importData(event)">
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   ДАННЫЕ: 48 юнитов + общие помещения
+   Координаты в % (x, y, w, h) относительно контейнера 1200×900
+   Данные статусов/цен — из вашей таблицы.
+   ============================================================ */
+
+const STATUS_OCCUPIED = 'occupied';
+const STATUS_VACANT = 'vacant';
+
+// Все юниты с данными. Позиции по схематичной карте.
+// Формат: [suite, status, type, window, sqft, capacity, rent, rate, x, y, w, h]
+const UNITS = [
+  // TOP ROW
+  { id:'418', status:'vacant',   type:'office', window:true,  sqft:164, cap:5,  rent:1700, rate:124.39, x:1,   y:0.8, w:11,   h:8  },
+  { id:'419', status:'vacant',   type:'office', window:true,  sqft:144, cap:5,  rent:1200, rate:100.00, x:12,  y:0.8, w:9.2,  h:8  },
+  { id:'420', status:'vacant',   type:'office', window:true,  sqft:104, cap:3,  rent:850,  rate:98.08,  x:21.2,y:0.8, w:7.5,  h:8  },
+  { id:'426', status:'occupied', type:'office', window:true,  sqft:148, cap:5,  rent:925,  rate:75.00,  x:29.3,y:0.8, w:10.2, h:8  },
+  { id:'427', status:'vacant',   type:'office', window:true,  sqft:141, cap:5,  rent:1000, rate:85.11,  x:39.6,y:0.8, w:9.2,  h:8  },
+  { id:'429', status:'occupied', type:'office', window:true,  sqft:145, cap:5,  rent:900,  rate:74.48,  x:59.5,y:0.8, w:9.2,  h:8  },
+  { id:'431', status:'occupied', type:'office', window:true,  sqft:162, cap:5,  rent:990,  rate:73.33,  x:69,  y:0.8, w:10,   h:8  },
+  { id:'432', status:'vacant',   type:'office', window:true,  sqft:165, cap:5,  rent:1200, rate:87.27,  x:79.2,y:0.8, w:10,   h:8  },
+  { id:'433', status:'occupied', type:'office', window:true,  sqft:308, cap:10, rent:1500, rate:58.44,  x:89.5,y:0.8, w:9.7,  h:8  },
+
+  // ROW B (y=10%)
+  { id:'416', status:'vacant',   type:'office', window:true,  sqft:108, cap:3,  rent:850,  rate:94.44,  x:1,   y:9.2, w:11,   h:8  },
+  { id:'417', status:'occupied', type:'office', window:false, sqft:72,  cap:2,  rent:450,  rate:75.00,  x:12,  y:9.2, w:5,    h:8  },
+  { id:'422', status:'occupied', type:'office', window:false, sqft:72,  cap:2,  rent:450,  rate:75.00,  x:17,  y:9.2, w:5,    h:8  },
+  { id:'421', status:'occupied', type:'office', window:false, sqft:72,  cap:2,  rent:400,  rate:66.67,  x:22.5,y:9.2, w:6.3,  h:8  },
+  { id:'428', status:'occupied', type:'office', window:false, sqft:94,  cap:3,  rent:525,  rate:67.02,  x:28.8,y:9.2, w:7.3,  h:8  },
+  { id:'430', status:'vacant',   type:'office', window:false, sqft:285, cap:9,  rent:2100, rate:88.42,  x:55,  y:9.2, w:12,   h:17 },
+
+  // ROW C (y=17%)
+  { id:'415', status:'vacant',   type:'office', window:true,  sqft:98,  cap:3,  rent:850,  rate:104.08, x:1,   y:17.5,w:11,   h:8  },
+  { id:'414', status:'occupied', type:'office', window:false, sqft:72,  cap:2,  rent:400,  rate:66.67,  x:12,  y:17.5,w:5,    h:8  },
+  { id:'423', status:'occupied', type:'office', window:false, sqft:69,  cap:2,  rent:450,  rate:78.26,  x:17,  y:17.5,w:5,    h:8  },
+  { id:'425', status:'vacant',   type:'office', window:false, sqft:105, cap:3,  rent:625,  rate:71.43,  x:22.5,y:17.5,w:13.5, h:8  },
+  { id:'434', status:'vacant',   type:'office', window:true,  sqft:141, cap:5,  rent:1050, rate:89.36,  x:89.5,y:9.2, w:9.7,  h:16 },
+  { id:'435', status:'vacant',   type:'office', window:false, sqft:189, cap:6,  rent:1200, rate:76.19,  x:68.5,y:17.5,w:11,   h:9  },
+
+  // ROW D (y=26%)
+  { id:'413', status:'occupied', type:'office', window:false, sqft:140, cap:4,  rent:550,  rate:47.14,  x:5,   y:26, w:11,   h:8  },
+  { id:'424', status:'occupied', type:'office', window:false, sqft:68,  cap:2,  rent:350,  rate:61.76,  x:16,  y:26, w:6,    h:8  },
+  { id:'410', status:'kitchen',  type:'kitchen',window:false, sqft:122, cap:4,  rent:0,    rate:0,      x:22,  y:26, w:9,    h:8  },
+  { id:'436', status:'vacant',   type:'office', window:true,  sqft:139, cap:4,  rent:1050, rate:90.65,  x:89.5,y:26, w:9.7,  h:7.5 },
+
+  // ROW E (y=34%)
+  { id:'412', status:'occupied', type:'office', window:true,  sqft:106, cap:3,  rent:850,  rate:96.23,  x:1,   y:34, w:11,   h:8  },
+  { id:'437', status:'vacant',   type:'office', window:true,  sqft:144, cap:5,  rent:1050, rate:87.50,  x:89.5,y:34, w:9.7,  h:7.5 },
+
+  // Center area: atrium
+  // (визуальный центральный элемент, не арендный)
+
+  // Interior middle (y~35-45%)
+  { id:'452', status:'occupied', type:'office', window:false, sqft:122, cap:4,  rent:675,  rate:66.39,  x:68.5,y:27, w:9,    h:7  },
+  { id:'438', status:'occupied', type:'office', window:false, sqft:102, cap:3,  rent:450,  rate:52.94,  x:77.5,y:27, w:8,    h:7  },
+  { id:'439', status:'occupied', type:'office', window:false, sqft:102, cap:3,  rent:550,  rate:64.71,  x:77.5,y:34, w:8,    h:7  },
+
+  // ROW F/G (y=42-52%)
+  { id:'411', status:'occupied', type:'office', window:true,  sqft:132, cap:4,  rent:1000, rate:90.91,  x:1,   y:42.5,w:13,   h:9.5 },
+
+  // ROW G right side (y=42-49%)
+  { id:'440', status:'vacant',   type:'office', window:false, sqft:91,  cap:3,  rent:600,  rate:79.12,  x:85,  y:42.5,w:7,    h:7  },
+  { id:'441', status:'vacant',   type:'office', window:true,  sqft:89,  cap:3,  rent:900,  rate:121.35, x:92,  y:42.5,w:7,    h:7  },
+
+  // ROW H (y=50-58%)
+  { id:'443', status:'occupied', type:'office', window:false, sqft:93,  cap:3,  rent:525,  rate:67.74,  x:85,  y:50, w:7,    h:7  },
+  { id:'444', status:'occupied', type:'office', window:true,  sqft:107, cap:3,  rent:800,  rate:89.72,  x:92,  y:50, w:7,    h:7  },
+
+  // ROW I (y=58-68%)
+  { id:'407', status:'occupied', type:'office', window:true,  sqft:224, cap:7,  rent:1600, rate:85.71,  x:1,   y:58, w:13,   h:14 },
+  { id:'408', status:'occupied', type:'office', window:false, sqft:112, cap:3,  rent:450,  rate:48.21,  x:14,  y:62, w:11,   h:10 },
+  { id:'409', status:'occupied', type:'office', window:false, sqft:164, cap:5,  rent:700,  rate:51.22,  x:25,  y:62, w:14,   h:10 },
+
+  // BOTTOM ROW (y=88-96%)
+  { id:'406', status:'occupied', type:'office', window:true,  sqft:116, cap:3,  rent:1200, rate:124.14, x:1,   y:89, w:11,   h:8  },
+  { id:'405', status:'vacant',   type:'office', window:true,  sqft:116, cap:3,  rent:1000, rate:103.45, x:12,  y:89, w:9.8,  h:8  },
+  { id:'404', status:'vacant',   type:'office', window:true,  sqft:119, cap:4,  rent:1000, rate:100.84, x:21.8,y:89, w:9.8,  h:8  },
+  { id:'403', status:'occupied', type:'office', window:true,  sqft:124, cap:4,  rent:1000, rate:96.77,  x:31.6,y:89, w:9.8,  h:8  },
+  { id:'402', status:'vacant',   type:'office', window:true,  sqft:121, cap:3,  rent:1000, rate:99.17,  x:41.4,y:89, w:9.8,  h:8  },
+  { id:'401', status:'vacant',   type:'office', window:true,  sqft:160, cap:6,  rent:1000, rate:75.00,  x:51.2,y:89, w:10,   h:8  },
+  { id:'449', status:'occupied', type:'office', window:true,  sqft:156, cap:5,  rent:1000, rate:76.92,  x:66,  y:89, w:10,   h:8  },
+  { id:'448', status:'vacant',   type:'office', window:true,  sqft:111, cap:3,  rent:1200, rate:129.73, x:76,  y:89, w:7.5,  h:8  },
+  { id:'447', status:'vacant',   type:'office', window:true,  sqft:113, cap:3,  rent:1200, rate:127.43, x:83.5,y:89, w:7.5,  h:8  },
+  { id:'446', status:'vacant',   type:'office', window:true,  sqft:112, cap:3,  rent:1200, rate:128.57, x:91,  y:89, w:7.5,  h:8  },
+  { id:'445', status:'occupied', type:'office', window:true,  sqft:120, cap:4,  rent:630,  rate:63.00,  x:98.5,y:89, w:8,    h:8  },
+];
+
+// Общие (нерентабельные) помещения
+const COMMONS = [
+  // Top stairs
+  { id:'UP',  label:'UP ▲', kind:'stairs',  x:49, y:0.8, w:5, h:11 },
+  // Atrium (central light well)
+  { id:'ATR', label:'ATRIUM', kind:'atrium', x:49.5, y:16, w:6, h:36 },
+  // Mechanical room
+  { id:'MECH', label:'MECHANICAL ROOM', kind:'mechanical', x:14, y:48, w:11, h:14 },
+  // Toilets (2)
+  { id:'T1', label:'TOILET', kind:'toilet', x:25, y:48, w:6, h:10 },
+  { id:'T2', label:'TOILET', kind:'toilet', x:31, y:48, w:5.5, h:10 },
+  // Conference room
+  { id:'CONF', label:'CONF ROOM', kind:'conf', x:14, y:72, w:11, h:7 },
+  // Lower stairs
+  { id:'DN', label:'▼ DN', kind:'stairs', x:49, y:72, w:5, h:14 },
+  // Elevators (near 442/451)
+  { id:'EL1', label:'ELEV', kind:'elevator', x:56, y:42, w:6, h:10 },
+  { id:'EL2', label:'ELEV', kind:'elevator', x:56, y:53, w:6, h:10 },
+  // Storage rooms
+  { id:'442', label:'442 STORAGE', kind:'storage', x:62.5, y:43, w:5, h:9 },
+  { id:'451', label:'451 STORAGE', kind:'storage', x:62.5, y:53, w:5, h:9 },
+];
+
+const STORAGE_KEY = 'pinellas4_v2';
+let overrides = {};   // id -> { status, tenant, tel, note, until }
+let selectedId = null;
+let filterStatus = 'all';
+let filterWindow = 'all';
+
+function load() {
+  try { overrides = JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; } catch(e) { overrides = {}; }
+}
+function save() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(overrides));
+}
+
+function getStatus(u) {
+  return overrides[u.id]?.status ?? u.status;
+}
+function getTenant(u) {
+  return overrides[u.id]?.tenant ?? '';
+}
+function getTel(u) { return overrides[u.id]?.tel ?? ''; }
+function getUntil(u) { return overrides[u.id]?.until ?? ''; }
+function getNote(u) { return overrides[u.id]?.note ?? ''; }
+
+function statusClass(s) {
+  if (s === 'vacant') return 'status-vacant';
+  if (s === 'occupied') return 'status-occupied';
+  if (s === 'reserved') return 'status-reserved';
+  return '';
+}
+
+function render() {
+  const plan = document.getElementById('plan');
+  plan.innerHTML = '';
+
+  // Commons first (background)
+  COMMONS.forEach(c => {
+    const el = document.createElement('div');
+    el.className = `cell non-rentable ${c.kind}`;
+    el.style.left = c.x + '%';
+    el.style.top = c.y + '%';
+    el.style.width = c.w + '%';
+    el.style.height = c.h + '%';
+    el.innerHTML = `<div class="num">${c.label}</div>`;
+    plan.appendChild(el);
+  });
+
+  // Stats calc
+  let vacCount = 0, occCount = 0, resCount = 0;
+  let totSqft = 0, occSqft = 0, vacSqft = 0;
+  let actualRev = 0, potRev = 0;
+  let wndSum = 0, wndCount = 0, intSum = 0, intCount = 0;
+
+  // Units
+  UNITS.forEach(u => {
+    const status = getStatus(u);
+    const tenant = getTenant(u);
+    const el = document.createElement('div');
+    el.className = `cell ${statusClass(status)}${u.window ? ' window-badge' : ''}${selectedId === u.id ? ' selected' : ''}`;
+    el.dataset.id = u.id;
+    el.dataset.status = status;
+    el.dataset.window = u.window ? 'window' : 'interior';
+    el.style.left = u.x + '%';
+    el.style.top = u.y + '%';
+    el.style.width = u.w + '%';
+    el.style.height = u.h + '%';
+
+    const priceLine = u.rent > 0 ? `$${u.rent.toLocaleString()}` : '';
+    let content = `<div class="num">№${u.id}</div>`;
+    if (u.rent > 0) content += `<div class="price">${priceLine}</div>`;
+    if (tenant && u.h > 6) content += `<div class="tag">${tenant.slice(0, 18)}</div>`;
+    if (u.sqft && u.h > 7 && !tenant) content += `<div class="tag">${u.sqft} ft² · ${u.cap}ч</div>`;
+    el.innerHTML = content;
+
+    el.addEventListener('click', () => selectUnit(u.id));
+    plan.appendChild(el);
+
+    // Stats
+    if (u.type === 'office') {
+      totSqft += u.sqft;
+      potRev += u.rent;
+      if (status === 'occupied') { occCount++; occSqft += u.sqft; actualRev += u.rent; }
+      else if (status === 'vacant') { vacCount++; vacSqft += u.sqft; }
+      else if (status === 'reserved') { resCount++; }
+      if (u.window) { wndSum += u.rate; wndCount++; }
+      else { intSum += u.rate; intCount++; }
+    }
+  });
+
+  // Update sidebar
+  document.getElementById('sVac').textContent = vacCount;
+  document.getElementById('sOcc').textContent = occCount;
+  document.getElementById('sAvgW').textContent = wndCount ? '$' + Math.round(wndSum/wndCount) : '$—';
+  document.getElementById('sAvgI').textContent = intCount ? '$' + Math.round(intSum/intCount) : '$—';
+
+  document.getElementById('revActual').textContent = '$' + actualRev.toLocaleString();
+  const revPct = potRev ? Math.round((actualRev/potRev)*100) : 0;
+  document.getElementById('revPct').textContent = revPct + '%';
+  document.getElementById('revPot').textContent = '$' + potRev.toLocaleString();
+  document.getElementById('revBarActual').style.width = revPct + '%';
+  document.getElementById('revBarLoss').style.width = (100 - revPct) + '%';
+
+  const occPct = totSqft ? Math.round((occSqft/totSqft)*100) : 0;
+  document.getElementById('occSqft').textContent = occSqft.toLocaleString();
+  document.getElementById('totSqft').textContent = totSqft.toLocaleString();
+  document.getElementById('occPctText').textContent = occPct + '% занято';
+
+  // Header strip
+  document.getElementById('hdrRentable').textContent = ' ' + totSqft.toLocaleString() + ' sq.ft.';
+  document.getElementById('hdrOccupied').textContent = ` ${occSqft.toLocaleString()} sq.ft. · ${occPct}% · $${potRev ? Math.round(actualRev*12/occSqft) : '—'}/ft · $${actualRev.toLocaleString()} mnth`;
+  const avgTot = (wndCount+intCount) ? Math.round((wndSum+intSum)/(wndCount+intCount)) : 0;
+  document.getElementById('hdrAvgs').textContent = ` $${Math.round(wndSum/wndCount||0)} / $${Math.round(intSum/intCount||0)} / $${avgTot}`;
+
+  renderDetail();
+  applyFilters();
+}
+
+function selectUnit(id) {
+  const u = UNITS.find(x => x.id === id);
+  if (!u) return;
+  selectedId = id;
+  render();
+}
+
+function renderDetail() {
+  const el = document.getElementById('detail');
+  if (!selectedId) {
+    el.className = 'detail-card empty';
+    el.innerHTML = 'Кликните по юниту на плане →';
+    return;
+  }
+  const u = UNITS.find(x => x.id === selectedId);
+  if (!u) return;
+  const status = getStatus(u);
+  const tenant = getTenant(u);
+  const tel = getTel(u);
+  const until = getUntil(u);
+  const note = getNote(u);
+
+  el.className = 'detail-card';
+  el.innerHTML = `
+    <div class="detail-num">№${u.id}</div>
+    <div class="detail-sub">Office · ${u.sqft} sq.ft. · до ${u.cap} чел.</div>
+    <div class="detail-badges">
+      <span class="badge ${u.window ? 'window' : 'interior'}">${u.window ? '🌞 Window' : '🔹 Interior'}</span>
+      <span class="badge">${u.cap} chairs</span>
+    </div>
+    <div class="money-row">
+      <div class="money-card"><div class="money-val">$${u.rent.toLocaleString()}</div><div class="money-lbl">мес. аренда</div></div>
+      <div class="money-card"><div class="money-val">$${u.rate.toFixed(2)}</div><div class="money-lbl">$/sqft/год</div></div>
+    </div>
+    <div class="status-picker">
+      <button class="status-pick free ${status==='vacant'?'active':''}" onclick="setStatus('vacant')">Vacant</button>
+      <button class="status-pick reserved ${status==='reserved'?'active':''}" onclick="setStatus('reserved')">Бронь</button>
+      <button class="status-pick busy ${status==='occupied'?'active':''}" onclick="setStatus('occupied')">Occupied</button>
+    </div>
+    <div class="field"><label>Арендатор</label><input type="text" id="fTenant" value="${esc(tenant)}" placeholder="Название компании / Ф.И.О."></div>
+    <div class="field"><label>Телефон / email</label><input type="text" id="fTel" value="${esc(tel)}" placeholder="+1 727…"></div>
+    <div class="field"><label>Договор до</label><input type="text" id="fUntil" value="${esc(until)}" placeholder="12/31/2026"></div>
+    <div class="field"><label>Заметка</label><textarea id="fNote">${esc(note)}</textarea></div>
+    <button class="save-btn" onclick="saveDetail()">Сохранить</button>
+  `;
+}
+
+function esc(s) { return (s||'').replace(/</g,'&lt;').replace(/"/g,'&quot;'); }
+
+function setStatus(st) {
+  if (!selectedId) return;
+  overrides[selectedId] = overrides[selectedId] || {};
+  overrides[selectedId].status = st;
+  save();
+  render();
+}
+
+function saveDetail() {
+  if (!selectedId) return;
+  overrides[selectedId] = overrides[selectedId] || {};
+  overrides[selectedId].tenant = document.getElementById('fTenant').value;
+  overrides[selectedId].tel = document.getElementById('fTel').value;
+  overrides[selectedId].until = document.getElementById('fUntil').value;
+  overrides[selectedId].note = document.getElementById('fNote').value;
+  save();
+  render();
+}
+
+// Filters
+document.querySelectorAll('#filters .ctrl-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#filters .ctrl-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    filterStatus = btn.dataset.f;
+    applyFilters();
+  });
+});
+document.querySelectorAll('.toolbar .btn-group:last-child .ctrl-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    btn.parentElement.querySelectorAll('.ctrl-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    filterWindow = btn.dataset.w;
+    applyFilters();
+  });
+});
+// Set first window filter active
+document.querySelector('.toolbar .btn-group:last-child .ctrl-btn').classList.add('active');
+
+function applyFilters() {
+  document.querySelectorAll('.cell').forEach(el => {
+    if (el.classList.contains('non-rentable')) return;
+    const s = el.dataset.status;
+    const w = el.dataset.window;
+    const statusMatch = filterStatus === 'all' || s === filterStatus;
+    const winMatch = filterWindow === 'all' || w === filterWindow;
+    el.style.opacity = (statusMatch && winMatch) ? 1 : 0.22;
+  });
+}
+
+// Import/Export
+function exportData() {
+  // Full report: original + overrides
+  const full = UNITS.map(u => ({
+    suite: u.id,
+    status: getStatus(u),
+    type: u.type,
+    window: u.window,
+    sqft: u.sqft,
+    capacity: u.cap,
+    rent: u.rent,
+    ratePerSqftYear: u.rate,
+    tenant: getTenant(u),
+    tel: getTel(u),
+    until: getUntil(u),
+    note: getNote(u)
+  }));
+  const blob = new Blob([JSON.stringify({ overrides, report: full }, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'pinellas-4f-' + new Date().toISOString().slice(0,10) + '.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function importData(e) {
+  const f = e.target.files[0];
+  if (!f) return;
+  const rd = new FileReader();
+  rd.onload = ev => {
+    try {
+      const data = JSON.parse(ev.target.result);
+      overrides = data.overrides || data;
+      save();
+      render();
+    } catch(err) { alert('Ошибка: ' + err.message); }
+  };
+  rd.readAsText(f);
+  e.target.value = '';
+}
+
+function resetOverrides() {
+  if (!confirm('Сбросить все изменения? Вернёт исходные статусы из таблицы.')) return;
+  overrides = {};
+  save();
+  render();
+}
+
+// Init
+load();
+render();
+</script>
+
+</body>
+</html>

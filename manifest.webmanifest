@@ -1,0 +1,19 @@
+{
+  "name": "SuitesForAll",
+  "short_name": "SuitesForAll",
+  "description": "Multi-building office floor plan + tenant + billing manager",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#FAFAF7",
+  "theme_color": "#1F2937",
+  "orientation": "any",
+  "categories": ["business", "productivity", "finance"],
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "any",
+      "type": "image/x-icon"
+    }
+  ]
+}

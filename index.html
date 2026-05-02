@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Карта офисов</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f5f6fa;
+    color: #2d3436;
+    min-height: 100vh;
+    padding: 24px;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  h1 {
+    font-size: 24px;
+    font-weight: 600;
+  }
+
+  .stats {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .stat {
+    background: white;
+    padding: 10px 16px;
+    border-radius: 10px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .stat .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+  }
+
+  .stat .num {
+    font-weight: 700;
+    font-size: 16px;
+  }
+
+  .dot.free { background: #00b894; }
+  .dot.busy { background: #d63031; }
+  .dot.reserved { background: #fdcb6e; }
+
+  .toolbar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+
+  button {
+    background: white;
+    border: 1px solid #dfe6e9;
+    padding: 8px 14px;
+    border-radius: 8px;
+    font-size: 14px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.15s;
+  }
+
+  button:hover {
+    background: #f0f3f5;
+    border-color: #b2bec3;
+  }
+
+  button.primary {
+    background: #0984e3;
+    color: white;
+    border-color: #0984e3;
+  }
+
+  button.primary:hover {
+    background: #0770b8;
+  }
+
+  .legend {
+    font-size: 13px;
+    color: #636e72;
+    margin-bottom: 12px;
+  }
+
+  .floor-plan {
+    background: white;
+    padding: 24px;
+    border-radius: 14px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(var(--cols, 5), 1fr);
+    gap: 12px;
+  }
+
+  .office {
+    aspect-ratio: 1.3;
+    border-radius: 10px;
+    padding: 12px;
+    cursor: pointer;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    transition: transform 0.1s, box-shadow 0.15s;
+    user-select: none;
+    border: 2px solid transparent;
+  }
+
+  .office:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(0,0,0,0.12);
+  }
+
+  .office.free {
+    background: linear-gradient(135deg, #55efc4, #00b894);
+    color: white;
+  }
+
+  .office.busy {
+    background: linear-gradient(135deg, #fab1a0, #d63031);
+    color: white;
+  }
+
+  .office.reserved {
+    background: linear-gradient(135deg, #ffeaa7, #fdcb6e);
+    color: #2d3436;
+  }
+
+  .office-number {
+    font-size: 22px;
+    font-weight: 700;
+  }
+
+  .office-tenant {
+    font-size: 12px;
+    opacity: 0.95;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .office-status {
+    position: absolute;
+    top: 8px;
+    right: 10px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+    opacity: 0.9;
+  }
+
+  /* Modal */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+
+  .modal-overlay.active {
+    display: flex;
+  }
+
+  .modal {
+    background: white;
+    padding: 28px;
+    border-radius: 14px;
+    width: 100%;
+    max-width: 420px;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.25);
+  }
+
+  .modal h2 {
+    margin-bottom: 20px;
+    font-size: 20px;
+  }
+
+  .field {
+    margin-bottom: 16px;
+  }
+
+  .field label {
+    display: block;
+    font-size: 13px;
+    color: #636e72;
+    margin-bottom: 6px;
+    font-weight: 500;
+  }
+
+  .field input, .field select, .field textarea {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #dfe6e9;
+    border-radius: 8px;
+    font-size: 14px;
+    font-family: inherit;
+    background: #f8f9fa;
+  }
+
+  .field textarea {
+    resize: vertical;
+    min-height: 60px;
+  }
+
+  .field input:focus, .field select:focus, .field textarea:focus {
+    outline: none;
+    border-color: #0984e3;
+    background: white;
+  }
+
+  .modal-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 22px;
+  }
+
+  .hint {
+    text-align: center;
+    color: #95a5a6;
+    font-size: 13px;
+    margin-top: 16px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🏢 Карта офисов</h1>
+  <div class="stats">
+    <div class="stat"><span class="dot free"></span>Свободно: <span class="num" id="statFree">0</span></div>
+    <div class="stat"><span class="dot busy"></span>Занято: <span class="num" id="statBusy">0</span></div>
+    <div class="stat"><span class="dot reserved"></span>Забронировано: <span class="num" id="statReserved">0</span></div>
+    <div class="stat">Всего: <span class="num" id="statTotal">0</span></div>
+  </div>
+</header>
+
+<div class="toolbar">
+  <button class="primary" onclick="openSettings()">⚙️ Настроить карту</button>
+  <button onclick="exportData()">💾 Экспорт</button>
+  <button onclick="document.getElementById('importFile').click()">📂 Импорт</button>
+  <input type="file" id="importFile" accept=".json" style="display:none" onchange="importData(event)">
+  <button onclick="resetAll()">🔄 Сбросить всё</button>
+</div>
+
+<div class="legend">Клик по офису — сменить статус (свободен → забронирован → занят → свободен). Двойной клик — редактировать данные.</div>
+
+<div class="floor-plan">
+  <div class="grid" id="grid"></div>
+</div>
+
+<!-- Модальное окно редактирования офиса -->
+<div class="modal-overlay" id="editModal">
+  <div class="modal">
+    <h2>Офис <span id="editModalNumber"></span></h2>
+    <div class="field">
+      <label>Статус</label>
+      <select id="editStatus">
+        <option value="free">Свободен</option>
+        <option value="reserved">Забронирован</option>
+        <option value="busy">Занят</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Арендатор / сотрудник</label>
+      <input type="text" id="editTenant" placeholder="Например: ООО Ромашка">
+    </div>
+    <div class="field">
+      <label>Площадь (м²)</label>
+      <input type="number" id="editArea" placeholder="25">
+    </div>
+    <div class="field">
+      <label>Заметка</label>
+      <textarea id="editNote" placeholder="Контакты, срок аренды…"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button onclick="closeEdit()">Отмена</button>
+      <button class="primary" onclick="saveEdit()">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<!-- Модальное окно настроек -->
+<div class="modal-overlay" id="settingsModal">
+  <div class="modal">
+    <h2>Настройка карты</h2>
+    <div class="field">
+      <label>Колонок</label>
+      <input type="number" id="setCols" min="1" max="20" value="5">
+    </div>
+    <div class="field">
+      <label>Строк</label>
+      <input type="number" id="setRows" min="1" max="20" value="4">
+    </div>
+    <div class="field">
+      <label>Номер первого офиса</label>
+      <input type="number" id="setStart" value="101">
+    </div>
+    <div class="modal-actions">
+      <button onclick="closeSettings()">Отмена</button>
+      <button class="primary" onclick="applySettings()">Применить</button>
+    </div>
+  </div>
+</div>
+
+<div class="hint">💡 Данные автоматически сохраняются в браузере. Для переноса на другой компьютер используйте «Экспорт».</div>
+
+<script>
+  const STORAGE_KEY = 'officeMapData_v1';
+  const STATUS_CYCLE = ['free', 'reserved', 'busy'];
+  const STATUS_LABEL = { free: 'Свободен', reserved: 'Бронь', busy: 'Занят' };
+
+  let state = {
+    cols: 5,
+    rows: 4,
+    start: 101,
+    offices: {} // key: office number, value: { status, tenant, area, note }
+  };
+
+  let editingOfficeNum = null;
+
+  // --- Загрузка / сохранение ---
+  function load() {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      try { state = JSON.parse(raw); } catch(e) { console.error(e); }
+    }
+  }
+
+  function save() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }
+
+  // --- Рендер ---
+  function render() {
+    const grid = document.getElementById('grid');
+    grid.style.setProperty('--cols', state.cols);
+    grid.innerHTML = '';
+
+    let free = 0, busy = 0, reserved = 0;
+    const total = state.cols * state.rows;
+
+    for (let i = 0; i < total; i++) {
+      const num = state.start + i;
+      const data = state.offices[num] || { status: 'free', tenant: '', area: '', note: '' };
+
+      if (data.status === 'free') free++;
+      else if (data.status === 'busy') busy++;
+      else if (data.status === 'reserved') reserved++;
+
+      const el = document.createElement('div');
+      el.className = 'office ' + data.status;
+      el.innerHTML = `
+        <div>
+          <div class="office-number">№${num}</div>
+          <div class="office-status">${STATUS_LABEL[data.status]}</div>
+        </div>
+        <div class="office-tenant">${data.tenant || (data.status === 'free' ? '—' : '')}</div>
+      `;
+      el.title = `№${num}${data.tenant ? ' · ' + data.tenant : ''}${data.area ? ' · ' + data.area + ' м²' : ''}${data.note ? '\n' + data.note : ''}`;
+      el.addEventListener('click', () => cycleStatus(num));
+      el.addEventListener('dblclick', (e) => { e.preventDefault(); openEdit(num); });
+      grid.appendChild(el);
+    }
+
+    document.getElementById('statFree').textContent = free;
+    document.getElementById('statBusy').textContent = busy;
+    document.getElementById('statReserved').textContent = reserved;
+    document.getElementById('statTotal').textContent = total;
+  }
+
+  // --- Смена статуса ---
+  function cycleStatus(num) {
+    const data = state.offices[num] || { status: 'free', tenant: '', area: '', note: '' };
+    const idx = STATUS_CYCLE.indexOf(data.status);
+    data.status = STATUS_CYCLE[(idx + 1) % STATUS_CYCLE.length];
+    state.offices[num] = data;
+    save();
+    render();
+  }
+
+  // --- Редактирование ---
+  function openEdit(num) {
+    editingOfficeNum = num;
+    const data = state.offices[num] || { status: 'free', tenant: '', area: '', note: '' };
+    document.getElementById('editModalNumber').textContent = '№' + num;
+    document.getElementById('editStatus').value = data.status;
+    document.getElementById('editTenant').value = data.tenant || '';
+    document.getElementById('editArea').value = data.area || '';
+    document.getElementById('editNote').value = data.note || '';
+    document.getElementById('editModal').classList.add('active');
+  }
+
+  function closeEdit() {
+    document.getElementById('editModal').classList.remove('active');
+    editingOfficeNum = null;
+  }
+
+  function saveEdit() {
+    if (editingOfficeNum === null) return;
+    state.offices[editingOfficeNum] = {
+      status: document.getElementById('editStatus').value,
+      tenant: document.getElementById('editTenant').value,
+      area: document.getElementById('editArea').value,
+      note: document.getElementById('editNote').value
+    };
+    save();
+    render();
+    closeEdit();
+  }
+
+  // --- Настройки ---
+  function openSettings() {
+    document.getElementById('setCols').value = state.cols;
+    document.getElementById('setRows').value = state.rows;
+    document.getElementById('setStart').value = state.start;
+    document.getElementById('settingsModal').classList.add('active');
+  }
+
+  function closeSettings() {
+    document.getElementById('settingsModal').classList.remove('active');
+  }
+
+  function applySettings() {
+    state.cols = parseInt(document.getElementById('setCols').value) || 5;
+    state.rows = parseInt(document.getElementById('setRows').value) || 4;
+    state.start = parseInt(document.getElementById('setStart').value) || 101;
+    save();
+    render();
+    closeSettings();
+  }
+
+  // --- Импорт / экспорт ---
+  function exportData() {
+    const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'office-map-' + new Date().toISOString().slice(0,10) + '.json';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  function importData(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        state = JSON.parse(e.target.result);
+        save();
+        render();
+      } catch (err) {
+        alert('Ошибка чтения файла: ' + err.message);
+      }
+    };
+    reader.readAsText(file);
+    event.target.value = '';
+  }
+
+  function resetAll() {
+    if (!confirm('Сбросить все данные? Это действие нельзя отменить.')) return;
+    state = { cols: 5, rows: 4, start: 101, offices: {} };
+    save();
+    render();
+  }
+
+  // Закрытие модалок по клику на фон
+  document.querySelectorAll('.modal-overlay').forEach(m => {
+    m.addEventListener('click', e => {
+      if (e.target === m) m.classList.remove('active');
+    });
+  });
+
+  // --- Инициализация ---
+  load();
+  render();
+</script>
+
+</body>
+</html>

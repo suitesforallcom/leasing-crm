@@ -1,0 +1,51 @@
+# ===== SuitesForAll .gitignore =====================================
+# Established 2026-05-01 alongside the project's first commit.
+# Goal: keep the repo small + free of secrets, machine state, and
+# anything regenerable.
+
+# --- Dependency directories ---
+node_modules/
+functions/node_modules/
+
+# --- Firebase tooling cache ---
+# Local emulator state, deploy hashes, cached function artifacts.
+# Safe to delete; recreated on next `firebase deploy` / `emulators:start`.
+.firebase/
+firebase-debug.log
+firebase-debug.*.log
+*.firebase.json.bak
+
+# --- macOS / FUSE / IDE noise ---
+.DS_Store
+.fuse_hidden*
+*.swp
+*.swo
+.idea/
+.vscode/
+*.sublime-workspace
+
+# --- Build output / logs ---
+dist/
+build/
+*.log
+npm-debug.log*
+
+# --- Local environment / secrets ---
+# The repo holds .firebaserc (project ID only — public) but anything
+# resembling .env should never be committed.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+serviceAccount*.json
+
+# --- Temp scratch screenshots from lease-document iteration ---
+# These were exported during DocuSign signature design experiments and
+# aren't referenced by the live app. Keeping them out of git keeps the
+# repo lean (each is 50–200 KB).
+_lease-*.jpg
+_v-*.jpg
+_body-*.jpg
+_sig-verify*.jpg
+_body-verify*.jpg

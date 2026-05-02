@@ -1,0 +1,99 @@
+rules_version = '2';
+
+// =============================================================================
+// SuitesForAll — Firebase Storage Security Rules
+// =============================================================================
+// Mirrors the Firestore role model. All media lives under
+// /workspaces/{wid}/... so we can scope by workspace.
+//
+// Rules summary:
+//   - Any authenticated member (workspace/{wid}/members/{uid} exists) can READ
+//     every file in that workspace (they need photos to render).
+//   - Only editors (admin/manager/mapeditor) OR the hardcoded root admin can
+//     WRITE / DELETE.
+//   - Per-file size cap: 25 MB (photos are resized client-side to ~500px so
+//     they're well under this; the cap is a DoS safety net).
+//
+// Deploy with: `firebase deploy --only storage`
+// or bundled:  `firebase deploy`
+// =============================================================================
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // Hardcoded owner emails — mirror of ROOT_ADMINS in the HTML.
+    function isRootAdmin() {
+      return request.auth != null
+        && request.auth.token.email != null
+        && request.auth.token.email.lower() in ['tony@al-en.com'];
+    }
+
+    // Member-role lookups for the given workspace.
+    function hasMemberDoc(wid) {
+      return firestore.exists(/databases/(default)/documents/workspaces/$(wid)/members/$(request.auth.uid));
+    }
+    function memberRole(wid) {
+      return firestore.get(/databases/(default)/documents/workspaces/$(wid)/members/$(request.auth.uid)).data.role;
+    }
+    // Archived members lose all workspace privileges — same logic as
+    // firestore.rules. Without this check, an archived member with a
+    // still-valid auth session (token has not yet expired) could read
+    // and write files freely from another tab. firestore.rules already
+    // closed this for state docs; this brings storage to parity.
+    function memberArchived(wid) {
+      return hasMemberDoc(wid)
+        && firestore.get(/databases/(default)/documents/workspaces/$(wid)/members/$(request.auth.uid)).data.get('archived', false) == true;
+    }
+    function isMember(wid) {
+      return request.auth != null
+        && (isRootAdmin() || (hasMemberDoc(wid) && !memberArchived(wid)));
+    }
+    function isEditor(wid) {
+      return isRootAdmin()
+        || (hasMemberDoc(wid) && !memberArchived(wid) && memberRole(wid) in ['admin', 'manager', 'mapeditor']);
+    }
+
+    // Receipts (rent payment receipts uploaded via Manual Payment
+    // modal). Per-user scoped path: the uploader's uid is part of the
+    // path, and write/delete only allowed when the path-uid matches
+    // the caller's auth.uid. Prevents an editor from overwriting or
+    // deleting a receipt uploaded by a different editor.
+    // Read stays open to all members so the operator viewing the
+    // receipt link from any device can render it.
+    // Existing flat /receipts/{file} paths still work via the
+    // generic match below — a future migration moves them under
+    // /receipts/{uid}/.
+    match /workspaces/{wid}/receipts/{uid}/{allPaths=**} {
+      allow read:   if isMember(wid);
+      allow write:  if isEditor(wid)
+                      && request.auth.uid == uid
+                      && (!('contentType' in request.resource)
+                          || request.resource.contentType.matches('^image/(png|jpeg|jpg|gif|webp|heic|heif)$')
+                          || request.resource.contentType.matches('^application/pdf$'))
+                      && request.resource.size < 25 * 1024 * 1024;
+      allow delete: if (request.auth.uid == uid && isEditor(wid))
+                       || isAdmin(wid);
+    }
+
+    // Per-workspace media tree (catch-all). Content-type check
+    // tightened: anchored regex, explicit allowlist of image subtypes
+    // and a single anchored `application/pdf` value. Per-user scope
+    // for receipts is matched MORE specifically above and takes
+    // precedence. Other paths (building photos, gallery, lease PDFs)
+    // fall through here — those are intentionally workspace-shared.
+    match /workspaces/{wid}/{allPaths=**} {
+      allow read:  if isMember(wid);
+      allow write: if isEditor(wid)
+                     && (!('contentType' in request.resource)
+                         || request.resource.contentType.matches('^image/(png|jpeg|jpg|gif|webp|heic|heif)$')
+                         || request.resource.contentType.matches('^application/pdf$'))
+                     && request.resource.size < 25 * 1024 * 1024;
+      allow delete: if isEditor(wid);
+    }
+    function isAdmin(wid) {
+      return isRootAdmin()
+        || (hasMemberDoc(wid) && !memberArchived(wid)
+            && firestore.get(/databases/(default)/documents/workspaces/$(wid)/members/$(request.auth.uid)).data.role == 'admin');
+    }
+  }
+}
