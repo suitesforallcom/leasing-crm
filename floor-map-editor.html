@@ -28658,28 +28658,33 @@ function _renderStackingHeader(b) {
   `;
 }
 
+// Shared "is this an inactive sub-room?" check — true when this unit
+// is a child of a whole-rented OR group-leased parent. The parent's
+// lease covers this sub-room's physical space, so it shouldn't be
+// counted independently in stats / shown as a separate row in reports
+// / displayed as vacant anywhere. Sub-rooms of VACANT parents stay
+// active — they can rent independently in that case.
+//
+// Used by every surface that filters office units (Stacking, Rent
+// Roll, Dashboard MRR / occupancy, etc.) so the answer is consistent
+// across the whole app.
+function _isInactiveSubRoom(u) {
+  if (!u || !u.parentId) return false;
+  if (typeof _unitParent !== 'function') return false;
+  const p = _unitParent(u);
+  if (!p) return false;
+  const parentDirectRented = (p.tenant || p.company) && p.status === 'occupied';
+  const parentInGroup      = !!p.groupId;
+  return parentDirectRented || parentInGroup;
+}
+
 // Shared filter for "is this unit a leasable office?" — used by every
 // stacking-view sub-renderer so they all draw the same population.
-//
-// Sub-room handling: a sub-room (u.parentId set) of a whole-rented OR
-// group-leased parent is INACTIVE — its physical space is already
-// covered by the parent's lease, so including it in the chart would
-// (a) double-count area and (b) display as red/vacant when in fact
-// it's part of the parent's rented footprint. Exclude these.
-// Sub-rooms of a VACANT parent stay in the chart — they rent
-// independently when the parent isn't whole-rented.
 function _stIsOffice(u) {
   if (!u) return false;
   if (typeof isArchived === 'function' && isArchived(u)) return false;
   if (u.type !== 'office' || u.rentable === false) return false;
-  if (u.parentId && typeof _unitParent === 'function') {
-    const p = _unitParent(u);
-    if (p) {
-      const parentDirectRented = (p.tenant || p.company) && p.status === 'occupied';
-      const parentInGroup      = !!p.groupId;
-      if (parentDirectRented || parentInGroup) return false;
-    }
-  }
+  if (_isInactiveSubRoom(u)) return false;
   return true;
 }
 
@@ -28838,7 +28843,7 @@ function _renderStackingChart(b) {
                and over only leased units (income picture). The Leased
                column is the operator's "what am I actually earning" view. -->
           <table class="sv-rate-tbl sv-mono">
-            <thead><tr><th></th><th>Total</th><th>Rentable</th><th>Leased</th></tr></thead>
+            <thead><tr><th></th><th title="Sum across all rentable office suites at their current rates (contract for occupied + proforma for vacant) — i.e. max MRR if everyone leased today">Potential</th><th title="Same money, expressed per rentable ft² of office space">Rentable</th><th title="What's actually leased + actually paid right now">Leased</th></tr></thead>
             <tbody>
               <tr>
                 <th>ft²</th>
@@ -28920,13 +28925,13 @@ function _renderStackingChart(b) {
             <th class="sv-st-l">Floor</th>
             <th>Suites</th>
             <th>Occ %</th>
-            <th>Total ft²</th>
-            <th>Rentable ft²</th>
-            <th class="sv-st-leased">Leased ft²</th>
-            <th>Rate ($/ft²/yr)</th>
-            <th>Lease rate ($/ft²/yr)</th>
-            <th>Rent / mo</th>
-            <th class="sv-st-leased sv-st-r">Income / mo</th>
+            <th title="Total drawn-outline area of the floor (incl. corridors / mech / commons)">Total ft²</th>
+            <th title="Sum of office-suite ft² (the leasable subset)">Rentable ft²</th>
+            <th class="sv-st-leased" title="Sum of currently-leased office-suite ft²">Leased ft²</th>
+            <th title="Asking $/ft²/yr — based on each suite's current proforma">Asking $/ft²/yr</th>
+            <th title="Actual leased $/ft²/yr — actual rent ÷ leased area">Leased $/ft²/yr</th>
+            <th title="Potential MRR — if every rentable suite leased today at current rates">Potential / mo</th>
+            <th class="sv-st-leased sv-st-r" title="Actual current MRR — what tenants are paying now">Income / mo</th>
           </tr>
         </thead>
         <tbody>
@@ -29222,9 +29227,9 @@ function _renderStackingSidebar(b) {
               <tr>
                 <th class="sv-ft-l">Floor</th>
                 <th>Suites</th>
-                <th>Total ft²</th>
-                <th>Rent ft²</th>
-                <th>Leased ft²</th>
+                <th title="Drawn outline area">Total ft²</th>
+                <th title="Sum of office-suite ft²">Rentable ft²</th>
+                <th title="Sum of leased office ft²">Leased ft²</th>
                 <th>Occ%</th>
                 <th class="sv-ft-r">Income/mo</th>
               </tr>
@@ -55262,9 +55267,22 @@ function calcStatsForUnits(units) {
   units.forEach(u => {
     if (isArchived(u)) return;
     if (u.rentable === false || u.type !== 'office') return;
+    // Skip sub-rooms whose parent is whole-rented / group-leased —
+    // counting them adds phantom vacant suites + double-counts area.
+    if (typeof _isInactiveSubRoom === 'function' && _isInactiveSubRoom(u)) return;
     totSqft += u.sqft || 0;
     pot += u.rent || 0;
-    if (u.status === 'occupied') { occ++; occSqft += u.sqft||0; actual += u.rent||0; }
+    if (u.status === 'occupied') {
+      occ++;
+      occSqft += u.sqft||0;
+      // CRITICAL: "actual revenue" = what the tenant ACTUALLY pays
+      // (contractRent), not the proforma asking rate (u.rent). Falling
+      // back to u.rent only when contractRent is 0 — handles legacy
+      // units that never had a contract figure separated from proforma.
+      // Mirrors the same precedence used by Stacking view + Rent Roll
+      // so the three surfaces always agree on the floor's MRR.
+      actual += +u.contractRent || +u.rent || 0;
+    }
     else if (u.status === 'vacant') vac++;
     else if (u.status === 'reserved') res++;
     if (u.window) { wSum += u.rate||0; wCnt++; } else { iSum += u.rate||0; iCnt++; }
@@ -68449,6 +68467,11 @@ function buildRentRollRows() {
         // Skip non-rentable (stairs, atrium, etc.)
         if (u.rentable === false) continue;
         if (u.type && !['office', 'kitchen', 'storage', 'conf'].includes(u.type) && u.type !== undefined) continue;
+        // Skip sub-rooms of a whole-rented / group-leased parent — the
+        // parent's lease covers their physical space; listing them as
+        // separate vacant rows would mislead the operator into thinking
+        // they're available to rent.
+        if (typeof _isInactiveSubRoom === 'function' && _isInactiveSubRoom(u)) continue;
         rows.push({
           buildingId: b.id,
           floorId: f.id,
