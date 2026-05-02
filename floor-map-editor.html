@@ -10697,9 +10697,13 @@
   /* A 'teamviewer' sees ONLY the floor plan with tenant names — no money.
      A 'viewer' sees the map + rent roll but cannot edit.
      'manager' and 'admin' see everything; only admin manages members. */
+  body.no-finance #railHome,
+  body.no-finance #railBill,
   body.no-finance #railRent,
+  body.no-finance #railLeases,
   body.no-finance #railPay,
   body.no-finance #railFin,
+  body.no-finance #railComm,
   body.no-finance .revenue-block,
   body.no-finance .money-row,
   body.no-finance .rent-strip,
@@ -23028,7 +23032,11 @@ function applyRoleVisibility() {
   document.body.classList.toggle('no-edit',    !canEdit());
 
   // Teamviewer landed on a finance view? Bounce them to the floor plan.
-  if (!canSeeFinance() && (state.ui.activeView === 'rentroll' || state.ui.activeView === 'payments')) {
+  // Why: every view in this list exposes rent / collection / payment data
+  // somewhere on the page (Home KPIs, Billing tabs, Lease rents, Stacking
+  // bar tooltips, Commission tables). Floor plan is the only safe landing.
+  const _financeViews = ['rentroll', 'payments', 'home', 'billing', 'invoices', 'leases', 'stacking', 'commissions'];
+  if (!canSeeFinance() && _financeViews.indexOf(state.ui.activeView) !== -1) {
     try { showFloorPlan(); } catch {}
   }
   // If the sidebar detail is showing financial fields, re-render.
@@ -28526,6 +28534,12 @@ function renderBuildingSelector() {
 // expiration. Classic brochure layout for quick rollover planning.
 // =========================================================================
 function showStackingPlan() {
+  // Stacking bars are coloured by lease expiration but tooltips and the
+  // sidebar expose rent — finance signal. Bounce teamviewer.
+  if (typeof canSeeFinance === 'function' && !canSeeFinance()) {
+    try { showFloorPlan(); } catch {}
+    return;
+  }
   state.ui.activeView = 'stacking';
   saveState();
   hideAllSecondaryViews();
@@ -67390,6 +67404,12 @@ function showInvoices() {
 // that need attention + quick-action shortcuts. All numbers come
 // from the user's real state (units, payments, leaseEnvelopes).
 function showHome() {
+  // Home shows collected/billed/overdue KPIs + revenue forecast — pure
+  // finance. Teamviewer must not land here even via direct call.
+  if (typeof canSeeFinance === 'function' && !canSeeFinance()) {
+    try { showFloorPlan(); } catch {}
+    return;
+  }
   state.ui = state.ui || {};
   state.ui.activeView = 'home';
   saveState();
@@ -68161,6 +68181,12 @@ function showFloorPlan() {
 // Fallback: tenants without attribution accrue to "Unattributed" bucket.
 // =========================================================================
 async function showCommissions() {
+  // Commissions = manager bonuses + leaderboard built on rent collected.
+  // Pure financial surface — teamviewer must not see it.
+  if (typeof canSeeFinance === 'function' && !canSeeFinance()) {
+    try { showFloorPlan(); } catch {}
+    return;
+  }
   // Flip view synchronously FIRST so even if the async member-load hiccups,
   // the user sees the tab switch happen. Previous bug: if loadCommMembers()
   // threw, later steps (rendering + rail highlight) never ran — looked like
