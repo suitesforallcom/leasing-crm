@@ -91,6 +91,36 @@ After each task, report:
 - Any risks or remaining issues
 - How to roll back
 
+## 9. Step Size & Review Cadence (set 2026-05-01)
+- Work in small, reviewable steps.
+- Do NOT modify more than 3–5 files in one pass unless explicitly approved.
+- After EACH step, summarize the changes and WAIT for the operator's
+  confirmation before continuing to the next step.
+- "Confirmation" = the operator explicitly types something like "ok",
+  "go ahead", "next", or substantive feedback. Silence is not approval.
+- If a task naturally requires touching more files, propose the file
+  list up front and wait for approval BEFORE making any edits.
+
+## 10. Rollback Instructions (set 2026-05-01)
+At the end of EVERY task (not just substantial ones), include a
+"Rollback" block with these four pieces:
+- **Commit hash before changes** — the SHA the working tree was at
+  before this task started (run `git rev-parse HEAD` at task start
+  and stash it).
+- **Branch name** — which feature/fix branch the work was done on.
+- **Files changed** — exact paths that were touched.
+- **Command to revert if needed** — copy-pasteable shell command(s)
+  that restore the pre-task state. Examples:
+  - `git checkout <branch> -- <file>` (revert single file)
+  - `git reset --hard <hash>` (revert whole branch — DESTRUCTIVE,
+    flag clearly)
+  - `git checkout main` followed by `git branch -D <feature-branch>`
+    (abandon the branch entirely).
+
+Even when no commit was made yet, list the working-tree files that
+were modified so the operator can `git checkout HEAD -- <file>` per
+file if desired.
+
 ## Core principles
 
 1. Always optimize for correctness, clarity, maintainability, security, and delivery speed together.
