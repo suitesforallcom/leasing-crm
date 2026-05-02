@@ -12534,6 +12534,7 @@
           <button class="bv-tab"        id="billTabLeases"    onclick="setBillingTab('leases')">Leases <span class="bv-tab-count" id="billLeaseCount">—</span></button>
           <button class="bv-tab"        id="billTabContracts" onclick="setBillingTab('contracts')">Vendor contracts <span class="bv-tab-count" id="billContractCount">—</span></button>
           <button class="bv-tab"        id="billTabVacancy"   onclick="setBillingTab('vacancy')">Vacancy <span class="bv-tab-count" id="billVacancyCount">—</span></button>
+          <button class="bv-tab"        id="billTabCalendar"  onclick="setBillingTab('calendar')">Calendar <span class="bv-tab-count" id="billCalendarCount">—</span></button>
         </div>
         <div class="bv-tab-body">
 
@@ -12986,6 +12987,55 @@
             <div style="font-size: 34px; margin-bottom: 8px;">🏢</div>
             <div style="font-size: 15px; font-weight: 600; margin-bottom: 6px;">No vacant suites</div>
             <div style="font-size: 12.5px;">Every suite in the current filter has an active lease.</div>
+          </div>
+        </div>
+
+        <!-- Calendar panel — upcoming move-outs (lease ends in window) and
+             move-ins (lease starts in future window). Combined timeline
+             sorted by date. Populated by renderCalendarPanel(). -->
+        <div id="billingCalendarPanel" style="display:none;">
+          <div class="billing-kpis" id="calendarKpis"></div>
+          <div class="ar-toolbar" style="margin-top: 6px;">
+            <div class="ar-toolbar-row">
+              <input type="text" class="rr-search" id="calendarSearch" placeholder="Search suite, building, tenant…" oninput="renderCalendarPanel()" style="min-width: 220px; flex: 1 1 260px;">
+              <select id="calendarWindow" class="ar-sel" onchange="renderCalendarPanel()" title="Time window">
+                <option value="30">Next 30 days</option>
+                <option value="60">Next 60 days</option>
+                <option value="90" selected>Next 90 days</option>
+                <option value="180">Next 180 days</option>
+              </select>
+              <select id="calendarType" class="ar-sel" onchange="renderCalendarPanel()" title="Event type">
+                <option value="">All events</option>
+                <option value="moveout">Move-outs only</option>
+                <option value="movein">Move-ins only</option>
+              </select>
+              <select id="calendarBuilding" class="ar-sel" onchange="renderCalendarPanel()" title="Filter by building">
+                <option value="">All buildings</option>
+              </select>
+              <div style="flex:1;"></div>
+              <button class="rr-btn ar-btn-sm" onclick="exportCalendarCsv()" title="Export current view to CSV">⬇ CSV</button>
+            </div>
+          </div>
+          <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: auto; margin-top: 6px;">
+            <table class="inv-table" id="calendarTable">
+              <thead>
+                <tr>
+                  <th style="width: 110px;">Date</th>
+                  <th style="width: 80px;">Days</th>
+                  <th style="width: 110px;">Type</th>
+                  <th style="width: 110px;">Suite</th>
+                  <th>Building · Floor</th>
+                  <th>Tenant</th>
+                  <th style="width: 100px; text-align: right;">Monthly rent</th>
+                </tr>
+              </thead>
+              <tbody id="calendarTableBody"></tbody>
+            </table>
+          </div>
+          <div id="calendarEmpty" style="display:none; padding:40px; text-align:center; color: var(--muted);">
+            <div style="font-size: 34px; margin-bottom: 8px;">📅</div>
+            <div style="font-size: 15px; font-weight: 600; margin-bottom: 6px;">Nothing scheduled</div>
+            <div style="font-size: 12.5px;">No move-ins or move-outs in this window.</div>
           </div>
         </div>
         </div><!-- /bv-tab-body — wraps all four sub-panels above -->
@@ -71525,6 +71575,7 @@ function setBillingTab(tab) {
   document.getElementById('billTabLeases')?.classList.toggle('active',    tab === 'leases');
   document.getElementById('billTabContracts')?.classList.toggle('active', tab === 'contracts');
   document.getElementById('billTabVacancy')?.classList.toggle('active',   tab === 'vacancy');
+  document.getElementById('billTabCalendar')?.classList.toggle('active',  tab === 'calendar');
   // Show the requested panel, hide the rest. Each panel is independent
   // and has its own render function — they don't share state.
   const tenantsPanel = document.getElementById('billingTenantsPanel');
@@ -71539,6 +71590,8 @@ function setBillingTab(tab) {
   if (contractsPanel) contractsPanel.style.display = tab === 'contracts' ? '' : 'none';
   const vacancyPanel = document.getElementById('billingVacancyPanel');
   if (vacancyPanel) vacancyPanel.style.display = tab === 'vacancy' ? '' : 'none';
+  const calendarPanel = document.getElementById('billingCalendarPanel');
+  if (calendarPanel) calendarPanel.style.display = tab === 'calendar' ? '' : 'none';
   if (tab === 'tenants')   renderTenantsPanelZip();  // ZIP-style — paints bvTenantsTable from state
   if (tab === 'invoices')  renderInvoicesPage();
   if (tab === 'aging')     renderAgingPanel();
@@ -71546,6 +71599,7 @@ function setBillingTab(tab) {
   if (tab === 'leases')    renderLeasesPanel();
   if (tab === 'contracts') renderContractsPanel();
   if (tab === 'vacancy' && typeof renderVacancyPanel === 'function') renderVacancyPanel();
+  if (tab === 'calendar' && typeof renderCalendarPanel === 'function') renderCalendarPanel();
   // Tab counts on the header (visible counters next to each tab name)
   try { _bvUpdateTabCounts(); } catch {}
   // Start/stop the 30s safety-net auto-refresh based on sub-tab.
@@ -71603,6 +71657,32 @@ function _bvUpdateTabCounts() {
       }
     }
     setCount('billVacancyCount', vac);
+  } catch {}
+  try {
+    // Calendar count = move-outs + move-ins in the next 90 days (default
+    // window). Cheap walk; matches what renderCalendarPanel shows by default.
+    const now = Date.now();
+    const horizon = now + 90 * 86400000;
+    let evt = 0;
+    for (const b of (state.buildings || [])) {
+      if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
+      for (const f of (b.floors || [])) {
+        for (const u of (f.units || [])) {
+          if (typeof _isInactiveSubRoom === 'function' && _isInactiveSubRoom(u)) continue;
+          const endStr   = u.until || u.leaseEnd || '';
+          const startStr = u.leaseStart || u.signed || '';
+          if (u.status === 'occupied' && endStr) {
+            const t = Date.parse(endStr);
+            if (!isNaN(t) && t >= now && t <= horizon) evt++;
+          }
+          if (startStr) {
+            const t = Date.parse(startStr);
+            if (!isNaN(t) && t > now && t <= horizon) evt++;
+          }
+        }
+      }
+    }
+    setCount('billCalendarCount', evt);
   } catch {}
 }
 
@@ -71760,6 +71840,173 @@ function exportVacancyCsv() {
   const a = document.createElement('a');
   a.href = url;
   a.download = `vacancy-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// =====================================================================
+// Move-out / Move-in calendar — upcoming lease boundaries within a
+// configurable time window. Move-out = occupied unit whose u.until
+// lands inside the window. Move-in = unit whose u.leaseStart is in
+// the future and inside the window (covers reserved + signed-but-not-
+// started leases). Combined timeline sorted by date ascending.
+// =====================================================================
+function _calendarCollect() {
+  const now = Date.now();
+  const horizon = now + 365 * 86400000;  // collect everything up to a year, filter later
+  const events = [];
+  for (const b of (state.buildings || [])) {
+    if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
+    for (const f of (b.floors || [])) {
+      for (const u of (f.units || [])) {
+        if (typeof _isInactiveSubRoom === 'function' && _isInactiveSubRoom(u)) continue;
+        const endStr   = u.until || u.leaseEnd || '';
+        const startStr = u.leaseStart || u.signed || '';
+        const rent = +u.rent || 0;
+        const tenant = u.tenant || u.company || '';
+        const company = u.company || '';
+        const base = {
+          bldgId: b.id, bldgName: b.name || '',
+          flrId: f.id, flrName: f.name || '',
+          uId: u.id, suite: u.suite || u.label || '',
+          tenant, company, rent
+        };
+        if (u.status === 'occupied' && endStr) {
+          const t = Date.parse(endStr);
+          if (!isNaN(t) && t >= now && t <= horizon) {
+            events.push(Object.assign({}, base, { type: 'moveout', date: endStr, ts: t }));
+          }
+        }
+        if (startStr) {
+          const t = Date.parse(startStr);
+          if (!isNaN(t) && t > now && t <= horizon) {
+            events.push(Object.assign({}, base, { type: 'movein', date: startStr, ts: t }));
+          }
+        }
+      }
+    }
+  }
+  return events;
+}
+
+function _calendarApplyFilters(events) {
+  const q = (document.getElementById('calendarSearch')?.value || '').trim().toLowerCase();
+  const win = +(document.getElementById('calendarWindow')?.value || 90);
+  const type = document.getElementById('calendarType')?.value || '';
+  const bldg = document.getElementById('calendarBuilding')?.value || '';
+  const cutoff = Date.now() + win * 86400000;
+  return events.filter(e => {
+    if (e.ts > cutoff) return false;
+    if (type && e.type !== type) return false;
+    if (bldg && e.bldgId !== bldg) return false;
+    if (q) {
+      const blob = (e.suite + ' ' + e.bldgName + ' ' + e.flrName + ' ' + e.tenant + ' ' + e.company).toLowerCase();
+      if (blob.indexOf(q) === -1) return false;
+    }
+    return true;
+  });
+}
+
+function _calendarPopulateBuildingSelect() {
+  const sel = document.getElementById('calendarBuilding');
+  if (!sel) return;
+  const cur = sel.value;
+  const seen = new Set();
+  const opts = ['<option value="">All buildings</option>'];
+  for (const b of (state.buildings || [])) {
+    if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
+    if (seen.has(b.id)) continue;
+    seen.add(b.id);
+    opts.push(`<option value="${esc(b.id)}">${esc(b.name || '(unnamed)')}</option>`);
+  }
+  sel.innerHTML = opts.join('');
+  if (cur && seen.has(cur)) sel.value = cur;
+}
+
+function renderCalendarPanel() {
+  if (typeof canSeeFinance === 'function' && !canSeeFinance()) return;
+  _calendarPopulateBuildingSelect();
+  const all = _calendarCollect();
+  const events = _calendarApplyFilters(all);
+  events.sort((a, b) => a.ts - b.ts);
+
+  const now = Date.now();
+  const inWindow = (days, type) => events.filter(e => e.type === type && e.ts <= now + days * 86400000).length;
+  const sumRent  = (days, type) => events.filter(e => e.type === type && e.ts <= now + days * 86400000).reduce((s, e) => s + (e.rent || 0), 0);
+
+  const kpis = document.getElementById('calendarKpis');
+  if (kpis) {
+    const fmt = n => '$' + Math.round(n).toLocaleString();
+    kpis.innerHTML = `
+      <div class="bv-kpi"><div class="bv-kpi-label">Move-outs · 30d</div><div class="bv-kpi-value bv-danger">${inWindow(30, 'moveout')}</div><div class="bv-kpi-sub">−${fmt(sumRent(30, 'moveout'))}/mo at risk</div></div>
+      <div class="bv-kpi"><div class="bv-kpi-label">Move-outs · 90d</div><div class="bv-kpi-value">${inWindow(90, 'moveout')}</div><div class="bv-kpi-sub">−${fmt(sumRent(90, 'moveout'))}/mo at risk</div></div>
+      <div class="bv-kpi"><div class="bv-kpi-label">Move-ins · 30d</div><div class="bv-kpi-value" style="color:#16a34a;">${inWindow(30, 'movein')}</div><div class="bv-kpi-sub">+${fmt(sumRent(30, 'movein'))}/mo incoming</div></div>
+      <div class="bv-kpi"><div class="bv-kpi-label">Move-ins · 90d</div><div class="bv-kpi-value">${inWindow(90, 'movein')}</div><div class="bv-kpi-sub">+${fmt(sumRent(90, 'movein'))}/mo incoming</div></div>
+    `;
+  }
+
+  const body  = document.getElementById('calendarTableBody');
+  const empty = document.getElementById('calendarEmpty');
+  const table = document.getElementById('calendarTable');
+  if (!body) return;
+  if (events.length === 0) {
+    body.innerHTML = '';
+    if (empty) empty.style.display = '';
+    if (table) table.style.display = 'none';
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+  if (table) table.style.display = '';
+
+  const fmtMoney = n => n > 0 ? '$' + n.toLocaleString() : '<span style="color:var(--muted);">—</span>';
+  const fmtTenant = (t, c) => t
+    ? esc(t) + (c && c !== t ? ` <span style="color:var(--muted); font-size:11.5px;">· ${esc(c)}</span>` : '')
+    : '<span style="color:var(--muted);">—</span>';
+  const typePill = type => type === 'moveout'
+    ? '<span style="display:inline-block; padding:2px 8px; border-radius:10px; background:#fee2e2; color:#dc2626; font-size:11.5px; font-weight:600;">→ Move-out</span>'
+    : '<span style="display:inline-block; padding:2px 8px; border-radius:10px; background:#dcfce7; color:#16a34a; font-size:11.5px; font-weight:600;">← Move-in</span>';
+
+  body.innerHTML = events.map(e => {
+    const days = Math.max(0, Math.ceil((e.ts - now) / 86400000));
+    const dayCls = days <= 7 ? 'color:#dc2626; font-weight:700;' : (days <= 30 ? 'color:#f59e0b; font-weight:600;' : '');
+    return `<tr style="cursor:pointer;" onclick="rentRollJumpToUnit && rentRollJumpToUnit('${esc(e.bldgId)}','${esc(e.flrId)}','${esc(e.uId)}')" title="Click to open suite">
+      <td>${esc(e.date)}</td>
+      <td><span style="${dayCls}">${days === 0 ? 'today' : days === 1 ? 'tomorrow' : 'in ' + days + 'd'}</span></td>
+      <td>${typePill(e.type)}</td>
+      <td><b>${esc(e.suite || '—')}</b></td>
+      <td>${esc(e.bldgName || '—')}${e.flrName ? ' · ' + esc(e.flrName) : ''}</td>
+      <td>${fmtTenant(e.tenant, e.company)}</td>
+      <td style="text-align:right;">${fmtMoney(e.rent)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function exportCalendarCsv() {
+  if (typeof canSeeFinance === 'function' && !canSeeFinance()) {
+    if (typeof toast === 'function') toast('Export not available for your role', 'error');
+    return;
+  }
+  const all = _calendarCollect();
+  const events = _calendarApplyFilters(all);
+  events.sort((a, b) => a.ts - b.ts);
+  const esc1 = v => {
+    const s = (v == null) ? '' : String(v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const now = Date.now();
+  const header = ['Date', 'Days from today', 'Type', 'Suite', 'Building', 'Floor', 'Tenant', 'Company', 'Monthly rent'];
+  const lines = [header.join(',')];
+  for (const e of events) {
+    const days = Math.max(0, Math.ceil((e.ts - now) / 86400000));
+    lines.push([e.date, days, e.type, e.suite, e.bldgName, e.flrName, e.tenant, e.company, e.rent].map(esc1).join(','));
+  }
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `move-calendar-${new Date().toISOString().slice(0, 10)}.csv`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
