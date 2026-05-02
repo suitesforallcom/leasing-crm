@@ -6745,6 +6745,18 @@
      from selection (teal) + parent (slate). Primary gets a slightly
      thicker stroke + a 🔗 marker so the operator can identify the
      "lead" suite at a glance. */
+  /* When ANY member of a multi-suite-lease group is selected, every
+     other member of the same group lights up too so the operator sees
+     the whole leased area as one selection. The selected unit itself
+     keeps its existing .selected styling — siblings get the active-group
+     treatment (thicker purple stroke + tinted fill). Without this rule,
+     clicking 101 would only highlight 101 even though 110/115/118/etc.
+     are all under the same lease. */
+  .unit-group--group-active:not(.selected) > .unit-rect {
+    stroke: #a855f7 !important;
+    stroke-width: 3.5 !important;
+    filter: drop-shadow(0 0 4px rgba(168, 85, 247, 0.45));
+  }
   .unit-group--in-tenant-group:not(.selected):not(.multi-selected) > .unit-rect {
     stroke: #a855f7;
     stroke-width: 2.2;
@@ -32491,6 +32503,16 @@ function renderUnits() {
 
   // === PASS 1: draw fills + labels ===
   const mapViewMode = (typeof getMapViewMode === 'function') ? getMapViewMode() : 'lease';
+  // Active group highlight — when the operator clicks a unit that's part
+  // of a multi-suite lease, EVERY member of that group lights up so the
+  // whole rented area reads as one selection. Driven from selectedIds:
+  // if the (single) selected unit has a groupId, capture it; siblings
+  // get a "group-active" class below.
+  let _activeGroupId = null;
+  if (selectedIds && selectedIds.length === 1) {
+    const _selUnit = units.find(x => x.id === selectedIds[0]);
+    if (_selUnit && _selUnit.groupId) _activeGroupId = _selUnit.groupId;
+  }
   units.forEach(u => {
     const isRentable = u.rentable !== false && u.type === 'office';
     // Fill respects the active map view mode (lease status / unit type /
@@ -32534,6 +32556,7 @@ function renderUnits() {
         if (parentDirectRented || parentInGroup) isInactiveChild = true;
       }
     }
+    const _isInActiveGroup = !!(_activeGroupId && u.groupId === _activeGroupId);
     g.setAttribute('class',
       'unit-group' +
       (isDarkFill ? ' dark-fill' : '') +
@@ -32542,6 +32565,7 @@ function renderUnits() {
       (isInactiveChild ? ' unit-group--inactive-child' : '') +
       (u.groupId ? ' unit-group--in-tenant-group' : '') +
       (u.groupId && u.groupRole === 'primary' ? ' unit-group--tenant-primary' : '') +
+      (_isInActiveGroup ? ' unit-group--group-active' : '') +
       (selectedIds.length === 1 && selectedIds[0] === u.id ? ' selected' : '') +
       (selectedIds.length > 1 && isSelected ? ' multi-selected' : ''));
     if (u.groupId) g.dataset.groupId = u.groupId;
