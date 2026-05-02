@@ -40405,15 +40405,35 @@ function _renderUnitV2Header(u, editOn) {
   //            fields were linked.
   //   vacant → BIG number is the proforma (asking) rate. There's no
   //            contract on a vacant suite to show.
-  const monthlyRent  = isRented ? contractRent : proformaRentRaw;
-  // Proforma reference is strictly u.rent. Same reasoning — earlier
-  // we let it fall back to contractRent, which made the row mirror
-  // the big number whenever proforma was unset. Now the row shows
-  // what's actually stored in u.rent and nothing else; if u.rent is
-  // 0, the row hides itself (gated below by proformaLineOn).
-  const proformaRent = proformaRentRaw;
-  const effectiveRate = (monthlyRent > 0 && u.sqft > 0) ? (monthlyRent * 12 / u.sqft) : 0;
-  const proformaRate  = (proformaRent > 0 && u.sqft > 0) ? (proformaRent * 12 / u.sqft) : 0;
+  // Multi-suite-lease aggregation. When this unit is part of a group
+  // (Shift+G multi-suite lease), the headline numbers + rate the
+  // operator sees should reflect the WHOLE LEASE, not just this suite's
+  // pro-rata share. Operator's mental model: "this is one tenant on one
+  // contract" — splitting per-suite breaks that model and clutters the
+  // panel. Per-suite share lives in the tenant-group banner just below
+  // for operators who want the breakdown.
+  let monthlyRent, proformaRent, effectiveRate, proformaRate;
+  let groupAggHint = '';
+  if (u.groupId && typeof _unitsInGroup === 'function') {
+    const members = _unitsInGroup(u.groupId);
+    if (members.length >= 2) {
+      const grpRent     = members.reduce((x, m) => x + (+m.contractRent || +m.rent || 0), 0);
+      const grpProforma = members.reduce((x, m) => x + (+m.rent || 0), 0);
+      const grpSqft     = members.reduce((x, m) => x + (+m.sqft || 0), 0);
+      monthlyRent  = grpRent;
+      proformaRent = grpProforma;
+      effectiveRate = (grpRent > 0     && grpSqft > 0) ? (grpRent     * 12 / grpSqft) : 0;
+      proformaRate  = (grpProforma > 0 && grpSqft > 0) ? (grpProforma * 12 / grpSqft) : 0;
+      groupAggHint = ` <span style="font-size:10px; color:var(--muted); font-weight:500; margin-left:4px;" title="Combined across ${members.length} suites in this lease">· ${members.length} suites combined</span>`;
+    }
+  }
+  if (monthlyRent === undefined) {
+    // Single-suite (no group) — original behavior preserved.
+    monthlyRent  = isRented ? contractRent : proformaRentRaw;
+    proformaRent = proformaRentRaw;
+    effectiveRate = (monthlyRent > 0 && u.sqft > 0) ? (monthlyRent * 12 / u.sqft) : 0;
+    proformaRate  = (proformaRent > 0 && u.sqft > 0) ? (proformaRent * 12 / u.sqft) : 0;
+  }
   // Layer toggles — default ON unless explicitly disabled.
   const showUnitPrice     = state.settings.showUnitPrice     !== false;
   const showRatePerSqft   = state.settings.showRatePerSqft   !== false;
@@ -40507,7 +40527,7 @@ function _renderUnitV2Header(u, editOn) {
         ${topLeft}
         ${showUnitPrice ? `
           <span class="upv2-rent-value-wrap">
-            <span class="upv2-rent-value">${monthlyRent > 0 ? '$' + monthlyRent.toLocaleString() : '—'}</span>
+            <span class="upv2-rent-value">${monthlyRent > 0 ? '$' + monthlyRent.toLocaleString() : '—'}</span>${groupAggHint}
             ${editPrimaryPencil}
           </span>
         ` : ''}
