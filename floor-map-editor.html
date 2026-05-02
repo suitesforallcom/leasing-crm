@@ -6856,6 +6856,16 @@
   .unit-overdue-mark-text { fill: #fff; font: bold 12px system-ui;
                             text-anchor: middle; dominant-baseline: central;
                             pointer-events: none; user-select: none; }
+  /* Charge-failed marker — Stripe couldn't charge the card on file
+     for a specific invoice (set by invoice.payment_failed webhook).
+     Distinct from .unit-overdue-mark which signals "tenant is late
+     overall" — this signals "the auto-charge attempt itself failed",
+     so the operator can scan for cards that need to be re-collected
+     vs tenants who simply haven't paid yet. */
+  .unit-charge-failed-mark { fill: #dc2626; pointer-events: none; }
+  .unit-charge-failed-mark-text { fill: #fff; font: bold 11px system-ui;
+                                  text-anchor: middle; dominant-baseline: central;
+                                  pointer-events: none; user-select: none; }
   /* Pending onboarding — violet border + soft pulse on units where the
      lease envelope is sent but unsigned, OR the deposit / first-rent
      invoice is open. Distinct from .unit-overdue-ring (red, more urgent)
@@ -33293,6 +33303,39 @@ function renderUnits() {
         markBg.appendChild(tt);
         g.appendChild(markTx);
       }
+    }
+
+    // Charge-failure marker — red dot with "$" anchored TOP-LEFT.
+    // Stamped by invoice.payment_failed webhook into
+    // u.stripe.lastChargeFailure when Stripe could not charge the
+    // tenant's saved card on file. Renders in BOTH compact and
+    // legacy modes (lives outside the legacy-badge if-block above)
+    // since the failure can co-occur with overdue status — operator
+    // benefits from seeing both signals at once. Top-left chosen so
+    // it doesn't collide with the bottom-right "!" overdue mark
+    // (legacy mode) or the top-right "!" overdue dot (compact mode).
+    const _cf = u && u.stripe && u.stripe.lastChargeFailure;
+    if (_cf && _cf.invoiceId && u.w >= 30 && u.h >= 30) {
+      const cfX = 11, cfY = 11;
+      const cfBg = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      cfBg.setAttribute('class', 'unit-charge-failed-mark');
+      cfBg.setAttribute('cx', cfX);
+      cfBg.setAttribute('cy', cfY);
+      cfBg.setAttribute('r', 8);
+      cfBg.setAttribute('opacity', effectiveOpacity);
+      const cfTt = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+      const cfYm = _cf.ym ? ' · ' + _cf.ym : '';
+      const cfAtt = (_cf.attemptCount && _cf.attemptCount > 1) ? ' · attempt ' + _cf.attemptCount : '';
+      const cfReason = _cf.code ? ' · ' + _cf.code : '';
+      cfTt.textContent = 'Auto-charge failed' + cfYm + cfAtt + cfReason;
+      cfBg.appendChild(cfTt);
+      g.appendChild(cfBg);
+      const cfTx = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      cfTx.setAttribute('class', 'unit-charge-failed-mark-text');
+      cfTx.setAttribute('x', cfX);
+      cfTx.setAttribute('y', cfY);
+      cfTx.textContent = '$';
+      g.appendChild(cfTx);
     }
 
     // Auto-invoice error overlay — appended LAST inside the unit
