@@ -196,6 +196,15 @@ For fast-track changes:
 If in doubt whether a change is fast-track: assume it's NOT, and use
 the full workflow.
 
+## 13. Deploy command rendering (set 2026-05-01)
+When sending the operator a deploy command (or any shell command they're
+expected to copy + paste), render it as a fenced ```bash code block in
+the chat reply — never as inline backticks alone, never as a plain
+sentence. Code blocks render with a copy icon in the chat UI, so the
+operator can grab the whole multi-step pipeline in one click. Continue
+also writing to clipboard via computer-use, but the visible code block
+is mandatory.
+
 ## Core principles
 
 1. Always optimize for correctness, clarity, maintainability, security, and delivery speed together.
