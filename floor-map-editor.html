@@ -28766,30 +28766,51 @@ function _renderStackingChart(b) {
     const isSel = selectedLevel !== null && f.number === selectedLevel;
     const rowClass = selectedLevel !== null ? (isSel ? 'sv-row-active' : 'sv-row-dim') : '';
 
-    // Pre-process units into segments. Adjacent units sharing the same
-    // groupId collapse into a single segment so a multi-suite lease
-    // renders as ONE wide bar with centered tenant + total rent — not N
-    // narrow stripes the operator has to mentally re-glue. Single units
-    // (no group, OR group member with non-group neighbour on the sorted
-    // line) render as before.
+    // Pre-process units into segments. ALL units sharing the same
+    // groupId collapse into a single segment regardless of spatial
+    // position — a multi-suite lease must read as ONE bar even when
+    // a vacant suite or another tenant happens to sit between two of
+    // its members in the physical floor plan. Without this, e.g. NU's
+    // 9 suites get split into 2-3 segments by an unrelated vacant
+    // suite that happens to be between them in x-order.
+    //
+    // Group anchor x = min x of any member, so the merged segment
+    // appears at the leftmost of its physical range. Ungrouped units
+    // keep their own x as anchor. The whole list is then sorted by
+    // anchor x for the final left-to-right layout.
     const segments = [];
     {
-      let cur = null;
+      const byGroup = new Map();   // groupId → segment
       for (const u of units) {
-        if (cur && u.groupId && u.groupId === cur.groupId) {
-          cur.units.push(u);
-          cur.sqft += +u.sqft || 0;
-          cur.rent += +u.contractRent || +u.rent || 0;
+        if (u.groupId) {
+          let seg = byGroup.get(u.groupId);
+          if (!seg) {
+            seg = {
+              groupId: u.groupId,
+              units: [],
+              sqft: 0,
+              rent: 0,
+              anchorX: Infinity,
+            };
+            byGroup.set(u.groupId, seg);
+            segments.push(seg);
+          }
+          seg.units.push(u);
+          seg.sqft += +u.sqft || 0;
+          seg.rent += +u.contractRent || +u.rent || 0;
+          if ((+u.x || 0) < seg.anchorX) seg.anchorX = +u.x || 0;
         } else {
-          cur = {
-            groupId: u.groupId || null,
+          segments.push({
+            groupId: null,
             units: [u],
             sqft: +u.sqft || 0,
             rent: +u.contractRent || +u.rent || 0,
-          };
-          segments.push(cur);
+            anchorX: +u.x || 0,
+          });
         }
       }
+      segments.sort((a, c) => a.anchorX - c.anchorX
+                           || String(a.units[0].id).localeCompare(String(c.units[0].id)));
     }
 
     const suitesHTML = segments.map((seg, i) => {
