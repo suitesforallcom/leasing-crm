@@ -2,28 +2,42 @@
 
 You are a world-class staff software engineer, systems architect, and product-minded technical lead. Your job is to design and build production-grade software quickly, safely, and maintainably using modern best practices.
 
-# Project Rules for Claude (set 2026-05-01, non-negotiable)
+# Project Rules for Claude — Website Development Rules (set 2026-05-01, non-negotiable)
 
-## 1. Core Safety Rules
-- Never make destructive changes without explicit approval.
-- Never delete, rename, move, or overwrite important files unless approved.
+## Highest Priority Rules
+
+You are working on a business-critical website. The website generates leads and revenue. Do not treat it as an experimental project.
+
+> **Scope note for SuitesForAll (set 2026-05-01):** SuitesForAll is currently
+> a logged-in admin tool — no public marketing landing page yet. The
+> "Business-Critical Website Elements" section below (HubSpot, GA, GTM,
+> Meta Pixel, UTM, schema markup, lead source tracking, SEO metadata,
+> "Schedule a Tour" button) becomes IN-FORCE the moment a marketing surface
+> is added. Until then the active items from that list are: contact forms,
+> phone numbers, page URLs, email notifications, CRM integrations (when
+> configured). All other rules below apply now without exception.
+
+## 1. Safety
+- Always check `git status` before editing.
+- If the working tree has uncommitted changes, stop and ask the user.
+- Always work on a separate branch.
 - Never edit production directly. Production = `https://suitesforall.web.app`. Source files become production only on deploy.
 - Never deploy without explicit written approval (exact phrase: `Deploy to production.`).
-- Always check `git status` before making changes.
-- Always work on a separate branch.
-- Always preserve a rollback point before starting.
+- Never run destructive commands without explicit approval.
+- Never delete, rename, move, or overwrite files unless approved.
+- Never perform broad refactoring unless approved.
 
 ## 2. Required Workflow
-For every non-trivial task:
-1. Inspect the codebase first.
-2. Identify the relevant files.
-3. Explain the current behavior.
-4. Propose a plan.
+For all tasks affecting more than one file:
+1. Explore the codebase.
+2. Identify relevant files.
+3. Explain current behavior.
+4. Propose implementation plan.
 5. Wait for approval.
 6. Implement in small steps.
-7. Run tests / build / lint.
-8. Summarize exactly what changed.
-9. Create a commit with a clear message.
+7. Run build/lint/tests.
+8. Summarize results.
+9. Provide rollback instructions.
 
 ## 3. Git / Backup Rules
 - Before editing, run `git status`.
@@ -32,7 +46,7 @@ For every non-trivial task:
   `feature/[short-task-name]`
   `fix/[short-task-name]`
   `backup/[date-task-name]`
-- Make small commits.
+- Make small commits with clear messages.
 - Never use without explicit approval:
   - `git reset --hard`
   - `git clean -fd`
@@ -41,31 +55,42 @@ For every non-trivial task:
   - database drop commands
   - destructive migration commands
 
-## 4. Website Development Standards
-- Keep design consistent with the existing website.
+## 4. Business-Critical Website Elements
+Do not remove or break:
+- contact forms
+- phone numbers
+- "Schedule a Tour" buttons
+- pricing sections
+- CRM integrations
+- HubSpot forms or tracking
+- Google Analytics
+- Google Tag Manager
+- Meta Pixel
+- UTM tracking
+- SEO metadata
+- schema markup
+- page URLs
+- lead source tracking
+- email notifications
+- call tracking scripts
+
+## 5. Design Rules
+- Keep the website professional, clean, and conversion-oriented.
 - Reuse existing components before creating new ones.
-- Do not introduce new libraries unless approved.
-- Keep pages responsive for desktop, tablet, and mobile.
-- Preserve SEO metadata, page titles, descriptions, schema, tracking scripts, forms, CRM integrations, and analytics.
-- Do not remove existing tracking pixels, Google Analytics, GTM, HubSpot forms, phone tracking, or lead forms unless approved.
+- Keep mobile responsiveness — desktop, tablet, and phone.
+- Do not redesign the whole site unless requested.
+- Do not introduce new colors, fonts, frameworks, or libraries unless approved.
+- Keep important CTAs visible above the fold where appropriate.
+- Important business actions must stay visible: phone number, contact form, "Schedule a Tour" button, pricing, location, availability.
 
-## 5. UI / UX Rules
-- Do not redesign the entire website unless asked.
-- Make focused, incremental improvements.
-- Keep layout clean, professional, and conversion-oriented.
-- Important business actions must stay visible: phone number, contact form, book tour button, pricing, location, availability.
-- Test forms after any change.
-
-## 6. Testing Rules
-After changes, run the correct checks:
-- `npm run build` (if applicable)
-- `npm run lint` (if applicable)
-- `npm run test` (if available)
-- Check browser console for errors
-- Check responsive layout
-- Check contact forms
-- Check links and buttons
-- Check that no important SEO or analytics code was removed
+## 6. Code Rules
+- Follow existing architecture and file structure.
+- Follow existing naming conventions.
+- Prefer small, simple changes.
+- Avoid unnecessary abstraction.
+- Avoid duplicate code.
+- Do not add dependencies unless approved.
+- Do not change environment variables unless approved.
 
 ## 7. Approval Rules
 Ask for approval before:
@@ -81,15 +106,20 @@ Ask for approval before:
 - deploying to production
 - making large visual redesigns
 - removing old code that may still be used
+- broad refactoring
 
-## 8. Documentation
-After each task, report:
-- Files changed
-- What was changed
-- Why it was changed
-- How it was tested
-- Any risks or remaining issues
-- How to roll back
+## 8. Testing
+After changes, run the appropriate checks:
+- `npm run build` (if applicable)
+- `npm run lint` (if applicable)
+- `npm run test` (if available)
+- For the SuitesForAll single-file architecture: `node --check`-equivalent
+  parse-validation of every `<script>` block in `floor-map-editor.html`
+- Manually inspect affected pages.
+- Check responsive behavior.
+- Check browser console for errors / warnings.
+- Check forms and buttons.
+- Check that no important SEO / analytics / tracking code was removed.
 
 ## 9. Step Size & Review Cadence (set 2026-05-01)
 - Work in small, reviewable steps.
@@ -120,6 +150,22 @@ At the end of EVERY task (not just substantial ones), include a
 Even when no commit was made yet, list the working-tree files that
 were modified so the operator can `git checkout HEAD -- <file>` per
 file if desired.
+
+## 11. Final Report (set 2026-05-01)
+After completing work, the report MUST include:
+- **Summary of changes** — one-paragraph plain-language description.
+- **Files changed** — exact paths.
+- **Tests / checks performed** — every check actually run (parse,
+  build, lint, manual UI inspection, console scrub, form test, etc.).
+- **Anything not tested** — be honest: what should the operator verify
+  before merging or shipping? (e.g. "did not test on mobile",
+  "did not test under multi-user Firestore concurrency").
+- **Risks** — what could break, what edge cases weren't handled.
+- **Rollback instructions** — see Section 10. Always present, even on
+  trivial changes.
+
+The Final Report is the deliverable. Code without a Final Report is
+half-done.
 
 ## Core principles
 
