@@ -2897,6 +2897,32 @@ exports.runAutoInvoices = onSchedule(
               skipped++;
               continue;
             }
+
+            // Cross-flow dedupe vs MANUAL sends. createStripeInvoice
+            // stamps u.stripe.lastInvoiceYm but NOT autoSentYm, so the
+            // autoSentYm short-circuit above doesn't catch a manually
+            // issued rent invoice — without this guard cron would
+            // double-bill the tenant. Mirrors the Stripe Search query
+            // used by createStripeInvoice (line 671). Search is
+            // eventually-consistent (~10s lag), fine for a daily cron.
+            try {
+              const dupQ = `customer:"${customerId}" AND metadata["unitId"]:"${u.id}" `
+                         + `AND metadata["purpose"]:"rent" AND metadata["ym"]:"${nextYm}"`;
+              const dupRes = await stripe.invoices.search({ query: dupQ, limit: 5 });
+              const liveDup = (dupRes.data || []).find(inv =>
+                !['void', 'uncollectible', 'deleted'].includes(inv.status));
+              if (liveDup) {
+                logger.info(`[auto-invoice] ${u.id}: rent for ${nextYm} already exists (${liveDup.id}, ${liveDup.status}); skipping cron-create`);
+                skipped++;
+                continue;
+              }
+            } catch (searchErr) {
+              // Don't block the cron over a Search API hiccup — log and
+              // proceed. Stripe-level idempotency key still guards
+              // against same-day re-fires from cron itself.
+              logger.warn(`[auto-invoice] ${u.id}: dup-search failed (${searchErr.message}); proceeding without cross-flow dedupe`);
+            }
+
             const description = `Monthly rent — ${nm.toLocaleString('en-US', {month:'long', year:'numeric', timeZone:'UTC'})} · Suite ${u.id}`;
             const due = Math.floor((Date.now() + dueDays * 86400_000) / 1000);
 
