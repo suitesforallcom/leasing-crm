@@ -67522,29 +67522,6 @@ function _saveLeasingModel(buildingId, mutator) {
   if (typeof renderLeasingModelPanel === 'function') renderLeasingModelPanel();
 }
 
-// Перемещение этажа в очереди заполнения. dir = -1 (вверх) или +1 (вниз).
-// Если floorOrder ещё пуст — материализуем его из текущего эффективного порядка
-// (_buildFillQueue), чтобы первое движение было относительно того, что оператор видит.
-function _moveFloorInOrder(floorId, dir) {
-  const b = currentBuilding(); if (!b) return;
-  if (dir !== -1 && dir !== 1) return;
-  _saveLeasingModel(b.id, m => {
-    let order = Array.isArray(m.floorOrder) ? m.floorOrder.slice() : [];
-    // Материализация: если floorOrder пуст ИЛИ floorId не в нём — берём
-    // текущий effective queue и пишем его как baseline.
-    if (!order.length || !order.includes(floorId)) {
-      const sortedFloors = (b.floors || []).slice().sort((a, b2) => (a.number || 0) - (b2.number || 0));
-      order = sortedFloors.map(f => f.id);
-    }
-    const i = order.indexOf(floorId);
-    if (i < 0) return;
-    const j = i + dir;
-    if (j < 0 || j >= order.length) return;
-    [order[i], order[j]] = [order[j], order[i]];
-    m.floorOrder = order;
-  });
-}
-
 // Сохранение velocity-поля (mode | targetMonths | manualSqftPerMo | manualAvgLeaseSize).
 function _saveLmVelocity(field, value) {
   const b = currentBuilding(); if (!b) return;
@@ -67599,6 +67576,47 @@ function _toggleFloorHold(floorId) {
     } else {
       m.floorOverrides[floorId] = { state: 'hold' };
     }
+  });
+}
+
+// HTML5 drag-drop для очереди заполнения. Каждый re-render
+// renderLeasingModelPanel() переписывает innerHTML, поэтому listeners надо
+// перевешивать каждый раз. dragId — closure-локальная переменная этого вызова.
+// На вход — buildingId, чтобы _saveLeasingModel знал куда писать.
+function _wireLeasingModelDnD(buildingId) {
+  const list = document.getElementById('lmFillOrder');
+  if (!list) return;
+  let dragId = null;
+  list.querySelectorAll('[data-floor-id]').forEach(row => {
+    row.addEventListener('dragstart', (e) => {
+      dragId = row.dataset.floorId;
+      row.style.opacity = '0.4';
+      try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', dragId); } catch {}
+    });
+    row.addEventListener('dragend', () => {
+      row.style.opacity = '';
+      list.querySelectorAll('[data-floor-id]').forEach(r => { r.style.outline = ''; });
+      dragId = null;
+    });
+    row.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      try { e.dataTransfer.dropEffect = 'move'; } catch {}
+      row.style.outline = '2px dashed var(--accent)';
+    });
+    row.addEventListener('dragleave', () => { row.style.outline = ''; });
+    row.addEventListener('drop', (e) => {
+      e.preventDefault();
+      row.style.outline = '';
+      const targetId = row.dataset.floorId;
+      if (!dragId || dragId === targetId) return;
+      const ids = Array.from(list.querySelectorAll('[data-floor-id]')).map(r => r.dataset.floorId);
+      const fromIdx = ids.indexOf(dragId);
+      const toIdx   = ids.indexOf(targetId);
+      if (fromIdx < 0 || toIdx < 0) return;
+      ids.splice(fromIdx, 1);
+      ids.splice(toIdx, 0, dragId);
+      _saveLeasingModel(buildingId, m => { m.floorOrder = ids; });
+    });
   });
 }
 
@@ -67711,10 +67729,10 @@ function renderLeasingModelPanel() {
     </div>
   `;
 
-  // === Fill order — список этажей с ↑↓ кнопками + Hold toggle ===
-  // Показываем эффективный порядок (как _buildFillQueue его построит) +
-  // Hold-этажи отдельным dimmed-блоком в конце. Hold-этажи нельзя двигать
-  // ↑↓ (они вне очереди), но toggle обратно в Active возможен.
+  // === Fill order — drag-drop список этажей + select типа аренды + Hold toggle ===
+  // Активные этажи в верхнем списке — таскаются мышкой за ⋮⋮ ручку слева.
+  // Hold-этажи в нижней секции — не таскаются (они вне очереди), но
+  // у них всё равно есть селектор типа и кнопка ↩ Resume.
   const overrides = m.floorOverrides || {};
   const isHold = (id) => !!(overrides[id] && overrides[id].state === 'hold');
   const queue = (typeof _buildFillQueue === 'function')
@@ -67723,48 +67741,50 @@ function renderLeasingModelPanel() {
 
   const _floorRow = (f, opts) => {
     const i = opts.index;
-    const total = opts.total;
     const held = !!opts.held;
-    const upDisabled = held || i === 0;
-    const downDisabled = held || i === total - 1;
+    const lt = f.leaseType || 'multi-suite';
+    // Drag разрешён только для активных. У held-этажей — те же столбцы,
+    // но без draggable + без ⋮⋮ ручки (вместо неё — em-dash).
+    const dragAttrs = held ? '' : 'draggable="true"';
+    const handle = held ? '—' : '⋮⋮';
+    const cursor = held ? 'default' : 'grab';
     return `
-      <div style="display:grid; grid-template-columns: 24px 1fr auto auto; gap:6px; align-items:center; padding:8px 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 4px; ${held ? 'opacity: 0.55;' : ''}">
-        <div style="color: var(--muted); font-size: 12px; text-align: right;">${held ? '—' : (i + 1)}.</div>
-        <div>
-          <div style="font-weight: 600; font-size: 12.5px;">
-            <span style="color: var(--muted); font-weight: 400; font-size: 11.5px;">#${f.number || '?'}</span>
-            ${esc(f.name)}
-            ${held ? '<span style="margin-left: 6px; font-size: 10px; padding: 1px 6px; border-radius: 8px; background: var(--warning); color: #000; font-weight: 700;">HOLD</span>' : ''}
-          </div>
-        </div>
-        <div style="display: flex; gap: 2px;">
-          <button class="rr-btn" ${upDisabled ? 'disabled' : ''}
-                  onclick="_moveFloorInOrder('${esc(f.id)}', -1)"
-                  title="Move up in fill order"
-                  style="padding: 4px 8px; font-size: 11px; ${upDisabled ? 'opacity: 0.35; cursor: not-allowed;' : ''}">↑</button>
-          <button class="rr-btn" ${downDisabled ? 'disabled' : ''}
-                  onclick="_moveFloorInOrder('${esc(f.id)}', 1)"
-                  title="Move down in fill order"
-                  style="padding: 4px 8px; font-size: 11px; ${downDisabled ? 'opacity: 0.35; cursor: not-allowed;' : ''}">↓</button>
-        </div>
+      <div data-floor-id="${esc(f.id)}" ${dragAttrs}
+           style="display:grid; grid-template-columns: 18px 28px 1fr auto auto; gap:8px; align-items:center; padding:8px 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 4px; cursor: ${cursor}; user-select: none; ${held ? 'opacity: 0.55;' : ''}">
+        <span style="color: var(--muted); font-size: 14px; text-align: center;" title="${held ? 'Этаж в Hold — вне очереди' : 'Перетащи строку, чтобы изменить порядок'}">${handle}</span>
+        <span style="color: var(--muted); font-size: 12px; text-align: right;">${held ? '—' : (i + 1) + '.'}</span>
+        <span style="font-weight: 600; font-size: 12.5px;">
+          <span style="color: var(--muted); font-weight: 400; font-size: 11.5px;">#${f.number || '?'}</span>
+          ${esc(f.name)}
+          ${held ? '<span style="margin-left: 6px; font-size: 10px; padding: 1px 6px; border-radius: 8px; background: var(--warning); color: #000; font-weight: 700;">HOLD</span>' : ''}
+        </span>
+        <select class="rr-select"
+                onchange="_saveFloorLeaseType('${esc(f.id)}', this.value)"
+                title="Тип аренды этого этажа.&#10;Multi-suite — каждый офис сдаётся отдельно.&#10;Full-floor — весь этаж одному арендатору (anchor)."
+                style="padding: 3px 6px; font-size: 11.5px; width: 130px;">
+          <option value="multi-suite" ${lt === 'multi-suite' ? 'selected' : ''}>Multi-suite</option>
+          <option value="full-floor"  ${lt === 'full-floor'  ? 'selected' : ''}>Full-floor</option>
+        </select>
         <button class="rr-btn ${held ? 'primary' : ''}"
                 onclick="_toggleFloorHold('${esc(f.id)}')"
-                title="${held ? 'Click to put floor back into the fill queue' : 'Hold = exclude from forecast (renovation, construction, etc.)'}"
+                title="${held ? 'Click to put floor back into the fill queue' : 'Hold = исключить из forecast (стройка, реновация и т.п.)'}"
                 style="padding: 4px 10px; font-size: 11.5px;">${held ? '↩ Resume' : 'Hold'}</button>
       </div>
     `;
   };
 
-  const queueRowsHTML = queue.map((f, i) => _floorRow(f, { index: i, total: queue.length, held: false })).join('');
-  const heldRowsHTML  = heldFloors.map(f => _floorRow(f, { index: 0, total: 1, held: true })).join('');
+  const queueRowsHTML = queue.map((f, i) => _floorRow(f, { index: i, held: false })).join('');
+  const heldRowsHTML  = heldFloors.map(f => _floorRow(f, { index: 0, held: true })).join('');
 
   const perFloorHTML = `
     <div>
       <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); font-weight: 600; margin-bottom: 6px;">Fill order</div>
       <div style="font-size: 11px; color: var(--muted); margin-bottom: 8px; line-height: 1.5;">
-        Порядок, в котором forecast будет заполнять vacant-площади. Самый верхний — первым. Кнопка Hold выводит этаж из очереди (стройка / реновация). Тип этажа (Multi-suite / Full-floor) теперь настраивается на самом юните в right-panel.
+        Порядок, в котором forecast будет заполнять vacant-площади. Самый верхний — первым. Перетащи строку за ⋮⋮ слева, чтобы изменить порядок. Справа выбери тип аренды этажа (Multi-suite или Full-floor). Кнопка Hold выводит этаж из очереди (стройка, реновация и т.п.).
       </div>
-      ${queueRowsHTML}
+      <div id="lmFillOrder">
+        ${queueRowsHTML}
+      </div>
       ${heldRowsHTML ? `
         <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); font-weight: 600; margin: 10px 0 6px;">On hold</div>
         ${heldRowsHTML}
@@ -67783,6 +67803,10 @@ function renderLeasingModelPanel() {
       ${perFloorHTML}
     </div>
   `;
+
+  // Перевешиваем drag-drop listeners на свежесгенерированные строки очереди.
+  // Каждый innerHTML стирает старые listeners — wire идемпотентен.
+  if (typeof _wireLeasingModelDnD === 'function') _wireLeasingModelDnD(b.id);
 }
 
 // Update a floor's GFA or RSF field
