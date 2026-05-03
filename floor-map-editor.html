@@ -1575,66 +1575,67 @@
 
   /* ---- Header ---- */
   .stacking-view .sv-header {
-    padding: 24px 24px 20px;
+    padding: 14px 24px 12px;
     border-bottom: 1px solid #d9d2c3;
     background: #fffdf8;
-    display: flex; justify-content: space-between; align-items: flex-end;
-    gap: 20px; flex-wrap: wrap;
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 16px; flex-wrap: wrap;
   }
-  .stacking-view .sv-kicker {
-    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 10.5px; color: #8f887c; letter-spacing: 0.8px;
-    text-transform: uppercase; margin-bottom: 4px;
-  }
+  .stacking-view .sv-kicker { display: none; }   /* folded into meta line */
   .stacking-view .sv-title {
     margin: 0; font-family: 'Instrument Serif', Georgia, serif;
-    font-size: clamp(28px, 4vw, 44px); font-weight: 400;
-    letter-spacing: -1px; line-height: 1.1;
+    font-size: clamp(20px, 2.4vw, 28px); font-weight: 400;
+    letter-spacing: -0.5px; line-height: 1.15;
   }
-  .stacking-view .sv-title-sep { color: #8f887c; margin: 0 6px; }
+  .stacking-view .sv-title-sep { color: #8f887c; margin: 0 5px; }
   .stacking-view .sv-title-floors { font-style: italic; color: #1a3a5c; }
-  .stacking-view .sv-meta { font-size: 13px; color: #6b655b; margin-top: 6px; }
+  .stacking-view .sv-meta {
+    font-size: 12px; color: #8f887c; margin-top: 3px;
+    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: 0.1px;
+  }
 
-  /* Occupancy KPI strip — sits directly under the address meta line so the
-     "what's leased / what's free" answer reads at a glance, before the
-     operator scans the floor stack. Two pills + a thin progress bar. */
+  /* Occupancy KPI — compact column inside sv-header-right so it doesn't
+     add any height to the left side. Reads like a mini scorecard. */
   .stacking-view .sv-occ {
-    display: flex; align-items: center; gap: 14px;
-    margin-top: 10px; flex-wrap: wrap;
+    display: flex; flex-direction: column; align-items: flex-end; gap: 5px;
   }
   .stacking-view .sv-occ-bar {
-    position: relative; height: 8px; width: 220px; max-width: 100%;
-    background: #efeadf; border-radius: 4px; overflow: hidden;
-    box-shadow: inset 0 1px 2px rgba(40,30,20,0.05);
+    position: relative; height: 5px; width: 160px;
+    background: #efeadf; border-radius: 3px; overflow: hidden;
   }
   .stacking-view .sv-occ-bar-fill {
     position: absolute; top: 0; left: 0; bottom: 0;
     background: linear-gradient(90deg, #1a3a5c, #2c5a8a);
-    border-radius: 4px;
+    border-radius: 3px;
+  }
+  .stacking-view .sv-occ-stats {
+    display: flex; gap: 12px;
   }
   .stacking-view .sv-occ-stat {
-    display: inline-flex; align-items: baseline; gap: 5px;
+    display: inline-flex; align-items: baseline; gap: 4px;
     font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 12px; color: #4b443c;
+    font-size: 11px; color: #6b655b;
   }
   .stacking-view .sv-occ-stat .sv-occ-num {
     font-family: 'Instrument Serif', Georgia, serif;
-    font-size: 18px; font-weight: 400; line-height: 1; color: #1a1815;
+    font-size: 15px; font-weight: 400; line-height: 1;
   }
   .stacking-view .sv-occ-stat .sv-occ-pct {
-    font-family: 'Instrument Serif', Georgia, serif;
-    font-size: 14px; font-style: italic; color: #6b655b;
+    font-style: italic; font-size: 11px; color: #8f887c;
   }
   .stacking-view .sv-occ-stat.is-leased .sv-occ-num { color: #1a3a5c; }
   .stacking-view .sv-occ-stat.is-vacant .sv-occ-num { color: #6b655b; }
   .stacking-view .sv-occ-dot {
-    width: 8px; height: 8px; border-radius: 50%; display: inline-block;
-    margin-right: 2px; vertical-align: 1px;
+    width: 7px; height: 7px; border-radius: 50%; display: inline-block;
+    margin-right: 1px; vertical-align: 0px; flex-shrink: 0;
   }
   .stacking-view .sv-occ-dot.is-leased { background: #1a3a5c; }
   .stacking-view .sv-occ-dot.is-vacant { background: #c7bfae; }
 
-  .stacking-view .sv-header-right { display: flex; gap: 8px; align-items: center; }
+  .stacking-view .sv-header-right {
+    display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+  }
   .stacking-view .sv-bldg-switcher {
     display: flex; flex-wrap: wrap;               /* extra buildings wrap to a second row */
     background: #efeadf; padding: 3px; border-radius: 8px; gap: 2px;
@@ -29670,12 +29671,14 @@ function _renderStackingHeader(b) {
     yearBuilt ? `Built ${yearBuilt}` : '',
     totalSqft ? `${totalSqft.toLocaleString()} sqft leasable` : '',
   ].filter(Boolean).join(' · ');
-  // Occupancy strip — only renders when there's leasable area to report.
+  // Compact occupancy block for the right column.
   const occHtml = totalSqft ? `
     <div class="sv-occ" title="Leased ${leasedSqft.toLocaleString()} ft² of ${totalSqft.toLocaleString()} ft² total">
       <div class="sv-occ-bar"><div class="sv-occ-bar-fill" style="width:${leasedPct}%"></div></div>
-      <span class="sv-occ-stat is-leased"><span class="sv-occ-dot is-leased"></span><span class="sv-occ-num">${leasedSqft.toLocaleString()}</span> ft² leased <span class="sv-occ-pct">${leasedPct}%</span></span>
-      <span class="sv-occ-stat is-vacant"><span class="sv-occ-dot is-vacant"></span><span class="sv-occ-num">${vacantSqft.toLocaleString()}</span> ft² vacant <span class="sv-occ-pct">${vacantPct}%</span></span>
+      <div class="sv-occ-stats">
+        <span class="sv-occ-stat is-leased"><span class="sv-occ-dot is-leased"></span><span class="sv-occ-num">${leasedSqft.toLocaleString()}</span> ft² <span class="sv-occ-pct">${leasedPct}%</span></span>
+        <span class="sv-occ-stat is-vacant"><span class="sv-occ-dot is-vacant"></span><span class="sv-occ-num">${vacantSqft.toLocaleString()}</span> ft² <span class="sv-occ-pct">${vacantPct}%</span></span>
+      </div>
     </div>
   ` : '';
   host.innerHTML = `
@@ -29686,20 +29689,22 @@ function _renderStackingHeader(b) {
         <span class="sv-title-sep">·</span><span class="sv-title-floors">${floorCount} floor${floorCount === 1 ? '' : 's'}</span>
       </h1>
       <div class="sv-meta">${esc(meta || '—')}</div>
-      ${occHtml}
     </div>
     <div class="sv-header-right">
-      <div class="sv-bldg-switcher">
-        ${buildings.map(x => `
-          <button class="sv-bldg-btn ${x.id === b.id ? 'active' : ''}"
-                  onclick="switchBuilding('${esc(x.id)}')"
-                  title="${esc(x.address || x.name || '')}">${esc(_stShortAddr(x))}</button>
-        `).join('')}
+      ${occHtml}
+      <div style="display:flex; gap:8px; align-items:center;">
+        <div class="sv-bldg-switcher">
+          ${buildings.map(x => `
+            <button class="sv-bldg-btn ${x.id === b.id ? 'active' : ''}"
+                    onclick="switchBuilding('${esc(x.id)}')"
+                    title="${esc(x.address || x.name || '')}">${esc(_stShortAddr(x))}</button>
+          `).join('')}
+        </div>
+        <button class="sv-export-btn" onclick="stackingExport()" title="Download CSV of the stacking plan">
+          <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3v10M5 9l5 5 5-5M3 17h14"/></svg>
+          Export
+        </button>
       </div>
-      <button class="sv-export-btn" onclick="stackingExport()" title="Download CSV of the stacking plan">
-        <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3v10M5 9l5 5 5-5M3 17h14"/></svg>
-        Export
-      </button>
     </div>
   `;
 }
