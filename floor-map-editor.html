@@ -15617,7 +15617,6 @@
         <li><b>Apply to</b> — rent only, or rent + taxes + services (total balance)</li>
         <li><b>Frequency</b> — <code>once</code> per overdue cycle, or <code>monthly</code> recurring until paid</li>
       </ul>
-      <p style="margin: 0 0 6px;"><b>Honeymoon period:</b> the very first month of tenancy is exempt from late fees and overdue alerts — the operator is still settling the tenant in. Determined by <code>u._tenantAddedAt</code> or <code>u.leaseStart</code>, whichever is earlier.</p>
       <p style="margin: 0;"><b>Dismissal:</b> operators can waive an individual month's fee from the Late-fee block on the Overview tab. Dismissed fees don't count toward outstanding.</p>
     </div>
 
@@ -42210,11 +42209,8 @@ function _computeUnitMoney(u) {
   const grace = (state?.settings?.lateFee?.graceDays ?? 5);
   let owed = 0, paidYtd = 0, unpaidMonths = 0, currentOverdue = false;
 
-  const firstYm = _firstTenancyYm(u);
   // `outstanding` = total money the tenant currently owes us right now
-  //                 (unpaid rent past honeymoon + unpaid late fees +
-  //                 unpaid deposit). Honeymoon month is NOT counted —
-  //                 it's a freebie period.
+  //                 (unpaid rent + unpaid late fees + unpaid deposit).
   // `owed`        = OVERDUE subset of outstanding (drives alerts /
   //                 red overdue overlay on the floor plan).
   let outstanding = 0;
@@ -42235,8 +42231,6 @@ function _computeUnitMoney(u) {
     // (referral credit, comp month, etc.) would still light up the
     // unit as overdue on the floor map and accrue late fees.
     if (p?.status === 'free') continue;
-    // Honeymoon month — no charges accrue, period.
-    if (firstYm && ym === firstYm) continue;
 
     if (i > 0) {
       // Past unpaid month — outstanding + overdue
@@ -42264,7 +42258,6 @@ function _computeUnitMoney(u) {
       const lastDay = new Date(now.getFullYear(), now.getMonth() - i + 1, 0);
       if (startDate && !isNaN(startDate.getTime()) && lastDay < startDate) continue;
       const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-      if (firstYm && ym === firstYm) continue;
       const pm = u.payments?.[ym];
       if (pm?.status === 'paid' || pm?.status === 'free') continue;
       const isLate = (i > 0) || (i === 0 && now.getDate() > (lfCfg.graceDays ?? 5));
@@ -42536,7 +42529,7 @@ function _renderUnitOverviewPane(u, editOn, ro) {
   }
   // Single source of truth for money math — lease-start-aware +
   // honours grace period for current-month overdue.
-  // `outstanding` = unpaid rent (post-honeymoon) + unpaid late fees.
+  // `outstanding` = unpaid rent + unpaid late fees.
   //                  Deposit is NOT included — shown on its own row.
   // `owed` = overdue subset — drives alerts, not the stat card.
   const money = _computeUnitMoney(u);
@@ -43160,8 +43153,7 @@ function _renderLeaseInsurance(u, editOn, ro) {
 
 // Late fee block — surfaces unpaid late fees + reflects real-time
 // status of any sent late-fee invoice. Hides entirely once all fees
-// are billed AND paid. Honeymoon: skips the very first month of
-// tenancy (operator settling tenant in).
+// are billed AND paid.
 function _renderUnitLateFeeOwed(u) {
   if (u.status !== 'occupied' || !u.tenant) return '';
   const cfg = (typeof getLateFeeConfig === 'function') ? getLateFeeConfig(u) : null;
@@ -43174,9 +43166,8 @@ function _renderUnitLateFeeOwed(u) {
   const startIso = u.leaseStart || u.signed || '';
   const startDate = startIso ? new Date(startIso + 'T00:00:00') : null;
   const grace = cfg.graceDays ?? 5;
-  const firstYm = _firstTenancyYm(u);
 
-  // Compute fee items per overdue month (skip honeymoon + paid + dismissed)
+  // Compute fee items per overdue month (skip paid + dismissed)
   const items = [];
   let totalFee = 0;
   for (let i = 0; i < 12; i++) {
@@ -43184,8 +43175,6 @@ function _renderUnitLateFeeOwed(u) {
     const lastDay = new Date(now.getFullYear(), now.getMonth() - i + 1, 0);
     if (startDate && !isNaN(startDate.getTime()) && lastDay < startDate) continue;
     const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-    // First month of tenancy = honeymoon, no fee
-    if (firstYm && ym === firstYm) continue;
     const p = u.payments?.[ym];
     if (p?.status === 'paid' || p?.status === 'free') continue;
     let isLate = false;
@@ -46281,10 +46270,6 @@ function _renderUnitPaymentHealth(u) {
   // trigger always agree. Default 5 days if no config.
   const lfCfg = (typeof getLateFeeConfig === 'function') ? getLateFeeConfig(u) : null;
   const graceDays = (lfCfg && Number.isFinite(+lfCfg.graceDays)) ? +lfCfg.graceDays : 5;
-  // Honeymoon — first calendar month of tenancy is exempt from late-fee
-  // accrual AND from "overdue" alerts. Operator is still settling the
-  // tenant in (sending invoices, collecting docs).
-  const honeymoonYm = (typeof _firstTenancyYm === 'function') ? _firstTenancyYm(u) : null;
 
   // Pre-compute: which months had a late-fee invoice that was PAID?
   // Used to overlay a small gold "$" dot on those cells so the operator
@@ -46522,13 +46507,10 @@ function _renderUnitPaymentHealth(u) {
     } else if (ym === curYm) {
       // Current month — within grace period (≤ graceDays from 1st)
       // it's still "current" (blue). Past grace, treat as overdue (red).
-      // Honeymoon month is exempt — show as 'free' (no debt).
+      // First month of tenancy is NOT visually exempt: rent is still
+      // owed even though late-fee accrual is suppressed elsewhere.
       const dayOfMonth = today.getDate();
-      if (honeymoonYm && ym === honeymoonYm) {
-        cls = 'free';
-        label = monthLabel[0];
-        tooltip = `${monthFull} ${fullYear}\nHoneymoon month — first month of tenancy\nNo late-fee accrual · operator settling tenant in`;
-      } else if (dayOfMonth > graceDays) {
+      if (dayOfMonth > graceDays) {
         cls = 'overdue';
         label = monthLabel[0];
         tooltip = `${monthFull} ${fullYear}\n${dayOfMonth - graceDays}d past ${graceDays}-day grace · $${rent.toLocaleString()} unpaid\n\nClick to record payment.`;
@@ -46541,11 +46523,6 @@ function _renderUnitPaymentHealth(u) {
         const left = graceDays - dayOfMonth + 1;
         tooltip = `${monthFull} ${fullYear}\nCurrent month · ${left}d left in ${graceDays}-day grace period\nRent: $${rent.toLocaleString()}`;
       }
-    } else if (honeymoonYm && ym === honeymoonYm) {
-      // Past month, BUT it was the honeymoon — never overdue, no debt.
-      cls = 'free';
-      label = monthLabel[0];
-      tooltip = `${monthFull} ${fullYear}\nHoneymoon month — first month of tenancy\nNo late fees, no debt accrued`;
     } else {
       // Past month, no payment on file — red regardless of how far
       // overdue. Per operator request: don't split into 30-90 / 90+
@@ -46934,19 +46911,16 @@ function _isUnitPendingOnboarding(u) {
   return leasePending || depPending || rentPending;
 }
 
-// First calendar month of tenancy — the "honeymoon period" where no
-// late fees accrue and no overdue alerts fire. Operator is still
-// settling the tenant in (sending invoices, collecting docs, etc.),
-// so a brand-new tenant being a few days late shouldn't trigger
-// alarms or fees.
+// First calendar month of tenancy — used to skip phantom-arrears months
+// before the lease started (a tenant who signed for May 2026 shouldn't
+// show arrears reaching back into 2025).
 //
 // Reference: u._tenantAddedAt (when operator added the tenant) OR
 // u.leaseStart. Earliest of the two wins. Compares year-month only.
 function _firstTenancyYm(u) {
   if (!u) return null;
-  // Multi-suite lease: honeymoon month is a property of the LEASE, not
-  // the suite. Read it from the head so all members share the same
-  // first-tenancy month + skip late-fee accrual on the same month.
+  // Multi-suite lease: tenancy start is a property of the LEASE, not
+  // the suite. Read it from the head so all members agree.
   if (typeof _unitLeaseHead === 'function') u = _unitLeaseHead(u);
   let earliestMs = Infinity;
   for (const ref of [u._tenantAddedAt, u.leaseStart]) {
@@ -46957,10 +46931,6 @@ function _firstTenancyYm(u) {
   if (!isFinite(earliestMs)) return null;
   const d = new Date(earliestMs);
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-}
-function _isFirstMonthOfTenancy(u, ym) {
-  const first = _firstTenancyYm(u);
-  return first && ym === first;
 }
 
 // Move-in card lifetime: 30 days from the moment the tenant was added
@@ -52843,11 +52813,11 @@ function _moResolveCtxUnit() {
 }
 
 // Lightweight outstanding-balance estimator. Counts unpaid months since
-// lease start (cap 12) × monthly rent. Used to pre-fill the Balance owed
+// lease start (cap 24) × monthly rent. Used to pre-fill the Balance owed
 // field on the move-out modal when reason is collections / writeoff.
-// Skips the honeymoon month + paid/free statuses. Conservative — actual
-// debt may include late fees, services, etc., which managers can layer
-// on top by editing the field manually.
+// Skips paid/free statuses. Conservative — actual debt may include late
+// fees, services, etc., which managers can layer on top by editing the
+// field manually.
 function _outstandingForUnit(u) {
   if (!u) return 0;
   const rent = +u.contractRent || +u.rent || 0;
@@ -52856,14 +52826,12 @@ function _outstandingForUnit(u) {
   const startStr = u.leaseStart || u.signed || '';
   const startDate = startStr ? new Date(startStr + 'T00:00:00') : null;
   const startMs = startDate && !isNaN(startDate.getTime()) ? startDate.getTime() : null;
-  const honeymoonYm = (typeof _firstTenancyYm === 'function') ? _firstTenancyYm(u) : null;
   let months = 0;
   // Walk the last 24 months — enough to cover anyone meaningfully delinquent.
   for (let i = 0; i < 24; i++) {
     const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
     if (startMs && d.getTime() < startMs) break;
     const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-    if (honeymoonYm && ym === honeymoonYm) continue;
     const p = u.payments?.[ym];
     if (p?.status === 'paid' || p?.status === 'free') continue;
     months++;
@@ -52888,7 +52856,6 @@ function _moBuildBalanceBreakdown(u) {
   const startStr = u.leaseStart || u.signed || '';
   const startDate = startStr ? new Date(startStr + 'T00:00:00') : null;
   const startMs = (startDate && !isNaN(startDate.getTime())) ? startDate.getTime() : null;
-  const honeymoonYm = (typeof _firstTenancyYm === 'function') ? _firstTenancyYm(u) : null;
   const lfCfg = (typeof getLateFeeConfig === 'function') ? getLateFeeConfig(u) : null;
   const dismissed = u.lateFeeDismissed || {};
   const grace = lfCfg?.graceDays ?? state?.settings?.lateFee?.graceDays ?? 5;
@@ -52911,7 +52878,6 @@ function _moBuildBalanceBreakdown(u) {
     const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
     if (startMs && d.getTime() < startMs) break;
     const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-    if (honeymoonYm && ym === honeymoonYm) continue;
     const p = u.payments?.[ym];
     if (p?.status === 'paid' || p?.status === 'free') continue;
 
@@ -52971,7 +52937,6 @@ function _moBuildBalanceBreakdown(u) {
     const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
     if (startMs && d.getTime() < startMs) break;
     const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-    if (honeymoonYm && ym === honeymoonYm) continue;
     const p = u.payments?.[ym];
     if (p?.status === 'paid' || p?.status === 'free') continue;
     unpaidMonths.push({ d, ym });
@@ -73833,18 +73798,16 @@ function lateFeePreviewFor(rec) {
     return base;
   };
   // Walk oldest→newest in the 12-mo window. Only months past the grace
-  // period and still unpaid accrue a fee. First month of tenancy is
-  // skipped (honeymoon — operator settling tenant in). Months BEFORE
-  // the tenant's lease started are skipped entirely — without this,
-  // a tenant who signed for May 2026 would show 11 months of phantom
-  // arrears reaching back into 2025 when nobody owed anything.
+  // period and still unpaid accrue a fee. Months BEFORE the tenant's
+  // lease started are skipped entirely — without this, a tenant who
+  // signed for May 2026 would show 11 months of phantom arrears
+  // reaching back into 2025 when nobody owed anything.
   const firstYm = (typeof _firstTenancyYm === 'function') ? _firstTenancyYm(rec.u) : null;
   let totalFee = 0, monthsOwed = 0;
   for (let i = 11; i >= 0; i--) {
     const d = new Date(curY, curM - i, 1);
     const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
     if (firstYm && ym < firstYm) continue;     // before tenancy began
-    if (firstYm && ym === firstYm) continue;   // honeymoon
     const p = rec.u.payments?.[ym];
     if (p?.status === 'paid' || p?.status === 'free') continue;
     const due = new Date(d.getFullYear(), d.getMonth()+1, 1);
