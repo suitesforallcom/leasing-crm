@@ -83930,14 +83930,15 @@ function _mpmOnYmChange() {
 function _mpmOnMethodChange() {
   const method = document.getElementById('mpmMethod')?.value || 'check';
   const isWaived = method === 'waived';
-  // Stripe shortcut — if the operator picks "Stripe" as the method,
-  // auto-open the Browse Stripe invoices picker pre-set to the
-  // current billing month. Click any invoice → it links as rent for
-  // _mpmCtx.ym, both modals close, the unit's payments[ym] mirrors
-  // paid status from the chosen invoice. Saves them from manually
-  // typing the same numbers they could just pick.
-  if (method === 'stripe' && _mpmCtx && !_mpmSuppressStripeBrowser && typeof _openInvoiceBrowser === 'function') {
-    _openInvoiceBrowser(_mpmCtx.buildingId, _mpmCtx.floorId, _mpmCtx.unitId, _mpmCtx.ym);
+  // Stripe shortcut — если оператор выбрал Method=stripe, автоматически
+  // открываем единый Browse-окно (бывший _openInvoiceBrowser, теперь
+  // _openTxnBrowser объединяющий bank+stripe), отфильтрованное на текущий
+  // ym. Клик по строке → линкуется как rent за _mpmCtx.ym, оба модала
+  // закрываются. Заменили _openInvoiceBrowser на _openTxnBrowser, чтобы
+  // оператор не видел "две отдельные окна" — теперь это одна таблица
+  // с фильтром Type=All / Bank only / Stripe only.
+  if (method === 'stripe' && _mpmCtx && !_mpmSuppressStripeBrowser && typeof _openTxnBrowser === 'function') {
+    _openTxnBrowser(_mpmCtx.buildingId, _mpmCtx.floorId, _mpmCtx.unitId, _mpmCtx.ym);
   }
   const waiverRow = document.getElementById('mpmWaiverRow');
   // Reference сидит парой с Method в одной строке (mpmMethodRefRow).
