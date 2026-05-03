@@ -7687,6 +7687,17 @@
      paired with the violet "lease signed" fill on the floor plan, so
      the operator sees one consistent purple cue from map to header. */
   .upv2-pill-deposit  { background: #F3E8FF; color: #6B21A8; }
+  /* Clickable status pill — used for "Awaiting Deposit" so the operator
+     can stamp the deposit paid (cash/check/wire received outside Stripe)
+     directly from the badge instead of hunting through the menu. */
+  .upv2-pill.upv2-pill-clickable {
+    cursor: pointer; border: 1px solid transparent;
+    transition: filter .12s, box-shadow .12s;
+  }
+  .upv2-pill.upv2-pill-clickable:hover {
+    filter: brightness(0.95);
+    box-shadow: 0 0 0 2px rgba(107,33,168,0.20);
+  }
   /* Vacant — soft warm-grey (not a dashed border) so it visually sits
      in the same family as the other pills, just muted. */
   .upv2-pill-vacant   { background: #F4F2EE; color: #6B665C; }
@@ -8825,11 +8836,11 @@
     font: 500 11px system-ui; color: var(--muted);
   }
   .mpm-bf-rows {
-    display: flex; flex-direction: column; gap: 6px;
-    /* Bound the suggestions list so a long match window doesn't push
-       the modal action buttons off-screen. Server caps at 8 rows; CSS
-       scroll keeps any overflow in-place. */
-    max-height: 220px; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 4px;
+    /* Bound tight so the rest of the form (Reference, Amount, Date,
+       Check copy upload, Memo, action buttons) stays visible without
+       scrolling. Inner scroll surfaces extra suggestions. */
+    max-height: 132px; overflow-y: auto;
     padding-right: 4px;
   }
 
@@ -8851,7 +8862,7 @@
   .mpm-bf-row {
     display: flex; justify-content: space-between; align-items: center;
     gap: 10px;
-    padding: 6px 8px;
+    padding: 4px 8px;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -8902,8 +8913,110 @@
     color: var(--accent); text-decoration: none; font-weight: 600;
   }
   .mpm-bf-foot a:hover, .mpm-bf-empty-sub a:hover { text-decoration: underline; }
+
+  /* Check-copy upload drop-zone — replaces the bare <input type="file">
+     so the operator instantly sees this field is for attaching a photo
+     of the check (vs. a generic "browse" button that reads as optional). */
+  .mpm-check-drop {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px;
+    background: rgba(99,91,255,0.05);
+    border: 1.5px dashed rgba(99,91,255,0.40);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background .12s, border-color .12s;
+  }
+  .mpm-check-drop:hover {
+    background: rgba(99,91,255,0.10);
+    border-color: rgba(99,91,255,0.65);
+  }
+  .mpm-check-drop.has-file {
+    background: rgba(16,185,129,0.08);
+    border-style: solid;
+    border-color: rgba(16,185,129,0.55);
+  }
+  .mpm-check-drop input[type="file"] {
+    position: absolute; width: 1px; height: 1px;
+    opacity: 0; pointer-events: none;
+  }
+  .mpm-check-drop-icon { font-size: 18px; line-height: 1; }
+  .mpm-check-drop-text {
+    display: flex; flex-direction: column; gap: 1px; min-width: 0;
+  }
+  .mpm-check-drop-text b {
+    font-size: 12.5px; color: var(--text);
+  }
+  .mpm-check-drop-hint {
+    font-size: 11px; color: var(--muted);
+  }
   .mpm-bf-empty-sub {
     font-size: 11.5px; color: var(--muted); line-height: 1.5;
+  }
+
+  /* Forecast floor-scope picker — compact popover anchored to the
+     "Floors: All" button next to the Non-renewal slider. Lets operator
+     limit the 12-mo projection to a subset of buildings/floors. */
+  .hv-fcst-floors { position: relative; }
+  .hv-fcst-floors-btn {
+    display: flex; align-items: center; gap: 4px;
+    width: 100%; padding: 6px 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    cursor: pointer;
+    transition: border-color .12s, background .12s;
+  }
+  .hv-fcst-floors-btn:hover { border-color: rgba(2,132,199,0.45); }
+  .hv-fcst-floors-pop {
+    position: absolute; top: calc(100% + 4px); right: 0;
+    z-index: 50;
+    min-width: 240px; max-width: 320px;
+    max-height: 360px; overflow-y: auto;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.16);
+    padding: 8px;
+  }
+  .hv-fcst-floors-pop .hv-fcst-actions {
+    display: flex; gap: 8px;
+    padding: 4px 6px 8px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 6px;
+  }
+  .hv-fcst-floors-pop .hv-fcst-actions button {
+    flex: 1; padding: 4px 8px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--accent);
+    font-size: 11.5px; font-weight: 600;
+    cursor: pointer;
+  }
+  .hv-fcst-floors-pop .hv-fcst-actions button:hover {
+    background: rgba(99,91,255,0.08);
+  }
+  .hv-fcst-floors-pop .hv-fcst-bldg {
+    font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.04em; color: var(--muted);
+    padding: 6px 6px 2px;
+  }
+  .hv-fcst-floors-pop label {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 6px;
+    border-radius: 5px;
+    font-size: 12.5px; color: var(--text);
+    cursor: pointer;
+  }
+  .hv-fcst-floors-pop label:hover { background: var(--surface-2); }
+  .hv-fcst-floors-pop label input[type="checkbox"] {
+    accent-color: #0284c7; cursor: pointer;
+  }
+  .hv-fcst-floors-pop .hv-fcst-floor-meta {
+    margin-left: auto;
+    font-size: 11px; color: var(--muted);
+    font-variant-numeric: tabular-nums;
   }
   .mpm-bf-error {
     font-size: 11.5px; color: #b91c1c; line-height: 1.5;
@@ -12173,6 +12286,18 @@
                        style="width: 100%; accent-color: #0284c7;">
                 <div style="font-size: 10.5px; color: var(--muted); line-height: 1.3;">
                   Tenants assumed NOT to renew on lease end. Default 30% — industry baseline for office space.
+                </div>
+                <!-- Floor scope picker — operator can narrow the forecast
+                     to a subset of floors (e.g. "L2 + L3 of building A only").
+                     Default = all floors (whole portfolio). Selection
+                     persists on state.ui.forecastFloorFilter. -->
+                <div class="hv-fcst-floors" style="margin-top: 4px;">
+                  <button type="button" class="hv-fcst-floors-btn" id="hvFcstFloorsBtn" onclick="_toggleForecastFloorPicker(event)" title="Limit forecast to selected floors">
+                    <span style="font-size: 11px; color:var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700;">Floors</span>
+                    <span id="hvFcstFloorsSummary" style="margin-left: 6px; font-size: 12px; color: var(--text); font-weight: 600;">All</span>
+                    <span style="margin-left: auto; font-size: 10px; color: var(--muted);">▾</span>
+                  </button>
+                  <div class="hv-fcst-floors-pop" id="hvFcstFloorsPop" style="display:none;"></div>
                 </div>
               </div>
             </div>
@@ -17592,11 +17717,18 @@
 
     <div class="stripe-modal-row" style="align-items: flex-start;">
       <div class="label">
-        <b>Receipt image</b>
-        <div class="hint">JPG/PNG/HEIC — check stub, ACH screenshot, etc.</div>
+        <b>📎 Check copy</b>
+        <div class="hint">Photo of the actual check (or ACH screenshot, wire confirmation)</div>
       </div>
       <div style="flex:1;">
-        <input id="mpmReceipt" type="file" accept="image/*" style="font-size:12px;">
+        <label for="mpmReceipt" class="mpm-check-drop" id="mpmReceiptLabel">
+          <span class="mpm-check-drop-icon">📎</span>
+          <span class="mpm-check-drop-text">
+            <b>Attach check copy</b>
+            <span class="mpm-check-drop-hint">Click to choose · JPG / PNG / HEIC</span>
+          </span>
+          <input id="mpmReceipt" type="file" accept="image/*" onchange="_mpmUpdateReceiptLabel(this)">
+        </label>
         <div id="mpmExistingReceipt" style="margin-top:6px;"></div>
       </div>
     </div>
@@ -24555,8 +24687,24 @@ function updateTopbarOutstandingPill() {
     el = document.createElement('div');
     el.id = 'outstandingPill';
     el.className = 'outstanding-pill';
-    el.title = 'Jump to A/R Aging';
-    el.onclick = () => { showBilling(); setTimeout(() => setBillingTab('aging'), 80); };
+    el.title = 'Jump to A/R Aging — filtered to past-due only';
+    // Operator clicked the topbar "N overdue · $X" pill → they expect to see
+    // ONLY those past-due rows, not the full open-invoice list (which also
+    // includes current-month rents not yet past their grace period). Force
+    // "Past-due only" ON so the visible table total matches the pill amount.
+    el.onclick = () => {
+      showBilling();
+      setTimeout(() => {
+        setBillingTab('aging');
+        setTimeout(() => {
+          const cb = document.getElementById('agingPastDueOnly');
+          if (!cb || cb.checked) return;
+          const btn = document.querySelector('[onclick*="toggleAgingPastDueOnly"]');
+          if (btn && typeof toggleAgingPastDueOnly === 'function') toggleAgingPastDueOnly(btn);
+          else { cb.checked = true; if (typeof renderAgingPanel === 'function') renderAgingPanel(); }
+        }, 120);
+      }, 80);
+    };
     const host = document.querySelector('.topbar-actions');
     const userBadge = document.getElementById('userBadge');
     const qa = document.getElementById('quickAdd');
@@ -24611,9 +24759,160 @@ window._topbarTimers.push(
 //
 // Returns 12 monthly bucket objects so the chart renderer can stack
 // continuing vs new vs lost (non-renewing).
-function _computeRevenueForecast(nonRenewalPct) {
+// =========================================================================
+// Forecast floor-scope picker — renders a popover next to the Non-renewal
+// slider with a checkbox per floor (grouped by building). Selection is
+// persisted on state.ui.forecastFloorFilter as an array of "buildingId/
+// floorId" keys; empty/missing means "no filter — whole portfolio".
+// =========================================================================
+function _toggleForecastFloorPicker(ev) {
+  if (ev) ev.stopPropagation();
+  const pop = document.getElementById('hvFcstFloorsPop');
+  if (!pop) return;
+  if (pop.style.display === 'none' || !pop.style.display) {
+    _buildForecastFloorPicker();
+    pop.style.display = 'block';
+    // Outside-click closer — registered once, removes itself on first hit.
+    setTimeout(() => {
+      const off = (e) => {
+        if (!pop.contains(e.target) && e.target.id !== 'hvFcstFloorsBtn'
+            && !document.getElementById('hvFcstFloorsBtn')?.contains(e.target)) {
+          pop.style.display = 'none';
+          document.removeEventListener('mousedown', off, true);
+        }
+      };
+      document.addEventListener('mousedown', off, true);
+    }, 0);
+  } else {
+    pop.style.display = 'none';
+  }
+}
+
+function _buildForecastFloorPicker() {
+  const pop = document.getElementById('hvFcstFloorsPop');
+  if (!pop) return;
+  state.ui = state.ui || {};
+  const sel = new Set(Array.isArray(state.ui.forecastFloorFilter) ? state.ui.forecastFloorFilter : []);
+  // Tally occupied office units per floor so the operator sees scale
+  // ("L2 — 12 leases") next to each row before checking it.
+  const tally = {};
+  for (const b of (state.buildings || [])) {
+    if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
+    for (const f of (b.floors || [])) {
+      let n = 0;
+      for (const u of (f.units || [])) {
+        if (u.rentable === false || (u.type && u.type !== 'office')) continue;
+        if (u.status !== 'occupied' || (!u.tenant && !u.company)) continue;
+        n++;
+      }
+      tally[`${b.id}/${f.id}`] = n;
+    }
+  }
+  const parts = [
+    `<div class="hv-fcst-actions">
+       <button type="button" onclick="_setForecastFloorFilter('all')">Select all</button>
+       <button type="button" onclick="_setForecastFloorFilter('none')">Clear</button>
+     </div>`
+  ];
+  for (const b of (state.buildings || [])) {
+    if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
+    if (!(b.floors || []).length) continue;
+    parts.push(`<div class="hv-fcst-bldg">${esc(b.name || b.id)}</div>`);
+    for (const f of (b.floors || [])) {
+      const k = `${b.id}/${f.id}`;
+      const checked = (sel.size === 0) || sel.has(k);
+      const n = tally[k] || 0;
+      parts.push(
+        `<label>
+           <input type="checkbox" data-fcst-floor="${esc(k)}" ${checked ? 'checked' : ''}
+                  onchange="_onForecastFloorToggle(this)">
+           <span>${esc(f.name || f.id)}</span>
+           <span class="hv-fcst-floor-meta">${n} lease${n === 1 ? '' : 's'}</span>
+         </label>`
+      );
+    }
+  }
+  pop.innerHTML = parts.join('');
+}
+
+function _setForecastFloorFilter(mode) {
+  state.ui = state.ui || {};
+  if (mode === 'all') {
+    // Empty array = no filter (whole portfolio). Cheaper than enumerating
+    // every floor; the compute function treats empty as null.
+    state.ui.forecastFloorFilter = [];
+  } else if (mode === 'none') {
+    // Explicit "none" — populate with a single non-existent key so the
+    // compute filter excludes everything. Operator must then re-check
+    // floors to bring them back into scope.
+    state.ui.forecastFloorFilter = ['__none__'];
+  }
+  if (typeof saveState === 'function') saveState();
+  _buildForecastFloorPicker();
+  if (typeof renderHomeForecast === 'function') renderHomeForecast();
+}
+
+function _onForecastFloorToggle(cb) {
+  state.ui = state.ui || {};
+  const k = cb.getAttribute('data-fcst-floor');
+  if (!k) return;
+  // First toggle from a "no filter" baseline materializes the full set
+  // so toggling one OFF actually narrows scope (instead of going from
+  // "all implicit" to "all explicit minus one" with bad UX).
+  let arr = Array.isArray(state.ui.forecastFloorFilter) ? state.ui.forecastFloorFilter.slice() : [];
+  if (!arr.length) {
+    // Materialize all currently-visible floor keys.
+    arr = [];
+    for (const b of (state.buildings || [])) {
+      if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
+      for (const f of (b.floors || [])) arr.push(`${b.id}/${f.id}`);
+    }
+  }
+  const setView = new Set(arr);
+  if (cb.checked) setView.add(k); else setView.delete(k);
+  // Collapse "all checked" back to empty array so the no-filter path is
+  // the default state on next reload.
+  let total = 0;
+  for (const b of (state.buildings || [])) {
+    if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
+    total += (b.floors || []).length;
+  }
+  state.ui.forecastFloorFilter = (setView.size === total) ? [] : Array.from(setView);
+  if (typeof saveState === 'function') saveState();
+  if (typeof renderHomeForecast === 'function') renderHomeForecast();
+}
+
+function _renderForecastFloorSummary() {
+  const el = document.getElementById('hvFcstFloorsSummary');
+  if (!el) return;
+  const arr = Array.isArray(state.ui?.forecastFloorFilter) ? state.ui.forecastFloorFilter : [];
+  let total = 0;
+  for (const b of (state.buildings || [])) {
+    if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
+    total += (b.floors || []).length;
+  }
+  if (!arr.length) {
+    el.textContent = `All (${total})`;
+    el.style.color = '';
+  } else if (arr.length === 1 && arr[0] === '__none__') {
+    el.textContent = 'None';
+    el.style.color = '#dc2626';
+  } else {
+    el.textContent = `${arr.length} of ${total}`;
+    el.style.color = '#0284c7';
+  }
+}
+
+function _computeRevenueForecast(nonRenewalPct, floorFilter) {
   const rate = Math.max(0, Math.min(100, +nonRenewalPct || 0)) / 100;
   const renewalProb = 1 - rate;
+  // floorFilter: Set of "buildingId/floorId" keys when the operator
+  // narrowed the forecast to specific floors via the popover; null/empty
+  // = no filter (whole portfolio). Applied to both the active-portfolio
+  // walk and the recoveryCases lookup so the projection scope is
+  // consistent end-to-end.
+  const _hasFloorFilter = floorFilter && typeof floorFilter.has === 'function' && floorFilter.size > 0;
+  const _floorOk = (bId, fId) => !_hasFloorFilter || floorFilter.has(`${bId}/${fId}`);
   // M2M leases face attrition every month, not just at term-end. Convert
   // the annual non-renewal rate into a monthly retention rate so over 12
   // months the cumulative attrition equals `rate`. (1-rate)^(1/12) is
@@ -24634,6 +24933,7 @@ function _computeRevenueForecast(nonRenewalPct) {
   for (const b of (state.buildings || [])) {
     if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
     for (const f of (b.floors || [])) {
+      if (!_floorOk(b.id, f.id)) continue;
       for (const u of (f.units || [])) {
         if (u.rentable === false || (u.type && u.type !== 'office')) continue;
         if (u.status !== 'occupied' || (!u.tenant && !u.company)) continue;
@@ -24706,6 +25006,7 @@ function _computeRevenueForecast(nonRenewalPct) {
     if (rc.status !== 'in_collections' && rc.status !== 'written_off') continue;
     const moMs = rc.movedOut ? new Date(rc.movedOut + 'T00:00:00').getTime() : 0;
     if (!Number.isFinite(moMs) || moMs <= 0 || moMs < sixMoAgoMs) continue;
+    if (_hasFloorFilter && !_floorOk(rc.buildingId, rc.floorId)) continue;
     collectionsCount6mo++;
     // Find the corresponding tenantHistory record on the unit to recover
     // the actual contractRent. The recovery case carries unitId — match
@@ -25003,7 +25304,17 @@ function renderHomeForecast() {
   section.style.display = '';
   const rateInput = document.getElementById('hvFcstRate');
   const rate = rateInput ? +rateInput.value : 30;
-  const f = _computeRevenueForecast(rate);
+  // Floor filter — operator may have narrowed scope to specific floors via
+  // the popover next to the slider. Persisted on state.ui so the choice
+  // survives reloads. Empty array / missing = no filter (whole portfolio).
+  const _ffArr = Array.isArray(state.ui?.forecastFloorFilter) ? state.ui.forecastFloorFilter : [];
+  const floorFilter = _ffArr.length ? new Set(_ffArr) : null;
+  const f = _computeRevenueForecast(rate, floorFilter);
+  // Update the popover's summary label so the operator sees how many
+  // floors are in scope without expanding the picker.
+  if (typeof _renderForecastFloorSummary === 'function') {
+    try { _renderForecastFloorSummary(); } catch {}
+  }
 
   // Daily snapshot — record today's projected total + key inputs once
   // per calendar day so we can later show forecast-vs-actual drift.
@@ -41408,7 +41719,9 @@ function _renderUnitV2Header(u, editOn) {
            In edit mode the kebab menu collapses into Save/Cancel. -->
       <div class="upv2-h-titlebar">
         <h2 class="upv2-h-title">Suite ${esc(u.id)}</h2>
-        <span class="upv2-pill ${pillCls}">${esc(pillLabel)}</span>
+        ${(pillLabel === 'Awaiting Deposit' && typeof canEdit === 'function' && canEdit())
+          ? `<button type="button" class="upv2-pill ${pillCls} upv2-pill-clickable" onclick="event.stopPropagation(); markUnitDepositPaid('${esc(u.id)}')" title="Click to mark deposit as paid (cash, check, wire — received outside Stripe)">${esc(pillLabel)} →</button>`
+          : `<span class="upv2-pill ${pillCls}">${esc(pillLabel)}</span>`}
         <div class="upv2-h-actions">
           ${editOn ? `
             <button class="unit-btn unit-btn-primary" onclick="saveUnitDetail()">💾 Save</button>
@@ -81225,7 +81538,7 @@ async function _mpmRenderBankSuggestions(u, ym) {
         amountTolerancePct: 15,
         dateRangeDays: 30,
         accountIds,
-        limit: 8,
+        limit: 4,
       });
       items = data?.items || [];
       _mpmBankCache.set(cacheKey, { at: Date.now(), items });
@@ -81299,6 +81612,26 @@ async function _mpmRenderBankSuggestions(u, ym) {
 
   // Stash items so _mpmUseBankTxn can find the picked row without a refetch.
   _mpmBankCache.set(cacheKey, { at: Date.now(), items });
+}
+
+// Update the check-copy drop-zone label to reflect the picked file.
+// Called from the file input's onchange — swaps the prompt text for the
+// chosen filename and switches the zone to a "✓ attached" green style so
+// the operator can see at a glance the check copy was actually selected.
+function _mpmUpdateReceiptLabel(input) {
+  const label = document.getElementById('mpmReceiptLabel');
+  if (!label) return;
+  const txt = label.querySelector('.mpm-check-drop-text');
+  if (!txt) return;
+  const file = input?.files?.[0];
+  if (file) {
+    label.classList.add('has-file');
+    const sizeKb = Math.max(1, Math.round(file.size / 1024));
+    txt.innerHTML = `<b>✓ ${esc(file.name)}</b><span class="mpm-check-drop-hint">${sizeKb} KB · click to replace</span>`;
+  } else {
+    label.classList.remove('has-file');
+    txt.innerHTML = `<b>Attach check copy</b><span class="mpm-check-drop-hint">Click to choose · JPG / PNG / HEIC</span>`;
+  }
 }
 
 // Operator clicked "✓ Use this" — auto-fill Method/Reference/Amount/Date
@@ -81823,6 +82156,12 @@ function openManualPaymentModal(buildingId, floorId, unitId, ym) {
   document.getElementById('mpmDate').value = existing.date || new Date().toISOString().slice(0,10);
   document.getElementById('mpmMemo').value = existing.memo || '';
   document.getElementById('mpmReceipt').value = '';
+  // Reset the check-copy drop-zone label back to its empty state ("Attach
+  // check copy") whenever the modal reopens — without this, a previous
+  // session's filename sticks even after the file input has been cleared.
+  if (typeof _mpmUpdateReceiptLabel === 'function') {
+    _mpmUpdateReceiptLabel(document.getElementById('mpmReceipt'));
+  }
 
   // Waiver fields — restore reason + referred-suite if previously waived.
   document.getElementById('mpmWaiverReason').value = existing.waiverReason || 'referral';
