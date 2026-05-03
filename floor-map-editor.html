@@ -25049,8 +25049,18 @@ function _computeRevenueForecast(nonRenewalPct, floorFilter) {
   // _stRentableUnits(f), чтобы не задвоить метраж от sub-room'ов
   // (тот же fix, что в Building Summary).
   let vacantCapacity = 0;
+  // Total leasable sqft в scope — сумма u.sqft по всем юнитам, которые
+  // _stRentableUnits видит как сдаваемые (без задвоения sub-room'ов).
+  // Нужно UI для подписи «$X/sqft/yr» на линии capacity-ceiling: такая
+  // котировка — стандарт коммерческой недвижимости в США (proforma
+  // asking rate). Без неё цифра в $/mo бесполезна для сравнения с
+  // рынком — оператор сравнивает арендные ставки именно в $/sqft/yr.
+  let totalScopeSqft = 0;
   const _vacantInScope = (typeof _stRentableUnits === 'function')
     ? (f) => _stRentableUnits(f).filter(u => u.status !== 'occupied')
+    : null;
+  const _allLeasableInScope = (typeof _stRentableUnits === 'function')
+    ? (f) => _stRentableUnits(f)
     : null;
   for (const b of (state.buildings || [])) {
     if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
@@ -25082,6 +25092,13 @@ function _computeRevenueForecast(nonRenewalPct, floorFilter) {
       // Берём asking-rent (proforma): contractRent если задан, иначе rent.
       // Юниты, которые _stRentableUnits отфильтрует как «sub-room под
       // видимым родителем», не учитываем — иначе задвоим площадь.
+      // Параллельно копим totalScopeSqft по ВСЕМ leasable юнитам
+      // (занятым + вакантным) — для расчёта $/sqft/yr на ceiling-линии.
+      if (_allLeasableInScope) {
+        for (const u of _allLeasableInScope(f)) {
+          totalScopeSqft += +u.sqft || 0;
+        }
+      }
       if (_vacantInScope) {
         for (const u of _vacantInScope(f)) {
           const ask = +u.contractRent || +u.rent || 0;
@@ -25457,6 +25474,11 @@ function _computeRevenueForecast(nonRenewalPct, floorFilter) {
     // Используется UI для отрисовки потолка «100% leased» на графике,
     // чтобы оператор видел, насколько ещё можно вырасти физически.
     vacantCapacity,
+    // Суммарная leasable-площадь scope в sqft (занятые + вакантные,
+    // без задвоения sub-room'ов). UI делит ceiling/totalScopeSqft и
+    // показывает $/sqft/yr — стандартная котировка коммерческой
+    // недвижимости.
+    totalScopeSqft,
   };
 }
 
@@ -25757,7 +25779,19 @@ function renderHomeForecast() {
   // и линия превращается в шум.
   const showCeiling = (f.vacantCapacity || 0) > 0 && capacityCeiling > 0;
   const ceilingY = pad.t + chartH - (capacityCeiling / maxStack) * chartH;
-  const ceilingLbl = `100% leased: $${Math.round(capacityCeiling).toLocaleString()}/mo`;
+  // Подпись потолка: основной ярлык — $/sqft/yr (стандартная котировка
+  // коммерческой недвижимости). Это позволяет оператору сразу сравнить
+  // с рыночными ставками без калькулятора. В скобках для контекста —
+  // абсолютная сумма в $/mo. Если sqft в scope нет (None из юнитов
+  // не имеет площади) — фолбэк только на $/mo.
+  const _scopeSqft = +f.totalScopeSqft || 0;
+  const _ratePerSqftYr = _scopeSqft > 0 ? (capacityCeiling * 12) / _scopeSqft : 0;
+  const _rateStr = _ratePerSqftYr >= 100
+    ? `$${Math.round(_ratePerSqftYr)}`
+    : `$${_ratePerSqftYr.toFixed(2)}`;
+  const ceilingLbl = _scopeSqft > 0
+    ? `100% leased: ${_rateStr}/sqft/yr · $${Math.round(capacityCeiling).toLocaleString()}/mo`
+    : `100% leased: $${Math.round(capacityCeiling).toLocaleString()}/mo`;
   // Подпись потолка — в верхней служебной строке чарта (одна линия с
   // `$X potential`), а не под самой линией. Лежать на барах подпись
   // не должна — это перекрывает зелёный/синий стек и плохо читается.
