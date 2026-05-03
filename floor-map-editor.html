@@ -12311,10 +12311,10 @@
                 <div style="font-size: 10.5px; color: var(--muted); line-height: 1.3;">
                   Tenants assumed NOT to renew on lease end. Default 30% — industry baseline for office space.
                 </div>
-                <!-- Floor scope picker — operator can narrow the forecast
-                     to a subset of floors (e.g. "L2 + L3 of building A only").
-                     Default = all floors (whole portfolio). Selection
-                     persists on state.ui.forecastFloorFilter. -->
+                <!-- Floor scope picker — narrows the forecast to selected
+                     floors of the CURRENT building only. Selection lives
+                     in module-level _forecastFloorFilter and resets on
+                     every page load and building switch. -->
                 <div class="hv-fcst-floors" style="margin-top: 4px;">
                   <button type="button" class="hv-fcst-floors-btn" id="hvFcstFloorsBtn" onclick="_toggleForecastFloorPicker(event)" title="Limit forecast to selected floors">
                     <span style="font-size: 11px; color:var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700;">Floors</span>
@@ -24785,10 +24785,36 @@ window._topbarTimers.push(
 // continuing vs new vs lost (non-renewing).
 // =========================================================================
 // Forecast floor-scope picker — renders a popover next to the Non-renewal
-// slider with a checkbox per floor (grouped by building). Selection is
-// persisted on state.ui.forecastFloorFilter as an array of "buildingId/
-// floorId" keys; empty/missing means "no filter — whole portfolio".
+// slider with a checkbox per floor of the CURRENTLY OPEN building only.
+// Selection is held in a module-level variable that resets on every page
+// load AND every building switch (operator wanted ephemeral scope, not
+// persistent — the previous state.ui-backed version was confusing because
+// stale picks survived reloads). null = "all floors of current building".
 // =========================================================================
+let _forecastFloorFilter = null;  // Set<"bId/fId"> | null
+
+function _currentForecastBuilding() {
+  const b = (typeof currentBuilding === 'function') ? currentBuilding() : null;
+  return b && (!canAccessBuilding || canAccessBuilding(b.id)) ? b : null;
+}
+function _currentForecastFloorKeys() {
+  const b = _currentForecastBuilding();
+  if (!b) return [];
+  return (b.floors || []).map(f => `${b.id}/${f.id}`);
+}
+// Reset the picker selection when the operator switches buildings —
+// floor IDs from the previous building would be invalid against the new
+// scope and produce a phantom "0 of N" summary.
+let _lastForecastBuildingId = null;
+function _maybeResetForecastFilterOnBuildingChange() {
+  const cur = _currentForecastBuilding();
+  const id = cur ? cur.id : null;
+  if (_lastForecastBuildingId !== id) {
+    _forecastFloorFilter = null;
+    _lastForecastBuildingId = id;
+  }
+}
+
 function _toggleForecastFloorPicker(ev) {
   if (ev) ev.stopPropagation();
   const pop = document.getElementById('hvFcstFloorsPop');
@@ -24815,114 +24841,88 @@ function _toggleForecastFloorPicker(ev) {
 function _buildForecastFloorPicker() {
   const pop = document.getElementById('hvFcstFloorsPop');
   if (!pop) return;
-  state.ui = state.ui || {};
-  const sel = new Set(Array.isArray(state.ui.forecastFloorFilter) ? state.ui.forecastFloorFilter : []);
+  _maybeResetForecastFilterOnBuildingChange();
+  const b = _currentForecastBuilding();
+  if (!b) { pop.innerHTML = '<div style="color:var(--muted); font-size:11.5px;">No building selected.</div>'; return; }
+  const allKeys = _currentForecastFloorKeys();
+  const sel = _forecastFloorFilter;  // Set or null
   // Tally occupied office units per floor so the operator sees scale
   // ("L2 — 12 leases") next to each row before checking it.
   const tally = {};
-  for (const b of (state.buildings || [])) {
-    if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
-    for (const f of (b.floors || [])) {
-      let n = 0;
-      for (const u of (f.units || [])) {
-        if (u.rentable === false || (u.type && u.type !== 'office')) continue;
-        if (u.status !== 'occupied' || (!u.tenant && !u.company)) continue;
-        n++;
-      }
-      tally[`${b.id}/${f.id}`] = n;
+  for (const f of (b.floors || [])) {
+    let n = 0;
+    for (const u of (f.units || [])) {
+      if (u.rentable === false || (u.type && u.type !== 'office')) continue;
+      if (u.status !== 'occupied' || (!u.tenant && !u.company)) continue;
+      n++;
     }
+    tally[`${b.id}/${f.id}`] = n;
   }
   const parts = [
     `<div class="hv-fcst-actions">
        <button type="button" onclick="_setForecastFloorFilter('all')">Select all</button>
        <button type="button" onclick="_setForecastFloorFilter('none')">Clear</button>
-     </div>`
+     </div>`,
+    `<div class="hv-fcst-bldg">${esc(b.name || b.id)}</div>`
   ];
-  for (const b of (state.buildings || [])) {
-    if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
-    if (!(b.floors || []).length) continue;
-    parts.push(`<div class="hv-fcst-bldg">${esc(b.name || b.id)}</div>`);
-    for (const f of (b.floors || [])) {
-      const k = `${b.id}/${f.id}`;
-      const checked = (sel.size === 0) || sel.has(k);
-      const n = tally[k] || 0;
-      parts.push(
-        `<label>
-           <input type="checkbox" data-fcst-floor="${esc(k)}" ${checked ? 'checked' : ''}
-                  onchange="_onForecastFloorToggle(this)">
-           <span>${esc(f.name || f.id)}</span>
-           <span class="hv-fcst-floor-meta">${n} lease${n === 1 ? '' : 's'}</span>
-         </label>`
-      );
-    }
+  for (const f of (b.floors || [])) {
+    const k = `${b.id}/${f.id}`;
+    const checked = !sel || sel.has(k);
+    const n = tally[k] || 0;
+    parts.push(
+      `<label>
+         <input type="checkbox" data-fcst-floor="${esc(k)}" ${checked ? 'checked' : ''}
+                onchange="_onForecastFloorToggle(this)">
+         <span>${esc(f.name || f.id)}</span>
+         <span class="hv-fcst-floor-meta">${n} lease${n === 1 ? '' : 's'}</span>
+       </label>`
+    );
   }
   pop.innerHTML = parts.join('');
 }
 
 function _setForecastFloorFilter(mode) {
-  state.ui = state.ui || {};
   if (mode === 'all') {
-    // Empty array = no filter (whole portfolio). Cheaper than enumerating
-    // every floor; the compute function treats empty as null.
-    state.ui.forecastFloorFilter = [];
+    _forecastFloorFilter = null;  // null = every floor of current building
   } else if (mode === 'none') {
-    // Explicit "none" — populate with a single non-existent key so the
-    // compute filter excludes everything. Operator must then re-check
-    // floors to bring them back into scope.
-    state.ui.forecastFloorFilter = ['__none__'];
+    _forecastFloorFilter = new Set();  // empty Set = explicitly nothing
   }
-  if (typeof saveState === 'function') saveState();
   _buildForecastFloorPicker();
   if (typeof renderHomeForecast === 'function') renderHomeForecast();
 }
 
 function _onForecastFloorToggle(cb) {
-  state.ui = state.ui || {};
   const k = cb.getAttribute('data-fcst-floor');
   if (!k) return;
-  // First toggle from a "no filter" baseline materializes the full set
-  // so toggling one OFF actually narrows scope (instead of going from
-  // "all implicit" to "all explicit minus one" with bad UX).
-  let arr = Array.isArray(state.ui.forecastFloorFilter) ? state.ui.forecastFloorFilter.slice() : [];
-  if (!arr.length) {
-    // Materialize all currently-visible floor keys.
-    arr = [];
-    for (const b of (state.buildings || [])) {
-      if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
-      for (const f of (b.floors || [])) arr.push(`${b.id}/${f.id}`);
-    }
+  // First toggle from the "all by default" baseline materializes the
+  // full set so unchecking one floor actually narrows scope.
+  if (!_forecastFloorFilter) {
+    _forecastFloorFilter = new Set(_currentForecastFloorKeys());
   }
-  const setView = new Set(arr);
-  if (cb.checked) setView.add(k); else setView.delete(k);
-  // Collapse "all checked" back to empty array so the no-filter path is
-  // the default state on next reload.
-  let total = 0;
-  for (const b of (state.buildings || [])) {
-    if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
-    total += (b.floors || []).length;
+  if (cb.checked) _forecastFloorFilter.add(k);
+  else            _forecastFloorFilter.delete(k);
+  // Collapse "all checked" back to null so the next render knows it's
+  // the no-filter (all-of-current-building) baseline.
+  const allKeys = _currentForecastFloorKeys();
+  if (_forecastFloorFilter.size === allKeys.length && allKeys.every(x => _forecastFloorFilter.has(x))) {
+    _forecastFloorFilter = null;
   }
-  state.ui.forecastFloorFilter = (setView.size === total) ? [] : Array.from(setView);
-  if (typeof saveState === 'function') saveState();
   if (typeof renderHomeForecast === 'function') renderHomeForecast();
 }
 
 function _renderForecastFloorSummary() {
   const el = document.getElementById('hvFcstFloorsSummary');
   if (!el) return;
-  const arr = Array.isArray(state.ui?.forecastFloorFilter) ? state.ui.forecastFloorFilter : [];
-  let total = 0;
-  for (const b of (state.buildings || [])) {
-    if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
-    total += (b.floors || []).length;
-  }
-  if (!arr.length) {
+  _maybeResetForecastFilterOnBuildingChange();
+  const total = _currentForecastFloorKeys().length;
+  if (!_forecastFloorFilter) {
     el.textContent = `All (${total})`;
     el.style.color = '';
-  } else if (arr.length === 1 && arr[0] === '__none__') {
+  } else if (_forecastFloorFilter.size === 0) {
     el.textContent = 'None';
     el.style.color = '#dc2626';
   } else {
-    el.textContent = `${arr.length} of ${total}`;
+    el.textContent = `${_forecastFloorFilter.size} of ${total}`;
     el.style.color = '#0284c7';
   }
 }
@@ -25328,11 +25328,19 @@ function renderHomeForecast() {
   section.style.display = '';
   const rateInput = document.getElementById('hvFcstRate');
   const rate = rateInput ? +rateInput.value : 30;
-  // Floor filter — operator may have narrowed scope to specific floors via
-  // the popover next to the slider. Persisted on state.ui so the choice
-  // survives reloads. Empty array / missing = no filter (whole portfolio).
-  const _ffArr = Array.isArray(state.ui?.forecastFloorFilter) ? state.ui.forecastFloorFilter : [];
-  const floorFilter = _ffArr.length ? new Set(_ffArr) : null;
+  // Floor filter — picker is now scoped to the CURRENT building only and
+  // resets on every page load / building switch (see _forecastFloorFilter).
+  // null inside the module-level var = "all floors of current building";
+  // we materialize that into a real Set here so the compute function
+  // always restricts scope to the current building, never to the entire
+  // portfolio.
+  if (typeof _maybeResetForecastFilterOnBuildingChange === 'function') {
+    _maybeResetForecastFilterOnBuildingChange();
+  }
+  const _curBldgKeys = (typeof _currentForecastFloorKeys === 'function') ? _currentForecastFloorKeys() : [];
+  const floorFilter = (_forecastFloorFilter instanceof Set)
+    ? _forecastFloorFilter
+    : new Set(_curBldgKeys);
   const f = _computeRevenueForecast(rate, floorFilter);
   // Update the popover's summary label so the operator sees how many
   // floors are in scope without expanding the picker.
@@ -41457,31 +41465,10 @@ function _renderUnitV2Header(u, editOn) {
   } else if (_rentState === 'open') {
     pillLabel = 'Due';                pillCls = 'upv2-pill-due';
   } else if (_rentState === 'paid') {
-    // Find the LATEST month that actually has a paid/free record in
-    // u.payments. Older code assumed `_rentState === 'paid'` always
-    // meant the current month was paid, but _unitRentCurrentStatus
-    // also returns 'paid' for the "deposit paid, awaiting next rent
-    // invoice" fallback — labelling that case "Paid · {currentMonth}"
-    // misled operators into thinking the current month was settled.
-    // Using the actual last-paid month makes the pill truthful in both
-    // the genuine-current-paid case AND the awaiting-next-invoice case.
-    const _now = new Date();
-    const _curYm = `${_now.getFullYear()}-${String(_now.getMonth()+1).padStart(2,'0')}`;
-    const _payments = (typeof _unitLeaseHead === 'function' ? _unitLeaseHead(u) : u)?.payments || {};
-    let _paidYm = null;
-    if (_payments[_curYm]?.status === 'paid' || _payments[_curYm]?.status === 'free') {
-      _paidYm = _curYm;
-    } else {
-      const _paidKeys = Object.keys(_payments)
-        .filter(k => k !== 'deposit' && /^\d{4}-\d{2}$/.test(k) &&
-                     (_payments[k]?.status === 'paid' || _payments[k]?.status === 'free'))
-        .sort();
-      _paidYm = _paidKeys[_paidKeys.length - 1] || null;
-    }
-    const _paidMonth = _paidYm
-      ? new Date(_paidYm + '-01T00:00:00').toLocaleDateString('en-US', { month: 'short' })
-      : _now.toLocaleDateString('en-US', { month: 'short' });
-    pillLabel = `Paid · ${_paidMonth}`;
+    // Plain "Paid" — no month suffix. The overdue branch above
+    // already names the late period separately, so a current-paid
+    // unit doesn't need to spell out which month was settled.
+    pillLabel = 'Paid';
     pillCls   = 'upv2-pill-paid';
   } else if (status === 'reserved') {
     pillLabel = 'Reserved';           pillCls = 'upv2-pill-reserved';
@@ -46317,14 +46304,22 @@ function _collectUnitInvoices(u, opts = {}) {
       const isBackfill = via === 'backfill';
       const tag = isBackfill ? 'BACKFILL' : 'MANUAL';
       const purposeLabelFull = isBackfill ? 'Backfill (migrated)' : 'Manual payment';
-      // Resolve a sensible "paid date" — operator-stamped paidAt if
-      // available, else fall back to ym start. Created uses ym start
-      // for consistent ordering with real Stripe invoices for the
-      // same period.
+      // Resolve a sensible "paid date" — prefer the operator-entered
+      // date from the Record Manual Payment form (p.date, ISO yyyy-mm-dd),
+      // then bank-feed authoritative date (p.bankPaidAt), then legacy
+      // p.paidAt, finally fall back to the 1st of the billed month.
+      // Without the p.date branch the tooltip always read "Paid: {1st of
+      // month}" because submitManualPayment writes to p.date, not paidAt.
       let paidAtMs = ymStartMs;
-      if (p.paidAt) {
-        const t = new Date(p.paidAt).getTime();
-        if (Number.isFinite(t)) paidAtMs = t;
+      const _paidDateCandidates = [p.date, p.bankPaidAt, p.paidAt];
+      for (const cand of _paidDateCandidates) {
+        if (!cand) continue;
+        // Pure yyyy-mm-dd strings need T00:00:00 so they parse as LOCAL
+        // midnight (matches how ymStartMs was built above) — otherwise
+        // negative-UTC zones render the previous day.
+        const isoLocal = /^\d{4}-\d{2}-\d{2}$/.test(cand) ? cand + 'T00:00:00' : cand;
+        const t = new Date(isoLocal).getTime();
+        if (Number.isFinite(t)) { paidAtMs = t; break; }
       }
       out.push({
         id: `manual-${u.id}-${ym}`,
