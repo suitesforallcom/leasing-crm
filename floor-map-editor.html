@@ -36816,6 +36816,21 @@ function onUnitPointerDown(e, u) {
   if (mode !== 'select') return;
   e.stopPropagation();
 
+  // Sub-room → parent redirect: when the operator clicks a sub-room
+  // whose parent is part of a tenant group (multi-suite lease), the
+  // sub-room is structurally part of the parent's rented area — the
+  // operator's mental model is "this is part of the National University
+  // lease", not "this is a separately-trackable child unit". Resolve to
+  // the parent so the right-panel shows the group's combined info AND
+  // the floor map keeps the purple group highlight on every member.
+  // Bypassed in edit mode (operator may want to actually edit the
+  // child) and on shift-click (multi-select keeps clicked target).
+  if (!e.shiftKey && !state?.settings?.editMode
+      && u && u.parentId && typeof _unitParent === 'function') {
+    const _p = _unitParent(u);
+    if (_p && _p.groupId) u = _p;
+  }
+
   if (e.shiftKey) {
     if (selectedIds.includes(u.id)) {
       selectedIds = selectedIds.filter(x => x !== u.id);
