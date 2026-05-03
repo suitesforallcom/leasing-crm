@@ -5011,7 +5011,22 @@ exports.importBankTransactions = onCall(
     const state = runMatcher ? await readWorkspaceState() : null;
     const col = db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`);
 
-    let scanned = 0, written = 0, skipped = 0, suggested = 0, malformed = 0;
+    // Day-clamp: any date already covered by an existing transaction (Stripe
+    // pull or earlier import) is treated as "fully accounted for" and rows
+    // for that day get dropped from this import. Operator's call: they don't
+    // want overlap with Stripe's window double-counted just because the
+    // descriptions differ. Pull the distinct date set once up front.
+    const existingDates = new Set();
+    {
+      const snap = await col.select('transactedAt').get();
+      for (const d of snap.docs) {
+        const ts = d.get('transactedAt');
+        if (!ts) continue;
+        existingDates.add(new Date(ts * 1000).toISOString().slice(0, 10));
+      }
+    }
+
+    let scanned = 0, written = 0, skipped = 0, suggested = 0, malformed = 0, clamped = 0;
     let batch = db.batch();
     let inBatch = 0;
     const seenIds = new Set();   // intra-batch dedup
@@ -5025,6 +5040,10 @@ exports.importBankTransactions = onCall(
         malformed++;
         continue;
       }
+      // Day-clamp: skip if any existing transaction (Stripe or imported)
+      // already covers this day.
+      if (existingDates.has(date)) { clamped++; continue; }
+
       const transactedAt = Math.floor(new Date(date + 'T12:00:00Z').getTime() / 1000);
       if (!Number.isFinite(transactedAt)) { malformed++; continue; }
 
@@ -5034,8 +5053,8 @@ exports.importBankTransactions = onCall(
       if (seenIds.has(docId)) { skipped++; continue; }    // dup within file
       seenIds.add(docId);
 
-      // Pre-check existing — so we report a real "skipped" count to the
-      // operator (not just batch.set merge results which are silent).
+      // Pre-check existing by id — catches the rare case where a row's day
+      // wasn't covered yet but it duplicates a previously-imported hash.
       const existing = await col.doc(docId).get();
       if (existing.exists) { skipped++; continue; }
 
@@ -5080,8 +5099,8 @@ exports.importBankTransactions = onCall(
     }
     if (inBatch > 0) await batch.commit();
 
-    logger.info(`[bank-feed] import "${sourceLabel}": scanned=${scanned} written=${written} skipped=${skipped} suggested=${suggested} malformed=${malformed}`);
-    return { scanned, written, skipped, suggested, malformed };
+    logger.info(`[bank-feed] import "${sourceLabel}": scanned=${scanned} written=${written} skipped=${skipped} clamped=${clamped} suggested=${suggested} malformed=${malformed}`);
+    return { scanned, written, skipped, clamped, suggested, malformed };
   }
 );
 

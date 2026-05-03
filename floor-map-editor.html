@@ -17628,7 +17628,7 @@
   <div class="stripe-modal-card" style="max-width: 720px; position: relative;">
     <button class="modal-x-close" type="button" onclick="closeBankImportModal()" aria-label="Close" title="Close (Esc)">×</button>
     <h3>📥 Import bank statement</h3>
-    <div class="sub">Add transactions from a file when Stripe doesn't reach far enough back. Supports <b>CSV</b>, <b>Excel</b> (xlsx/xls), <b>OFX</b>, <b>QFX</b>, and <b>QBO</b> (QuickBooks).</div>
+    <div class="sub">Add transactions from a file when Stripe doesn't reach far enough back. Supports <b>CSV</b>, <b>Excel</b> (xlsx/xls), <b>OFX</b>, <b>QFX</b>, and <b>QBO</b> (QuickBooks). Days that already have transactions in the system are <b>skipped automatically</b> to prevent overlap with the bank feed.</div>
 
     <div id="bankImportPickerRow" style="margin-top: 14px;">
       <div style="border:2px dashed var(--border); border-radius:10px; padding:24px; text-align:center; background:var(--surface-2, rgba(0,0,0,0.02));"
@@ -59608,9 +59608,13 @@ async function _bankImportSubmit() {
     const { data } = await fn({ items, sourceLabel, accountTag, runMatcher });
     const w = data?.written || 0;
     const sk = data?.skipped || 0;
+    const cl = data?.clamped || 0;
     const sg = data?.suggested || 0;
     const mf = data?.malformed || 0;
-    status.innerHTML = `<span style="color:var(--success)">✓</span> Imported <b>${w}</b> · ${sk} duplicate${sk===1?'':'s'} · ${sg} matched · ${mf} malformed`;
+    const clampNote = cl > 0
+      ? ` · <b>${cl}</b> trimmed (day already covered)`
+      : '';
+    status.innerHTML = `<span style="color:var(--success)">✓</span> Imported <b>${w}</b>${clampNote} · ${sk} duplicate${sk===1?'':'s'} · ${sg} matched · ${mf} malformed`;
     _bankActivityCache = null;
     setTimeout(() => {
       closeBankImportModal();
