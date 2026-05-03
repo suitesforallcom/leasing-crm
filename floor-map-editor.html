@@ -7687,6 +7687,17 @@
      paired with the violet "lease signed" fill on the floor plan, so
      the operator sees one consistent purple cue from map to header. */
   .upv2-pill-deposit  { background: #F3E8FF; color: #6B21A8; }
+  /* Clickable status pill — used for "Awaiting Deposit" so the operator
+     can stamp the deposit paid (cash/check/wire received outside Stripe)
+     directly from the badge instead of hunting through the menu. */
+  .upv2-pill.upv2-pill-clickable {
+    cursor: pointer; border: 1px solid transparent;
+    transition: filter .12s, box-shadow .12s;
+  }
+  .upv2-pill.upv2-pill-clickable:hover {
+    filter: brightness(0.95);
+    box-shadow: 0 0 0 2px rgba(107,33,168,0.20);
+  }
   /* Vacant — soft warm-grey (not a dashed border) so it visually sits
      in the same family as the other pills, just muted. */
   .upv2-pill-vacant   { background: #F4F2EE; color: #6B665C; }
@@ -8791,6 +8802,250 @@
     text-decoration: none;
   }
   .mpm-inv-link:hover { text-decoration: underline; }
+
+  /* Bank-feed suggestions card — sits below the invoice card. Surfaces
+     credits from connected bank accounts that match this lease/month so
+     the operator can apply with one click instead of typing manually. */
+  .mpm-bf-card {
+    background: rgba(14,165,233,0.05);
+    border: 1px solid rgba(14,165,233,0.30);
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin: 4px 0 14px;
+  }
+  .mpm-bf-card-empty {
+    background: var(--surface-2);
+    border: 1px dashed var(--border);
+  }
+  .mpm-bf-card-loading { opacity: 0.85; }
+  .mpm-bf-card-error {
+    background: rgba(220,38,38,0.06);
+    border: 1px solid rgba(220,38,38,0.30);
+  }
+  .mpm-bf-head {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 10px;
+    font: 600 12.5px system-ui; color: var(--text);
+    padding-bottom: 8px;
+  }
+  .mpm-bf-card:not(.mpm-bf-card-empty):not(.mpm-bf-card-loading):not(.mpm-bf-card-error) .mpm-bf-head {
+    border-bottom: 1px solid rgba(14,165,233,0.20);
+    margin-bottom: 8px;
+  }
+  .mpm-bf-acct, .mpm-bf-spinner {
+    font: 500 11px system-ui; color: var(--muted);
+  }
+  .mpm-bf-rows {
+    display: flex; flex-direction: column; gap: 4px;
+    /* Bound tight so the rest of the form (Reference, Amount, Date,
+       Check copy upload, Memo, action buttons) stays visible without
+       scrolling. Inner scroll surfaces extra suggestions. */
+    max-height: 132px; overflow-y: auto;
+    padding-right: 4px;
+  }
+
+  /* Manual-payment modal — once the bank-feed card is in play the
+     overall modal can exceed viewport height. Constrain to 90vh and
+     keep the action footer (Pay later / Record payment) pinned at the
+     bottom while the body scrolls. */
+  #manualPaymentModal .stripe-modal-card {
+    max-height: 90vh;
+    overflow-y: auto;
+  }
+  #manualPaymentModal .stripe-modal-actions {
+    position: sticky; bottom: 0; z-index: 1;
+    background: var(--surface);
+    margin: 16px -22px -22px;
+    padding: 12px 22px 22px;
+    border-top: 1px solid var(--border);
+  }
+  .mpm-bf-row {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 10px;
+    padding: 4px 8px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .mpm-bf-row-main { flex: 1; min-width: 0; }
+  .mpm-bf-row-amt {
+    font: 700 13px system-ui; color: var(--text);
+    font-variant-numeric: tabular-nums;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .mpm-bf-row-meta {
+    font-size: 11.5px; color: var(--muted);
+    margin-top: 2px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .mpm-bf-exact {
+    font: 700 9.5px system-ui; letter-spacing: 0.05em;
+    background: rgba(16,185,129,0.18); color: #047857;
+    padding: 1px 5px; border-radius: 3px;
+  }
+  .mpm-bf-close {
+    font: 700 9.5px system-ui; letter-spacing: 0.05em;
+    background: rgba(245,158,11,0.18); color: #b45309;
+    padding: 1px 5px; border-radius: 3px;
+  }
+  .mpm-bf-state-suggested {
+    font: 600 10px system-ui; color: #0284c7;
+    margin-left: 4px;
+  }
+  .mpm-bf-use-btn {
+    flex: 0 0 auto;
+    background: var(--success); color: #fff; border-color: var(--success);
+  }
+  .mpm-bf-row.mpm-bf-row-selected {
+    background: rgba(16,185,129,0.10);
+    border-color: rgba(16,185,129,0.55);
+    box-shadow: 0 0 0 1px rgba(16,185,129,0.25) inset;
+  }
+  .mpm-bf-use-btn.mpm-bf-use-btn-selected {
+    background: transparent; color: var(--success); border-color: var(--success);
+  }
+  /* Collapsed mode — when one suggestion has been picked, hide the
+     other rows so the modal stays compact. The expand toggle is the
+     only way to reveal them again. */
+  .mpm-bf-card.mpm-bf-card-collapsed .mpm-bf-row:not(.mpm-bf-row-selected) {
+    display: none;
+  }
+  .mpm-bf-card.mpm-bf-card-collapsed.mpm-bf-card-expanded .mpm-bf-row {
+    display: flex;
+  }
+  .mpm-bf-toggle {
+    display: none; align-items: center; justify-content: center; gap: 4px;
+    width: 100%; margin-top: 4px;
+    padding: 4px 8px;
+    background: transparent; color: var(--muted);
+    border: 1px dashed var(--border); border-radius: 6px;
+    cursor: pointer; font: 600 11.5px system-ui;
+    transition: background .12s, color .12s, border-color .12s;
+  }
+  .mpm-bf-toggle:hover {
+    background: rgba(14,165,233,0.06);
+    color: var(--accent);
+    border-color: rgba(14,165,233,0.40);
+  }
+  .mpm-bf-card.mpm-bf-card-collapsed .mpm-bf-toggle { display: flex; }
+  .mpm-bf-foot {
+    margin-top: 8px; padding-top: 8px;
+    border-top: 1px solid rgba(14,165,233,0.20);
+    font-size: 11.5px;
+  }
+  .mpm-bf-foot a, .mpm-bf-empty-sub a {
+    color: var(--accent); text-decoration: none; font-weight: 600;
+  }
+  .mpm-bf-foot a:hover, .mpm-bf-empty-sub a:hover { text-decoration: underline; }
+
+  /* Check-copy upload drop-zone — replaces the bare <input type="file">
+     so the operator instantly sees this field is for attaching a photo
+     of the check (vs. a generic "browse" button that reads as optional). */
+  .mpm-check-drop {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px;
+    background: rgba(99,91,255,0.05);
+    border: 1.5px dashed rgba(99,91,255,0.40);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background .12s, border-color .12s;
+  }
+  .mpm-check-drop:hover {
+    background: rgba(99,91,255,0.10);
+    border-color: rgba(99,91,255,0.65);
+  }
+  .mpm-check-drop.has-file {
+    background: rgba(16,185,129,0.08);
+    border-style: solid;
+    border-color: rgba(16,185,129,0.55);
+  }
+  .mpm-check-drop input[type="file"] {
+    position: absolute; width: 1px; height: 1px;
+    opacity: 0; pointer-events: none;
+  }
+  .mpm-check-drop-icon { font-size: 18px; line-height: 1; }
+  .mpm-check-drop-text {
+    display: flex; flex-direction: column; gap: 1px; min-width: 0;
+  }
+  .mpm-check-drop-text b {
+    font-size: 12.5px; color: var(--text);
+  }
+  .mpm-check-drop-hint {
+    font-size: 11px; color: var(--muted);
+  }
+  .mpm-bf-empty-sub {
+    font-size: 11.5px; color: var(--muted); line-height: 1.5;
+  }
+
+  /* Forecast floor-scope picker — compact popover anchored to the
+     "Floors: All" button next to the Non-renewal slider. Lets operator
+     limit the 12-mo projection to a subset of buildings/floors. */
+  .hv-fcst-floors { position: relative; }
+  .hv-fcst-floors-btn {
+    display: flex; align-items: center; gap: 4px;
+    width: 100%; padding: 6px 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    cursor: pointer;
+    transition: border-color .12s, background .12s;
+  }
+  .hv-fcst-floors-btn:hover { border-color: rgba(2,132,199,0.45); }
+  .hv-fcst-floors-pop {
+    position: absolute; top: calc(100% + 4px); right: 0;
+    z-index: 50;
+    min-width: 240px; max-width: 320px;
+    max-height: 360px; overflow-y: auto;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.16);
+    padding: 8px;
+  }
+  .hv-fcst-floors-pop .hv-fcst-actions {
+    display: flex; gap: 8px;
+    padding: 4px 6px 8px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 6px;
+  }
+  .hv-fcst-floors-pop .hv-fcst-actions button {
+    flex: 1; padding: 4px 8px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--accent);
+    font-size: 11.5px; font-weight: 600;
+    cursor: pointer;
+  }
+  .hv-fcst-floors-pop .hv-fcst-actions button:hover {
+    background: rgba(99,91,255,0.08);
+  }
+  .hv-fcst-floors-pop .hv-fcst-bldg {
+    font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.04em; color: var(--muted);
+    padding: 6px 6px 2px;
+  }
+  .hv-fcst-floors-pop label {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 6px;
+    border-radius: 5px;
+    font-size: 12.5px; color: var(--text);
+    cursor: pointer;
+  }
+  .hv-fcst-floors-pop label:hover { background: var(--surface-2); }
+  .hv-fcst-floors-pop label input[type="checkbox"] {
+    accent-color: #0284c7; cursor: pointer;
+  }
+  .hv-fcst-floors-pop .hv-fcst-floor-meta {
+    margin-left: auto;
+    font-size: 11px; color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .mpm-bf-error {
+    font-size: 11.5px; color: #b91c1c; line-height: 1.5;
+    margin-top: 4px;
+  }
 
   /* Inline copy button — used next to email / phone / text fields.
      Ghost chrome until hover so it doesn't compete with the input. */
@@ -12056,6 +12311,18 @@
                 <div style="font-size: 10.5px; color: var(--muted); line-height: 1.3;">
                   Tenants assumed NOT to renew on lease end. Default 30% — industry baseline for office space.
                 </div>
+                <!-- Floor scope picker — operator can narrow the forecast
+                     to a subset of floors (e.g. "L2 + L3 of building A only").
+                     Default = all floors (whole portfolio). Selection
+                     persists on state.ui.forecastFloorFilter. -->
+                <div class="hv-fcst-floors" style="margin-top: 4px;">
+                  <button type="button" class="hv-fcst-floors-btn" id="hvFcstFloorsBtn" onclick="_toggleForecastFloorPicker(event)" title="Limit forecast to selected floors">
+                    <span style="font-size: 11px; color:var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700;">Floors</span>
+                    <span id="hvFcstFloorsSummary" style="margin-left: 6px; font-size: 12px; color: var(--text); font-weight: 600;">All</span>
+                    <span style="margin-left: auto; font-size: 10px; color: var(--muted);">▾</span>
+                  </button>
+                  <div class="hv-fcst-floors-pop" id="hvFcstFloorsPop" style="display:none;"></div>
+                </div>
               </div>
             </div>
             <div id="hvFcstChart" style="margin-top: 14px;"></div>
@@ -12536,6 +12803,7 @@
           <button class="bv-tab"        id="billTabVacancy"   onclick="setBillingTab('vacancy')">Vacancy <span class="bv-tab-count" id="billVacancyCount">—</span></button>
           <button class="bv-tab"        id="billTabCalendar"  onclick="setBillingTab('calendar')">Calendar <span class="bv-tab-count" id="billCalendarCount">—</span></button>
           <button class="bv-tab"        id="billTabPnl"       onclick="setBillingTab('pnl')">P&amp;L <span class="bv-tab-count" id="billPnlCount">—</span></button>
+          <button class="bv-tab"        id="billTabBankActivity" onclick="setBillingTab('bankActivity')">🏦 Bank Activity <span class="bv-tab-count" id="billBankActivityCount">—</span></button>
         </div>
         <div class="bv-tab-body">
 
@@ -13083,6 +13351,53 @@
             <div style="font-size: 34px; margin-bottom: 8px;">📊</div>
             <div style="font-size: 15px; font-weight: 600; margin-bottom: 6px;">No payments recorded</div>
             <div style="font-size: 12.5px;">Once tenants pay, monthly revenue will appear here.</div>
+          </div>
+        </div>
+
+        <!-- Bank Activity — Phase 3. Lists transactions pulled from
+             connected bank accounts. Auto-matched suggestions can be
+             confirmed (records the rent payment) or dismissed (e.g. it's
+             a refund, transfer, or unrelated deposit). -->
+        <div id="billingBankActivityPanel" style="display:none;">
+          <div class="ar-toolbar" style="margin-top: 6px;">
+            <div class="ar-toolbar-row" style="gap:8px; align-items:center;">
+              <select id="bankActivityFilter" class="ar-sel" onchange="renderBankActivityPanel()" title="Filter">
+                <option value="pending" selected>Needs review (suggested + unmatched)</option>
+                <option value="confirmed">Confirmed</option>
+                <option value="dismissed">Dismissed</option>
+                <option value="all">All</option>
+              </select>
+              <input type="text" id="bankActivitySearch" class="ar-sel" placeholder="Search description / amount…" oninput="renderBankActivityPanel()" style="min-width:200px;">
+              <label style="display:inline-flex; align-items:center; gap:4px; font-size:12px; color:var(--muted); cursor:pointer; user-select:none;" title="Outgoing debits can never be rent payments — hidden by default in this queue">
+                <input type="checkbox" id="bankActivityShowDebits" onchange="renderBankActivityPanel()" style="margin:0;">
+                Show debits
+              </label>
+              <div style="flex:1;"></div>
+              <button class="rr-btn ar-btn-sm" id="bankActivityConfirmHighBtn" onclick="confirmAllHighConfidence()" title="Auto-confirm every suggested match with score ≥ 90 (high confidence). Records all rent payments in one batch." style="display:none; background:var(--success); color:#fff; border-color:var(--success);">✓ Confirm all high-confidence (<span id="bankActivityHighCount">0</span>)</button>
+              <button class="rr-btn ar-btn-sm" onclick="openBankImportModal()" title="Import a bank statement file (CSV, Excel, OFX, QFX, QBO) — for months Stripe doesn't reach back to.">📥 Import file</button>
+              <button class="rr-btn ar-btn-sm" onclick="rerunBankFeedMatcher()" title="Re-run the matcher across all unmatched/suggested transactions — useful after editing tenant names.">🔄 Re-match all</button>
+              <button class="rr-btn ar-btn-sm" onclick="renderBankActivityPanel({force:true})" title="Reload from server">↻ Reload</button>
+            </div>
+          </div>
+          <div id="bankActivityStatus" style="font-size:11.5px; color:var(--muted); padding:6px 4px;"></div>
+          <div style="overflow:auto;">
+            <table class="rr-table" id="bankActivityTable" style="width:100%; font-size:12px;">
+              <thead>
+                <tr>
+                  <th style="text-align:left; width:90px;">Date</th>
+                  <th style="text-align:right; width:90px;">Amount</th>
+                  <th style="text-align:left;">Bank description</th>
+                  <th style="text-align:left; width:280px;">Matched / Suggested</th>
+                  <th style="text-align:left; width:230px;">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="bankActivityTbody"></tbody>
+            </table>
+          </div>
+          <div id="bankActivityEmpty" style="display:none; padding:40px; text-align:center; color: var(--muted);">
+            <div style="font-size: 34px; margin-bottom: 8px;">🏦</div>
+            <div style="font-size: 15px; font-weight: 600; margin-bottom: 6px;">No transactions yet</div>
+            <div style="font-size: 12.5px;">Connect a bank account in Settings → Integrations and trigger a backfill to see transactions here.</div>
           </div>
         </div>
         </div><!-- /bv-tab-body — wraps all four sub-panels above -->
@@ -14761,6 +15076,40 @@
       </div>
     </div>
 
+    <!-- Bank Connections (Stripe Financial Connections) — pulls incoming
+         deposits from operator's business bank to auto-match against open
+         invoices. Phase 1 ships connect-only; transaction polling, matcher,
+         and review board land in subsequent phases. -->
+    <div class="int-section">
+      <div class="int-header">
+        <div class="int-icon" style="background: #0ea5e920; color: #0284c7;">🏦</div>
+        <div class="int-info">
+          <div class="int-name">Bank Connections (Bank Feed)</div>
+          <div class="int-desc">Pull deposits from your business bank · Capital One / Chase / BofA / etc.</div>
+        </div>
+        <span class="int-badge" id="bankFeedBadge">Not connected</span>
+      </div>
+      <div class="int-help">
+        Powered by <b>Stripe Financial Connections</b>. Connect your business bank account once via OAuth — read-only access to incoming transactions. Used to auto-match wire / ACH / check deposits to open rent invoices. <b>Cost:</b> $1.50 per connect + $0.10/mo per active account. Requires the publishable key in the Stripe section above.
+      </div>
+      <div id="bankFeedConnectionsList" style="display:flex; flex-direction:column; gap:8px; margin-bottom:10px;">
+        <!-- populated by _renderBankConnections() -->
+      </div>
+      <div class="int-actions">
+        <button class="int-btn" id="bankFeedConnectBtn" onclick="connectBankAccount()">
+          <svg viewBox="0 0 24 24"><path d="M3 21h18M3 10h18M5 6l7-3 7 3M4 10v11M20 10v11M8 14v3M12 14v3M16 14v3"/></svg>
+          Connect bank account
+        </button>
+        <button class="int-btn outline" id="bankFeedSyncBtn" onclick="syncBankConnectionsFromStripe()" title="Pull the authoritative list of linked accounts from Stripe — surfaces any account that exists in Stripe but is missing from this view (e.g. from earlier connect attempts).">
+          ↻ Sync from Stripe
+        </button>
+      </div>
+      <div class="int-status-msg" id="bankFeedStatusMsg"></div>
+      <div class="int-help" style="margin-top:10px; font-size:11px;">
+        Phase 1 (current): connect &amp; list accounts. Phase 2: scheduled transaction poll. Phase 3: auto-match to invoices. Phase 4: operator review board.
+      </div>
+    </div>
+
     <!-- DocuSign — PKCE, browser-direct (no backend) -->
     <div class="int-section">
       <div class="int-header">
@@ -15617,7 +15966,6 @@
         <li><b>Apply to</b> — rent only, or rent + taxes + services (total balance)</li>
         <li><b>Frequency</b> — <code>once</code> per overdue cycle, or <code>monthly</code> recurring until paid</li>
       </ul>
-      <p style="margin: 0 0 6px;"><b>Honeymoon period:</b> the very first month of tenancy is exempt from late fees and overdue alerts — the operator is still settling the tenant in. Determined by <code>u._tenantAddedAt</code> or <code>u.leaseStart</code>, whichever is earlier.</p>
       <p style="margin: 0;"><b>Dismissal:</b> operators can waive an individual month's fee from the Late-fee block on the Overview tab. Dismissed fees don't count toward outstanding.</p>
     </div>
 
@@ -17301,6 +17649,15 @@
          hosted-URL link. Hidden when no matching invoice is found. -->
     <div id="mpmInvoiceCard"></div>
 
+    <!-- Bank-feed suggestions — populated by _mpmRenderBankSuggestions().
+         When the operator has connected ≥1 bank account via Stripe
+         Financial Connections, we surface incoming credits that match
+         this lease's expected amount/month so they can apply the actual
+         bank transaction with one click instead of retyping check #,
+         amount, and date by hand. Hidden when no matches are found
+         (or no bank is connected). -->
+    <div id="mpmBankFeedCard"></div>
+
     <div class="stripe-modal-row">
       <div class="label"><b>Method</b></div>
       <select id="mpmMethod" onchange="_mpmOnMethodChange()" style="padding:6px 8px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); min-width:180px;">
@@ -17361,7 +17718,12 @@
         <b>Reference #</b>
         <div class="hint">Check #, ACH/wire confirmation, receipt #</div>
       </div>
-      <input id="mpmReference" type="text" placeholder="e.g. 1425" style="padding:6px 8px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); width:200px;">
+      <div style="display:flex; flex-direction:column; gap:4px;">
+        <input id="mpmReference" type="text" placeholder="e.g. 1425" style="padding:6px 8px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); width:200px;">
+        <!-- "Linked to bank txn" pill — shown when operator picked a
+             suggested transaction. Clicking × unlinks it (manual entry mode). -->
+        <div id="mpmLinkedBankPill" style="display:none;"></div>
+      </div>
     </div>
 
     <div class="stripe-modal-row" id="mpmAmountRow" style="align-items: flex-start;">
@@ -17379,11 +17741,18 @@
 
     <div class="stripe-modal-row" style="align-items: flex-start;">
       <div class="label">
-        <b>Receipt image</b>
-        <div class="hint">JPG/PNG/HEIC — check stub, ACH screenshot, etc.</div>
+        <b>📎 Check copy</b>
+        <div class="hint">Photo of the actual check (or ACH screenshot, wire confirmation)</div>
       </div>
       <div style="flex:1;">
-        <input id="mpmReceipt" type="file" accept="image/*" style="font-size:12px;">
+        <label for="mpmReceipt" class="mpm-check-drop" id="mpmReceiptLabel">
+          <span class="mpm-check-drop-icon">📎</span>
+          <span class="mpm-check-drop-text">
+            <b>Attach check copy</b>
+            <span class="mpm-check-drop-hint">Click to choose · JPG / PNG / HEIC</span>
+          </span>
+          <input id="mpmReceipt" type="file" accept="image/*" onchange="_mpmUpdateReceiptLabel(this)">
+        </label>
         <div id="mpmExistingReceipt" style="margin-top:6px;"></div>
       </div>
     </div>
@@ -17401,6 +17770,100 @@
       <button class="rr-btn" id="mpmRemindBtn" onclick="mpmSendReminder()" style="display: none;" title="Re-email this invoice to the tenant via Stripe">✉ Send reminder</button>
       <button class="rr-btn" onclick="closeManualPaymentModal()">Pay later</button>
       <button class="rr-btn primary" id="mpmSubmitBtn" onclick="submitManualPayment()">Record payment</button>
+    </div>
+  </div>
+</div>
+
+<!-- Bank statement import modal.
+     Imports operator-supplied statement files (CSV, XLSX, OFX, QFX, QBO)
+     into the same bankTransactions collection as Stripe-pulled rows.
+     Used when Stripe Financial Connections only exposes ~90 days of
+     history (Capital One default) but the operator needs older months
+     reconciled. Rows are deduped by sha1(date|amount|description). -->
+<div class="stripe-modal" id="bankImportModal">
+  <div class="stripe-modal-card" style="max-width: 720px; position: relative;">
+    <button class="modal-x-close" type="button" onclick="closeBankImportModal()" aria-label="Close" title="Close (Esc)">×</button>
+    <h3>📥 Import bank statement</h3>
+    <div class="sub">Add transactions from a file when Stripe doesn't reach far enough back. Supports <b>CSV</b>, <b>Excel</b> (xlsx/xls), <b>OFX</b>, <b>QFX</b>, and <b>QBO</b> (QuickBooks). Days that already have transactions in the system are <b>skipped automatically</b> to prevent overlap with the bank feed.</div>
+
+    <div id="bankImportPickerRow" style="margin-top: 14px;">
+      <div style="border:2px dashed var(--border); border-radius:10px; padding:24px; text-align:center; background:var(--surface-2, rgba(0,0,0,0.02));"
+           id="bankImportDropzone">
+        <div style="font-size:28px; margin-bottom:6px;">📂</div>
+        <div style="font-size:14px; font-weight:600; margin-bottom:6px;">Drop a statement file here, or click to browse</div>
+        <div style="font-size:12px; color:var(--muted);">Accepted: .csv · .xlsx · .xls · .ofx · .qfx · .qbo (max 5 MB)</div>
+        <input type="file" id="bankImportFileInput" accept=".csv,.xlsx,.xls,.ofx,.qfx,.qbo,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+               style="display:none;" onchange="_bankImportOnFile(event)">
+        <button type="button" class="rr-btn" style="margin-top:10px;" onclick="document.getElementById('bankImportFileInput').click()">Choose file</button>
+      </div>
+      <div id="bankImportLoadStatus" style="margin-top:8px; font-size:12px; color:var(--muted);"></div>
+    </div>
+
+    <!-- Step 2: Column mapping (CSV / XLSX only — OFX/QFX/QBO are
+         structured so we know which field is which). -->
+    <div id="bankImportMapRow" style="display:none; margin-top:14px; padding:12px; border:1px solid var(--border); border-radius:8px; background:var(--surface);">
+      <div style="font-weight:600; font-size:13px; margin-bottom:8px;">Column mapping</div>
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+        <label style="font-size:12px;">Date column
+          <select id="bankImportColDate" class="ar-sel" style="width:100%; margin-top:2px;" onchange="_bankImportRebuildPreview()"></select>
+        </label>
+        <label style="font-size:12px;">Description column
+          <select id="bankImportColDesc" class="ar-sel" style="width:100%; margin-top:2px;" onchange="_bankImportRebuildPreview()"></select>
+        </label>
+        <label style="font-size:12px;">Amount column (signed: +credit / -debit)
+          <select id="bankImportColAmt" class="ar-sel" style="width:100%; margin-top:2px;" onchange="_bankImportRebuildPreview()"></select>
+        </label>
+        <label style="font-size:12px;">— or split: Credit / Debit columns
+          <span style="display:flex; gap:4px; margin-top:2px;">
+            <select id="bankImportColCredit" class="ar-sel" style="flex:1;" onchange="_bankImportRebuildPreview()"></select>
+            <select id="bankImportColDebit" class="ar-sel" style="flex:1;" onchange="_bankImportRebuildPreview()"></select>
+          </span>
+        </label>
+      </div>
+      <div style="font-size:11px; color:var(--muted); margin-top:6px;">If your file has a single signed Amount column, leave Credit/Debit on "(none)". Otherwise use the split columns.</div>
+    </div>
+
+    <!-- Step 3: Preview rows -->
+    <div id="bankImportPreviewRow" style="display:none; margin-top:14px;">
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+        <div style="font-weight:600; font-size:13px;">Preview</div>
+        <span id="bankImportPreviewStat" style="font-size:11.5px; color:var(--muted);"></span>
+      </div>
+      <div style="max-height: 240px; overflow:auto; border:1px solid var(--border); border-radius:8px;">
+        <table id="bankImportPreviewTable" style="width:100%; font-size:11.5px; border-collapse:collapse;">
+          <thead style="position:sticky; top:0; background:var(--surface); z-index:1;">
+            <tr>
+              <th style="text-align:left; padding:6px 8px; border-bottom:1px solid var(--border);">Date</th>
+              <th style="text-align:right; padding:6px 8px; border-bottom:1px solid var(--border);">Amount</th>
+              <th style="text-align:left; padding:6px 8px; border-bottom:1px solid var(--border);">Description</th>
+            </tr>
+          </thead>
+          <tbody id="bankImportPreviewBody"></tbody>
+        </table>
+      </div>
+
+      <div style="display:flex; gap:14px; margin-top:10px; align-items:center; flex-wrap:wrap;">
+        <label style="display:inline-flex; align-items:center; gap:5px; font-size:12.5px; cursor:pointer;">
+          <input type="checkbox" id="bankImportSkipDebits" checked style="margin:0;">
+          Skip debits (recommended — debits aren't rent)
+        </label>
+        <label style="display:inline-flex; align-items:center; gap:5px; font-size:12.5px; cursor:pointer;">
+          <input type="checkbox" id="bankImportRunMatcher" checked style="margin:0;">
+          Run matcher on import
+        </label>
+        <label style="display:inline-flex; align-items:center; gap:5px; font-size:12.5px;">
+          Account label:
+          <input type="text" id="bankImportAcctTag" class="ar-sel" placeholder="e.g. Capital One …5709" style="width:170px;">
+        </label>
+      </div>
+    </div>
+
+    <div id="bankImportSubmitStatus" style="margin-top:10px; font-size:12px; min-height:18px;"></div>
+
+    <div class="stripe-modal-actions" style="margin-top:14px;">
+      <button class="rr-btn" type="button" onclick="closeBankImportModal()">Cancel</button>
+      <button class="rr-btn primary" type="button" id="bankImportSubmitBtn"
+              onclick="_bankImportSubmit()" disabled>Import 0 rows</button>
     </div>
   </div>
 </div>
@@ -22744,7 +23207,7 @@ function fbApplyRemote(doc) {
   // remote update silently switched THIS operator's selectedUnitId,
   // currentBuildingId, currentFloorId — yanking the right detail panel
   // mid-edit. Local UI state is per-tab and never belongs in cloud sync.)
-  for (const k of ['buildings', 'tenants', 'leases', 'contracts', 'settings']) {
+  for (const k of ['buildings', 'tenants', 'leases', 'contracts', 'settings', 'bankConnections']) {
     if (remote[k] !== undefined) {
       // Defensive coerce — Firestore may degrade arrays into
       // object-with-numeric-keys after dot-path field updates.
@@ -22974,6 +23437,7 @@ function fbSanitizeState(s) {
     leases:    _coerceFirestoreArray(s.leases),
     contracts: _coerceFirestoreArray(s.contracts),
     settings: s.settings || {},
+    bankConnections: _coerceFirestoreArray(s.bankConnections),
     _seeded: s._seeded || false,
   }));
   // Polygon points serialization — Firestore rejects nested arrays
@@ -24247,8 +24711,24 @@ function updateTopbarOutstandingPill() {
     el = document.createElement('div');
     el.id = 'outstandingPill';
     el.className = 'outstanding-pill';
-    el.title = 'Jump to A/R Aging';
-    el.onclick = () => { showBilling(); setTimeout(() => setBillingTab('aging'), 80); };
+    el.title = 'Jump to A/R Aging — filtered to past-due only';
+    // Operator clicked the topbar "N overdue · $X" pill → they expect to see
+    // ONLY those past-due rows, not the full open-invoice list (which also
+    // includes current-month rents not yet past their grace period). Force
+    // "Past-due only" ON so the visible table total matches the pill amount.
+    el.onclick = () => {
+      showBilling();
+      setTimeout(() => {
+        setBillingTab('aging');
+        setTimeout(() => {
+          const cb = document.getElementById('agingPastDueOnly');
+          if (!cb || cb.checked) return;
+          const btn = document.querySelector('[onclick*="toggleAgingPastDueOnly"]');
+          if (btn && typeof toggleAgingPastDueOnly === 'function') toggleAgingPastDueOnly(btn);
+          else { cb.checked = true; if (typeof renderAgingPanel === 'function') renderAgingPanel(); }
+        }, 120);
+      }, 80);
+    };
     const host = document.querySelector('.topbar-actions');
     const userBadge = document.getElementById('userBadge');
     const qa = document.getElementById('quickAdd');
@@ -24303,9 +24783,160 @@ window._topbarTimers.push(
 //
 // Returns 12 monthly bucket objects so the chart renderer can stack
 // continuing vs new vs lost (non-renewing).
-function _computeRevenueForecast(nonRenewalPct) {
+// =========================================================================
+// Forecast floor-scope picker — renders a popover next to the Non-renewal
+// slider with a checkbox per floor (grouped by building). Selection is
+// persisted on state.ui.forecastFloorFilter as an array of "buildingId/
+// floorId" keys; empty/missing means "no filter — whole portfolio".
+// =========================================================================
+function _toggleForecastFloorPicker(ev) {
+  if (ev) ev.stopPropagation();
+  const pop = document.getElementById('hvFcstFloorsPop');
+  if (!pop) return;
+  if (pop.style.display === 'none' || !pop.style.display) {
+    _buildForecastFloorPicker();
+    pop.style.display = 'block';
+    // Outside-click closer — registered once, removes itself on first hit.
+    setTimeout(() => {
+      const off = (e) => {
+        if (!pop.contains(e.target) && e.target.id !== 'hvFcstFloorsBtn'
+            && !document.getElementById('hvFcstFloorsBtn')?.contains(e.target)) {
+          pop.style.display = 'none';
+          document.removeEventListener('mousedown', off, true);
+        }
+      };
+      document.addEventListener('mousedown', off, true);
+    }, 0);
+  } else {
+    pop.style.display = 'none';
+  }
+}
+
+function _buildForecastFloorPicker() {
+  const pop = document.getElementById('hvFcstFloorsPop');
+  if (!pop) return;
+  state.ui = state.ui || {};
+  const sel = new Set(Array.isArray(state.ui.forecastFloorFilter) ? state.ui.forecastFloorFilter : []);
+  // Tally occupied office units per floor so the operator sees scale
+  // ("L2 — 12 leases") next to each row before checking it.
+  const tally = {};
+  for (const b of (state.buildings || [])) {
+    if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
+    for (const f of (b.floors || [])) {
+      let n = 0;
+      for (const u of (f.units || [])) {
+        if (u.rentable === false || (u.type && u.type !== 'office')) continue;
+        if (u.status !== 'occupied' || (!u.tenant && !u.company)) continue;
+        n++;
+      }
+      tally[`${b.id}/${f.id}`] = n;
+    }
+  }
+  const parts = [
+    `<div class="hv-fcst-actions">
+       <button type="button" onclick="_setForecastFloorFilter('all')">Select all</button>
+       <button type="button" onclick="_setForecastFloorFilter('none')">Clear</button>
+     </div>`
+  ];
+  for (const b of (state.buildings || [])) {
+    if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
+    if (!(b.floors || []).length) continue;
+    parts.push(`<div class="hv-fcst-bldg">${esc(b.name || b.id)}</div>`);
+    for (const f of (b.floors || [])) {
+      const k = `${b.id}/${f.id}`;
+      const checked = (sel.size === 0) || sel.has(k);
+      const n = tally[k] || 0;
+      parts.push(
+        `<label>
+           <input type="checkbox" data-fcst-floor="${esc(k)}" ${checked ? 'checked' : ''}
+                  onchange="_onForecastFloorToggle(this)">
+           <span>${esc(f.name || f.id)}</span>
+           <span class="hv-fcst-floor-meta">${n} lease${n === 1 ? '' : 's'}</span>
+         </label>`
+      );
+    }
+  }
+  pop.innerHTML = parts.join('');
+}
+
+function _setForecastFloorFilter(mode) {
+  state.ui = state.ui || {};
+  if (mode === 'all') {
+    // Empty array = no filter (whole portfolio). Cheaper than enumerating
+    // every floor; the compute function treats empty as null.
+    state.ui.forecastFloorFilter = [];
+  } else if (mode === 'none') {
+    // Explicit "none" — populate with a single non-existent key so the
+    // compute filter excludes everything. Operator must then re-check
+    // floors to bring them back into scope.
+    state.ui.forecastFloorFilter = ['__none__'];
+  }
+  if (typeof saveState === 'function') saveState();
+  _buildForecastFloorPicker();
+  if (typeof renderHomeForecast === 'function') renderHomeForecast();
+}
+
+function _onForecastFloorToggle(cb) {
+  state.ui = state.ui || {};
+  const k = cb.getAttribute('data-fcst-floor');
+  if (!k) return;
+  // First toggle from a "no filter" baseline materializes the full set
+  // so toggling one OFF actually narrows scope (instead of going from
+  // "all implicit" to "all explicit minus one" with bad UX).
+  let arr = Array.isArray(state.ui.forecastFloorFilter) ? state.ui.forecastFloorFilter.slice() : [];
+  if (!arr.length) {
+    // Materialize all currently-visible floor keys.
+    arr = [];
+    for (const b of (state.buildings || [])) {
+      if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
+      for (const f of (b.floors || [])) arr.push(`${b.id}/${f.id}`);
+    }
+  }
+  const setView = new Set(arr);
+  if (cb.checked) setView.add(k); else setView.delete(k);
+  // Collapse "all checked" back to empty array so the no-filter path is
+  // the default state on next reload.
+  let total = 0;
+  for (const b of (state.buildings || [])) {
+    if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
+    total += (b.floors || []).length;
+  }
+  state.ui.forecastFloorFilter = (setView.size === total) ? [] : Array.from(setView);
+  if (typeof saveState === 'function') saveState();
+  if (typeof renderHomeForecast === 'function') renderHomeForecast();
+}
+
+function _renderForecastFloorSummary() {
+  const el = document.getElementById('hvFcstFloorsSummary');
+  if (!el) return;
+  const arr = Array.isArray(state.ui?.forecastFloorFilter) ? state.ui.forecastFloorFilter : [];
+  let total = 0;
+  for (const b of (state.buildings || [])) {
+    if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
+    total += (b.floors || []).length;
+  }
+  if (!arr.length) {
+    el.textContent = `All (${total})`;
+    el.style.color = '';
+  } else if (arr.length === 1 && arr[0] === '__none__') {
+    el.textContent = 'None';
+    el.style.color = '#dc2626';
+  } else {
+    el.textContent = `${arr.length} of ${total}`;
+    el.style.color = '#0284c7';
+  }
+}
+
+function _computeRevenueForecast(nonRenewalPct, floorFilter) {
   const rate = Math.max(0, Math.min(100, +nonRenewalPct || 0)) / 100;
   const renewalProb = 1 - rate;
+  // floorFilter: Set of "buildingId/floorId" keys when the operator
+  // narrowed the forecast to specific floors via the popover; null/empty
+  // = no filter (whole portfolio). Applied to both the active-portfolio
+  // walk and the recoveryCases lookup so the projection scope is
+  // consistent end-to-end.
+  const _hasFloorFilter = floorFilter && typeof floorFilter.has === 'function' && floorFilter.size > 0;
+  const _floorOk = (bId, fId) => !_hasFloorFilter || floorFilter.has(`${bId}/${fId}`);
   // M2M leases face attrition every month, not just at term-end. Convert
   // the annual non-renewal rate into a monthly retention rate so over 12
   // months the cumulative attrition equals `rate`. (1-rate)^(1/12) is
@@ -24326,6 +24957,7 @@ function _computeRevenueForecast(nonRenewalPct) {
   for (const b of (state.buildings || [])) {
     if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
     for (const f of (b.floors || [])) {
+      if (!_floorOk(b.id, f.id)) continue;
       for (const u of (f.units || [])) {
         if (u.rentable === false || (u.type && u.type !== 'office')) continue;
         if (u.status !== 'occupied' || (!u.tenant && !u.company)) continue;
@@ -24398,6 +25030,7 @@ function _computeRevenueForecast(nonRenewalPct) {
     if (rc.status !== 'in_collections' && rc.status !== 'written_off') continue;
     const moMs = rc.movedOut ? new Date(rc.movedOut + 'T00:00:00').getTime() : 0;
     if (!Number.isFinite(moMs) || moMs <= 0 || moMs < sixMoAgoMs) continue;
+    if (_hasFloorFilter && !_floorOk(rc.buildingId, rc.floorId)) continue;
     collectionsCount6mo++;
     // Find the corresponding tenantHistory record on the unit to recover
     // the actual contractRent. The recovery case carries unitId — match
@@ -24695,7 +25328,17 @@ function renderHomeForecast() {
   section.style.display = '';
   const rateInput = document.getElementById('hvFcstRate');
   const rate = rateInput ? +rateInput.value : 30;
-  const f = _computeRevenueForecast(rate);
+  // Floor filter — operator may have narrowed scope to specific floors via
+  // the popover next to the slider. Persisted on state.ui so the choice
+  // survives reloads. Empty array / missing = no filter (whole portfolio).
+  const _ffArr = Array.isArray(state.ui?.forecastFloorFilter) ? state.ui.forecastFloorFilter : [];
+  const floorFilter = _ffArr.length ? new Set(_ffArr) : null;
+  const f = _computeRevenueForecast(rate, floorFilter);
+  // Update the popover's summary label so the operator sees how many
+  // floors are in scope without expanding the picker.
+  if (typeof _renderForecastFloorSummary === 'function') {
+    try { _renderForecastFloorSummary(); } catch {}
+  }
 
   // Daily snapshot — record today's projected total + key inputs once
   // per calendar day so we can later show forecast-vs-actual drift.
@@ -35730,66 +36373,10 @@ function _renderUnitSubRoomBanner(u) {
       </div>`;
   }
 
-  // isParent path — list sub-rooms with quick-jump
-  const fmt = (n) => '$' + (+n || 0).toLocaleString();
-  // Parent is "whole-rented" if it has a tenant + occupied status OR it's
-  // part of a multi-suite-lease group (grouped suites are treated as
-  // occupied even if the operator hasn't explicitly flipped status). Sub-
-  // rooms of a whole-rented parent should NOT display as "vacant" — they
-  // are covered by the parent's lease.
-  const inGroup = !!u.groupId;
-  const groupTenant = inGroup && typeof _groupPrimary === 'function'
-    ? (() => {
-        const p = _groupPrimary(u.groupId);
-        return p ? (p.tenant || p.company || '').trim() : '';
-      })()
-    : '';
-  const wholeRented = !!((u.tenant || u.company) && u.status === 'occupied') || (inGroup && groupTenant);
-  const parentTenantName = (u.tenant || u.company || groupTenant || '').trim();
-  const occupiedKids = children.filter(c => c.status === 'occupied');
-  const subRoomRows = children.map(c => {
-    const tenant = (c.tenant || c.company || '').trim();
-    const rent = +c.contractRent || +c.rent || 0;
-    const isOccupied = c.status === 'occupied';
-    // When the parent is whole-rented, sub-rooms aren't "vacant" — they
-    // are inactive because the parent's lease covers the whole physical
-    // space. Show that explicitly with an amber dot + plain-language
-    // label, instead of a grey dot + "vacant" italic that misleadingly
-    // implies "available to rent".
-    const dot = wholeRented ? '#f59e0b' : (isOccupied ? '#16a34a' : '#94a3b8');
-    const labelHtml = wholeRented
-      ? `<span style="color:#92400e;">Covered by parent lease${parentTenantName ? ` · ${esc(parentTenantName)}` : ''}</span>`
-      : (tenant ? esc(tenant) : '<i style="color: #94a3b8;">vacant</i>');
-    return `
-      <div style="display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; cursor: pointer; transition: background 0.1s;" onmouseover="this.style.background='#fff'" onmouseout="this.style.background='transparent'" onclick="_unitJumpTo('${esc(c.id)}')">
-        <span style="display: inline-block; width: 8px; height: 8px; background: ${dot}; border-radius: 50%; flex-shrink: 0;"></span>
-        <span style="font-weight: 700; color: #0f172a; min-width: 50px;">${esc(c.id)}</span>
-        <span style="flex: 1; color: #475569; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-          ${labelHtml}
-        </span>
-        ${rent > 0 && !wholeRented ? `<span style="color: #475569; font-size: 11px; font-variant-numeric: tabular-nums;">${esc(fmt(rent))}/mo</span>` : ''}
-      </div>`;
-  }).join('');
-  const summary = wholeRented
-    ? (inGroup
-        ? `Whole-rented (multi-suite lease) · sub-rooms covered by parent lease`
-        : `Whole-rented · sub-rooms covered by parent lease`)
-    : `${occupiedKids.length} of ${children.length} room${children.length === 1 ? '' : 's'} rented`;
-
-  return `
-    <div style="margin: 6px 16px 10px; padding: 10px 12px; background: ${wholeRented ? '#fef3c7' : '#f0f9ff'}; border: 1px solid ${wholeRented ? '#fcd34d' : '#bae6fd'}; border-radius: 8px; font-size: 12.5px;">
-      <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 6px;">
-        <span style="font-size: 16px; flex-shrink: 0;">🏢</span>
-        <div style="flex: 1;">
-          <div style="font-weight: 700; color: #0f172a;">Suite hosts ${children.length} sub-room${children.length === 1 ? '' : 's'}</div>
-          <div style="font-size: 11.5px; color: ${wholeRented ? '#92400e' : '#075985'}; margin-top: 2px;">${esc(summary)}</div>
-        </div>
-        ${state.settings.editMode && !u.parentId ? `<button type="button" onclick="_unitAddSubRoomChoose('${esc(u.id)}')" style="padding: 4px 10px; border: 0; background: #0284c7; color: #fff; border-radius: 5px; font-weight: 700; font-size: 11px; cursor: pointer; flex-shrink: 0;">+ Add room</button>` : ''}
-      </div>
-      <div style="background: #f8fafc; border-radius: 6px; padding: 4px;">
-        ${subRoomRows}
-      </div>
-    </div>`;
+  // Parent banner (the "Suite hosts N sub-rooms" panel) intentionally not
+  // rendered — sub-rooms redirect to parent on click and the multi-suite-
+  // lease banner already conveys group context.
+  return '';
 }
 
 // Quick-jump from one unit to another (parent ↔ child link in the banner).
@@ -36815,6 +37402,21 @@ function snapPoint(px, py, excludeIds = null) {
 function onUnitPointerDown(e, u) {
   if (mode !== 'select') return;
   e.stopPropagation();
+
+  // Sub-room → parent redirect: when the operator clicks a sub-room
+  // whose parent is part of a tenant group (multi-suite lease), the
+  // sub-room is structurally part of the parent's rented area — the
+  // operator's mental model is "this is part of the National University
+  // lease", not "this is a separately-trackable child unit". Resolve to
+  // the parent so the right-panel shows the group's combined info AND
+  // the floor map keeps the purple group highlight on every member.
+  // Bypassed in edit mode (operator may want to actually edit the
+  // child) and on shift-click (multi-select keeps clicked target).
+  if (!e.shiftKey && !state?.settings?.editMode
+      && u && u.parentId && typeof _unitParent === 'function') {
+    const _p = _unitParent(u);
+    if (_p && _p.groupId) u = _p;
+  }
 
   if (e.shiftKey) {
     if (selectedIds.includes(u.id)) {
@@ -40147,14 +40749,18 @@ function renderDetail() {
     ? _renderUnitTenantGroupBanner(u)
     : '';
 
+  // Tab nav sits directly under the rent card so the tab strip is always
+  // the next thing the operator sees after the header (operator request).
+  // Multi-suite + sub-room context banners moved into the Overview pane
+  // so they don't push tabs out of view on tabs that don't need them.
+  const overviewPaneHtml = `${tenantGroupBanner}${subRoomBanner}${panes.overview}`;
+  const panesOrdered = { ...panes, overview: overviewPaneHtml };
   el.innerHTML = `
     <div class="unit-panel-v2">
       ${v2Header}
-      ${tenantGroupBanner}
-      ${subRoomBanner}
       ${v2Tabs}
       <div class="upv2-content">
-        ${Object.entries(panes).map(([name, html]) =>
+        ${Object.entries(panesOrdered).map(([name, html]) =>
           `<div class="upv2-pane ${name === activeTab ? 'active' : ''}" data-up-pane="${name}">${html}</div>`
         ).join('')}
       </div>
@@ -41137,7 +41743,9 @@ function _renderUnitV2Header(u, editOn) {
            In edit mode the kebab menu collapses into Save/Cancel. -->
       <div class="upv2-h-titlebar">
         <h2 class="upv2-h-title">Suite ${esc(u.id)}</h2>
-        <span class="upv2-pill ${pillCls}">${esc(pillLabel)}</span>
+        ${(pillLabel === 'Awaiting Deposit' && typeof canEdit === 'function' && canEdit())
+          ? `<button type="button" class="upv2-pill ${pillCls} upv2-pill-clickable" onclick="event.stopPropagation(); markUnitDepositPaid('${esc(u.id)}')" title="Click to mark deposit as paid (cash, check, wire — received outside Stripe)">${esc(pillLabel)} →</button>`
+          : `<span class="upv2-pill ${pillCls}">${esc(pillLabel)}</span>`}
         <div class="upv2-h-actions">
           ${editOn ? `
             <button class="unit-btn unit-btn-primary" onclick="saveUnitDetail()">💾 Save</button>
@@ -42247,11 +42855,8 @@ function _computeUnitMoney(u) {
   const grace = (state?.settings?.lateFee?.graceDays ?? 5);
   let owed = 0, paidYtd = 0, unpaidMonths = 0, currentOverdue = false;
 
-  const firstYm = _firstTenancyYm(u);
   // `outstanding` = total money the tenant currently owes us right now
-  //                 (unpaid rent past honeymoon + unpaid late fees +
-  //                 unpaid deposit). Honeymoon month is NOT counted —
-  //                 it's a freebie period.
+  //                 (unpaid rent + unpaid late fees + unpaid deposit).
   // `owed`        = OVERDUE subset of outstanding (drives alerts /
   //                 red overdue overlay on the floor plan).
   let outstanding = 0;
@@ -42272,8 +42877,6 @@ function _computeUnitMoney(u) {
     // (referral credit, comp month, etc.) would still light up the
     // unit as overdue on the floor map and accrue late fees.
     if (p?.status === 'free') continue;
-    // Honeymoon month — no charges accrue, period.
-    if (firstYm && ym === firstYm) continue;
 
     if (i > 0) {
       // Past unpaid month — outstanding + overdue
@@ -42301,7 +42904,6 @@ function _computeUnitMoney(u) {
       const lastDay = new Date(now.getFullYear(), now.getMonth() - i + 1, 0);
       if (startDate && !isNaN(startDate.getTime()) && lastDay < startDate) continue;
       const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-      if (firstYm && ym === firstYm) continue;
       const pm = u.payments?.[ym];
       if (pm?.status === 'paid' || pm?.status === 'free') continue;
       const isLate = (i > 0) || (i === 0 && now.getDate() > (lfCfg.graceDays ?? 5));
@@ -42573,7 +43175,7 @@ function _renderUnitOverviewPane(u, editOn, ro) {
   }
   // Single source of truth for money math — lease-start-aware +
   // honours grace period for current-month overdue.
-  // `outstanding` = unpaid rent (post-honeymoon) + unpaid late fees.
+  // `outstanding` = unpaid rent + unpaid late fees.
   //                  Deposit is NOT included — shown on its own row.
   // `owed` = overdue subset — drives alerts, not the stat card.
   const money = _computeUnitMoney(u);
@@ -43197,8 +43799,7 @@ function _renderLeaseInsurance(u, editOn, ro) {
 
 // Late fee block — surfaces unpaid late fees + reflects real-time
 // status of any sent late-fee invoice. Hides entirely once all fees
-// are billed AND paid. Honeymoon: skips the very first month of
-// tenancy (operator settling tenant in).
+// are billed AND paid.
 function _renderUnitLateFeeOwed(u) {
   if (u.status !== 'occupied' || !u.tenant) return '';
   const cfg = (typeof getLateFeeConfig === 'function') ? getLateFeeConfig(u) : null;
@@ -43211,9 +43812,8 @@ function _renderUnitLateFeeOwed(u) {
   const startIso = u.leaseStart || u.signed || '';
   const startDate = startIso ? new Date(startIso + 'T00:00:00') : null;
   const grace = cfg.graceDays ?? 5;
-  const firstYm = _firstTenancyYm(u);
 
-  // Compute fee items per overdue month (skip honeymoon + paid + dismissed)
+  // Compute fee items per overdue month (skip paid + dismissed)
   const items = [];
   let totalFee = 0;
   for (let i = 0; i < 12; i++) {
@@ -43221,8 +43821,6 @@ function _renderUnitLateFeeOwed(u) {
     const lastDay = new Date(now.getFullYear(), now.getMonth() - i + 1, 0);
     if (startDate && !isNaN(startDate.getTime()) && lastDay < startDate) continue;
     const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-    // First month of tenancy = honeymoon, no fee
-    if (firstYm && ym === firstYm) continue;
     const p = u.payments?.[ym];
     if (p?.status === 'paid' || p?.status === 'free') continue;
     let isLate = false;
@@ -43947,6 +44545,16 @@ async function _invoiceHistoryRefresh(buildingId, floorId, unitId) {
 // =============================================================
 function _renderUnitActiveServices(u) {
   if (!u || u.status !== 'occupied' || (!u.tenant && !u.company)) return '';
+  // Lease-head redirect — for any non-head member of a multi-suite group,
+  // route to the head so rent + monthly subscriptions read off the lease's
+  // single source of truth. Without this, members of a 9-suite group
+  // showed an empty "Monthly recurring" panel ("No rent or recurring
+  // subscriptions on this lease yet") while the head showed the real
+  // combined $13,318/mo. Click handlers below also retarget to head.id.
+  if (typeof _unitLeaseHead === 'function') {
+    const head = _unitLeaseHead(u);
+    if (head && head !== u) u = head;
+  }
   // Only recurring monthly subscriptions belong on the unit panel —
   // one-time / hourly / daily are usage-based add-ons that shouldn't
   // contribute to the recurring-revenue summary the operator scans
@@ -44372,6 +44980,15 @@ if (typeof window !== 'undefined' && !window.__ttPortalWired) {
 
 function _renderUnitInvoiceHistory(u) {
   if (!u || u.type !== 'office' || u.rentable === false) return '';
+  // Lease-head redirect — for any non-head member of a multi-suite group,
+  // route to the head so invoice history reads off the lease's single
+  // Stripe customer. Without this, members of a 9-suite group showed an
+  // empty Invoice History while the head (where invoices are sent) had
+  // the full record.
+  if (typeof _unitLeaseHead === 'function') {
+    const head = _unitLeaseHead(u);
+    if (head && head !== u) u = head;
+  }
   // When the unit is vacant (no active tenant), historical invoices
   // from prior occupants are real financial records but do NOT belong
   // in the unit's live panel — they create the impression that the
@@ -46271,8 +46888,28 @@ function _renderUnitTenantHistoryBlock(u) {
 //   - Previous tenants summary (click one → lease + payment history)
 // ============================================================
 function _renderUnitPaymentHealth(u) {
-  const b = currentBuilding();
-  const f = currentFloor();
+  // Lease-head redirect: for any non-head member of a multi-suite group,
+  // route to the head so payment-history pills, "X months unpaid" alert,
+  // and "Last payment:" line all reflect the SHARED lease state. Without
+  // this, clicking a member like Suite 118 in a 9-suite National
+  // University group showed empty pills + phantom overdue while the head
+  // (Suite 101) showed the actual payment history.
+  if (typeof _unitLeaseHead === 'function') {
+    const head = _unitLeaseHead(u);
+    if (head && head !== u) u = head;
+  }
+  // Look up the head's actual building/floor — defensive against the
+  // (unusual) case of a cross-floor group where currentFloor() would
+  // produce wrong ids in the click handlers.
+  let b = currentBuilding();
+  let f = currentFloor();
+  if (u && u.id) {
+    for (const bb of (state.buildings || [])) {
+      for (const ff of (bb.floors || [])) {
+        if ((ff.units || []).some(x => x.id === u.id)) { b = bb; f = ff; break; }
+      }
+    }
+  }
   if (!b || !f || !u) return '';
 
   // Data integrity guard: an "occupied" unit without a tenant name /
@@ -46318,10 +46955,6 @@ function _renderUnitPaymentHealth(u) {
   // trigger always agree. Default 5 days if no config.
   const lfCfg = (typeof getLateFeeConfig === 'function') ? getLateFeeConfig(u) : null;
   const graceDays = (lfCfg && Number.isFinite(+lfCfg.graceDays)) ? +lfCfg.graceDays : 5;
-  // Honeymoon — first calendar month of tenancy is exempt from late-fee
-  // accrual AND from "overdue" alerts. Operator is still settling the
-  // tenant in (sending invoices, collecting docs).
-  const honeymoonYm = (typeof _firstTenancyYm === 'function') ? _firstTenancyYm(u) : null;
 
   // Pre-compute: which months had a late-fee invoice that was PAID?
   // Used to overlay a small gold "$" dot on those cells so the operator
@@ -46470,7 +47103,12 @@ function _renderUnitPaymentHealth(u) {
       const methodLabels = { check:'Check', ach:'Bank transfer', wire:'Wire', cash:'Cash', stripe:'Stripe', backfill:'Backfilled (manual)', other:'Other' };
       const method = methodLabels[p.paidMethod || p.paidVia] || 'Paid';
       const isBackfill = (p.paidMethod === 'backfill' || p.paidVia === 'backfill');
-      const paidAt = p.date ? new Date(p.date + 'T00:00:00') : null;
+      // Prefer bank's authoritative date when available — bankPaidAt is set
+      // by submitManualPayment whenever the operator linked a bank-feed
+      // transaction. Falls back to p.date (operator-typed) for legacy /
+      // non-bank-linked payments.
+      const paidDateStr = p.bankPaidAt || p.date || '';
+      const paidAt = paidDateStr ? new Date(paidDateStr + 'T00:00:00') : null;
       // Late-paid detection — graceDays=5 means "by the 5th of the
       // month" (calendar day 5 inclusive). Day 5 is 4 calendar days
       // after the 1st, so the cutoff is `(graceDays - 1)` days after
@@ -46559,13 +47197,10 @@ function _renderUnitPaymentHealth(u) {
     } else if (ym === curYm) {
       // Current month — within grace period (≤ graceDays from 1st)
       // it's still "current" (blue). Past grace, treat as overdue (red).
-      // Honeymoon month is exempt — show as 'free' (no debt).
+      // First month of tenancy is NOT visually exempt: rent is still
+      // owed even though late-fee accrual is suppressed elsewhere.
       const dayOfMonth = today.getDate();
-      if (honeymoonYm && ym === honeymoonYm) {
-        cls = 'free';
-        label = monthLabel[0];
-        tooltip = `${monthFull} ${fullYear}\nHoneymoon month — first month of tenancy\nNo late-fee accrual · operator settling tenant in`;
-      } else if (dayOfMonth > graceDays) {
+      if (dayOfMonth > graceDays) {
         cls = 'overdue';
         label = monthLabel[0];
         tooltip = `${monthFull} ${fullYear}\n${dayOfMonth - graceDays}d past ${graceDays}-day grace · $${rent.toLocaleString()} unpaid\n\nClick to record payment.`;
@@ -46578,11 +47213,6 @@ function _renderUnitPaymentHealth(u) {
         const left = graceDays - dayOfMonth + 1;
         tooltip = `${monthFull} ${fullYear}\nCurrent month · ${left}d left in ${graceDays}-day grace period\nRent: $${rent.toLocaleString()}`;
       }
-    } else if (honeymoonYm && ym === honeymoonYm) {
-      // Past month, BUT it was the honeymoon — never overdue, no debt.
-      cls = 'free';
-      label = monthLabel[0];
-      tooltip = `${monthFull} ${fullYear}\nHoneymoon month — first month of tenancy\nNo late fees, no debt accrued`;
     } else {
       // Past month, no payment on file — red regardless of how far
       // overdue. Per operator request: don't split into 30-90 / 90+
@@ -46727,7 +47357,7 @@ function _renderUnitPaymentHealth(u) {
                     return `<div class="ph-cell ph-empty"
                                  onclick="openManualPaymentModal('${esc(b.id)}','${esc(f.id)}','${esc(u.id)}','${ymHere}')"
                                  style="cursor: pointer;"
-                                 title="${esc(tip)}\n\nClick to record a payment for this month.">
+                                 data-tt-portal="${esc(tip + '\n\nClick to record a payment for this month.')}">
                               <div class="ph-cell-label">${monthLetters[idx]}</div>
                             </div>`;
                   }
@@ -46742,11 +47372,12 @@ function _renderUnitPaymentHealth(u) {
                     c.cls === 'pre-tenancy' ? '\n\nClick to record a payment for this month.' :
                     c.cls === 'future'      ? '\n\nClick to record an advance payment.' :
                                               '';
+                  const _phTipText = `${c.tooltip}${c.feePaid ? '\n\n💰 Late fee invoice paid this cycle' : ''}${hint}`;
                   return `
                     <div class="ph-cell ${c.cls}${c.feePaid ? ' fee-paid' : ''}"
                          onclick="openManualPaymentModal('${esc(b.id)}','${esc(f.id)}','${esc(u.id)}','${c.ym}')"
                          style="cursor: pointer;"
-                         title="${esc(c.tooltip)}${c.feePaid ? '\n\n💰 Late fee invoice paid this cycle' : ''}${hint}">
+                         data-tt-portal="${esc(_phTipText)}">
                       <div class="ph-cell-label">${esc(c.label)}</div>
                       ${c.feePaid ? '<div class="ph-cell-fee-dot" title="Late fee paid">$</div>' : ''}
                     </div>`;
@@ -46971,19 +47602,16 @@ function _isUnitPendingOnboarding(u) {
   return leasePending || depPending || rentPending;
 }
 
-// First calendar month of tenancy — the "honeymoon period" where no
-// late fees accrue and no overdue alerts fire. Operator is still
-// settling the tenant in (sending invoices, collecting docs, etc.),
-// so a brand-new tenant being a few days late shouldn't trigger
-// alarms or fees.
+// First calendar month of tenancy — used to skip phantom-arrears months
+// before the lease started (a tenant who signed for May 2026 shouldn't
+// show arrears reaching back into 2025).
 //
 // Reference: u._tenantAddedAt (when operator added the tenant) OR
 // u.leaseStart. Earliest of the two wins. Compares year-month only.
 function _firstTenancyYm(u) {
   if (!u) return null;
-  // Multi-suite lease: honeymoon month is a property of the LEASE, not
-  // the suite. Read it from the head so all members share the same
-  // first-tenancy month + skip late-fee accrual on the same month.
+  // Multi-suite lease: tenancy start is a property of the LEASE, not
+  // the suite. Read it from the head so all members agree.
   if (typeof _unitLeaseHead === 'function') u = _unitLeaseHead(u);
   let earliestMs = Infinity;
   for (const ref of [u._tenantAddedAt, u.leaseStart]) {
@@ -46994,10 +47622,6 @@ function _firstTenancyYm(u) {
   if (!isFinite(earliestMs)) return null;
   const d = new Date(earliestMs);
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-}
-function _isFirstMonthOfTenancy(u, ym) {
-  const first = _firstTenancyYm(u);
-  return first && ym === first;
 }
 
 // Move-in card lifetime: 30 days from the moment the tenant was added
@@ -52880,11 +53504,11 @@ function _moResolveCtxUnit() {
 }
 
 // Lightweight outstanding-balance estimator. Counts unpaid months since
-// lease start (cap 12) × monthly rent. Used to pre-fill the Balance owed
+// lease start (cap 24) × monthly rent. Used to pre-fill the Balance owed
 // field on the move-out modal when reason is collections / writeoff.
-// Skips the honeymoon month + paid/free statuses. Conservative — actual
-// debt may include late fees, services, etc., which managers can layer
-// on top by editing the field manually.
+// Skips paid/free statuses. Conservative — actual debt may include late
+// fees, services, etc., which managers can layer on top by editing the
+// field manually.
 function _outstandingForUnit(u) {
   if (!u) return 0;
   const rent = +u.contractRent || +u.rent || 0;
@@ -52893,14 +53517,12 @@ function _outstandingForUnit(u) {
   const startStr = u.leaseStart || u.signed || '';
   const startDate = startStr ? new Date(startStr + 'T00:00:00') : null;
   const startMs = startDate && !isNaN(startDate.getTime()) ? startDate.getTime() : null;
-  const honeymoonYm = (typeof _firstTenancyYm === 'function') ? _firstTenancyYm(u) : null;
   let months = 0;
   // Walk the last 24 months — enough to cover anyone meaningfully delinquent.
   for (let i = 0; i < 24; i++) {
     const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
     if (startMs && d.getTime() < startMs) break;
     const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-    if (honeymoonYm && ym === honeymoonYm) continue;
     const p = u.payments?.[ym];
     if (p?.status === 'paid' || p?.status === 'free') continue;
     months++;
@@ -52925,7 +53547,6 @@ function _moBuildBalanceBreakdown(u) {
   const startStr = u.leaseStart || u.signed || '';
   const startDate = startStr ? new Date(startStr + 'T00:00:00') : null;
   const startMs = (startDate && !isNaN(startDate.getTime())) ? startDate.getTime() : null;
-  const honeymoonYm = (typeof _firstTenancyYm === 'function') ? _firstTenancyYm(u) : null;
   const lfCfg = (typeof getLateFeeConfig === 'function') ? getLateFeeConfig(u) : null;
   const dismissed = u.lateFeeDismissed || {};
   const grace = lfCfg?.graceDays ?? state?.settings?.lateFee?.graceDays ?? 5;
@@ -52948,7 +53569,6 @@ function _moBuildBalanceBreakdown(u) {
     const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
     if (startMs && d.getTime() < startMs) break;
     const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-    if (honeymoonYm && ym === honeymoonYm) continue;
     const p = u.payments?.[ym];
     if (p?.status === 'paid' || p?.status === 'free') continue;
 
@@ -53008,7 +53628,6 @@ function _moBuildBalanceBreakdown(u) {
     const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
     if (startMs && d.getTime() < startMs) break;
     const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-    if (honeymoonYm && ym === honeymoonYm) continue;
     const p = u.payments?.[ym];
     if (p?.status === 'paid' || p?.status === 'free') continue;
     unpaidMonths.push({ d, ym });
@@ -58293,6 +58912,1147 @@ function connectStripe() {
   const warn = sec ? ' <br><small style="opacity:0.85;">⚠ Reminder: secret keys in the browser are a risk — rotate them via <code>firebase functions:secrets:set</code> if you pasted a real sk_live_… here.</small>' : '';
   setIntStatus('stripe', 'success', `✓ <b>Saved (${mode} mode).</b> Cloud Functions backend is already live — invoice / reminder / webhook flows work now.${warn}`);
 }
+
+// =====================================================================
+// Bank Feed (Stripe Financial Connections) — operator-side bank account
+// onboarding. Phase 1 of 4: OAuth connect + list + disconnect.
+// Backend callables live in functions/index.js (connectBankAccount,
+// finalizeBankConnection, disconnectBankAccount). State sits at
+// state.bankConnections[]. UI lives in Settings → Integrations.
+// =====================================================================
+
+let _stripeJsPromise = null;
+function _loadStripeJsLazy() {
+  if (_stripeJsPromise) return _stripeJsPromise;
+  if (typeof window !== 'undefined' && window.Stripe) {
+    _stripeJsPromise = Promise.resolve(window.Stripe);
+    return _stripeJsPromise;
+  }
+  _stripeJsPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://js.stripe.com/v3/';
+    s.async = true;
+    s.onload = () => {
+      if (window.Stripe) resolve(window.Stripe);
+      else reject(new Error('Stripe.js loaded but window.Stripe is missing'));
+    };
+    s.onerror = () => reject(new Error('Failed to load Stripe.js (network/CSP block?)'));
+    document.head.appendChild(s);
+  });
+  return _stripeJsPromise;
+}
+
+async function connectBankAccount() {
+  const pubKey = (localStorage.getItem('sfa_stripe_pub') || '').trim();
+  if (!pubKey) {
+    setIntStatus('bankFeed', 'error',
+      '⚠ Paste your Stripe Publishable Key in the Stripe section above first (pk_live_… or pk_test_…), then click Save Credentials. The Bank Feed widget needs it to load.');
+    return;
+  }
+  if (!/^pk_(test|live)_[a-zA-Z0-9]{24,}$/.test(pubKey)) {
+    setIntStatus('bankFeed', 'error',
+      '⚠ Saved publishable key looks malformed. Re-paste it in the Stripe section above.');
+    return;
+  }
+  const btn = document.getElementById('bankFeedConnectBtn');
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; }
+  setIntStatus('bankFeed', 'info', '⏳ Loading Stripe…');
+  try {
+    const StripeCtor = await _loadStripeJsLazy();
+    const stripe = StripeCtor(pubKey);
+    setIntStatus('bankFeed', 'info', '⏳ Creating session…');
+    const fn = stripeCallable('connectBankAccount');
+    const { data } = await fn({});
+    if (!data?.clientSecret) throw new Error('Backend did not return a client_secret');
+    setIntStatus('bankFeed', 'info', '⏳ Opening bank picker — pick Capital One in the popup.');
+    const result = await stripe.collectFinancialConnectionsAccounts({
+      clientSecret: data.clientSecret,
+    });
+    if (result.error) throw new Error(result.error.message || 'Bank linking cancelled');
+    const linked = result.financialConnectionsSession?.accounts?.length || 0;
+    if (!linked) {
+      setIntStatus('bankFeed', 'warn', 'No accounts were linked (cancelled before grant).');
+      return;
+    }
+    setIntStatus('bankFeed', 'info', `⏳ Saving ${linked} linked account(s)…`);
+    const finalize = stripeCallable('finalizeBankConnection');
+    const finRes = await finalize({ sessionId: data.sessionId });
+    const newCount = finRes.data?.connected || 0;
+    const reCount = finRes.data?.reactivated || 0;
+    const newAccts = finRes.data?.accounts || [];
+    let msg = `✓ <b>Connected ${newCount} new account(s).</b>`;
+    if (reCount) msg += ` Reactivated ${reCount} previously-disconnected account(s).`;
+    setIntStatus('bankFeed', 'success', msg);
+    _renderBankConnections();
+    // Phase 2 backfill — fire-and-forget per new account so the operator
+    // doesn't have to wait 365 days of pagination synchronously. Each
+    // pollBankTransactions call has its own 5-min timeout server-side.
+    for (const a of newAccts) {
+      const fcId = a.stripeFcAccountId;
+      if (!fcId) continue;
+      (async () => {
+        try {
+          setIntStatus('bankFeed', 'info', `⏳ Backfilling 365 days of transactions for ${esc(a.displayName || fcId)}…`);
+          const poll = stripeCallable('pollBankTransactions');
+          const r = await poll({ stripeFcAccountId: fcId, backfill: true });
+          const w = r.data?.totalWritten || 0;
+          setIntStatus('bankFeed', 'success', `✓ Backfilled ${w} transactions for ${esc(a.displayName || fcId)}.`);
+          _renderBankConnections();
+        } catch (e) {
+          console.warn('[bank-feed] backfill failed:', e);
+          setIntStatus('bankFeed', 'warn', `⚠ Backfill failed for ${esc(a.displayName || fcId)}: ${esc(e.message || String(e))}. Use "Refresh now" to retry.`);
+        }
+      })();
+    }
+  } catch (err) {
+    const m = err?.message || String(err);
+    setIntStatus('bankFeed', 'error', `⚠ ${esc(m)}`);
+    console.warn('[bank-feed] connect failed:', err);
+  } finally {
+    if (btn) { btn.disabled = false; btn.style.opacity = ''; }
+  }
+}
+
+async function disconnectBankAccount(fcAccountId) {
+  if (!fcAccountId) return;
+  if (!confirm('Disconnect this bank account? Stripe will stop pulling new transactions. Existing matched payments stay on record.')) return;
+  setIntStatus('bankFeed', 'info', '⏳ Disconnecting…');
+  try {
+    const fn = stripeCallable('disconnectBankAccount');
+    await fn({ stripeFcAccountId: fcAccountId });
+    setIntStatus('bankFeed', 'success', '✓ Disconnected.');
+    _renderBankConnections();
+  } catch (err) {
+    setIntStatus('bankFeed', 'error', `⚠ ${esc(err?.message || String(err))}`);
+  }
+}
+
+async function syncBankConnectionsFromStripe(opts) {
+  const silent = opts && opts.silent;
+  const btn = document.getElementById('bankFeedSyncBtn');
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; }
+  if (!silent) setIntStatus('bankFeed', 'info', '⏳ Syncing from Stripe…');
+  try {
+    const fn = stripeCallable('syncBankConnections');
+    const { data } = await fn({});
+    const total = data?.total || 0;
+    const added = data?.added || 0;
+    const updated = data?.updated || 0;
+    if (!silent) {
+      let msg;
+      if (!total) msg = 'No accounts linked at Stripe yet — click "Connect bank account" to add one.';
+      else if (added) msg = `✓ Found ${total} account(s) at Stripe — added ${added} missing record(s)${updated ? `, refreshed ${updated}` : ''}. Each row below has a Disconnect button.`;
+      else msg = `✓ In sync — ${total} account(s) at Stripe, ${updated} refreshed. Already showing all of them below.`;
+      setIntStatus('bankFeed', 'success', msg);
+    }
+    _renderBankConnections();
+  } catch (err) {
+    if (!silent) setIntStatus('bankFeed', 'error', `⚠ Sync failed: ${esc(err?.message || String(err))}`);
+    console.warn('[bank-feed] sync failed:', err);
+  } finally {
+    if (btn) { btn.disabled = false; btn.style.opacity = ''; }
+  }
+}
+
+function _renderBankConnections() {
+  const host = document.getElementById('bankFeedConnectionsList');
+  if (!host) return;
+  const conns = (state && Array.isArray(state.bankConnections)) ? state.bankConnections : [];
+  const active = conns.filter(c => c.status !== 'disconnected');
+  // Badge mirrors active-count
+  const badge = document.getElementById('bankFeedBadge');
+  if (badge) {
+    badge.classList.remove('active', 'phase2', 'phase3');
+    if (active.length) {
+      badge.classList.add('active');
+      badge.textContent = `✓ ${active.length} connected`;
+    } else {
+      badge.textContent = 'Not connected';
+    }
+  }
+  if (!conns.length) {
+    host.innerHTML = `<div style="font-size:11.5px; color:var(--muted); padding:6px 0;">No bank accounts connected yet.</div>`;
+    return;
+  }
+  const POLL_OPTIONS = [
+    { h: 1,   label: 'Every hour' },
+    { h: 6,   label: 'Every 6 hours' },
+    { h: 24,  label: 'Daily (default)' },
+    { h: 168, label: 'Weekly' },
+    { h: 0,   label: 'Manual only' },
+  ];
+  host.innerHTML = conns.map(c => {
+    const isActive = c.status !== 'disconnected';
+    const statusColor = isActive ? 'var(--success)' : 'var(--muted)';
+    const statusLabel = isActive ? c.status : 'Disconnected';
+    const last4 = c.accountLast4 ? `····${esc(c.accountLast4)}` : '';
+    const sub = c.accountSubcategory ? ` · ${esc(c.accountSubcategory)}` : '';
+    const interval = Number.isFinite(+c.pollIntervalHours) ? +c.pollIntervalHours : 24;
+    const polled = c.lastPolledAt
+      ? `Last poll: ${esc(new Date(c.lastPolledAt).toLocaleString())}` +
+          (typeof c.lastPollWritten === 'number'
+            ? ` · ${c.lastPollWritten} new`
+            : '')
+      : 'Never polled';
+    // Stripe FC sometimes needs 1-2 min to prep transactions on a freshly
+    // connected account. While prep is pending the operator's Refresh attempts
+    // return 0 — show an inline note so they know to wait, not click again.
+    const prepNote = (c.transactionRefreshStatus === 'pending' && isActive)
+      ? `<div style="padding-left:28px; font-size:11px; color:#a16207; background:rgba(245,158,11,0.10); padding:6px 10px; border-radius:6px; margin-top:2px;">⏳ Stripe is preparing transactions for this account. First poll may return 0 — try Refresh again in 1-2 min.</div>`
+      : '';
+    const fcId = esc(c.stripeFcAccountId);
+    const isRefreshing = _bankAccountsRefreshing.has(c.stripeFcAccountId);
+    const intervalSel = isActive
+      ? `<select onchange="setBankPollIntervalUI('${fcId}', this.value)" ${isRefreshing ? 'disabled' : ''} style="font-size:11px; padding:3px 6px; border:1px solid var(--border); border-radius:4px; background:var(--surface);">
+           ${POLL_OPTIONS.map(o => `<option value="${o.h}"${o.h === interval ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}
+         </select>`
+      : '';
+    const refreshBtn = isActive
+      ? `<button class="int-btn outline" ${isRefreshing ? 'disabled' : ''} style="flex:0 0 auto; padding:4px 10px; font-size:11px; opacity:${isRefreshing ? '0.6' : '1'};" onclick="refreshBankAccountNow('${fcId}')" title="Pull new transactions from Stripe right now (incremental since last poll).">${isRefreshing ? '⏳ Pulling…' : '↻ Refresh now'}</button>`
+      : '';
+    const diagnoseBtn = isActive
+      ? `<button class="int-btn outline" style="flex:0 0 auto; padding:4px 10px; font-size:11px;" onclick="diagnoseBankAccountNow('${fcId}')" title="Show Stripe's live view of this account: permissions, transaction-refresh status, and a sample of what list returns.">🔍 Diagnose</button>`
+      : '';
+    const disconnectBtn = isActive
+      ? `<button class="int-btn outline" ${isRefreshing ? 'disabled' : ''} style="flex:0 0 auto; padding:4px 10px; font-size:11px; opacity:${isRefreshing ? '0.6' : '1'};" onclick="disconnectBankAccount('${fcId}')">Disconnect</button>`
+      : '';
+    // Disconnected card: offer Reconnect (re-runs OAuth, server merges with
+    // this ghost record by institution+last4) and Remove (hard-delete).
+    const reconnectBtn = !isActive
+      ? `<button class="int-btn" style="flex:0 0 auto; padding:4px 10px; font-size:11px;" onclick="connectBankAccount()" title="Re-link this bank. Stripe will reuse this record if institution + last4 match.">↻ Reconnect</button>`
+      : '';
+    const removeBtn = !isActive
+      ? `<button class="int-btn outline" style="flex:0 0 auto; padding:4px 10px; font-size:11px;" onclick="removeBankConnection('${fcId}', '${esc((c.institutionName || '') + ' ····' + (c.accountLast4 || ''))}')" title="Permanently delete this row from the list.">🗑 Remove</button>`
+      : '';
+    // Indeterminate progress bar — reuses the .recon-progress-fill keyframe
+    // (reconShimmer) defined alongside the reconciliation widget so we don't
+    // need a new <style> rule. Fills width 100% with a flowing gradient.
+    let progressBar = '';
+    if (isRefreshing) {
+      progressBar = `<div style="padding-left:28px;">
+           <div style="height:6px; background:rgba(99,91,255,0.12); border-radius:999px; overflow:hidden;">
+             <div class="recon-progress-fill" style="width:100%; height:100%;"></div>
+           </div>
+           <div style="font-size:10.5px; color:var(--muted); margin-top:4px; display:flex; align-items:center; gap:6px;">
+             <span>Pulling transactions from Stripe… (this can take 30–60s for fresh accounts)</span>
+           </div>
+         </div>`;
+    } else {
+      // Short-lived success/error banner after a refresh completes — gives
+      // the operator visible confirmation even when CF returned in <2s.
+      const last = _bankAccountsLastResult.get(c.stripeFcAccountId);
+      if (last && Date.now() < last.expiresAt) {
+        const bg = last.ok ? 'rgba(34,197,94,0.10)' : 'rgba(239,68,68,0.10)';
+        const fg = last.ok ? 'var(--success)' : 'var(--danger)';
+        progressBar = `<div style="padding-left:28px;">
+             <div style="background:${bg}; color:${fg}; padding:6px 10px; border-radius:6px; font-size:11px; font-weight:600;">
+               ${esc(last.message)}
+             </div>
+           </div>`;
+      }
+    }
+    return `
+      <div style="display:flex; flex-direction:column; gap:8px; padding:10px 12px; background:var(--surface); border:1px solid var(--border); border-radius:8px;">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <div style="font-size:18px;">🏦</div>
+          <div style="flex:1; min-width:0;">
+            <div style="font-size:12.5px; font-weight:600;">${esc(c.institutionName || 'Bank')} ${last4}${sub}</div>
+            <div style="font-size:10.5px; color:var(--muted); margin-top:2px;">
+              <span style="color:${statusColor}; font-weight:600; text-transform:uppercase; letter-spacing:0.3px;">${esc(statusLabel)}</span>
+              · ${polled}
+            </div>
+          </div>
+          ${disconnectBtn}${reconnectBtn}${removeBtn}
+        </div>
+        ${isActive ? `
+          <div style="display:flex; align-items:center; gap:8px; padding-left:28px; font-size:11px; color:var(--muted); flex-wrap:wrap;">
+            <span>Poll cadence:</span>
+            ${intervalSel}
+            ${refreshBtn}
+            ${diagnoseBtn}
+          </div>
+        ` : ''}
+        ${prepNote}
+        ${progressBar}
+      </div>
+    `;
+  }).join('');
+}
+
+async function removeBankConnection(fcAccountId, label) {
+  if (!fcAccountId) return;
+  if (!confirm(`Permanently remove the ghost record for ${label || fcAccountId} from the list? Stripe-side data is unaffected — this just hides the row.`)) return;
+  setIntStatus('bankFeed', 'info', '⏳ Removing record…');
+  try {
+    const fn = stripeCallable('removeBankConnection');
+    await fn({ stripeFcAccountId: fcAccountId });
+    setIntStatus('bankFeed', 'success', '✓ Record removed.');
+    _renderBankConnections();
+  } catch (err) {
+    setIntStatus('bankFeed', 'error', `⚠ ${esc(err?.message || String(err))}`);
+  }
+}
+
+async function diagnoseBankAccountNow(fcAccountId) {
+  if (!fcAccountId) return;
+  setIntStatus('bankFeed', 'info', '🔍 Querying Stripe…');
+  try {
+    const fn = stripeCallable('diagnoseBankAccount');
+    const { data } = await fn({ stripeFcAccountId: fcAccountId });
+    setIntStatus('bankFeed', 'success', '✓ Diagnosis complete.');
+    _showBankDiagnosisModal(data);
+  } catch (err) {
+    setIntStatus('bankFeed', 'error', `⚠ ${esc(err?.message || String(err))}`);
+  }
+}
+
+function _showBankDiagnosisModal(d) {
+  const txnRefresh = d.transaction_refresh || {};
+  const lastAttempt = txnRefresh.last_attempted_at
+    ? new Date(txnRefresh.last_attempted_at * 1000).toLocaleString()
+    : '—';
+  const nextAvail = txnRefresh.next_refresh_available_at
+    ? new Date(txnRefresh.next_refresh_available_at * 1000).toLocaleString()
+    : '—';
+  const verdict = (() => {
+    if (d.status !== 'active') return { color: 'var(--danger)', text: `❌ Account status is "${d.status}" — Stripe considers this disconnected.` };
+    if (!d.hasTransactionsPermission) return { color: 'var(--danger)', text: '❌ Missing "transactions" permission — re-link the account and grant transaction access during Stripe FC consent.' };
+    if (!d.listSample?.ok) return { color: 'var(--danger)', text: `❌ list call failed: ${d.listSample?.error || 'unknown'}` };
+    if (txnRefresh.status === 'pending') return { color: '#a16207', text: '⏳ Stripe is still preparing transactions. This can take a few minutes after first connect, longer for large accounts. Wait + Refresh again.' };
+    if (txnRefresh.status === 'failed') return { color: 'var(--danger)', text: `❌ Stripe transaction refresh failed: ${(txnRefresh.last_attempted_error?.message) || 'unknown reason'}` };
+    if (d.listSample.count === 0 && txnRefresh.status === 'succeeded') return { color: '#a16207', text: '⚠ Refresh succeeded but Stripe returned 0 transactions. Likely the bank has not yet shared transaction history with Stripe (initial sync can take hours). Wait and Refresh again.' };
+    if (d.listSample.count > 0) return { color: 'var(--success)', text: `✓ Stripe returned ${d.listSample.count} sample transactions — listing works. Click Refresh now to load them.` };
+    return { color: 'var(--muted)', text: 'No clear verdict — see raw response below.' };
+  })();
+  const sampleHtml = (d.listSample?.sample || []).map(t => `
+    <li style="font-size:11px; padding:4px 0;">
+      <strong>${(t.amount/100).toFixed(2)}</strong> · ${esc(t.description || '(no description)')} ·
+      <span style="color:var(--muted);">${t.transacted_at ? new Date(t.transacted_at*1000).toLocaleDateString() : '—'}</span>
+    </li>
+  `).join('');
+  const html = `
+    <div style="position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:99999; display:flex; align-items:center; justify-content:center;" onclick="if(event.target===this) this.remove()">
+      <div style="background:var(--surface); border-radius:10px; padding:20px; max-width:600px; width:90%; max-height:85vh; overflow-y:auto;">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;">
+          <h3 style="margin:0; font-size:14px;">🔍 Stripe FC Diagnosis · ${esc(d.institution || '?')} ····${esc(d.last4 || '????')}</h3>
+          <button onclick="this.closest('[style*=fixed]').remove()" style="border:none; background:transparent; font-size:18px; cursor:pointer;">×</button>
+        </div>
+        <div style="background:rgba(99,91,255,0.08); padding:10px 12px; border-radius:6px; color:${verdict.color}; font-weight:600; font-size:12px; margin-bottom:14px;">
+          ${esc(verdict.text)}
+        </div>
+        <table style="width:100%; font-size:11.5px; border-collapse:collapse;">
+          <tr><td style="padding:4px 0; color:var(--muted); width:42%;">Account ID</td><td style="font-family:monospace;">${esc(d.id)}</td></tr>
+          <tr><td style="padding:4px 0; color:var(--muted);">Category / Subcategory</td><td>${esc(d.category)} / ${esc(d.subcategory || '—')}</td></tr>
+          <tr><td style="padding:4px 0; color:var(--muted);">Stripe status</td><td><strong>${esc(d.status)}</strong></td></tr>
+          <tr><td style="padding:4px 0; color:var(--muted);">Permissions granted</td><td>${(d.permissions || []).map(p => `<code style="padding:1px 5px; background:rgba(99,91,255,0.10); border-radius:3px; margin-right:3px; font-size:10.5px;">${esc(p)}</code>`).join('') || '<em>none</em>'}</td></tr>
+          <tr><td style="padding:4px 0; color:var(--muted);">Has "transactions"?</td><td><strong style="color:${d.hasTransactionsPermission ? 'var(--success)' : 'var(--danger)'};">${d.hasTransactionsPermission ? 'YES' : 'NO'}</strong></td></tr>
+          <tr><td style="padding:4px 0; color:var(--muted);">Transaction refresh status</td><td><strong>${esc(txnRefresh.status || '—')}</strong></td></tr>
+          <tr><td style="padding:4px 0; color:var(--muted);">Last refresh attempt</td><td>${esc(lastAttempt)}</td></tr>
+          <tr><td style="padding:4px 0; color:var(--muted);">Next refresh available</td><td>${esc(nextAvail)}</td></tr>
+          <tr><td style="padding:4px 0; color:var(--muted);">Latest refresh trigger</td><td><strong>${esc(d.latestRefreshTrigger?.transaction_refresh?.status || d.latestRefreshTrigger?.error || '—')}</strong></td></tr>
+          <tr><td style="padding:4px 0; color:var(--muted);">List sample</td><td>${d.listSample?.ok ? `${d.listSample.count} txns returned` : `<span style="color:var(--danger);">${esc(d.listSample?.error || 'failed')}</span>`}</td></tr>
+        </table>
+        ${sampleHtml ? `<div style="margin-top:12px;"><strong style="font-size:11px; color:var(--muted);">Sample transactions:</strong><ul style="margin:6px 0 0; padding-left:18px;">${sampleHtml}</ul></div>` : ''}
+      </div>
+    </div>
+  `;
+  const wrap = document.createElement('div');
+  wrap.innerHTML = html;
+  document.body.appendChild(wrap.firstElementChild);
+}
+
+async function setBankPollIntervalUI(fcAccountId, hoursStr) {
+  const hours = +hoursStr;
+  try {
+    const fn = stripeCallable('setBankPollInterval');
+    await fn({ stripeFcAccountId: fcAccountId, hours });
+    setIntStatus('bankFeed', 'success', `✓ Polling cadence updated.`);
+    _renderBankConnections();
+  } catch (err) {
+    setIntStatus('bankFeed', 'error', `⚠ ${esc(err?.message || String(err))}`);
+  }
+}
+
+// Tracks which bank accounts have an in-flight refresh so the UI can show
+// inline indeterminate progress bars per-card.
+const _bankAccountsRefreshing = new Set();
+// After a refresh finishes we keep a short-lived banner per-account so the
+// operator sees confirmation even when the CF returns in 1–2 sec (e.g. an
+// incremental poll with no new transactions). { ok, message, expiresAt }.
+const _bankAccountsLastResult = new Map();
+const _bankAccountsRefreshStarted = new Map();   // fcId → ms timestamp
+const _BANK_REFRESH_MIN_VISIBLE_MS = 1500;       // bar stays at least 1.5s
+const _BANK_REFRESH_BANNER_MS = 4000;            // success/error banner 4s
+
+async function refreshBankAccountNow(fcAccountId) {
+  if (!fcAccountId) return;
+  if (_bankAccountsRefreshing.has(fcAccountId)) return;     // already running
+  _bankAccountsRefreshing.add(fcAccountId);
+  _bankAccountsRefreshStarted.set(fcAccountId, Date.now());
+  _bankAccountsLastResult.delete(fcAccountId);
+  _renderBankConnections();   // re-paint to show progress bar + disabled btn
+  setIntStatus('bankFeed', 'info', '⏳ Pulling new transactions from Stripe…');
+  let result = null;
+  try {
+    const fn = stripeCallable('pollBankTransactions');
+    const { data } = await fn({ stripeFcAccountId: fcAccountId });
+    const w = data?.totalWritten || 0;
+    const acc = data?.accounts?.[0] || {};
+    const scanned = acc.scanned ?? 0;
+    if (acc.transactionRefreshTriggered) {
+      // Stripe FC has not finished preparing transactions for this account.
+      // Triggering a refresh kicks off the prep; next poll (in ~1-2 min)
+      // should return real data.
+      result = { ok: true, message: `⏳ Stripe is preparing transactions for this account. Try Refresh again in 1-2 minutes.` };
+      setIntStatus('bankFeed', 'info', '⏳ Stripe preparing transactions — try again in 1-2 min.');
+    } else {
+      result = { ok: true, message: w > 0
+        ? `✓ ${w} new transaction${w === 1 ? '' : 's'} pulled (${scanned} scanned).`
+        : `✓ Up to date — no new transactions (${scanned} scanned).` };
+      setIntStatus('bankFeed', 'success', `✓ ${w} transaction(s) updated.`);
+    }
+  } catch (err) {
+    result = { ok: false, message: `⚠ ${err?.message || String(err)}` };
+    setIntStatus('bankFeed', 'error', `⚠ ${esc(err?.message || String(err))}`);
+  }
+  // Keep the bar visible for at least _BANK_REFRESH_MIN_VISIBLE_MS so the
+  // operator actually perceives that something happened. Without this the
+  // bar can flash for 200ms on a cached account and the operator thinks
+  // the click was ignored.
+  const elapsed = Date.now() - (_bankAccountsRefreshStarted.get(fcAccountId) || 0);
+  if (elapsed < _BANK_REFRESH_MIN_VISIBLE_MS) {
+    await new Promise(r => setTimeout(r, _BANK_REFRESH_MIN_VISIBLE_MS - elapsed));
+  }
+  _bankAccountsRefreshing.delete(fcAccountId);
+  _bankAccountsRefreshStarted.delete(fcAccountId);
+  _bankAccountsLastResult.set(fcAccountId, {
+    ...result,
+    expiresAt: Date.now() + _BANK_REFRESH_BANNER_MS,
+  });
+  _renderBankConnections();
+  // Auto-clear the inline banner after _BANK_REFRESH_BANNER_MS so the card
+  // returns to its normal compact state.
+  setTimeout(() => {
+    const r = _bankAccountsLastResult.get(fcAccountId);
+    if (r && Date.now() >= r.expiresAt) {
+      _bankAccountsLastResult.delete(fcAccountId);
+      _renderBankConnections();
+    }
+  }, _BANK_REFRESH_BANNER_MS + 50);
+}
+
+// =========================================================================
+// ===== Bank Activity panel (Billing → Bank Activity tab) =================
+// Lists transactions pulled from connected bank accounts. Suggested matches
+// can be confirmed (records the rent payment) or dismissed.
+// =========================================================================
+
+let _bankActivityCache = null;
+let _bankActivityLastLoad = 0;
+
+async function renderBankActivityPanel(opts) {
+  const force = opts && opts.force;
+  const tbody = document.getElementById('bankActivityTbody');
+  const empty = document.getElementById('bankActivityEmpty');
+  const status = document.getElementById('bankActivityStatus');
+  if (!tbody) return;
+  const filter = document.getElementById('bankActivityFilter')?.value || 'pending';
+  const search = (document.getElementById('bankActivitySearch')?.value || '').toLowerCase().trim();
+
+  // Cache for 30s — flipping filters or typing search shouldn't re-call CF.
+  const cacheStale = !_bankActivityCache
+    || (_bankActivityCache.filter !== filter)
+    || (Date.now() - _bankActivityLastLoad > 30000);
+  if (cacheStale || force) {
+    if (typeof stripeCallable !== 'function') {
+      status.textContent = 'Cloud Functions not available.';
+      return;
+    }
+    tbody.innerHTML = '<tr><td colspan="5" style="padding:20px; text-align:center; color:var(--muted);">Loading…</td></tr>';
+    try {
+      const fn = stripeCallable('listBankTransactions');
+      // Pull up to 2000 — covers ~12 months of activity even on a busy
+      // property. The previous 300 cap was hiding everything older than the
+      // first ~3 months on the queue and the operator couldn't reach
+      // historical bank credits (e.g. December rent payments) from the UI.
+      const { data } = await fn({ filter, limit: 2000 });
+      _bankActivityCache = { filter, items: data?.items || [] };
+      _bankActivityLastLoad = Date.now();
+    } catch (err) {
+      tbody.innerHTML = '';
+      status.innerHTML = `<span style="color:var(--danger)">⚠ ${esc(err?.message || String(err))}</span>`;
+      return;
+    }
+  }
+
+  let items = _bankActivityCache?.items || [];
+  // Debits (money going OUT) can never be a rent payment, so they pollute the
+  // "Needs review" queue. Hide them by default; operator can toggle them back
+  // on with the "Show debits" checkbox or by switching to the "All" filter.
+  const showDebits = !!document.getElementById('bankActivityShowDebits')?.checked;
+  let debitsHidden = 0;
+  if (filter === 'pending' && !showDebits) {
+    const before = items.length;
+    items = items.filter(t => +t.amount > 0);
+    debitsHidden = before - items.length;
+  }
+  if (search) {
+    items = items.filter(t =>
+      String(t.description || '').toLowerCase().includes(search) ||
+      String(Math.abs(t.amount / 100)).includes(search)
+    );
+  }
+
+  // Tab counter (pending only)
+  if (filter === 'pending') {
+    const cEl = document.getElementById('billBankActivityCount');
+    if (cEl) cEl.textContent = items.length;
+  }
+
+  if (!items.length) {
+    tbody.innerHTML = '';
+    empty.style.display = '';
+    status.textContent = debitsHidden
+      ? `0 credits to review · ${debitsHidden} debit${debitsHidden === 1 ? '' : 's'} hidden`
+      : `0 transactions for filter "${filter}"`;
+    return;
+  }
+  empty.style.display = 'none';
+  const debitNote = debitsHidden ? ` · ${debitsHidden} debit${debitsHidden === 1 ? '' : 's'} hidden` : '';
+  status.textContent = `${items.length} transaction${items.length === 1 ? '' : 's'} (${filter})${debitNote}`;
+
+  // Build a unitId → unit lookup for displaying the suggested match name.
+  const units = new Map();
+  for (const b of state.buildings || []) {
+    for (const f of b.floors || []) {
+      for (const u of f.units || []) units.set(u.id, { u, b, f });
+    }
+  }
+
+  tbody.innerHTML = items.map(t => {
+    const dt = t.transactedAt ? new Date(t.transactedAt * 1000) : null;
+    const dateStr = dt ? dt.toLocaleDateString() : '—';
+    const amount = (t.amount / 100);
+    const isCredit = amount > 0;
+    const amtStr = `${isCredit ? '+' : ''}$${Math.abs(amount).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+    const amtColor = isCredit ? 'var(--success)' : 'var(--muted)';
+
+    let matchedCell = '<span style="color:var(--muted); font-style:italic;">No match</span>';
+    let actions = '';
+    if (t.matchState === 'confirmed') {
+      const ctx = units.get(t.matchedUnitId);
+      const tenant = ctx ? (ctx.u.company || ctx.u.tenant || ctx.u.id) : t.matchedUnitId;
+      matchedCell = `<span style="color:var(--success); font-weight:600;">✓ ${esc(tenant)}</span><br><span style="color:var(--muted); font-size:11px;">Suite ${esc(t.matchedUnitId || '')} · ${esc(t.matchedYm || '')}</span>`;
+      actions = `<button class="rr-btn ar-btn-sm" onclick="undoBankConfirmation('${esc(t.id)}')" title="Undo this confirmation">↶ Undo</button>`;
+    } else if (t.matchState === 'dismissed') {
+      matchedCell = '<span style="color:var(--muted);">Dismissed</span>';
+      actions = `<button class="rr-btn ar-btn-sm" onclick="undoBankDismissal('${esc(t.id)}')" title="Move back to needs-review">↶ Re-open</button>`;
+    } else if (t.matchState === 'suggested' && t.matchedUnitId) {
+      const ctx = units.get(t.matchedUnitId);
+      const tenant = ctx ? (ctx.u.company || ctx.u.tenant || ctx.u.id) : t.matchedUnitId;
+      // Prefer the new point-based fields when present; fall back to legacy 0..1 score.
+      const points = (typeof t.matchPoints === 'number')
+        ? t.matchPoints
+        : Math.round((t.matchScore || 0) * 100);
+      const conf = t.matchConfidence
+        || (points >= 90 ? 'high' : points >= 60 ? 'medium' : 'low');
+      const badge = conf === 'high'
+        ? `<span style="background:var(--success); color:#fff; padding:1px 6px; border-radius:9px; font-size:10px; font-weight:700;">HIGH ${points}</span>`
+        : conf === 'medium'
+          ? `<span style="background:#f59e0b; color:#fff; padding:1px 6px; border-radius:9px; font-size:10px; font-weight:700;">MED ${points}</span>`
+          : `<span style="background:var(--muted); color:#fff; padding:1px 6px; border-radius:9px; font-size:10px; font-weight:700;">LOW ${points}</span>`;
+      const breakdownTitle = Array.isArray(t.matchBreakdown) && t.matchBreakdown.length
+        ? t.matchBreakdown.map(b => {
+            // Tolerate both legacy [label,delta] tuples and new {label,delta} objects.
+            const label = Array.isArray(b) ? b[0] : b.label;
+            const delta = Array.isArray(b) ? b[1] : b.delta;
+            return `${label}: ${delta >= 0 ? '+' : ''}${delta}`;
+          }).join('\n')
+        : 'No breakdown available';
+      matchedCell = `<span style="color:#0ea5e9; font-weight:600;">→ ${esc(tenant)}</span> <span title="${esc(breakdownTitle)}" style="cursor:help;">${badge}</span><br><span style="color:var(--muted); font-size:11px;">Suite ${esc(t.matchedUnitId)} · ${esc(t.matchedYm || '')}</span>`;
+      actions = `
+        <button class="rr-btn ar-btn-sm" style="background:var(--success); color:#fff; border-color:var(--success);" onclick="confirmBankMatch('${esc(t.id)}', '${esc(t.matchedUnitId)}', '${esc(t.matchedYm)}')">✓ Confirm</button>
+        <button class="rr-btn ar-btn-sm" onclick="changeBankMatch('${esc(t.id)}')">✎ Change</button>
+        <button class="rr-btn ar-btn-sm" onclick="dismissBankMatch('${esc(t.id)}')">✗ Dismiss</button>
+      `;
+    } else if (isCredit) {
+      // Unmatched credit — operator can pick a tenant manually.
+      actions = `
+        <button class="rr-btn ar-btn-sm" onclick="changeBankMatch('${esc(t.id)}')">✎ Match</button>
+        <button class="rr-btn ar-btn-sm" onclick="dismissBankMatch('${esc(t.id)}')">✗ Not rent</button>
+      `;
+    } else {
+      // Outgoing debit — usually irrelevant for rent matching.
+      actions = `<button class="rr-btn ar-btn-sm" onclick="dismissBankMatch('${esc(t.id)}')">✗ Hide</button>`;
+    }
+
+    return `
+      <tr>
+        <td>${esc(dateStr)}</td>
+        <td style="text-align:right; color:${amtColor}; font-weight:600;">${esc(amtStr)}</td>
+        <td style="font-size:11.5px; max-width:340px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${esc(t.description || '')}">${esc(t.description || '—')}</td>
+        <td>${matchedCell}</td>
+        <td style="white-space:nowrap;">${actions}</td>
+      </tr>
+    `;
+  }).join('');
+
+  // Update bulk "Confirm all high-confidence" button visibility/count.
+  const highBtn = document.getElementById('bankActivityConfirmHighBtn');
+  const highCountEl = document.getElementById('bankActivityHighCount');
+  if (highBtn && highCountEl) {
+    const highItems = items.filter(t => {
+      if (t.matchState !== 'suggested' || !t.matchedUnitId) return false;
+      if (t.matchConfidence === 'high') return true;
+      const pts = (typeof t.matchPoints === 'number')
+        ? t.matchPoints
+        : Math.round((t.matchScore || 0) * 100);
+      return pts >= 90;
+    });
+    highCountEl.textContent = highItems.length;
+    highBtn.style.display = highItems.length > 0 ? '' : 'none';
+  }
+}
+
+// Bulk-confirm every suggested match with confidence='high' (≥90 pts).
+// Sequentially calls confirmBankMatch on each so the workspace state mutate
+// loop stays consistent (mutateWorkspaceState runs an optimistic-locking
+// transaction per call).
+async function confirmAllHighConfidence() {
+  const items = (_bankActivityCache?.items || []).filter(t => {
+    if (t.matchState !== 'suggested' || !t.matchedUnitId || !t.matchedYm) return false;
+    if (t.matchConfidence === 'high') return true;
+    const pts = (typeof t.matchPoints === 'number')
+      ? t.matchPoints
+      : Math.round((t.matchScore || 0) * 100);
+    return pts >= 90;
+  });
+  if (!items.length) return;
+  if (!confirm(`Auto-confirm ${items.length} high-confidence match${items.length === 1 ? '' : 'es'}? Each will record a rent payment.`)) return;
+  const status = document.getElementById('bankActivityStatus');
+  const fn = stripeCallable('confirmBankMatch');
+  let ok = 0, fail = 0;
+  for (let i = 0; i < items.length; i++) {
+    const t = items[i];
+    if (status) status.innerHTML = `⏳ Confirming ${i + 1}/${items.length}…`;
+    try {
+      await fn({ txnId: t.id, unitId: t.matchedUnitId, ym: t.matchedYm, recordPayment: true });
+      ok++;
+    } catch (err) {
+      console.warn('[bank-feed] bulk confirm failed for', t.id, err);
+      fail++;
+    }
+  }
+  if (status) status.innerHTML = `✓ Confirmed ${ok}${fail ? ` · ${fail} failed` : ''}.`;
+  _bankActivityCache = null;
+  renderBankActivityPanel({ force: true });
+  if (typeof renderAll === 'function') renderAll();
+}
+
+async function rerunBankFeedMatcher() {
+  const status = document.getElementById('bankActivityStatus');
+  status.innerHTML = '⏳ Re-matching all unmatched/suggested transactions…';
+  try {
+    const fn = stripeCallable('runBankFeedMatcher');
+    const { data } = await fn({});
+    status.innerHTML = `✓ Re-matched ${data?.reviewed || 0} transactions, ${data?.suggested || 0} new suggestions.`;
+    _bankActivityCache = null;
+    renderBankActivityPanel({ force: true });
+  } catch (err) {
+    status.innerHTML = `<span style="color:var(--danger)">⚠ ${esc(err?.message || String(err))}</span>`;
+  }
+}
+
+// =========================================================================
+// ===== Bank statement import (CSV / XLSX / OFX / QFX / QBO) =============
+// Used when Stripe FC's transaction window doesn't reach far enough back.
+// All five formats normalize to the same { date, amountCents, description }
+// row shape, then go through importBankTransactions cloud function which
+// dedupes by sha1 and runs the matcher inline.
+// =========================================================================
+
+let _bankImportState = null;   // { fileName, format, rows, headers?, ... }
+const _BANK_IMPORT_MAX_BYTES = 5 * 1024 * 1024;       // 5 MB
+const _BANK_IMPORT_MAX_ROWS  = 5000;
+const _SHEETJS_CDN = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+
+function openBankImportModal() {
+  _bankImportState = null;
+  document.getElementById('bankImportFileInput').value = '';
+  document.getElementById('bankImportLoadStatus').textContent = '';
+  document.getElementById('bankImportSubmitStatus').textContent = '';
+  document.getElementById('bankImportMapRow').style.display = 'none';
+  document.getElementById('bankImportPreviewRow').style.display = 'none';
+  const btn = document.getElementById('bankImportSubmitBtn');
+  btn.disabled = true;
+  btn.textContent = 'Import 0 rows';
+  document.getElementById('bankImportAcctTag').value = '';
+  document.getElementById('bankImportModal').style.display = 'flex';
+  // Drop-zone wiring (idempotent — we re-bind every open).
+  const dz = document.getElementById('bankImportDropzone');
+  dz.ondragover = e => { e.preventDefault(); dz.style.borderColor = 'var(--brand)'; };
+  dz.ondragleave = e => { e.preventDefault(); dz.style.borderColor = 'var(--border)'; };
+  dz.ondrop = e => {
+    e.preventDefault(); dz.style.borderColor = 'var(--border)';
+    const f = e.dataTransfer?.files?.[0];
+    if (f) _bankImportLoadFile(f);
+  };
+}
+
+function closeBankImportModal() {
+  document.getElementById('bankImportModal').style.display = 'none';
+  _bankImportState = null;
+}
+
+function _bankImportOnFile(ev) {
+  const f = ev?.target?.files?.[0];
+  if (f) _bankImportLoadFile(f);
+}
+
+async function _bankImportLoadFile(file) {
+  const status = document.getElementById('bankImportLoadStatus');
+  if (file.size > _BANK_IMPORT_MAX_BYTES) {
+    status.innerHTML = `<span style="color:var(--danger)">File too large (${(file.size/1048576).toFixed(1)} MB). Max 5 MB.</span>`;
+    return;
+  }
+  const name = file.name || 'statement';
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  status.textContent = `Reading ${name}…`;
+  try {
+    let parsed = null;
+    if (ext === 'csv' || (!['xlsx','xls','ofx','qfx','qbo'].includes(ext))) {
+      const text = await file.text();
+      // OFX/QFX/QBO can be served without the right extension — sniff content.
+      if (/<OFX>|<STMTTRN>/i.test(text.slice(0, 4096))) {
+        parsed = _bankImportParseOfx(text, name);
+      } else {
+        parsed = _bankImportParseCsv(text, name);
+      }
+    } else if (ext === 'ofx' || ext === 'qfx' || ext === 'qbo') {
+      const text = await file.text();
+      parsed = _bankImportParseOfx(text, name);
+    } else if (ext === 'xlsx' || ext === 'xls') {
+      const buf = await file.arrayBuffer();
+      await _bankImportEnsureSheetJs();
+      parsed = _bankImportParseXlsx(buf, name);
+    }
+    if (!parsed) throw new Error('Unknown file format');
+
+    _bankImportState = parsed;
+    const acctGuess = (name.match(/(\d{4})/) || [])[1];
+    if (acctGuess) {
+      document.getElementById('bankImportAcctTag').value = `Imported …${acctGuess}`;
+    }
+    status.innerHTML = `<span style="color:var(--success)">✓</span> Loaded <b>${esc(name)}</b> · format: <b>${parsed.format}</b> · ${parsed.rawRows ?? parsed.rows.length} raw rows`;
+    if (parsed.format === 'csv' || parsed.format === 'xlsx') {
+      _bankImportShowMapping(parsed);
+    } else {
+      // OFX/QFX/QBO are structured — go straight to preview.
+      document.getElementById('bankImportMapRow').style.display = 'none';
+      _bankImportRebuildPreview();
+    }
+  } catch (err) {
+    status.innerHTML = `<span style="color:var(--danger)">⚠ ${esc(err?.message || String(err))}</span>`;
+  }
+}
+
+// ---------- CSV parser ----------
+// Handles quoted fields, escaped quotes, CR/LF, BOM. Header row required.
+function _bankImportParseCsv(text, name) {
+  text = text.replace(/^\uFEFF/, '');
+  const rows = [];
+  let row = [], cell = '', inQ = false, i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"') {
+        if (text[i+1] === '"') { cell += '"'; i += 2; continue; }
+        inQ = false; i++; continue;
+      }
+      cell += c; i++; continue;
+    }
+    if (c === '"') { inQ = true; i++; continue; }
+    if (c === ',') { row.push(cell); cell = ''; i++; continue; }
+    if (c === '\r') { i++; continue; }
+    if (c === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; i++; continue; }
+    cell += c; i++;
+  }
+  if (cell.length || row.length) { row.push(cell); rows.push(row); }
+  if (rows.length < 2) throw new Error('CSV has no data rows');
+  // Some Capital One exports have a "Transactions" preamble line then a blank
+  // line before headers — skip leading rows whose first cell looks like prose.
+  while (rows.length && rows[0].length < 2) rows.shift();
+  const headers = rows.shift().map(h => String(h).trim());
+  const data = rows
+    .filter(r => r.some(c => String(c).trim() !== ''))
+    .map(r => {
+      const o = {};
+      for (let k = 0; k < headers.length; k++) o[headers[k]] = (r[k] ?? '').trim();
+      return o;
+    });
+  return { format: 'csv', fileName: name, headers, rows: data, rawRows: data.length };
+}
+
+// ---------- XLSX parser (SheetJS) ----------
+async function _bankImportEnsureSheetJs() {
+  if (typeof XLSX !== 'undefined') return;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = _SHEETJS_CDN;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('Failed to load SheetJS CDN — check your connection.'));
+    document.head.appendChild(s);
+  });
+}
+function _bankImportParseXlsx(buf, name) {
+  const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+  const firstSheet = wb.SheetNames[0];
+  if (!firstSheet) throw new Error('Workbook is empty');
+  const ws = wb.Sheets[firstSheet];
+  const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+  if (aoa.length < 2) throw new Error('Sheet has no data rows');
+  // Skip blank/preamble rows like CSV.
+  while (aoa.length && aoa[0].filter(c => c !== '').length < 2) aoa.shift();
+  const headers = (aoa.shift() || []).map(h => String(h).trim());
+  const data = aoa
+    .filter(r => r.some(c => c !== '' && c != null))
+    .map(r => {
+      const o = {};
+      for (let k = 0; k < headers.length; k++) {
+        let v = r[k];
+        if (v instanceof Date) v = v.toISOString().slice(0, 10);
+        o[headers[k]] = (v == null) ? '' : String(v).trim();
+      }
+      return o;
+    });
+  return { format: 'xlsx', fileName: name, headers, rows: data, rawRows: data.length, sheetName: firstSheet };
+}
+
+// ---------- OFX / QFX / QBO parser ----------
+// All three are SGML-flavored OFX. Extract <STMTTRN> blocks; each has
+// <DTPOSTED>, <TRNAMT>, <NAME>/<MEMO>. Works on both 1.x SGML (no slashes)
+// and 2.x XML (proper closing tags).
+function _bankImportParseOfx(text, name) {
+  const rows = [];
+  const re = /<STMTTRN>([\s\S]*?)<\/STMTTRN>/gi;
+  let m;
+  const tag = (block, t) => {
+    const r = new RegExp(`<${t}>([^<\\r\\n]+)`, 'i').exec(block);
+    return r ? r[1].trim() : '';
+  };
+  while ((m = re.exec(text)) !== null) {
+    const blk = m[1];
+    const dt = tag(blk, 'DTPOSTED');
+    const amt = tag(blk, 'TRNAMT');
+    const nm = tag(blk, 'NAME') || tag(blk, 'PAYEE') || '';
+    const memo = tag(blk, 'MEMO');
+    if (!dt || !amt) continue;
+    // OFX dates: YYYYMMDD or YYYYMMDDHHMMSS[.SSS][TZ]
+    const isoDate = `${dt.slice(0,4)}-${dt.slice(4,6)}-${dt.slice(6,8)}`;
+    const description = [nm, memo].filter(Boolean).join(' · ').slice(0, 240);
+    rows.push({
+      date: isoDate,
+      amountCents: Math.round(parseFloat(amt) * 100),
+      description,
+    });
+  }
+  if (!rows.length) throw new Error('No <STMTTRN> blocks found in file');
+  return { format: 'ofx', fileName: name, rows, rawRows: rows.length, normalized: true };
+}
+
+// ---------- Column mapping (CSV / XLSX) ----------
+// Heuristic auto-detect, then operator can override via dropdowns.
+function _bankImportShowMapping(parsed) {
+  const row = document.getElementById('bankImportMapRow');
+  row.style.display = '';
+  const headers = parsed.headers || [];
+  const opts = '<option value="">(none)</option>' + headers.map(h => `<option value="${esc(h)}">${esc(h)}</option>`).join('');
+  for (const id of ['bankImportColDate','bankImportColDesc','bankImportColAmt','bankImportColCredit','bankImportColDebit']) {
+    document.getElementById(id).innerHTML = opts;
+  }
+  // Auto-detect by header substring.
+  const find = (...patterns) => headers.find(h => patterns.some(p => p.test(h.toLowerCase())));
+  const dateCol = find(/^date$/, /transaction date/, /posted date/, /post date/, /\bdate\b/);
+  const descCol = find(/description/, /payee/, /memo/, /detail/, /merchant/);
+  const amtCol  = find(/^amount$/, /\bamount\b/, /transaction amount/);
+  const creditCol = find(/^credit$/, /\bcredit\b/, /deposit/);
+  const debitCol  = find(/^debit$/, /\bdebit\b/, /withdraw/);
+  const set = (id, v) => { if (v) document.getElementById(id).value = v; };
+  set('bankImportColDate', dateCol);
+  set('bankImportColDesc', descCol);
+  // Prefer signed Amount if present; otherwise fall back to split Credit/Debit.
+  if (amtCol && !creditCol && !debitCol) {
+    set('bankImportColAmt', amtCol);
+  } else if (creditCol || debitCol) {
+    set('bankImportColCredit', creditCol);
+    set('bankImportColDebit', debitCol);
+  } else if (amtCol) {
+    set('bankImportColAmt', amtCol);
+  }
+  _bankImportRebuildPreview();
+}
+
+// Date parser — accepts ISO, US (M/D/YYYY), EU (D/M/YYYY heuristically when day>12).
+function _bankImportParseDate(s) {
+  s = String(s || '').trim();
+  if (!s) return null;
+  // ISO YYYY-MM-DD or YYYY/MM/DD
+  let m = s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/);
+  if (m) return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
+  // M/D/YYYY or M/D/YY
+  m = s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2,4})/);
+  if (m) {
+    let yyyy = +m[3]; if (yyyy < 100) yyyy += 2000;
+    return `${yyyy}-${String(m[1]).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`;
+  }
+  // Excel may have given us a Date already serialized.
+  const d = new Date(s);
+  if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  return null;
+}
+
+// Money parser — handles "$1,234.56", "(123.45)" for negatives, "1.234,56" Euro style.
+function _bankImportParseMoney(s) {
+  if (s === '' || s == null) return null;
+  s = String(s).trim();
+  if (!s) return null;
+  let neg = false;
+  if (/^\(.*\)$/.test(s)) { neg = true; s = s.slice(1, -1); }
+  s = s.replace(/[^\d.,\-+]/g, '');
+  if (!s) return null;
+  // If both . and , present, the rightmost is the decimal separator.
+  if (s.includes(',') && s.includes('.')) {
+    if (s.lastIndexOf(',') > s.lastIndexOf('.')) {
+      s = s.replace(/\./g, '').replace(',', '.');
+    } else {
+      s = s.replace(/,/g, '');
+    }
+  } else if (s.includes(',') && !s.includes('.')) {
+    // Heuristic: 3-digit groups → thousands; otherwise decimal.
+    if (/^\d{1,3}(,\d{3})+$/.test(s)) s = s.replace(/,/g, '');
+    else s = s.replace(',', '.');
+  }
+  const n = parseFloat(s);
+  if (!isFinite(n)) return null;
+  return neg ? -n : n;
+}
+
+// Build normalized rows from the current mapping (CSV/XLSX), or use the
+// already-normalized rows directly (OFX). Returns { items, summary }.
+function _bankImportNormalize() {
+  if (!_bankImportState) return { items: [], summary: { total: 0, malformed: 0, debits: 0 } };
+  const skipDebits = document.getElementById('bankImportSkipDebits')?.checked;
+  const items = [];
+  let malformed = 0, debits = 0;
+
+  if (_bankImportState.normalized) {
+    // OFX path
+    for (const r of _bankImportState.rows) {
+      if (!r.date || !Number.isFinite(r.amountCents) || r.amountCents === 0) { malformed++; continue; }
+      if (skipDebits && r.amountCents < 0) { debits++; continue; }
+      items.push(r);
+    }
+  } else {
+    // CSV / XLSX path — apply column mapping.
+    const cDate = document.getElementById('bankImportColDate').value;
+    const cDesc = document.getElementById('bankImportColDesc').value;
+    const cAmt  = document.getElementById('bankImportColAmt').value;
+    const cCr   = document.getElementById('bankImportColCredit').value;
+    const cDr   = document.getElementById('bankImportColDebit').value;
+    if (!cDate || !(cAmt || cCr || cDr)) {
+      return { items: [], summary: { total: 0, malformed: 0, debits: 0, missingMap: true } };
+    }
+    for (const row of _bankImportState.rows) {
+      const date = _bankImportParseDate(row[cDate]);
+      let amt = null;
+      if (cAmt) amt = _bankImportParseMoney(row[cAmt]);
+      if (amt == null && (cCr || cDr)) {
+        const cr = cCr ? _bankImportParseMoney(row[cCr]) : null;
+        const dr = cDr ? _bankImportParseMoney(row[cDr]) : null;
+        amt = ((cr || 0) - Math.abs(dr || 0)) || null;
+      }
+      const desc = cDesc ? String(row[cDesc] || '').trim() : '';
+      if (!date || amt == null || amt === 0) { malformed++; continue; }
+      if (skipDebits && amt < 0) { debits++; continue; }
+      items.push({ date, amountCents: Math.round(amt * 100), description: desc });
+    }
+  }
+  return { items, summary: { total: items.length, malformed, debits } };
+}
+
+function _bankImportRebuildPreview() {
+  const wrap = document.getElementById('bankImportPreviewRow');
+  const tbody = document.getElementById('bankImportPreviewBody');
+  const stat = document.getElementById('bankImportPreviewStat');
+  const btn = document.getElementById('bankImportSubmitBtn');
+  const { items, summary } = _bankImportNormalize();
+  wrap.style.display = '';
+  if (summary.missingMap) {
+    tbody.innerHTML = `<tr><td colspan="3" style="padding:14px; text-align:center; color:var(--muted);">Pick a Date column and an Amount (or Credit/Debit) column to preview.</td></tr>`;
+    stat.textContent = '';
+    btn.disabled = true;
+    btn.textContent = 'Import 0 rows';
+    return;
+  }
+  if (!items.length) {
+    tbody.innerHTML = `<tr><td colspan="3" style="padding:14px; text-align:center; color:var(--muted);">No usable rows. Check column mapping or date format.</td></tr>`;
+    stat.textContent = `${summary.malformed} malformed, ${summary.debits} debits skipped`;
+    btn.disabled = true;
+    btn.textContent = 'Import 0 rows';
+    return;
+  }
+  // Sort newest first for the preview.
+  const sorted = items.slice().sort((a, b) => b.date.localeCompare(a.date));
+  const top = sorted.slice(0, 50);
+  tbody.innerHTML = top.map(r => {
+    const amt = (r.amountCents / 100);
+    const isCredit = amt > 0;
+    const amtStr = `${isCredit ? '+' : '-'}$${Math.abs(amt).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+    const color = isCredit ? 'var(--success)' : 'var(--muted)';
+    return `<tr>
+      <td style="padding:5px 8px; border-bottom:1px solid var(--border);">${esc(r.date)}</td>
+      <td style="padding:5px 8px; text-align:right; border-bottom:1px solid var(--border); color:${color}; font-variant-numeric:tabular-nums;">${amtStr}</td>
+      <td style="padding:5px 8px; border-bottom:1px solid var(--border);">${esc(r.description || '—')}</td>
+    </tr>`;
+  }).join('');
+  const moreNote = items.length > top.length ? ` (showing ${top.length} of ${items.length})` : '';
+  const skipNote = summary.malformed || summary.debits
+    ? ` · ${summary.malformed} malformed${summary.debits ? `, ${summary.debits} debits skipped` : ''}`
+    : '';
+  stat.textContent = `${items.length} row${items.length === 1 ? '' : 's'} ready${moreNote}${skipNote}`;
+  btn.disabled = items.length === 0 || items.length > _BANK_IMPORT_MAX_ROWS;
+  btn.textContent = items.length > _BANK_IMPORT_MAX_ROWS
+    ? `Too many (${items.length}, max ${_BANK_IMPORT_MAX_ROWS})`
+    : `Import ${items.length} row${items.length === 1 ? '' : 's'}`;
+}
+
+async function _bankImportSubmit() {
+  if (typeof stripeCallable !== 'function') {
+    document.getElementById('bankImportSubmitStatus').innerHTML = `<span style="color:var(--danger)">Cloud Functions not available.</span>`;
+    return;
+  }
+  const { items } = _bankImportNormalize();
+  if (!items.length) return;
+  const status = document.getElementById('bankImportSubmitStatus');
+  const btn = document.getElementById('bankImportSubmitBtn');
+  btn.disabled = true;
+  status.innerHTML = `⏳ Uploading ${items.length} row${items.length===1?'':'s'}…`;
+  const sourceLabel = `${_bankImportState?.format || 'file'} · ${_bankImportState?.fileName || 'statement'} · ${new Date().toISOString().slice(0,16).replace('T',' ')}`;
+  const accountTag = (document.getElementById('bankImportAcctTag').value || '').trim();
+  const runMatcher = !!document.getElementById('bankImportRunMatcher').checked;
+  try {
+    const fn = stripeCallable('importBankTransactions');
+    const { data } = await fn({ items, sourceLabel, accountTag, runMatcher });
+    const w = data?.written || 0;
+    const sk = data?.skipped || 0;
+    const cl = data?.clamped || 0;
+    const sg = data?.suggested || 0;
+    const mf = data?.malformed || 0;
+    const clampNote = cl > 0
+      ? ` · <b>${cl}</b> trimmed (day already covered)`
+      : '';
+    status.innerHTML = `<span style="color:var(--success)">✓</span> Imported <b>${w}</b>${clampNote} · ${sk} duplicate${sk===1?'':'s'} · ${sg} matched · ${mf} malformed`;
+    _bankActivityCache = null;
+    setTimeout(() => {
+      closeBankImportModal();
+      renderBankActivityPanel({ force: true });
+    }, 1500);
+  } catch (err) {
+    status.innerHTML = `<span style="color:var(--danger)">⚠ ${esc(err?.message || String(err))}</span>`;
+    btn.disabled = false;
+  }
+}
+
+window.openBankImportModal = openBankImportModal;
+window.closeBankImportModal = closeBankImportModal;
+window._bankImportOnFile = _bankImportOnFile;
+window._bankImportRebuildPreview = _bankImportRebuildPreview;
+window._bankImportSubmit = _bankImportSubmit;
+
+async function confirmBankMatch(txnId, unitId, ym) {
+  if (!txnId || !unitId || !ym) return;
+  if (!confirm(`Confirm this transaction as rent payment for unit ${unitId} (${ym})? The payment will be recorded.`)) return;
+  try {
+    const fn = stripeCallable('confirmBankMatch');
+    await fn({ txnId, unitId, ym, recordPayment: true });
+    _bankActivityCache = null;
+    renderBankActivityPanel({ force: true });
+    if (typeof renderAll === 'function') renderAll();
+  } catch (err) {
+    alert(`Confirm failed: ${err?.message || String(err)}`);
+  }
+}
+
+async function dismissBankMatch(txnId) {
+  if (!txnId) return;
+  try {
+    const fn = stripeCallable('dismissBankMatch');
+    await fn({ txnId });
+    _bankActivityCache = null;
+    renderBankActivityPanel({ force: true });
+  } catch (err) {
+    alert(`Dismiss failed: ${err?.message || String(err)}`);
+  }
+}
+
+async function undoBankConfirmation(txnId) {
+  // Reopen for review — does NOT auto-revert the payment record (operator
+  // may want to keep that and just re-classify the txn). They can edit
+  // the payment manually if needed.
+  if (!txnId) return;
+  if (!confirm('Move this transaction back to "Needs review"? Note: the rent payment record stays — edit it manually if needed.')) return;
+  try {
+    const fn = stripeCallable('dismissBankMatch');     // dismiss → unmatched on re-match
+    await fn({ txnId });
+    _bankActivityCache = null;
+    renderBankActivityPanel({ force: true });
+  } catch (err) {
+    alert(`Undo failed: ${err?.message || String(err)}`);
+  }
+}
+
+async function undoBankDismissal(txnId) {
+  if (!txnId) return;
+  // Re-run matcher on this single txn by clearing dismissed state.
+  // Cheapest path: call the runMatcher endpoint which re-evaluates
+  // all dismissed too (it filters in/out based on matchState).
+  try {
+    const fn = stripeCallable('confirmBankMatch');
+    // Hack: not ideal — for now operator should pick a tenant via "Change".
+    alert('Use "Change" to manually re-match this transaction.');
+  } catch (err) {}
+}
+
+function changeBankMatch(txnId) {
+  // Build a quick prompt: show all occupied units, let operator pick.
+  const choices = [];
+  for (const b of state.buildings || []) {
+    for (const f of b.floors || []) {
+      for (const u of f.units || []) {
+        if (u.status !== 'occupied') continue;
+        if (!u.tenant && !u.company) continue;
+        choices.push({ unitId: u.id, label: `${u.id} — ${u.company || u.tenant}` });
+      }
+    }
+  }
+  if (!choices.length) { alert('No occupied units available to match against.'); return; }
+  const numbered = choices.map((c, i) => `${i + 1}. ${c.label}`).join('\n');
+  const pick = prompt(`Pick the tenant who paid this transaction:\n\n${numbered}\n\nEnter number:`);
+  if (!pick) return;
+  const idx = parseInt(pick, 10) - 1;
+  if (isNaN(idx) || idx < 0 || idx >= choices.length) { alert('Invalid choice.'); return; }
+  const ym = prompt('Which month does this payment cover? (YYYY-MM, e.g. 2026-05)', new Date().toISOString().slice(0, 7));
+  if (!ym || !/^\d{4}-\d{2}$/.test(ym)) { alert('Invalid month.'); return; }
+  confirmBankMatch(txnId, choices[idx].unitId, ym);
+}
+
+// Wire re-render to the panel: when Settings opens or the integrations
+// tab activates, refresh the list. Cheaper than reactive — operator
+// rarely opens this panel during normal work.
+window.addEventListener('DOMContentLoaded', () => {
+  // Defer one tick so state has loaded.
+  setTimeout(() => { try { _renderBankConnections(); } catch {} }, 500);
+});
 
 // Stripe "connected" = Cloud Functions backend is reachable AND the user
 // has saved at least one credential locally (so we know they've set up
@@ -71538,6 +73298,11 @@ function renderBilling() {
   updateBillingOutstandingWidget();
   // Keep the topbar pill in sync too
   try { updateTopbarOutstandingPill(); } catch {}
+  // Legacy single-table UI was replaced by the ZIP-style panels (Tenants,
+  // Invoices, Aging, etc.). The DOM nodes below — billingKpis, billingTable,
+  // billingSearch, billingBuildingMS, billingStatusMS — no longer exist.
+  // Bail before any of them are touched.
+  if (!document.getElementById('billingKpis')) return;
   const search = (document.getElementById('billingSearch')?.value || '').toLowerCase();
   const bldgs  = getMSValues('billingBuildingMS');
   const states = getMSValues('billingStatusMS');
@@ -71896,6 +73661,7 @@ function setBillingTab(tab) {
   document.getElementById('billTabVacancy')?.classList.toggle('active',   tab === 'vacancy');
   document.getElementById('billTabCalendar')?.classList.toggle('active',  tab === 'calendar');
   document.getElementById('billTabPnl')?.classList.toggle('active',       tab === 'pnl');
+  document.getElementById('billTabBankActivity')?.classList.toggle('active', tab === 'bankActivity');
   // Show the requested panel, hide the rest. Each panel is independent
   // and has its own render function — they don't share state.
   const tenantsPanel = document.getElementById('billingTenantsPanel');
@@ -71914,6 +73680,8 @@ function setBillingTab(tab) {
   if (calendarPanel) calendarPanel.style.display = tab === 'calendar' ? '' : 'none';
   const pnlPanel = document.getElementById('billingPnlPanel');
   if (pnlPanel) pnlPanel.style.display = tab === 'pnl' ? '' : 'none';
+  const baPanel = document.getElementById('billingBankActivityPanel');
+  if (baPanel) baPanel.style.display = tab === 'bankActivity' ? '' : 'none';
   if (tab === 'tenants')   renderTenantsPanelZip();  // ZIP-style — paints bvTenantsTable from state
   if (tab === 'invoices')  renderInvoicesPage();
   if (tab === 'aging')     renderAgingPanel();
@@ -71923,6 +73691,7 @@ function setBillingTab(tab) {
   if (tab === 'vacancy' && typeof renderVacancyPanel === 'function') renderVacancyPanel();
   if (tab === 'calendar' && typeof renderCalendarPanel === 'function') renderCalendarPanel();
   if (tab === 'pnl' && typeof renderPnlPanel === 'function') renderPnlPanel();
+  if (tab === 'bankActivity' && typeof renderBankActivityPanel === 'function') renderBankActivityPanel();
   // Tab counts on the header (visible counters next to each tab name)
   try { _bvUpdateTabCounts(); } catch {}
   // Start/stop the 30s safety-net auto-refresh based on sub-tab.
@@ -73870,18 +75639,16 @@ function lateFeePreviewFor(rec) {
     return base;
   };
   // Walk oldest→newest in the 12-mo window. Only months past the grace
-  // period and still unpaid accrue a fee. First month of tenancy is
-  // skipped (honeymoon — operator settling tenant in). Months BEFORE
-  // the tenant's lease started are skipped entirely — without this,
-  // a tenant who signed for May 2026 would show 11 months of phantom
-  // arrears reaching back into 2025 when nobody owed anything.
+  // period and still unpaid accrue a fee. Months BEFORE the tenant's
+  // lease started are skipped entirely — without this, a tenant who
+  // signed for May 2026 would show 11 months of phantom arrears
+  // reaching back into 2025 when nobody owed anything.
   const firstYm = (typeof _firstTenancyYm === 'function') ? _firstTenancyYm(rec.u) : null;
   let totalFee = 0, monthsOwed = 0;
   for (let i = 11; i >= 0; i--) {
     const d = new Date(curY, curM - i, 1);
     const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
     if (firstYm && ym < firstYm) continue;     // before tenancy began
-    if (firstYm && ym === firstYm) continue;   // honeymoon
     const p = rec.u.payments?.[ym];
     if (p?.status === 'paid' || p?.status === 'free') continue;
     const due = new Date(d.getFullYear(), d.getMonth()+1, 1);
@@ -75343,6 +77110,29 @@ function setSettingsTab(tabId) {
   if (tabId === 'integrations' && typeof _renderGmailIntegrationCard === 'function') {
     setTimeout(() => { try { _renderGmailIntegrationCard(); } catch (e) { console.warn(e); } }, 0);
   }
+  // Bank Connections — same idea: re-render on open so newly-connected
+  // accounts (or status changes from another tab) reflect immediately.
+  // Then silently reconcile against Stripe so any "ghost" account that
+  // exists at Stripe but is missing from local state shows up with a
+  // working Disconnect button. Throttled to 1/min to avoid hammering
+  // Stripe on rapid tab toggles.
+  if (tabId === 'integrations' && typeof _renderBankConnections === 'function') {
+    setTimeout(() => {
+      try { _renderBankConnections(); } catch (e) { console.warn(e); }
+      // Re-apply collapse + sort order so any badge change since the
+      // last open bubbles green→yellow→grey. Cheap (~5 DOM ops).
+      try { _wireIntegrationAccordions(); } catch {}
+    }, 0);
+    if (typeof syncBankConnectionsFromStripe === 'function') {
+      const last = window._bankSyncLastAt || 0;
+      if (Date.now() - last > 60_000) {
+        window._bankSyncLastAt = Date.now();
+        setTimeout(() => syncBankConnectionsFromStripe({ silent: true })
+          .catch(() => {})
+          .finally(() => { try { _wireIntegrationAccordions(); } catch {} }), 250);
+      }
+    }
+  }
   // Templates panel also renders the Common charges list — defined
   // alongside document templates because both are workspace-level
   // reusable assets. Re-render every time so freshly-added charges
@@ -75549,12 +77339,26 @@ function _wireIntegrationAccordions() {
         });
       }
     }
-    // Open if disconnected (badge says so), otherwise collapse.
-    const badge = sec.querySelector('.int-badge');
-    const badgeText = (badge?.textContent || '').toLowerCase();
-    const isConnected = badge?.classList.contains('active') || /connected|ready|active/.test(badgeText);
-    sec.classList.toggle('int-collapsed', isConnected);
+    // Always collapse on (re-)open — operator scans the badge column to
+    // see what's connected, then expands only what they want to act on.
+    sec.classList.add('int-collapsed');
   });
+  // Sort cards: green (active) → yellow (phase2 / re-auth) → everything
+  // else (grey "not connected", phase3 purple, plain status). Done by
+  // re-appending in priority order; only sorts cards inside the
+  // Integrations panel and skips non-section siblings (intro <p> etc.).
+  const panel = document.querySelector('#settingsModal .st-tab-panel[data-st-panel="integrations"]');
+  if (panel) {
+    const cards = Array.from(panel.querySelectorAll(':scope > .int-section'));
+    const priority = (sec) => {
+      const badge = sec.querySelector('.int-badge');
+      if (badge?.classList.contains('active')) return 0;
+      if (badge?.classList.contains('phase2')) return 1;
+      return 2;
+    };
+    cards.sort((a, b) => priority(a) - priority(b));
+    cards.forEach(c => panel.appendChild(c));
+  }
 }
 
 // =============================================================
@@ -76922,6 +78726,9 @@ function updatePaymentsOutstandingWidget() {
 function updateBillingOutstandingWidget() {
   const card = document.getElementById('billingOutstandingCard');
   if (!card) return;
+  const amtEl = document.getElementById('billingOutstandingAmt');
+  const subEl = document.getElementById('billingOutstandingSub');
+  if (!amtEl || !subEl) { card.style.display = 'none'; return; }
   const rows = buildAgingRows();
   const today = new Date();
   const curYm = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}`;
@@ -79691,7 +81498,296 @@ async function submitSendLease() {
 // the row-level menu. Stores method, reference, memo, and an optional
 // receipt image on u.payments[ym].
 // =========================================================================
-let _mpmCtx = null;   // { buildingId, floorId, unitId, ym }
+let _mpmCtx = null;   // { buildingId, floorId, unitId, ym, linkedBankTxn? }
+
+// In-flight token used to discard stale bank-suggestion fetches when
+// the operator changes the billing month rapidly.
+let _mpmBankFetchSeq = 0;
+
+// Tiny per-(unitId,ym) cache so reopening the same modal twice doesn't
+// re-hit the CF. Keyed by `${unitId}|${ym}|${accountIds}`. 30s TTL.
+const _mpmBankCache = new Map();
+function _mpmBankCacheKey(unitId, ym, accountIds) {
+  return `${unitId}|${ym}|${(accountIds || []).slice().sort().join(',')}`;
+}
+
+// Map a bank description to the closest payment method. Operator can
+// always override after auto-fill — this is just a sane default.
+function _mpmGuessMethodFromDesc(desc) {
+  const d = String(desc || '').toLowerCase();
+  if (d.includes('check')) return 'check';
+  if (d.includes('wire'))  return 'wire';
+  if (d.includes('ach') || d.includes('transfer') || d.includes('zelle')
+      || d.includes('venmo') || d.includes('deposit')) return 'ach';
+  if (d.includes('stripe')) return 'stripe';
+  return 'other';
+}
+
+// Pull bank suggestions from CF and render them inside the modal. Called
+// on modal open + every billing-month change. Idempotent.
+async function _mpmRenderBankSuggestions(u, ym) {
+  const card = document.getElementById('mpmBankFeedCard');
+  if (!card) return;
+  // Hide entirely when no bank connection exists — the section would
+  // just be dead UI. Also hide on waiver months (zero-dollar by def).
+  const conns = (state.bankConnections || []).filter(c => c.status === 'active');
+  if (!conns.length) { card.innerHTML = ''; return; }
+  if (document.getElementById('mpmMethod')?.value === 'waived') { card.innerHTML = ''; return; }
+  if (typeof stripeCallable !== 'function') { card.innerHTML = ''; return; }
+
+  const targetCents = Math.round(((+u.contractRent) || (+u.rent) || 0) * 100);
+  const accountIds = []; // empty = all connected accounts (multi-acct dropdown later)
+  const cacheKey = _mpmBankCacheKey(u.id, ym, accountIds);
+  const cached = _mpmBankCache.get(cacheKey);
+  const fresh = cached && (Date.now() - cached.at < 30000);
+  // Loading skeleton
+  if (!fresh) {
+    card.innerHTML = `
+      <div class="mpm-bf-card mpm-bf-card-loading">
+        <div class="mpm-bf-head">
+          <span>🏦 Bank feed suggestions for ${esc(_fmtMonthName(ym))}</span>
+          <span class="mpm-bf-spinner">⏳ scanning…</span>
+        </div>
+      </div>`;
+  }
+
+  const seq = ++_mpmBankFetchSeq;
+  let items = cached?.items;
+  if (!fresh) {
+    try {
+      const fn = stripeCallable('listBankTransactionsForUnit');
+      const { data } = await fn({
+        ym,
+        amountCents: targetCents,
+        amountTolerancePct: 15,
+        dateRangeDays: 30,
+        accountIds,
+        limit: 4,
+      });
+      items = data?.items || [];
+      _mpmBankCache.set(cacheKey, { at: Date.now(), items });
+    } catch (err) {
+      // Stale fetch — operator already moved on; don't paint over fresh state.
+      if (seq !== _mpmBankFetchSeq) return;
+      card.innerHTML = `
+        <div class="mpm-bf-card mpm-bf-card-error">
+          <div class="mpm-bf-head">🏦 Bank feed</div>
+          <div class="mpm-bf-error">Couldn't load suggestions: ${esc(err?.message || String(err))}</div>
+        </div>`;
+      return;
+    }
+  }
+  if (seq !== _mpmBankFetchSeq) return;
+
+  const tenantName = u.company || u.tenant || '';
+  const accountLabel = conns.length === 1
+    ? `${esc(conns[0].institutionName || 'Bank')} ····${esc(conns[0].accountLast4 || '')}`
+    : `${conns.length} accounts`;
+
+  if (!items.length) {
+    card.innerHTML = `
+      <div class="mpm-bf-card mpm-bf-card-empty">
+        <div class="mpm-bf-head">
+          <span>🏦 No bank-feed match for ${esc(_fmtMonthName(ym))} (±30d, ±15%)</span>
+        </div>
+        <div class="mpm-bf-empty-sub">
+          Searched <b>${accountLabel}</b> for credits near <b>$${(targetCents / 100).toLocaleString()}</b>.
+          ${tenantName ? `<a href="javascript:void(0)" onclick="_mpmOpenBankActivityForTenant('${esc(tenantName)}')">→ View all bank activity for ${esc(tenantName)}</a>` : ''}
+        </div>
+      </div>`;
+    return;
+  }
+
+  const rows = items.map(t => {
+    const dt = t.transactedAt ? new Date(t.transactedAt * 1000) : null;
+    const dateStr = dt ? dt.toLocaleDateString() : '—';
+    const amount = (+t.amount || 0) / 100;
+    const amtStr = `$${amount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+    const exact = targetCents > 0 && Math.round(amount * 100) === targetCents;
+    const closeDelta = targetCents > 0 ? Math.round(amount * 100) - targetCents : 0;
+    const closeNote = exact
+      ? `<span class="mpm-bf-exact">EXACT</span>`
+      : (closeDelta !== 0
+          ? `<span class="mpm-bf-close" title="Off by $${(Math.abs(closeDelta) / 100).toLocaleString()}">${closeDelta > 0 ? '+' : '−'}$${(Math.abs(closeDelta) / 100).toLocaleString()}</span>`
+          : '');
+    const stateBadge = t.matchState === 'suggested'
+      ? `<span class="mpm-bf-state mpm-bf-state-suggested" title="Matcher already flagged this">★ suggested</span>`
+      : '';
+    const isSelected = !!(_mpmCtx?.linkedBankTxn && _mpmCtx.linkedBankTxn.id === t.id);
+    return `
+      <div class="mpm-bf-row ${isSelected ? 'mpm-bf-row-selected' : ''}" data-bf-row="${esc(t.id)}">
+        <div class="mpm-bf-row-main">
+          <div class="mpm-bf-row-amt">${amtStr} ${closeNote}</div>
+          <div class="mpm-bf-row-meta">${esc(dateStr)} · ${esc(t.description || '(no description)')} ${stateBadge}</div>
+        </div>
+        <button class="rr-btn ar-btn-sm mpm-bf-use-btn ${isSelected ? 'mpm-bf-use-btn-selected' : ''}" data-bf-btn="${esc(t.id)}" onclick="_mpmUseBankTxn('${esc(t.id)}')" title="Apply this transaction to the form">${isSelected ? '✓ Selected' : '✓ Use this'}</button>
+      </div>`;
+  }).join('');
+
+  const hasSel = !!(_mpmCtx?.linkedBankTxn);
+  const otherCount = Math.max(0, items.length - (hasSel ? 1 : 0));
+  card.innerHTML = `
+    <div class="mpm-bf-card ${hasSel ? 'mpm-bf-card-collapsed' : ''}" id="mpmBankFeedInner">
+      <div class="mpm-bf-head">
+        <span>🏦 Bank feed suggestions for ${esc(_fmtMonthName(ym))}</span>
+        <span class="mpm-bf-acct">${accountLabel}</span>
+      </div>
+      <div class="mpm-bf-rows">${rows}</div>
+      <button type="button" class="mpm-bf-toggle" id="mpmBankFeedToggle" onclick="_mpmToggleBankFeedExpand()">
+        <span class="mpm-bf-toggle-text">Show ${otherCount} other match${otherCount === 1 ? '' : 'es'} ▾</span>
+      </button>
+      ${tenantName ? `<div class="mpm-bf-foot"><a href="javascript:void(0)" onclick="_mpmOpenBankActivityForTenant('${esc(tenantName)}')">→ View all bank activity for ${esc(tenantName)}</a></div>` : ''}
+    </div>`;
+
+  // Stash items so _mpmUseBankTxn can find the picked row without a refetch.
+  _mpmBankCache.set(cacheKey, { at: Date.now(), items });
+}
+
+// Update the check-copy drop-zone label to reflect the picked file.
+// Called from the file input's onchange — swaps the prompt text for the
+// chosen filename and switches the zone to a "✓ attached" green style so
+// the operator can see at a glance the check copy was actually selected.
+function _mpmUpdateReceiptLabel(input) {
+  const label = document.getElementById('mpmReceiptLabel');
+  if (!label) return;
+  const txt = label.querySelector('.mpm-check-drop-text');
+  if (!txt) return;
+  const file = input?.files?.[0];
+  if (file) {
+    label.classList.add('has-file');
+    const sizeKb = Math.max(1, Math.round(file.size / 1024));
+    txt.innerHTML = `<b>✓ ${esc(file.name)}</b><span class="mpm-check-drop-hint">${sizeKb} KB · click to replace</span>`;
+  } else {
+    label.classList.remove('has-file');
+    txt.innerHTML = `<b>Attach check copy</b><span class="mpm-check-drop-hint">Click to choose · JPG / PNG / HEIC</span>`;
+  }
+}
+
+// Operator clicked "✓ Use this" — auto-fill Method/Reference/Amount/Date
+// from the bank txn and stash the link so submitManualPayment can confirm
+// the bank-side record after the local payment is saved.
+function _mpmUseBankTxn(txnId) {
+  if (!_mpmCtx) return;
+  // Find the txn in any cache entry (we may have several, e.g. after ym change).
+  let txn = null;
+  for (const v of _mpmBankCache.values()) {
+    txn = (v.items || []).find(t => t.id === txnId);
+    if (txn) break;
+  }
+  if (!txn) { toast('Bank transaction not in cache — try Reload', 'error'); return; }
+  const amount = (+txn.amount || 0) / 100;
+  const dt = txn.transactedAt ? new Date(txn.transactedAt * 1000) : new Date();
+  const isoDate = dt.toISOString().slice(0, 10);
+  const guessedMethod = _mpmGuessMethodFromDesc(txn.description);
+  // Apply to form fields. Reference takes the first chunk of the description
+  // (cleaned) so the Activity Log row shows something meaningful.
+  const refText = String(txn.description || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  document.getElementById('mpmMethod').value = guessedMethod;
+  _mpmOnMethodChange();
+  document.getElementById('mpmReference').value = refText;
+  document.getElementById('mpmAmount').value = amount.toFixed(2);
+  document.getElementById('mpmDate').value = isoDate;
+  // Stash for submitManualPayment.
+  _mpmCtx.linkedBankTxn = {
+    id: txn.id,
+    amount: txn.amount,
+    description: txn.description || '',
+    transactedAt: txn.transactedAt || null,
+    accountId: txn.accountId || null,
+  };
+  _mpmRenderLinkedPill();
+  _mpmPaintBankRowSelection(txnId);
+}
+
+// Toggle visual selection on bank-feed rows without a full re-render.
+// Pass null/undefined to clear all selection state.
+function _mpmPaintBankRowSelection(selectedTxnId) {
+  const card = document.getElementById('mpmBankFeedCard');
+  if (!card) return;
+  let totalRows = 0;
+  card.querySelectorAll('[data-bf-row]').forEach(row => {
+    totalRows += 1;
+    const isSel = row.getAttribute('data-bf-row') === selectedTxnId;
+    row.classList.toggle('mpm-bf-row-selected', isSel);
+  });
+  card.querySelectorAll('[data-bf-btn]').forEach(btn => {
+    const isSel = btn.getAttribute('data-bf-btn') === selectedTxnId;
+    btn.classList.toggle('mpm-bf-use-btn-selected', isSel);
+    btn.textContent = isSel ? '✓ Selected' : '✓ Use this';
+  });
+  // Collapse: when a selection is active, hide the other rows. Always
+  // reset the "expanded" state so a fresh selection starts collapsed.
+  const inner = document.getElementById('mpmBankFeedInner');
+  if (inner) {
+    const hasSel = !!selectedTxnId;
+    inner.classList.toggle('mpm-bf-card-collapsed', hasSel);
+    inner.classList.remove('mpm-bf-card-expanded');
+    const toggleTxt = inner.querySelector('.mpm-bf-toggle-text');
+    if (toggleTxt) {
+      const otherCount = Math.max(0, totalRows - (hasSel ? 1 : 0));
+      toggleTxt.textContent = `Show ${otherCount} other match${otherCount === 1 ? '' : 'es'} ▾`;
+    }
+  }
+}
+
+// Expand/collapse the "other matches" list inside the bank-feed card.
+function _mpmToggleBankFeedExpand() {
+  const inner = document.getElementById('mpmBankFeedInner');
+  if (!inner) return;
+  const expanded = inner.classList.toggle('mpm-bf-card-expanded');
+  const toggleTxt = inner.querySelector('.mpm-bf-toggle-text');
+  if (!toggleTxt) return;
+  if (expanded) {
+    toggleTxt.textContent = 'Hide other matches ▴';
+  } else {
+    const total = inner.querySelectorAll('[data-bf-row]').length;
+    const otherCount = Math.max(0, total - 1);
+    toggleTxt.textContent = `Show ${otherCount} other match${otherCount === 1 ? '' : 'es'} ▾`;
+  }
+}
+
+// Remove the bank-txn link without clearing form fields — operator may
+// want to keep the auto-filled values but record manually instead.
+function _mpmUnlinkBankTxn() {
+  if (!_mpmCtx) return;
+  delete _mpmCtx.linkedBankTxn;
+  _mpmRenderLinkedPill();
+  _mpmPaintBankRowSelection(null);
+}
+
+function _mpmRenderLinkedPill() {
+  const pill = document.getElementById('mpmLinkedBankPill');
+  if (!pill) return;
+  const linked = _mpmCtx?.linkedBankTxn;
+  if (!linked) { pill.style.display = 'none'; pill.innerHTML = ''; return; }
+  const dt = linked.transactedAt ? new Date(linked.transactedAt * 1000) : null;
+  const dateStr = dt ? dt.toLocaleDateString() : '—';
+  const amount = (+linked.amount || 0) / 100;
+  pill.style.display = '';
+  pill.innerHTML = `
+    <span style="display:inline-flex; align-items:center; gap:6px; padding:3px 8px; background:rgba(16,185,129,0.10); border:1px solid rgba(16,185,129,0.40); border-radius:14px; font-size:11.5px; color:var(--success);">
+      🔗 Linked: $${amount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} · ${esc(dateStr)}
+      <button type="button" onclick="_mpmUnlinkBankTxn()" title="Unlink (still records the payment, but doesn't mark the bank txn as confirmed)" style="background:none; border:none; cursor:pointer; color:var(--success); font-size:14px; line-height:1; padding:0;">×</button>
+    </span>`;
+}
+
+// Close the modal, switch to Bank Activity, pre-fill the search box with
+// the tenant name so the operator can scan / pick a transaction. Called
+// from the "→ View all bank activity for X" link.
+function _mpmOpenBankActivityForTenant(tenantName) {
+  closeManualPaymentModal();
+  if (typeof showBilling === 'function') showBilling();
+  setTimeout(() => {
+    if (typeof setBillingTab === 'function') setBillingTab('bankActivity');
+    setTimeout(() => {
+      const search = document.getElementById('bankActivitySearch');
+      if (search && tenantName) {
+        search.value = String(tenantName);
+        if (typeof renderBankActivityPanel === 'function') renderBankActivityPanel();
+      }
+    }, 80);
+  }, 80);
+}
 
 // Method picker change — toggle waiver-only fields and adjust the
 // rest of the form based on whether this is a real payment or a
@@ -79733,6 +81829,12 @@ function _mpmOnYmChange() {
   // Refresh the prorate hint — flips on / off based on whether the
   // newly-selected month is the prorated lease-start month.
   if (typeof _mpmUpdateAmountHint === 'function') _mpmUpdateAmountHint(u, ym);
+  // Bank-feed suggestions are month-specific too — refresh so the operator
+  // sees credits in the new billing window. Drop any prior link since the
+  // selected txn was for a different month.
+  if (_mpmCtx) delete _mpmCtx.linkedBankTxn;
+  _mpmRenderLinkedPill();
+  _mpmRenderBankSuggestions(u, ym);
 }
 
 function _mpmOnMethodChange() {
@@ -80044,6 +82146,24 @@ function openManualPaymentModal(buildingId, floorId, unitId, ym) {
   const existing = u.payments?.[ym] || {};
   const defaultRent = +u.contractRent || +u.rent || 0;
 
+  // Reconstruct linkedBankTxn from saved fields when reopening a modal
+  // for a payment that was previously bank-linked. Without this, the
+  // bank-feed card would show the suggestions list again as if no
+  // transaction had been picked, creating duplicate "Use this" buttons
+  // for an already-linked payment. Saved fields contain enough info to
+  // render the linked-view card without a CF round-trip.
+  if (existing.bankTxnId) {
+    _mpmCtx.linkedBankTxn = {
+      id: existing.bankTxnId,
+      amount: Math.round((+existing.amount || 0) * 100),
+      description: existing.paidReference || '',
+      transactedAt: existing.bankPaidAt
+        ? Math.floor(new Date(existing.bankPaidAt + 'T00:00:00Z').getTime() / 1000)
+        : null,
+      accountId: existing.bankAccountId || null,
+    };
+  }
+
   document.getElementById('mpmContext').innerHTML =
     `Suite <b>${esc(u.id)}</b> · ${esc(u.tenant || u.company || '(no name)')}`;
 
@@ -80096,6 +82216,12 @@ function openManualPaymentModal(buildingId, floorId, unitId, ym) {
   document.getElementById('mpmDate').value = existing.date || new Date().toISOString().slice(0,10);
   document.getElementById('mpmMemo').value = existing.memo || '';
   document.getElementById('mpmReceipt').value = '';
+  // Reset the check-copy drop-zone label back to its empty state ("Attach
+  // check copy") whenever the modal reopens — without this, a previous
+  // session's filename sticks even after the file input has been cleared.
+  if (typeof _mpmUpdateReceiptLabel === 'function') {
+    _mpmUpdateReceiptLabel(document.getElementById('mpmReceipt'));
+  }
 
   // Waiver fields — restore reason + referred-suite if previously waived.
   document.getElementById('mpmWaiverReason').value = existing.waiverReason || 'referral';
@@ -80139,6 +82265,10 @@ function openManualPaymentModal(buildingId, floorId, unitId, ym) {
   // smaller-than-full-rent default ($120 instead of $600) is intentional
   // for the lease-start month.
   _mpmUpdateAmountHint(u, ym);
+  // Bank-feed suggestions — pulled async, paints into mpmBankFeedCard
+  // when ready. Hidden if no bank account is connected.
+  _mpmRenderLinkedPill();
+  _mpmRenderBankSuggestions(u, ym);
 
   document.getElementById('manualPaymentModal').classList.add('active');
 }
@@ -80369,6 +82499,13 @@ async function submitManualPayment() {
         // Drop receipt fields — waivers don't have receipts.
       };
     } else {
+      // If the operator picked a bank-feed transaction inside the modal,
+      // mirror its identity onto the payment record so future reconcilers
+      // and the Activity Log can trace this payment back to the actual
+      // bank credit. The bank-side doc is also flipped to 'confirmed'
+      // below (post-save) so it stops appearing in the Bank Activity
+      // pending queue.
+      const linkedBank = _mpmCtx.linkedBankTxn || null;
       u.payments[ym] = {
         ...existing,
         status: 'paid',
@@ -80381,6 +82518,18 @@ async function submitManualPayment() {
         paidBy: fbSync?.user?.email || fbSync?.uid || 'admin',
         recordedAt: new Date().toISOString(),
         ...(receiptUrl ? { receiptUrl, receiptPath } : {}),
+        ...(linkedBank ? {
+          source: 'bank-feed',
+          bankTxnId: linkedBank.id,
+          bankAccountId: linkedBank.accountId || null,
+          // Bank's authoritative payment date — preserved even if operator
+          // later edits the form's date field. Surfaced in the payment-history
+          // hover tooltip so the date the BANK saw the money matches the date
+          // shown in the UI.
+          bankPaidAt: linkedBank.transactedAt
+            ? new Date(linkedBank.transactedAt * 1000).toISOString().slice(0, 10)
+            : null,
+        } : {}),
       };
       // Drop waiver-specific fields if this entry was previously a waiver.
       delete u.payments[ym].waiverReason;
@@ -80439,6 +82588,26 @@ async function submitManualPayment() {
         .catch(e => console.warn('[manual-payment field-level push]', e?.message || e));
     }
     saveState({ priority: 'money', dirty: ['payments'] });
+    // If a bank txn was linked, flip its server-side matchState to
+    // 'confirmed' so it stops appearing in the pending queue. We pass
+    // recordPayment:false because the local u.payments[ym] write above
+    // (+ the field-level push) is already authoritative — we only need
+    // the server to update the bankTransactions doc + audit fields.
+    // Fire-and-forget; failures are non-blocking and surfaced as a toast.
+    const linkedBankForConfirm = (!isWaived && _mpmCtx.linkedBankTxn) ? _mpmCtx.linkedBankTxn : null;
+    if (linkedBankForConfirm && typeof stripeCallable === 'function') {
+      const cfn = stripeCallable('confirmBankMatch');
+      cfn({ txnId: linkedBankForConfirm.id, unitId: u.id, ym, recordPayment: false })
+        .then(() => {
+          // Drop the cached pending list so the Bank Activity panel
+          // refresh after this submit reflects the new state.
+          if (typeof _bankActivityCache !== 'undefined') _bankActivityCache = null;
+        })
+        .catch(e => {
+          console.warn('[manual-payment bank-link]', e?.message || e);
+          toast('Payment saved, but the bank transaction link failed: ' + (e?.message || e), 'error');
+        });
+    }
     closeManualPaymentModal();
     if (typeof renderAgingPanel === 'function') renderAgingPanel();
     if (state?.ui?.activeView === 'payments' && typeof renderPayments === 'function') renderPayments();

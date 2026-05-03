@@ -3526,9 +3526,16 @@ exports.listBackups = onCall(
   async (req) => {
     await requireEditor(req.auth);
     const col = db.collection(`workspaces/${WORKSPACE_ID}/backups`);
+    // Doc IDs are YYYY-MM-DD (and YYYY-MM-DD-manual-HHMM) — lex-sortable.
+    // Sorting server-side by __name__ DESC requires a custom Firestore
+    // index; backup count is bounded by 90-day retention so it's
+    // cheaper to fetch all and sort in JS than to maintain the index.
+    //
+    // CRITICAL: use .select() to project ONLY metadata fields — without it
+    // Firestore returns the full doc including `state` (the entire workspace
+    // JSON snapshot, can be MBs) and 90 docs blow past the 256 MiB limit.
     const snap = await col
-      .orderBy(admin.firestore.FieldPath.documentId(), 'desc')
-      .limit(120)
+      .select('capturedAt', 'capturedBy', 'reason', '_rev', 'sizeBytes')
       .get();
     const items = snap.docs.map(d => {
       const x = d.data() || {};
@@ -3541,7 +3548,8 @@ exports.listBackups = onCall(
         sizeBytes: x.sizeBytes || 0,
       };
     });
-    return { items };
+    items.sort((a, b) => b.id.localeCompare(a.id));
+    return { items: items.slice(0, 120) };
   }
 );
 
@@ -3909,5 +3917,1265 @@ exports.eraseTenantPii = onCall(
       stripeCustomerLinkRemoved: stripeCustRemoved,
       stripeCustomerId: stripeCustomerId || null,
     };
+  }
+);
+
+// =========================================================================
+// ===== Stripe Financial Connections — Bank Feed (Phase 1: Connect) =======
+// Operator connects their business bank (Capital One etc.) so the app can
+// later pull incoming wire/ACH/check deposits and match them against open
+// invoices automatically. Phase 1 is OAuth onboarding only — transaction
+// polling, matcher, and review board land in subsequent phases.
+//
+// Flow:
+//   1. Operator clicks "Connect bank" in Settings → Bank Connections.
+//   2. Client calls connectBankAccount → backend creates a Stripe FC
+//      Session bound to the per-workspace Operator Customer (separate
+//      from tenant customers in state.stripeCustomers).
+//   3. Client opens Stripe.js widget with the returned client_secret;
+//      operator picks bank (Capital One Spark Business), authenticates,
+//      grants permissions.
+//   4. Widget returns success → client calls finalizeBankConnection
+//      with the session id. Backend re-fetches the session, reads the
+//      confirmed account ids, and appends one record per new account
+//      to state.bankConnections[].
+//   5. Disconnect: stripe.financialConnections.accounts.disconnect →
+//      mark local record status='disconnected'.
+// =========================================================================
+
+// Get-or-create the per-workspace Stripe Customer that owns the FC
+// account-holder relationship. This Customer represents the operator's
+// business and is distinct from per-tenant Customers in
+// state.stripeCustomers. Reused across all Bank Feed sessions so all
+// connected accounts roll up to one Stripe-side owner.
+async function _ensureOperatorCustomer(state, operatorEmail) {
+  if (state.operatorStripeCustomerId) return state.operatorStripeCustomerId;
+  const stripe = getStripe();
+  const cust = await stripe.customers.create({
+    email: operatorEmail || undefined,
+    name: `SuitesForAll Operator (${WORKSPACE_ID})`,
+    description: 'Owner Customer for Financial Connections (bank feed)',
+    metadata: {
+      workspaceId: WORKSPACE_ID,
+      role: 'operator',
+      source: 'suitesforall-bank-feed',
+    },
+  });
+  await mutateWorkspaceState((s) => {
+    s.operatorStripeCustomerId = cust.id;
+  });
+  logger.info(`[bank-feed] created operator customer ${cust.id} for ${operatorEmail || '(no email)'}`);
+  return cust.id;
+}
+
+exports.connectBankAccount = onCall(
+  {secrets: [STRIPE_SECRET_KEY], timeoutSeconds: 30},
+  async (req) => {
+    await requireEditor(req.auth);
+    const stripe = getStripe();
+    const state = await readWorkspaceState();
+    const operatorEmail = (req.auth?.token?.email || '').toLowerCase();
+    const customerId = await _ensureOperatorCustomer(state, operatorEmail);
+    const session = await stripe.financialConnections.sessions.create({
+      account_holder: { type: 'customer', customer: customerId },
+      // Permissions:
+      //   transactions  — required (this is the whole point of Phase 2+)
+      //   balances      — useful to show operator the current balance
+      //   ownership     — verifies account holder name; helps with matching
+      //                   wires whose memo line drops the company name.
+      permissions: ['transactions', 'balances', 'ownership'],
+      filters: { countries: ['US'] },
+    });
+    logger.info(`[bank-feed] connectBankAccount: created FC session ${session.id} for operator ${operatorEmail}`);
+    return {
+      clientSecret: session.client_secret,
+      sessionId: session.id,
+    };
+  }
+);
+
+exports.finalizeBankConnection = onCall(
+  {secrets: [STRIPE_SECRET_KEY], timeoutSeconds: 30},
+  async (req) => {
+    await requireEditor(req.auth);
+    const sessionId = req.data?.sessionId;
+    if (!sessionId) {
+      throw new HttpsError('invalid-argument', 'sessionId is required');
+    }
+    const stripe = getStripe();
+    const session = await stripe.financialConnections.sessions.retrieve(sessionId, {
+      expand: ['accounts'],
+    });
+    const accounts = session.accounts?.data || [];
+    if (!accounts.length) {
+      logger.warn(`[bank-feed] finalizeBankConnection: session ${sessionId} returned 0 accounts (operator likely cancelled)`);
+      return { connected: 0, accounts: [] };
+    }
+    const operatorEmail = (req.auth?.token?.email || '').toLowerCase();
+    const newConnections = [];
+    await mutateWorkspaceState((s) => {
+      s.bankConnections = s.bankConnections || [];
+      for (const acc of accounts) {
+        // Dedup pass 1: same Stripe FC account id → reactivate.
+        let existing = s.bankConnections.find(c => c.stripeFcAccountId === acc.id);
+        // Dedup pass 2: re-connecting the same bank typically gets a
+        // *new* FC account ID from Stripe (the old one was disconnected).
+        // Match by institution + last4 against any disconnected record so
+        // the operator's Reconnect flow replaces the ghost cleanly instead
+        // of leaving a dead row + a fresh duplicate.
+        if (!existing) {
+          const last4 = (acc.last4 || '').toLowerCase();
+          const inst = (acc.institution_name || '').toLowerCase();
+          if (last4 && inst) {
+            existing = s.bankConnections.find(c =>
+              c.status === 'disconnected'
+              && (c.accountLast4 || '').toLowerCase() === last4
+              && (c.institutionName || '').toLowerCase() === inst
+            );
+            if (existing) {
+              // Replace ghost: keep its lastPolledAt watermark but swap in
+              // the new FC account id so subsequent pulls/disconnects work.
+              existing.stripeFcAccountId = acc.id;
+              existing.id = 'bc_' + acc.id;
+            }
+          }
+        }
+        if (existing) {
+          existing.status = acc.status || 'active';
+          existing.permissions = acc.permissions || existing.permissions || [];
+          existing.reconnectedAt = new Date().toISOString();
+          delete existing.disconnectedAt;
+          continue;
+        }
+        const conn = {
+          id: 'bc_' + acc.id,
+          stripeFcAccountId: acc.id,
+          institutionName: acc.institution_name || 'Unknown bank',
+          accountLast4: acc.last4 || '',
+          accountCategory: acc.category || '',          // 'cash' | 'credit' | 'investment' | 'other'
+          accountSubcategory: acc.subcategory || '',    // 'checking' | 'savings' | etc.
+          displayName: acc.display_name
+            || `${acc.institution_name || 'Bank'} ····${acc.last4 || '????'}`,
+          permissions: acc.permissions || [],
+          status: acc.status || 'active',
+          connectedAt: new Date().toISOString(),
+          connectedBy: operatorEmail,
+          lastPolledAt: null,
+        };
+        s.bankConnections.push(conn);
+        newConnections.push(conn);
+      }
+    });
+    logger.info(`[bank-feed] finalizeBankConnection: linked ${newConnections.length} new account(s), reactivated ${accounts.length - newConnections.length} (session ${sessionId})`);
+    // Trigger transaction refresh for every linked/reactivated account so
+    // Stripe starts preparing transactions immediately. Without this the
+    // first poll throws `financial_connections_no_successful_transaction_refresh`
+    // and returns 0 transactions even when the account has months of history.
+    // Refresh is async on Stripe's side (1-2 min); we don't await per-account
+    // success — just kick it off so it's ready by next poll.
+    for (const acc of accounts) {
+      await _ensureTransactionRefresh(stripe, acc.id);
+    }
+    return {
+      connected: newConnections.length,
+      reactivated: accounts.length - newConnections.length,
+      accounts: newConnections,
+    };
+  }
+);
+
+exports.disconnectBankAccount = onCall(
+  {secrets: [STRIPE_SECRET_KEY], timeoutSeconds: 30},
+  async (req) => {
+    await requireEditor(req.auth);
+    const fcAccountId = req.data?.stripeFcAccountId;
+    if (!fcAccountId) {
+      throw new HttpsError('invalid-argument', 'stripeFcAccountId is required');
+    }
+    const stripe = getStripe();
+    let detached = false;
+    let detachError = null;
+    try {
+      await stripe.financialConnections.accounts.disconnect(fcAccountId);
+      detached = true;
+    } catch (e) {
+      // If Stripe says it's already detached / 404, that's fine — we
+      // still proceed to clean up our local state record. Surface the
+      // error so the client can show a softer "already disconnected"
+      // notice rather than failing hard.
+      detachError = e.message || String(e);
+      logger.warn(`[bank-feed] disconnectBankAccount: Stripe detach failed (${detachError}) — proceeding to local cleanup`);
+    }
+    await mutateWorkspaceState((s) => {
+      if (!Array.isArray(s.bankConnections)) return;
+      const c = s.bankConnections.find(x => x.stripeFcAccountId === fcAccountId);
+      if (c) {
+        c.status = 'disconnected';
+        c.disconnectedAt = new Date().toISOString();
+      }
+    });
+    return { detached, detachError };
+  }
+);
+
+// Hard-delete a disconnected bank-connection record from state. Operator
+// uses this to clean up "ghost" rows from cancelled connect flows or
+// long-gone accounts. SAFETY: only deletes if status === 'disconnected' so
+// an active feed can never be wiped by accident.
+exports.removeBankConnection = onCall(
+  {timeoutSeconds: 30},
+  async (req) => {
+    await requireEditor(req.auth);
+    const fcAccountId = req.data?.stripeFcAccountId;
+    if (!fcAccountId) {
+      throw new HttpsError('invalid-argument', 'stripeFcAccountId is required');
+    }
+    let removed = false;
+    let blockedActive = false;
+    await mutateWorkspaceState((s) => {
+      if (!Array.isArray(s.bankConnections)) return;
+      const idx = s.bankConnections.findIndex(c => c.stripeFcAccountId === fcAccountId);
+      if (idx < 0) return;
+      if (s.bankConnections[idx].status !== 'disconnected') {
+        blockedActive = true;
+        return;
+      }
+      s.bankConnections.splice(idx, 1);
+      removed = true;
+    });
+    if (blockedActive) {
+      throw new HttpsError('failed-precondition',
+        'Account is still active — disconnect it first, then remove.');
+    }
+    logger.info(`[bank-feed] removeBankConnection: deleted record ${fcAccountId} (removed=${removed})`);
+    return { removed };
+  }
+);
+
+// Diagnostic: pull the live Stripe FC account state for a connection so the
+// operator can see why transactions aren't arriving (permissions missing,
+// refresh stuck, account inactive, etc.) without needing the Stripe Dashboard.
+exports.diagnoseBankAccount = onCall(
+  {secrets: [STRIPE_SECRET_KEY], timeoutSeconds: 30},
+  async (req) => {
+    await requireEditor(req.auth);
+    const fcAccountId = req.data?.stripeFcAccountId;
+    if (!fcAccountId) {
+      throw new HttpsError('invalid-argument', 'stripeFcAccountId is required');
+    }
+    const stripe = getStripe();
+    let acc = null;
+    try {
+      acc = await stripe.financialConnections.accounts.retrieve(fcAccountId);
+    } catch (err) {
+      throw new HttpsError('not-found', `Stripe could not retrieve ${fcAccountId}: ${err.message || err}`);
+    }
+    // Trigger a fresh refresh + capture its returned status.
+    let refreshResult = null;
+    try {
+      refreshResult = await stripe.financialConnections.accounts.refresh(
+        fcAccountId,
+        { features: ['transactions'] }
+      );
+    } catch (err) {
+      refreshResult = { error: err.message || String(err), code: err.code || null };
+    }
+    // Quick try at listing 1 transaction to see if list now works.
+    let listSample = null;
+    try {
+      const page = await stripe.financialConnections.transactions.list({
+        account: fcAccountId,
+        limit: 5,
+      });
+      listSample = {
+        ok: true,
+        count: page.data.length,
+        sample: page.data.slice(0, 2).map(t => ({
+          id: t.id, amount: t.amount, description: t.description,
+          transacted_at: t.transacted_at, status: t.status,
+        })),
+      };
+    } catch (err) {
+      listSample = { ok: false, error: err.message || String(err), code: err.code || null };
+    }
+    const summary = {
+      id: acc.id,
+      institution: acc.institution_name,
+      last4: acc.last4,
+      category: acc.category,
+      subcategory: acc.subcategory,
+      status: acc.status,
+      permissions: acc.permissions || [],
+      hasTransactionsPermission: (acc.permissions || []).includes('transactions'),
+      transaction_refresh: acc.transaction_refresh || null,
+      balance_refresh: acc.balance_refresh || null,
+      ownership_refresh: acc.ownership_refresh || null,
+      latestRefreshTrigger: refreshResult,
+      listSample,
+    };
+    logger.info(`[bank-feed] diagnoseBankAccount ${fcAccountId}: perms=${summary.permissions.join(',')} txnRefresh=${JSON.stringify(summary.transaction_refresh)} listOk=${listSample.ok} listCount=${listSample.count || 0}`);
+    return summary;
+  }
+);
+
+// Reconcile state.bankConnections against Stripe's authoritative list of
+// FC accounts attached to our operator Customer. Catches "ghost" accounts
+// linked in Stripe but missing from our state (e.g. from earlier sessions
+// that landed at Stripe but failed to round-trip into our state) and
+// surfaces real-time status changes (Stripe can mark an account inactive
+// without us calling disconnect).
+exports.syncBankConnections = onCall(
+  {secrets: [STRIPE_SECRET_KEY], timeoutSeconds: 30},
+  async (req) => {
+    await requireEditor(req.auth);
+    const stripe = getStripe();
+    const state = await readWorkspaceState();
+    const customerId = state.operatorStripeCustomerId;
+    if (!customerId) {
+      // Nothing to sync — operator has never opened the FC widget.
+      return { added: 0, updated: 0, total: 0, accounts: [] };
+    }
+    // Page through every FC account attached to this customer.
+    const stripeAccounts = [];
+    let startingAfter = undefined;
+    for (;;) {
+      const page = await stripe.financialConnections.accounts.list({
+        account_holder: { customer: customerId },
+        limit: 100,
+        ...(startingAfter ? { starting_after: startingAfter } : {}),
+      });
+      stripeAccounts.push(...page.data);
+      if (!page.has_more) break;
+      startingAfter = page.data[page.data.length - 1].id;
+    }
+    let added = 0, updated = 0;
+    const operatorEmail = (req.auth?.token?.email || '').toLowerCase();
+    await mutateWorkspaceState((s) => {
+      s.bankConnections = s.bankConnections || [];
+      for (const acc of stripeAccounts) {
+        const existing = s.bankConnections.find(c => c.stripeFcAccountId === acc.id);
+        if (existing) {
+          // Refresh mutable fields. Stripe is authoritative for status,
+          // permissions, and last4/institution (rarely change but possible
+          // after a re-auth / institution rename).
+          if (existing.status !== (acc.status || existing.status)) updated++;
+          existing.status = acc.status || existing.status || 'active';
+          existing.permissions = acc.permissions || existing.permissions || [];
+          existing.institutionName = acc.institution_name || existing.institutionName;
+          existing.accountLast4 = acc.last4 || existing.accountLast4;
+          existing.accountCategory = acc.category || existing.accountCategory;
+          existing.accountSubcategory = acc.subcategory || existing.accountSubcategory;
+          existing.lastSyncedAt = new Date().toISOString();
+          continue;
+        }
+        s.bankConnections.push({
+          id: 'bc_' + acc.id,
+          stripeFcAccountId: acc.id,
+          institutionName: acc.institution_name || 'Unknown bank',
+          accountLast4: acc.last4 || '',
+          accountCategory: acc.category || '',
+          accountSubcategory: acc.subcategory || '',
+          displayName: acc.display_name
+            || `${acc.institution_name || 'Bank'} ····${acc.last4 || '????'}`,
+          permissions: acc.permissions || [],
+          status: acc.status || 'active',
+          connectedAt: new Date().toISOString(),
+          connectedBy: operatorEmail,
+          lastPolledAt: null,
+          lastSyncedAt: new Date().toISOString(),
+          syncedFromStripe: true,  // marks records reconciled (not freshly OAuthed)
+        });
+        added++;
+      }
+    });
+    logger.info(`[bank-feed] syncBankConnections: customer=${customerId} stripe=${stripeAccounts.length} added=${added} updated=${updated}`);
+    return {
+      added,
+      updated,
+      total: stripeAccounts.length,
+      accounts: stripeAccounts.map(a => ({
+        id: a.id, last4: a.last4, status: a.status, institution: a.institution_name,
+      })),
+    };
+  }
+);
+
+// =========================================================================
+// ===== Bank Feed Phase 2 — transaction polling ===========================
+// Cron + on-demand puller for incoming bank transactions (rent payments,
+// wire deposits, ACH credits) from connected Stripe Financial Connections
+// accounts. Storage: /workspaces/{wsId}/bankTransactions/{txnId}.
+//
+// First connect: backfill 365 days. Subsequent polls: incremental from
+// the account's lastPolledAt watermark.
+//
+// Per-account polling cadence is configurable via
+// bankConnections[].pollIntervalHours (1, 6, 24, 168, or 0=manual-only).
+// Default 24. The bankFeedScheduledPoll cron runs hourly and only polls
+// accounts whose last poll is older than their interval.
+// =========================================================================
+
+const BANK_FEED_BACKFILL_DAYS = 365;
+
+// Stripe FC requires an explicit transaction-feature refresh before
+// `transactions.list` will return data on a freshly-connected account.
+// Without it, `list` throws `financial_connections_no_successful_transaction_refresh`.
+// Calling refresh is idempotent — Stripe coalesces concurrent requests.
+async function _ensureTransactionRefresh(stripe, fcAccountId) {
+  try {
+    const r = await stripe.financialConnections.accounts.refresh(
+      fcAccountId,
+      { features: ['transactions'] }
+    );
+    logger.info(`[bank-feed] triggered transaction refresh ${fcAccountId}: status=${r?.transaction_refresh?.status || 'unknown'}`);
+    return { ok: true, status: r?.transaction_refresh?.status || null };
+  } catch (err) {
+    logger.warn(`[bank-feed] transaction refresh ${fcAccountId} failed: ${err?.message || err}`);
+    return { ok: false, error: err?.message || String(err) };
+  }
+}
+
+// Pull every transaction Stripe FC has for an account since `sinceUnix`
+// (or all-time if sinceUnix is null). Returns the count actually written
+// to Firestore (excluding dedup hits). When `state` is supplied, the
+// matcher runs inline against each new credit transaction.
+async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, state}) {
+  const col = db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`);
+  let written = 0, skipped = 0, scanned = 0, suggested = 0;
+  let startingAfter = undefined;
+  let refreshTriggered = false;
+  for (;;) {
+    const params = {
+      account: fcAccountId,
+      limit: 100,
+      ...(startingAfter ? { starting_after: startingAfter } : {}),
+      ...(sinceUnix ? { transacted_at: { gte: sinceUnix } } : {}),
+    };
+    let page;
+    try {
+      page = await stripe.financialConnections.transactions.list(params);
+    } catch (err) {
+      // Stripe FC has not yet successfully refreshed transactions for this
+      // account — trigger refresh and bail out so the operator's UI can show
+      // a helpful "preparing" message. Next poll (cron or manual) will succeed
+      // once Stripe finishes processing (typically 1-2 min).
+      if (err?.code === 'financial_connections_no_successful_transaction_refresh'
+          || /no_successful_transaction_refresh/i.test(err?.message || '')) {
+        const r = await _ensureTransactionRefresh(stripe, fcAccountId);
+        return {
+          scanned, written, skipped, suggested,
+          transactionRefreshTriggered: true,
+          transactionRefreshStatus: r.status || 'pending',
+          notice: 'Stripe is preparing transactions for this account. Try again in 1-2 minutes.',
+        };
+      }
+      throw err;
+    }
+    scanned += page.data.length;
+    // Batched writes — Firestore caps at 500 ops per batch; we use 100.
+    const batch = db.batch();
+    for (const t of page.data) {
+      const ref = col.doc(t.id);
+      const baseDoc = {
+        id: t.id,
+        accountId: t.account,
+        amount: t.amount,                       // cents (negative=debit, positive=credit)
+        currency: t.currency,
+        description: t.description || '',
+        transactedAt: t.transacted_at || null,  // unix seconds
+        statusTransitions: t.status_transitions || null,
+        status: t.status,                       // 'pending' | 'posted' | 'void'
+        seenAt: admin.firestore.FieldValue.serverTimestamp(),
+        matchState: 'unmatched',
+        matchedTenantId: null,
+        matchedUnitId: null,
+        matchedYm: null,
+        checkImageUrl: null,
+      };
+      // Run matcher inline if state was supplied. Skip if the txn is
+      // already confirmed/dismissed (merge:true preserves those fields).
+      if (state) {
+        const m = _matchTransaction(state, baseDoc);
+        if (m) {
+          Object.assign(baseDoc, m, { matchState: 'suggested' });
+          suggested++;
+        }
+      }
+      batch.set(ref, baseDoc, { merge: true });
+      written++;
+    }
+    if (page.data.length) await batch.commit();
+    if (!page.has_more) break;
+    startingAfter = page.data[page.data.length - 1].id;
+  }
+  return { scanned, written, skipped, suggested };
+}
+
+// Update the watermark + call the matcher after a successful pull.
+// `transactionRefreshTriggered` = poll bailed out because Stripe wasn't ready
+// yet; do NOT advance lastPolledAt or backfillCompleted, otherwise next poll's
+// incremental window will skip the historical transactions Stripe is about to
+// land. `written > 0` flips backfillCompleted=true so we can switch from the
+// 365-day backfill window to incremental polling thereafter.
+async function _markAccountPolled({fcAccountId, scanned, written, transactionRefreshStatus, transactionRefreshTriggered}) {
+  const nowIso = new Date().toISOString();
+  await mutateWorkspaceState((s) => {
+    if (!Array.isArray(s.bankConnections)) return;
+    const c = s.bankConnections.find(x => x.stripeFcAccountId === fcAccountId);
+    if (!c) return;
+    if (transactionRefreshTriggered) {
+      // Stripe wasn't ready — record the attempt but do not advance the
+      // watermark, otherwise the next poll's incremental query will exclude
+      // historical transactions Stripe is about to backfill.
+      c.transactionRefreshStatus = transactionRefreshStatus || 'pending';
+      c.lastPollScanned = scanned;
+      c.lastPollWritten = written;
+      return;
+    }
+    c.lastPolledAt = nowIso;
+    c.lastPollScanned = scanned;
+    c.lastPollWritten = written;
+    if (written > 0) {
+      // We've actually pulled real data → backfill done, future polls go
+      // incremental from this lastPolledAt.
+      c.backfillCompleted = true;
+    }
+    // Poll succeeded — clear any stale "preparing" hint regardless of
+    // whether we got 0 or N transactions back.
+    delete c.transactionRefreshStatus;
+  });
+}
+
+// Manual / on-demand: pull a single account or all active accounts.
+// Operator hits "Refresh now" in Settings, or this is invoked at the
+// tail of finalizeBankConnection for the 365-day backfill.
+exports.pollBankTransactions = onCall(
+  {secrets: [STRIPE_SECRET_KEY], timeoutSeconds: 300, memory: '512MiB'},
+  async (req) => {
+    await requireEditor(req.auth);
+    const stripe = getStripe();
+    const targetFcId = req.data?.stripeFcAccountId || null;  // null = poll all
+    const isBackfill = req.data?.backfill === true;
+    const state = await readWorkspaceState();
+    const conns = (state.bankConnections || [])
+      .filter(c => c.status === 'active')
+      .filter(c => !targetFcId || c.stripeFcAccountId === targetFcId);
+    if (!conns.length) {
+      return { polled: 0, totalWritten: 0, accounts: [] };
+    }
+    const results = [];
+    for (const c of conns) {
+      // Window decision: stay in 365-day backfill mode until we've actually
+      // pulled at least one transaction (`backfillCompleted`). Otherwise an
+      // initial poll that happens before Stripe finishes its first refresh
+      // would advance lastPolledAt to "now" and the next incremental poll
+      // would query `transacted_at >= now`, missing every historical txn.
+      const since = isBackfill || !c.backfillCompleted || !c.lastPolledAt
+        ? Math.floor(Date.now() / 1000) - (BANK_FEED_BACKFILL_DAYS * 86400)
+        : Math.floor(new Date(c.lastPolledAt).getTime() / 1000);
+      try {
+        const r = await _pullTransactionsForAccount({
+          stripe,
+          fcAccountId: c.stripeFcAccountId,
+          sinceUnix: since,
+          state,                         // enables inline matching
+        });
+        await _markAccountPolled({
+          fcAccountId: c.stripeFcAccountId,
+          scanned: r.scanned,
+          written: r.written,
+          transactionRefreshStatus: r.transactionRefreshStatus,
+          transactionRefreshTriggered: r.transactionRefreshTriggered,
+        });
+        results.push({ fcAccountId: c.stripeFcAccountId, ...r, error: null });
+        logger.info(`[bank-feed] poll ${c.stripeFcAccountId}: scanned=${r.scanned} written=${r.written} backfill=${isBackfill}${r.transactionRefreshTriggered ? ' (refresh-triggered)' : ''}`);
+      } catch (err) {
+        logger.error(`[bank-feed] poll ${c.stripeFcAccountId} failed:`, err);
+        results.push({ fcAccountId: c.stripeFcAccountId, error: err.message || String(err) });
+      }
+    }
+    return {
+      polled: results.length,
+      totalWritten: results.reduce((sum, r) => sum + (r.written || 0), 0),
+      accounts: results,
+    };
+  }
+);
+
+// Hourly cron — checks each active connection's pollIntervalHours and
+// lastPolledAt and polls if due. Default interval 24h if unset.
+exports.bankFeedScheduledPoll = onSchedule(
+  {
+    schedule: '7 * * * *',           // every hour at :07 (offset from other crons)
+    timeZone: 'UTC',
+    memory: '512MiB',
+    timeoutSeconds: 540,
+    secrets: [STRIPE_SECRET_KEY],
+  },
+  async () => {
+    const state = await readWorkspaceState();
+    const conns = (state.bankConnections || []).filter(c => c.status === 'active');
+    if (!conns.length) return;
+    const now = Date.now();
+    const due = conns.filter(c => {
+      const intervalH = +c.pollIntervalHours;
+      const interval = Number.isFinite(intervalH) ? intervalH : 24;
+      if (interval === 0) return false;            // manual-only
+      if (!c.lastPolledAt) return true;            // never polled
+      const ageMs = now - new Date(c.lastPolledAt).getTime();
+      return ageMs >= interval * 3600 * 1000;
+    });
+    if (!due.length) {
+      logger.info(`[bank-feed] cron: 0/${conns.length} accounts due`);
+      return;
+    }
+    const stripe = getStripe();
+    let totalWritten = 0;
+    for (const c of due) {
+      // Same window logic as the on-demand poller: stay in 365-day backfill
+      // mode until backfillCompleted=true (set by _markAccountPolled when the
+      // first poll actually writes data).
+      const sinceUnix = (!c.backfillCompleted || !c.lastPolledAt)
+        ? Math.floor(now / 1000) - (BANK_FEED_BACKFILL_DAYS * 86400)
+        : Math.floor(new Date(c.lastPolledAt).getTime() / 1000);
+      try {
+        const r = await _pullTransactionsForAccount({
+          stripe,
+          fcAccountId: c.stripeFcAccountId,
+          sinceUnix,
+          state,                         // enables inline matching
+        });
+        await _markAccountPolled({
+          fcAccountId: c.stripeFcAccountId,
+          scanned: r.scanned,
+          written: r.written,
+          transactionRefreshStatus: r.transactionRefreshStatus,
+          transactionRefreshTriggered: r.transactionRefreshTriggered,
+        });
+        totalWritten += r.written;
+        logger.info(`[bank-feed] cron ${c.stripeFcAccountId}: scanned=${r.scanned} written=${r.written}${r.transactionRefreshTriggered ? ' (refresh-triggered)' : ''}`);
+      } catch (err) {
+        logger.error(`[bank-feed] cron ${c.stripeFcAccountId} failed:`, err);
+      }
+    }
+    logger.info(`[bank-feed] cron complete: ${due.length}/${conns.length} polled, ${totalWritten} new txns`);
+  }
+);
+
+// Update per-account polling cadence. Operator picks from Settings UI.
+exports.setBankPollInterval = onCall(
+  {timeoutSeconds: 30},
+  async (req) => {
+    await requireEditor(req.auth);
+    const fcAccountId = req.data?.stripeFcAccountId;
+    const hours = +req.data?.hours;
+    if (!fcAccountId) throw new HttpsError('invalid-argument', 'stripeFcAccountId is required');
+    const ALLOWED = [0, 1, 6, 24, 168];
+    if (!ALLOWED.includes(hours)) {
+      throw new HttpsError('invalid-argument', `hours must be one of ${ALLOWED.join(',')}`);
+    }
+    await mutateWorkspaceState((s) => {
+      if (!Array.isArray(s.bankConnections)) return;
+      const c = s.bankConnections.find(x => x.stripeFcAccountId === fcAccountId);
+      if (!c) return;
+      c.pollIntervalHours = hours;
+    });
+    return { ok: true, hours };
+  }
+);
+
+// =========================================================================
+// ===== Bank Feed Phase 3 — auto-matcher (description → tenant) ===========
+// For each incoming credit transaction, fuzzy-match the bank description
+// against tenant.company / tenant.name. Strong match → 'suggested'.
+// Operator confirms in the Bank Activity panel; confirmation creates the
+// rent payment record. Dismiss marks as not-a-rent-payment.
+// =========================================================================
+
+function _normalizeForMatch(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// ---- YM helpers (YYYY-MM strings) ----
+function _ymForDate(d) {
+  if (!d || isNaN(d)) return null;
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${m}`;
+}
+function _ymStep(ym, n) {
+  const [y, m] = ym.split('-').map(Number);
+  const total = y * 12 + (m - 1) + n;
+  return `${Math.floor(total / 12)}-${String((total % 12) + 1).padStart(2, '0')}`;
+}
+function _ymDueUnix(ym) {
+  return Math.floor(Date.UTC(+ym.slice(0, 4), +ym.slice(5, 7) - 1, 1) / 1000);
+}
+
+// Compute unpaid months for a unit between leaseStart and asOfYm.
+// Returns [{ ym, expectedCents, dueUnix }, …]. Skips months with status='paid'.
+function _unitUnpaidInvoices(u, asOfYm) {
+  const out = [];
+  if (!u.leaseStart) return out;
+  const startD = new Date(u.leaseStart);
+  const startYm = _ymForDate(startD);
+  if (!startYm || startYm > asOfYm) return out;
+  let endYm = asOfYm;
+  if (u.until) {
+    const untilYm = _ymForDate(new Date(u.until));
+    if (untilYm && untilYm < endYm) endYm = untilYm;
+  }
+  const expectedCents = Math.round(((+u.contractRent) || (+u.rent) || 0) * 100);
+  if (!expectedCents) return out;
+  let ym = startYm;
+  let guard = 0;
+  while (ym <= endYm && guard++ < 240) {     // cap 20 years for safety
+    const p = (u.payments || {})[ym];
+    if (!p || p.status !== 'paid') {
+      out.push({ ym, expectedCents, dueUnix: _ymDueUnix(ym) });
+    }
+    ym = _ymStep(ym, 1);
+  }
+  return out;
+}
+
+// Count past payments via check / bank-feed → "tenant historically pays by check".
+function _unitCheckPaymentCount(u) {
+  let n = 0;
+  for (const ym of Object.keys(u.payments || {})) {
+    const p = u.payments[ym];
+    if (!p || p.status !== 'paid') continue;
+    if (p.source === 'check' || p.source === 'bank-feed') n++;
+  }
+  return n;
+}
+
+// Walk state, build candidate pool. Skips non-head members of grouped leases
+// (operator's mental model: one group = one lease — payment goes to head).
+function _matcherCandidates(state) {
+  const asOfYm = _ymForDate(new Date()) || new Date().toISOString().slice(0, 7);
+  const out = [];
+  for (const b of state.buildings || []) {
+    for (const f of b.floors || []) {
+      for (const u of f.units || []) {
+        if (u.status !== 'occupied') continue;
+        if (u.groupId && u.groupRole !== 'primary') continue;
+        if (!u.tenant && !u.company) continue;
+        const monthlyCents = Math.round(((+u.contractRent) || (+u.rent) || 0) * 100);
+        out.push({
+          unitId: u.id,
+          buildingId: b.id,
+          floorId: f.id,
+          tenant: u.tenant || '',
+          company: u.company || '',
+          contractRent: +u.contractRent || +u.rent || 0,
+          monthlyCents,
+          unpaidInvoices: _unitUnpaidInvoices(u, asOfYm),
+          checkPayCount: _unitCheckPaymentCount(u),
+        });
+      }
+    }
+  }
+  return out;
+}
+
+// Score a single candidate against a txn using the operator's point rubric:
+//   exact unpaid-invoice amount   +50
+//   tenant/company in description +30 (token overlap +10 fallback)
+//   single-unpaid-invoice tenant  +20
+//   close-but-not-exact amount    +15  (within $20 or 2%)
+//   amount === monthly rent       +15  (only if not already exact-invoice)
+//   txn 1–7 days after due date   +15
+//   tenant pays by check (≥2)     +10
+//   ambiguity (other candidate also exact-matched)  −30  (applied later)
+//
+// Returns { points, breakdown:[[label,delta],...], exactInvoice|null,
+//           closeInvoice|null }.
+function _matchPoints(cand, txnAmountCents, txnUnix, descNorm) {
+  const breakdown = [];
+  let points = 0;
+
+  // F: name match (+30) or token-overlap fallback (+10)
+  const company = _normalizeForMatch(cand.company);
+  const tenant = _normalizeForMatch(cand.tenant);
+  if (company && descNorm.includes(company)) {
+    points += 30; breakdown.push(['nameInDesc:company', 30]);
+  } else if (tenant && tenant.length > 4 && descNorm.includes(tenant)) {
+    points += 30; breakdown.push(['nameInDesc:tenant', 30]);
+  } else {
+    const descTokens = new Set(descNorm.split(' ').filter(t => t.length > 2));
+    const candTokens = [...company.split(' '), ...tenant.split(' ')]
+      .filter(t => t.length > 2);
+    const hits = candTokens.filter(t => descTokens.has(t)).length;
+    if (hits >= 2) { points += 10; breakdown.push([`tokenOverlap:${hits}`, 10]); }
+  }
+
+  // A/I: amount vs unpaid invoices
+  let exactInvoice = null, closeInvoice = null;
+  for (const inv of cand.unpaidInvoices) {
+    if (txnAmountCents === inv.expectedCents) { exactInvoice = inv; break; }
+    const tol = Math.max(2000, Math.round(inv.expectedCents * 0.02));
+    if (!closeInvoice && Math.abs(txnAmountCents - inv.expectedCents) <= tol) {
+      closeInvoice = inv;
+    }
+  }
+  if (exactInvoice) {
+    points += 50; breakdown.push(['unpaidInvoiceExact', 50]);
+  } else if (closeInvoice) {
+    points += 15; breakdown.push(['unpaidInvoiceClose', 15]);
+  }
+
+  // E: amount === monthly rent (skip if already counted as exact-invoice)
+  if (!exactInvoice && cand.monthlyCents && txnAmountCents === cand.monthlyCents) {
+    points += 15; breakdown.push(['monthlyRentExact', 15]);
+  }
+
+  // C: due-date window 1–7 days after the matched invoice's 1st-of-month
+  const ref = exactInvoice || closeInvoice;
+  if (ref && txnUnix) {
+    const daysAfter = (txnUnix - ref.dueUnix) / 86400;
+    if (daysAfter >= 1 && daysAfter <= 7) {
+      points += 15; breakdown.push(['dueDateWindow', 15]);
+    }
+  }
+
+  // D: tenant historically pays by check / bank-feed
+  if (cand.checkPayCount >= 2) {
+    points += 10; breakdown.push(['paysByCheckHistory', 10]);
+  }
+
+  // H: tenant has exactly one unpaid invoice
+  if (cand.unpaidInvoices.length === 1) {
+    points += 20; breakdown.push(['singleUnpaidInvoice', 20]);
+  }
+
+  return { points, breakdown, exactInvoice, closeInvoice };
+}
+
+// Pick best candidate by points. Returns null below 60-point threshold.
+// Confidence buckets: ≥90 'high', 60–89 'medium', else null (unmatched).
+function _matchTransaction(state, txn) {
+  if (txn.amount <= 0) return null;       // only credits
+  const descNorm = _normalizeForMatch(txn.description);
+  const cands = _matcherCandidates(state);
+  if (!cands.length) return null;
+  const txnUnix = txn.transactedAt || null;
+
+  const scored = cands.map(c => ({
+    cand: c,
+    ..._matchPoints(c, txn.amount, txnUnix, descNorm),
+  }));
+
+  // J: ambiguity penalty — if >1 candidate exact-matched the amount, −30 each
+  // K: uniqueness bonus — if EXACTLY 1 candidate exact-matched, +20.
+  // Rationale: when only one tenant in the entire portfolio has an unpaid
+  // invoice for this exact amount, that's a strong signal even when the
+  // bank description ("Customer Deposit", "Mobile Deposit", "Paid Check")
+  // contains zero tenant text. Without this, a bare exactInvoice match
+  // scores 50 (under the 60 threshold) and the operator gets "No match"
+  // for a transaction we could have confidently routed.
+  const exactMatchers = scored.filter(s => s.exactInvoice);
+  if (exactMatchers.length > 1) {
+    for (const s of exactMatchers) {
+      s.points -= 30;
+      s.breakdown.push(['ambiguityPenalty', -30]);
+    }
+  } else if (exactMatchers.length === 1) {
+    exactMatchers[0].points += 20;
+    exactMatchers[0].breakdown.push(['uniqueAmountBonus', 20]);
+  }
+
+  let best = null;
+  for (const s of scored) {
+    if (s.points >= 60 && (!best || s.points > best.points)) best = s;
+  }
+  if (!best) return null;
+
+  const conf = best.points >= 90 ? 'high' : 'medium';
+
+  // YM: prefer matched invoice's ym (so payment lands on the actual unpaid month);
+  // else txn's ym; else current month.
+  let ym;
+  const refInv = best.exactInvoice || best.closeInvoice;
+  if (refInv) {
+    ym = refInv.ym;
+  } else if (txnUnix) {
+    ym = new Date(txnUnix * 1000).toISOString().slice(0, 7);
+  } else {
+    ym = new Date().toISOString().slice(0, 7);
+  }
+
+  return {
+    matchedTenantId: best.cand.unitId,    // tenants don't have stable ids; key by unit
+    matchedUnitId: best.cand.unitId,
+    matchedBuildingId: best.cand.buildingId,
+    matchedFloorId: best.cand.floorId,
+    matchedYm: ym,
+    matchScore: Math.min(1, Math.max(0, best.points / 100)),  // 0..1 back-compat
+    matchPoints: best.points,
+    matchConfidence: conf,                 // 'high' | 'medium'
+    // Firestore rejects nested arrays — flatten [[label,delta],...] into
+    // [{label,delta},...] so the doc writes cleanly.
+    matchBreakdown: (best.breakdown || []).map(([label, delta]) => ({ label, delta })),
+    suggestedRent: best.cand.contractRent,
+  };
+}
+
+// Re-run the matcher across all unmatched/suggested transactions.
+// Called by the operator after editing tenants (e.g. fixing a typo
+// in company name) so old transactions get a fresh chance.
+exports.runBankFeedMatcher = onCall(
+  {timeoutSeconds: 120, memory: '512MiB'},
+  async (req) => {
+    await requireEditor(req.auth);
+    const state = await readWorkspaceState();
+    const col = db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`);
+    const snap = await col
+      .where('matchState', 'in', ['unmatched', 'suggested'])
+      .get();
+    let updated = 0, suggested = 0;
+    const batch = db.batch();
+    for (const d of snap.docs) {
+      const txn = d.data();
+      const m = _matchTransaction(state, txn);
+      if (m) {
+        batch.set(d.ref, {
+          ...m,
+          matchState: 'suggested',
+          matcherRunAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+        suggested++;
+      } else if (txn.matchState === 'suggested') {
+        // Was suggested before but no longer matches anyone → revert.
+        batch.set(d.ref, {
+          matchState: 'unmatched',
+          matchedTenantId: null,
+          matchedUnitId: null,
+          matchedYm: null,
+          matchScore: null,
+          suggestedRent: null,
+        }, { merge: true });
+      }
+      updated++;
+    }
+    if (updated) await batch.commit();
+    logger.info(`[bank-feed] matcher ran: ${updated} txns reviewed, ${suggested} suggestions`);
+    return { reviewed: updated, suggested };
+  }
+);
+
+// Lightweight read for the Bank Activity panel.
+exports.listBankTransactions = onCall(
+  {timeoutSeconds: 30, memory: '256MiB'},
+  async (req) => {
+    await requireEditor(req.auth);
+    const filter = req.data?.filter || 'pending';   // 'pending' | 'all' | 'confirmed' | 'dismissed'
+    // Cap at 2000 — operator wants to see at least 12 months of activity in
+    // one shot, and a busy property's monthly volume can easily exceed 100
+    // transactions, so the original 500 cap was clipping ~half the year off
+    // the queue. Firestore's where('in') + sort-in-JS approach scales fine
+    // up to a few thousand docs (workspace's bank-txn collection is bounded).
+    const limit = Math.min(+req.data?.limit || 200, 2000);
+    const col = db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`);
+    let q = col;
+    if (filter === 'pending') {
+      q = q.where('matchState', 'in', ['unmatched', 'suggested']);
+    } else if (filter === 'confirmed') {
+      q = q.where('matchState', '==', 'confirmed');
+    } else if (filter === 'dismissed') {
+      q = q.where('matchState', '==', 'dismissed');
+    }
+    // Sort + limit in JS to avoid composite-index requirements.
+    const snap = await q.get();
+    const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    items.sort((a, b) => (b.transactedAt || 0) - (a.transactedAt || 0));
+    return { items: items.slice(0, limit) };
+  }
+);
+
+// Suggest bank transactions to attach to a specific lease/month inside the
+// "Record Manual Payment" modal. Filters server-side so the modal pulls a
+// short list of plausible matches instead of all 300+ pending rows.
+//
+// Inputs (req.data):
+//   ym                 'YYYY-MM' — the billing month the operator picked
+//   amountCents        target amount in cents (the modal's expected rent)
+//   amountTolerancePct ±N% window around amountCents (default 15)
+//   dateRangeDays      ±N days window around the billing month (default 30)
+//   accountIds         optional whitelist of bank-account ids; empty = all
+//   includeStates      ['unmatched','suggested'] by default — operator
+//                      almost never wants 'confirmed' here, but allow override
+//   limit              up to 25
+//
+// Output: { items: [...txns sorted by amount-distance then date-distance] }
+exports.listBankTransactionsForUnit = onCall(
+  {timeoutSeconds: 30, memory: '256MiB'},
+  async (req) => {
+    await requireEditor(req.auth);
+    const ym = String(req.data?.ym || '');
+    if (!/^\d{4}-\d{2}$/.test(ym)) {
+      throw new HttpsError('invalid-argument', 'ym (YYYY-MM) required');
+    }
+    const targetCents = +req.data?.amountCents || 0;
+    const tolPct = Math.max(0, Math.min(100, +req.data?.amountTolerancePct || 15));
+    const rangeDays = Math.max(1, Math.min(120, +req.data?.dateRangeDays || 30));
+    const accountIds = Array.isArray(req.data?.accountIds) ? req.data.accountIds.filter(Boolean) : [];
+    const includeStates = Array.isArray(req.data?.includeStates) && req.data.includeStates.length
+      ? req.data.includeStates : ['unmatched', 'suggested'];
+    const limit = Math.max(1, Math.min(25, +req.data?.limit || 10));
+
+    // Compute the date window: month-of-ym ± rangeDays. Anchored at the
+    // start of `ym` and the end of `ym` so a January query gets December
+    // 15 → February 14 by default (covers "rent paid early" + "paid late").
+    const monthStart = Math.floor(Date.UTC(+ym.slice(0, 4), +ym.slice(5, 7) - 1, 1) / 1000);
+    const monthEnd = Math.floor(Date.UTC(+ym.slice(0, 4), +ym.slice(5, 7), 1) / 1000) - 1;
+    const fromUnix = monthStart - rangeDays * 86400;
+    const toUnix = monthEnd + rangeDays * 86400;
+
+    const col = db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`);
+    const snap = await col
+      .where('matchState', 'in', includeStates)
+      .get();
+
+    const tolCents = targetCents > 0 ? Math.max(2000, Math.round(targetCents * tolPct / 100)) : Infinity;
+    const rows = [];
+    for (const d of snap.docs) {
+      const t = d.data();
+      // Credits only — debits can never be a rent payment.
+      if (!(+t.amount > 0)) continue;
+      // Account whitelist (when provided).
+      if (accountIds.length && !accountIds.includes(t.accountId)) continue;
+      // Date window — skip transactions with no transactedAt rather than
+      // include-and-confuse-the-operator.
+      if (!t.transactedAt || t.transactedAt < fromUnix || t.transactedAt > toUnix) continue;
+      // Amount window — skip if we have a target and this is way off.
+      if (targetCents > 0 && Math.abs(+t.amount - targetCents) > tolCents) continue;
+      rows.push({ id: d.id, ...t });
+    }
+
+    // Rank: closest amount first, then closest to the middle of the month.
+    const monthMid = (monthStart + monthEnd) / 2;
+    rows.sort((a, b) => {
+      const aAmt = targetCents > 0 ? Math.abs(+a.amount - targetCents) : 0;
+      const bAmt = targetCents > 0 ? Math.abs(+b.amount - targetCents) : 0;
+      if (aAmt !== bAmt) return aAmt - bAmt;
+      const aDt = Math.abs((a.transactedAt || 0) - monthMid);
+      const bDt = Math.abs((b.transactedAt || 0) - monthMid);
+      return aDt - bDt;
+    });
+    return { items: rows.slice(0, limit) };
+  }
+);
+
+// Operator-supplied bank statements (CSV / XLSX / OFX / QFX / QBO).
+// Used when Stripe Financial Connections + the bank only expose ~90 days
+// of history but the operator needs older months (Capital One typically
+// caps at 90d via Stripe FC). Items are written into the same
+// bankTransactions collection as Stripe-pulled rows so the matcher,
+// "Bank Activity" panel, and "Record Manual Payment" suggestions all
+// pick them up uniformly.
+//
+// Inputs (req.data):
+//   items: [{ date: 'YYYY-MM-DD', amountCents: number (negative=debit),
+//             description: string, externalId?: string }]
+//   sourceLabel: string (e.g. "Capital One CSV - 2026-05-03 12:34")
+//                — becomes accountId 'import:csv:<sourceLabel>' so
+//                  imported rows are visually distinguishable from Stripe
+//   runMatcher: bool — run inline matcher over each new credit row
+//   accountTag?: string — short label (e.g. 'Capital One …5709') for UI
+//
+// Dedup: each row gets a deterministic doc-id of
+//   imp_<first 16 hex chars of sha1(date|amountCents|description)>
+// so re-importing the same statement is a no-op (Firestore merge:true
+// replays the same id, count surfaces in `skipped`).
+exports.importBankTransactions = onCall(
+  {timeoutSeconds: 120, memory: '512MiB'},
+  async (req) => {
+    await requireEditor(req.auth);
+    const items = Array.isArray(req.data?.items) ? req.data.items : [];
+    if (!items.length) {
+      throw new HttpsError('invalid-argument', 'items[] is required');
+    }
+    if (items.length > 5000) {
+      throw new HttpsError('invalid-argument', 'max 5000 rows per import');
+    }
+    const sourceLabel = String(req.data?.sourceLabel || 'manual-import').slice(0, 120);
+    const accountTag = String(req.data?.accountTag || '').slice(0, 80);
+    const runMatcher = req.data?.runMatcher !== false;            // default true
+    const accountId = `import:${sourceLabel.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 100)}`;
+
+    const crypto = require('crypto');
+    const state = runMatcher ? await readWorkspaceState() : null;
+    const col = db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`);
+
+    // Day-clamp: any date already covered by an existing transaction (Stripe
+    // pull or earlier import) is treated as "fully accounted for" and rows
+    // for that day get dropped from this import. Operator's call: they don't
+    // want overlap with Stripe's window double-counted just because the
+    // descriptions differ. Pull the distinct date set once up front.
+    const existingDates = new Set();
+    {
+      const snap = await col.select('transactedAt').get();
+      for (const d of snap.docs) {
+        const ts = d.get('transactedAt');
+        if (!ts) continue;
+        existingDates.add(new Date(ts * 1000).toISOString().slice(0, 10));
+      }
+    }
+
+    let scanned = 0, written = 0, skipped = 0, suggested = 0, malformed = 0, clamped = 0;
+    let batch = db.batch();
+    let inBatch = 0;
+    const seenIds = new Set();   // intra-batch dedup
+
+    for (const raw of items) {
+      scanned++;
+      const date = String(raw?.date || '').trim();
+      const desc = String(raw?.description || '').trim();
+      const amt = Math.round(+raw?.amountCents);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(amt) || amt === 0) {
+        malformed++;
+        continue;
+      }
+      // Day-clamp: skip if any existing transaction (Stripe or imported)
+      // already covers this day.
+      if (existingDates.has(date)) { clamped++; continue; }
+
+      const transactedAt = Math.floor(new Date(date + 'T12:00:00Z').getTime() / 1000);
+      if (!Number.isFinite(transactedAt)) { malformed++; continue; }
+
+      const hashSrc = `${date}|${amt}|${desc.toLowerCase()}`;
+      const hash = crypto.createHash('sha1').update(hashSrc).digest('hex').slice(0, 16);
+      const docId = `imp_${hash}`;
+      if (seenIds.has(docId)) { skipped++; continue; }    // dup within file
+      seenIds.add(docId);
+
+      // Pre-check existing by id — catches the rare case where a row's day
+      // wasn't covered yet but it duplicates a previously-imported hash.
+      const existing = await col.doc(docId).get();
+      if (existing.exists) { skipped++; continue; }
+
+      const baseDoc = {
+        id: docId,
+        accountId,
+        accountTag: accountTag || null,
+        amount: amt,
+        currency: 'usd',
+        description: desc || '(imported)',
+        transactedAt,
+        statusTransitions: null,
+        status: 'posted',
+        seenAt: admin.firestore.FieldValue.serverTimestamp(),
+        importedAt: admin.firestore.FieldValue.serverTimestamp(),
+        importedBy: req.auth?.uid || null,
+        importSource: sourceLabel,
+        matchState: 'unmatched',
+        matchedTenantId: null,
+        matchedUnitId: null,
+        matchedYm: null,
+        checkImageUrl: null,
+      };
+
+      if (runMatcher && state) {
+        const m = _matchTransaction(state, baseDoc);
+        if (m) {
+          Object.assign(baseDoc, m, { matchState: 'suggested' });
+          suggested++;
+        }
+      }
+
+      batch.set(col.doc(docId), baseDoc, { merge: true });
+      written++;
+      inBatch++;
+      // Firestore caps writes at 500 per batch — flush at 400 to stay safe.
+      if (inBatch >= 400) {
+        await batch.commit();
+        batch = db.batch();
+        inBatch = 0;
+      }
+    }
+    if (inBatch > 0) await batch.commit();
+
+    logger.info(`[bank-feed] import "${sourceLabel}": scanned=${scanned} written=${written} skipped=${skipped} clamped=${clamped} suggested=${suggested} malformed=${malformed}`);
+    return { scanned, written, skipped, clamped, suggested, malformed };
+  }
+);
+
+// Confirm a suggested match (or apply an operator override). Optionally
+// records the rent payment in state.
+exports.confirmBankMatch = onCall(
+  {timeoutSeconds: 60, memory: '256MiB'},
+  async (req) => {
+    await requireEditor(req.auth);
+    const txnId = String(req.data?.txnId || '');
+    const unitId = String(req.data?.unitId || '');
+    const ym = String(req.data?.ym || '');
+    const recordPayment = req.data?.recordPayment !== false;   // default true
+    if (!txnId || !unitId || !/^\d{4}-\d{2}$/.test(ym)) {
+      throw new HttpsError('invalid-argument', 'txnId, unitId, ym (YYYY-MM) required');
+    }
+    const ref = db.doc(`workspaces/${WORKSPACE_ID}/bankTransactions/${txnId}`);
+    const snap = await ref.get();
+    if (!snap.exists) throw new HttpsError('not-found', 'transaction not found');
+    const txn = snap.data();
+    const operatorEmail = (req.auth?.token?.email || '').toLowerCase();
+
+    if (recordPayment) {
+      await mutateWorkspaceState((s) => {
+        outer: for (const b of s.buildings || []) {
+          for (const f of b.floors || []) {
+            for (const u of f.units || []) {
+              if (u.id !== unitId) continue;
+              u.payments = u.payments || {};
+              const existing = u.payments[ym] || {};
+              u.payments[ym] = {
+                ...existing,
+                status: 'paid',
+                paidAt: new Date(txn.transactedAt ? txn.transactedAt * 1000 : Date.now()).toISOString(),
+                amount: Math.abs(txn.amount) / 100,
+                source: 'bank-feed',
+                bankTxnId: txnId,
+                confirmedBy: operatorEmail,
+              };
+              break outer;
+            }
+          }
+        }
+      });
+    }
+
+    await ref.set({
+      matchState: 'confirmed',
+      matchedUnitId: unitId,
+      matchedTenantId: unitId,
+      matchedYm: ym,
+      confirmedAt: admin.firestore.FieldValue.serverTimestamp(),
+      confirmedBy: operatorEmail,
+    }, { merge: true });
+
+    logger.info(`[bank-feed] confirmed txn ${txnId} → unit ${unitId} ym ${ym} (paymentRecorded=${recordPayment})`);
+    return { ok: true };
+  }
+);
+
+// Operator marks transaction as not-a-rent-payment (refund, transfer,
+// vendor payment, etc.). It stops appearing in the pending list.
+exports.dismissBankMatch = onCall(
+  {timeoutSeconds: 30},
+  async (req) => {
+    await requireEditor(req.auth);
+    const txnId = String(req.data?.txnId || '');
+    if (!txnId) throw new HttpsError('invalid-argument', 'txnId required');
+    const ref = db.doc(`workspaces/${WORKSPACE_ID}/bankTransactions/${txnId}`);
+    const operatorEmail = (req.auth?.token?.email || '').toLowerCase();
+    await ref.set({
+      matchState: 'dismissed',
+      dismissedAt: admin.firestore.FieldValue.serverTimestamp(),
+      dismissedBy: operatorEmail,
+    }, { merge: true });
+    return { ok: true };
   }
 );
