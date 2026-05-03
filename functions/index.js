@@ -4393,15 +4393,71 @@ function _normalizeForMatch(s) {
     .trim();
 }
 
-// Walk state, return { tenantId, unitId, company, tenant, contractRent }
-// for every occupied billable unit. Used as the candidate pool for matching.
+// ---- YM helpers (YYYY-MM strings) ----
+function _ymForDate(d) {
+  if (!d || isNaN(d)) return null;
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${m}`;
+}
+function _ymStep(ym, n) {
+  const [y, m] = ym.split('-').map(Number);
+  const total = y * 12 + (m - 1) + n;
+  return `${Math.floor(total / 12)}-${String((total % 12) + 1).padStart(2, '0')}`;
+}
+function _ymDueUnix(ym) {
+  return Math.floor(Date.UTC(+ym.slice(0, 4), +ym.slice(5, 7) - 1, 1) / 1000);
+}
+
+// Compute unpaid months for a unit between leaseStart and asOfYm.
+// Returns [{ ym, expectedCents, dueUnix }, …]. Skips months with status='paid'.
+function _unitUnpaidInvoices(u, asOfYm) {
+  const out = [];
+  if (!u.leaseStart) return out;
+  const startD = new Date(u.leaseStart);
+  const startYm = _ymForDate(startD);
+  if (!startYm || startYm > asOfYm) return out;
+  let endYm = asOfYm;
+  if (u.until) {
+    const untilYm = _ymForDate(new Date(u.until));
+    if (untilYm && untilYm < endYm) endYm = untilYm;
+  }
+  const expectedCents = Math.round(((+u.contractRent) || (+u.rent) || 0) * 100);
+  if (!expectedCents) return out;
+  let ym = startYm;
+  let guard = 0;
+  while (ym <= endYm && guard++ < 240) {     // cap 20 years for safety
+    const p = (u.payments || {})[ym];
+    if (!p || p.status !== 'paid') {
+      out.push({ ym, expectedCents, dueUnix: _ymDueUnix(ym) });
+    }
+    ym = _ymStep(ym, 1);
+  }
+  return out;
+}
+
+// Count past payments via check / bank-feed → "tenant historically pays by check".
+function _unitCheckPaymentCount(u) {
+  let n = 0;
+  for (const ym of Object.keys(u.payments || {})) {
+    const p = u.payments[ym];
+    if (!p || p.status !== 'paid') continue;
+    if (p.source === 'check' || p.source === 'bank-feed') n++;
+  }
+  return n;
+}
+
+// Walk state, build candidate pool. Skips non-head members of grouped leases
+// (operator's mental model: one group = one lease — payment goes to head).
 function _matcherCandidates(state) {
+  const asOfYm = _ymForDate(new Date()) || new Date().toISOString().slice(0, 7);
   const out = [];
   for (const b of state.buildings || []) {
     for (const f of b.floors || []) {
       for (const u of f.units || []) {
         if (u.status !== 'occupied') continue;
+        if (u.groupId && u.groupRole !== 'primary') continue;
         if (!u.tenant && !u.company) continue;
+        const monthlyCents = Math.round(((+u.contractRent) || (+u.rent) || 0) * 100);
         out.push({
           unitId: u.id,
           buildingId: b.id,
@@ -4409,6 +4465,9 @@ function _matcherCandidates(state) {
           tenant: u.tenant || '',
           company: u.company || '',
           contractRent: +u.contractRent || +u.rent || 0,
+          monthlyCents,
+          unpaidInvoices: _unitUnpaidInvoices(u, asOfYm),
+          checkPayCount: _unitCheckPaymentCount(u),
         });
       }
     }
@@ -4416,50 +4475,133 @@ function _matcherCandidates(state) {
   return out;
 }
 
-// Score a description against a candidate. Returns 0..1.
-// Heuristic: exact substring of company/tenant in description = 1.0;
-// every shared token >2 chars adds 0.25, capped at 0.95.
-function _scoreMatch(descNorm, candidate) {
-  const company = _normalizeForMatch(candidate.company);
-  const tenant = _normalizeForMatch(candidate.tenant);
-  if (company && descNorm.includes(company)) return 1.0;
-  if (tenant && tenant.length > 4 && descNorm.includes(tenant)) return 0.95;
-  // Token overlap
-  const descTokens = new Set(descNorm.split(' ').filter(t => t.length > 2));
-  const candTokens = [...company.split(' '), ...tenant.split(' ')]
-    .filter(t => t.length > 2);
-  if (!candTokens.length) return 0;
-  const hits = candTokens.filter(t => descTokens.has(t)).length;
-  if (!hits) return 0;
-  return Math.min(0.95, 0.25 * hits);
-}
+// Score a single candidate against a txn using the operator's point rubric:
+//   exact unpaid-invoice amount   +50
+//   tenant/company in description +30 (token overlap +10 fallback)
+//   single-unpaid-invoice tenant  +20
+//   close-but-not-exact amount    +15  (within $20 or 2%)
+//   amount === monthly rent       +15  (only if not already exact-invoice)
+//   txn 1–7 days after due date   +15
+//   tenant pays by check (≥2)     +10
+//   ambiguity (other candidate also exact-matched)  −30  (applied later)
+//
+// Returns { points, breakdown:[[label,delta],...], exactInvoice|null,
+//           closeInvoice|null }.
+function _matchPoints(cand, txnAmountCents, txnUnix, descNorm) {
+  const breakdown = [];
+  let points = 0;
 
-// Pick best candidate. Returns null if no candidate scores >= 0.7.
-function _matchTransaction(state, txn) {
-  if (txn.amount <= 0) return null;       // only credits = incoming money
-  const descNorm = _normalizeForMatch(txn.description);
-  if (!descNorm) return null;
-  const cands = _matcherCandidates(state);
-  let best = null;
-  for (const c of cands) {
-    const score = _scoreMatch(descNorm, c);
-    if (score >= 0.7 && (!best || score > best.score)) {
-      best = { ...c, score };
+  // F: name match (+30) or token-overlap fallback (+10)
+  const company = _normalizeForMatch(cand.company);
+  const tenant = _normalizeForMatch(cand.tenant);
+  if (company && descNorm.includes(company)) {
+    points += 30; breakdown.push(['nameInDesc:company', 30]);
+  } else if (tenant && tenant.length > 4 && descNorm.includes(tenant)) {
+    points += 30; breakdown.push(['nameInDesc:tenant', 30]);
+  } else {
+    const descTokens = new Set(descNorm.split(' ').filter(t => t.length > 2));
+    const candTokens = [...company.split(' '), ...tenant.split(' ')]
+      .filter(t => t.length > 2);
+    const hits = candTokens.filter(t => descTokens.has(t)).length;
+    if (hits >= 2) { points += 10; breakdown.push([`tokenOverlap:${hits}`, 10]); }
+  }
+
+  // A/I: amount vs unpaid invoices
+  let exactInvoice = null, closeInvoice = null;
+  for (const inv of cand.unpaidInvoices) {
+    if (txnAmountCents === inv.expectedCents) { exactInvoice = inv; break; }
+    const tol = Math.max(2000, Math.round(inv.expectedCents * 0.02));
+    if (!closeInvoice && Math.abs(txnAmountCents - inv.expectedCents) <= tol) {
+      closeInvoice = inv;
     }
   }
+  if (exactInvoice) {
+    points += 50; breakdown.push(['unpaidInvoiceExact', 50]);
+  } else if (closeInvoice) {
+    points += 15; breakdown.push(['unpaidInvoiceClose', 15]);
+  }
+
+  // E: amount === monthly rent (skip if already counted as exact-invoice)
+  if (!exactInvoice && cand.monthlyCents && txnAmountCents === cand.monthlyCents) {
+    points += 15; breakdown.push(['monthlyRentExact', 15]);
+  }
+
+  // C: due-date window 1–7 days after the matched invoice's 1st-of-month
+  const ref = exactInvoice || closeInvoice;
+  if (ref && txnUnix) {
+    const daysAfter = (txnUnix - ref.dueUnix) / 86400;
+    if (daysAfter >= 1 && daysAfter <= 7) {
+      points += 15; breakdown.push(['dueDateWindow', 15]);
+    }
+  }
+
+  // D: tenant historically pays by check / bank-feed
+  if (cand.checkPayCount >= 2) {
+    points += 10; breakdown.push(['paysByCheckHistory', 10]);
+  }
+
+  // H: tenant has exactly one unpaid invoice
+  if (cand.unpaidInvoices.length === 1) {
+    points += 20; breakdown.push(['singleUnpaidInvoice', 20]);
+  }
+
+  return { points, breakdown, exactInvoice, closeInvoice };
+}
+
+// Pick best candidate by points. Returns null below 60-point threshold.
+// Confidence buckets: ≥90 'high', 60–89 'medium', else null (unmatched).
+function _matchTransaction(state, txn) {
+  if (txn.amount <= 0) return null;       // only credits
+  const descNorm = _normalizeForMatch(txn.description);
+  const cands = _matcherCandidates(state);
+  if (!cands.length) return null;
+  const txnUnix = txn.transactedAt || null;
+
+  const scored = cands.map(c => ({
+    cand: c,
+    ..._matchPoints(c, txn.amount, txnUnix, descNorm),
+  }));
+
+  // J: ambiguity penalty — if >1 candidate exact-matched the amount, −30 each
+  const exactMatchers = scored.filter(s => s.exactInvoice);
+  if (exactMatchers.length > 1) {
+    for (const s of exactMatchers) {
+      s.points -= 30;
+      s.breakdown.push(['ambiguityPenalty', -30]);
+    }
+  }
+
+  let best = null;
+  for (const s of scored) {
+    if (s.points >= 60 && (!best || s.points > best.points)) best = s;
+  }
   if (!best) return null;
-  // Suggest the YM the transaction landed in (operator can change).
-  const ym = txn.transactedAt
-    ? new Date(txn.transactedAt * 1000).toISOString().slice(0, 7)
-    : new Date().toISOString().slice(0, 7);
+
+  const conf = best.points >= 90 ? 'high' : 'medium';
+
+  // YM: prefer matched invoice's ym (so payment lands on the actual unpaid month);
+  // else txn's ym; else current month.
+  let ym;
+  const refInv = best.exactInvoice || best.closeInvoice;
+  if (refInv) {
+    ym = refInv.ym;
+  } else if (txnUnix) {
+    ym = new Date(txnUnix * 1000).toISOString().slice(0, 7);
+  } else {
+    ym = new Date().toISOString().slice(0, 7);
+  }
+
   return {
-    matchedTenantId: best.unitId,    // tenants don't have stable ids; key by unit
-    matchedUnitId: best.unitId,
-    matchedBuildingId: best.buildingId,
-    matchedFloorId: best.floorId,
+    matchedTenantId: best.cand.unitId,    // tenants don't have stable ids; key by unit
+    matchedUnitId: best.cand.unitId,
+    matchedBuildingId: best.cand.buildingId,
+    matchedFloorId: best.cand.floorId,
     matchedYm: ym,
-    matchScore: best.score,
-    suggestedRent: best.contractRent,
+    matchScore: Math.min(1, Math.max(0, best.points / 100)),  // 0..1 back-compat
+    matchPoints: best.points,
+    matchConfidence: conf,                 // 'high' | 'medium'
+    matchBreakdown: best.breakdown,        // for audit / debug surfacing
+    suggestedRent: best.cand.contractRent,
   };
 }
 

@@ -13102,6 +13102,7 @@
               </select>
               <input type="text" id="bankActivitySearch" class="ar-sel" placeholder="Search description / amount…" oninput="renderBankActivityPanel()" style="min-width:200px;">
               <div style="flex:1;"></div>
+              <button class="rr-btn ar-btn-sm" id="bankActivityConfirmHighBtn" onclick="confirmAllHighConfidence()" title="Auto-confirm every suggested match with score ≥ 90 (high confidence). Records all rent payments in one batch." style="display:none; background:var(--success); color:#fff; border-color:var(--success);">✓ Confirm all high-confidence (<span id="bankActivityHighCount">0</span>)</button>
               <button class="rr-btn ar-btn-sm" onclick="rerunBankFeedMatcher()" title="Re-run the matcher across all unmatched/suggested transactions — useful after editing tenant names.">🔄 Re-match all</button>
               <button class="rr-btn ar-btn-sm" onclick="renderBankActivityPanel({force:true})" title="Reload from server">↻ Reload</button>
             </div>
@@ -58635,8 +58636,21 @@ async function renderBankActivityPanel(opts) {
     } else if (t.matchState === 'suggested' && t.matchedUnitId) {
       const ctx = units.get(t.matchedUnitId);
       const tenant = ctx ? (ctx.u.company || ctx.u.tenant || ctx.u.id) : t.matchedUnitId;
-      const score = Math.round((t.matchScore || 0) * 100);
-      matchedCell = `<span style="color:#0ea5e9; font-weight:600;">→ ${esc(tenant)}</span><br><span style="color:var(--muted); font-size:11px;">Suite ${esc(t.matchedUnitId)} · ${esc(t.matchedYm || '')} · ${score}% confidence</span>`;
+      // Prefer the new point-based fields when present; fall back to legacy 0..1 score.
+      const points = (typeof t.matchPoints === 'number')
+        ? t.matchPoints
+        : Math.round((t.matchScore || 0) * 100);
+      const conf = t.matchConfidence
+        || (points >= 90 ? 'high' : points >= 60 ? 'medium' : 'low');
+      const badge = conf === 'high'
+        ? `<span style="background:var(--success); color:#fff; padding:1px 6px; border-radius:9px; font-size:10px; font-weight:700;">HIGH ${points}</span>`
+        : conf === 'medium'
+          ? `<span style="background:#f59e0b; color:#fff; padding:1px 6px; border-radius:9px; font-size:10px; font-weight:700;">MED ${points}</span>`
+          : `<span style="background:var(--muted); color:#fff; padding:1px 6px; border-radius:9px; font-size:10px; font-weight:700;">LOW ${points}</span>`;
+      const breakdownTitle = Array.isArray(t.matchBreakdown) && t.matchBreakdown.length
+        ? t.matchBreakdown.map(b => `${b[0]}: ${b[1] >= 0 ? '+' : ''}${b[1]}`).join('\n')
+        : 'No breakdown available';
+      matchedCell = `<span style="color:#0ea5e9; font-weight:600;">→ ${esc(tenant)}</span> <span title="${esc(breakdownTitle)}" style="cursor:help;">${badge}</span><br><span style="color:var(--muted); font-size:11px;">Suite ${esc(t.matchedUnitId)} · ${esc(t.matchedYm || '')}</span>`;
       actions = `
         <button class="rr-btn ar-btn-sm" style="background:var(--success); color:#fff; border-color:var(--success);" onclick="confirmBankMatch('${esc(t.id)}', '${esc(t.matchedUnitId)}', '${esc(t.matchedYm)}')">✓ Confirm</button>
         <button class="rr-btn ar-btn-sm" onclick="changeBankMatch('${esc(t.id)}')">✎ Change</button>
@@ -58663,6 +58677,57 @@ async function renderBankActivityPanel(opts) {
       </tr>
     `;
   }).join('');
+
+  // Update bulk "Confirm all high-confidence" button visibility/count.
+  const highBtn = document.getElementById('bankActivityConfirmHighBtn');
+  const highCountEl = document.getElementById('bankActivityHighCount');
+  if (highBtn && highCountEl) {
+    const highItems = items.filter(t => {
+      if (t.matchState !== 'suggested' || !t.matchedUnitId) return false;
+      if (t.matchConfidence === 'high') return true;
+      const pts = (typeof t.matchPoints === 'number')
+        ? t.matchPoints
+        : Math.round((t.matchScore || 0) * 100);
+      return pts >= 90;
+    });
+    highCountEl.textContent = highItems.length;
+    highBtn.style.display = highItems.length > 0 ? '' : 'none';
+  }
+}
+
+// Bulk-confirm every suggested match with confidence='high' (≥90 pts).
+// Sequentially calls confirmBankMatch on each so the workspace state mutate
+// loop stays consistent (mutateWorkspaceState runs an optimistic-locking
+// transaction per call).
+async function confirmAllHighConfidence() {
+  const items = (_bankActivityCache?.items || []).filter(t => {
+    if (t.matchState !== 'suggested' || !t.matchedUnitId || !t.matchedYm) return false;
+    if (t.matchConfidence === 'high') return true;
+    const pts = (typeof t.matchPoints === 'number')
+      ? t.matchPoints
+      : Math.round((t.matchScore || 0) * 100);
+    return pts >= 90;
+  });
+  if (!items.length) return;
+  if (!confirm(`Auto-confirm ${items.length} high-confidence match${items.length === 1 ? '' : 'es'}? Each will record a rent payment.`)) return;
+  const status = document.getElementById('bankActivityStatus');
+  const fn = stripeCallable('confirmBankMatch');
+  let ok = 0, fail = 0;
+  for (let i = 0; i < items.length; i++) {
+    const t = items[i];
+    if (status) status.innerHTML = `⏳ Confirming ${i + 1}/${items.length}…`;
+    try {
+      await fn({ txnId: t.id, unitId: t.matchedUnitId, ym: t.matchedYm, recordPayment: true });
+      ok++;
+    } catch (err) {
+      console.warn('[bank-feed] bulk confirm failed for', t.id, err);
+      fail++;
+    }
+  }
+  if (status) status.innerHTML = `✓ Confirmed ${ok}${fail ? ` · ${fail} failed` : ''}.`;
+  _bankActivityCache = null;
+  renderBankActivityPanel({ force: true });
+  if (typeof renderAll === 'function') renderAll();
 }
 
 async function rerunBankFeedMatcher() {
