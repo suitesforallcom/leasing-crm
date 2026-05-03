@@ -22,7 +22,7 @@ You are working on a business-critical website. The website generates leads and 
 - If the working tree has uncommitted changes, stop and ask the user.
 - Always work on a separate branch.
 - Never edit production directly. Production = `https://suitesforall.web.app`. Source files become production only on deploy.
-- Never deploy without explicit written approval (exact phrase: `Deploy to production.`).
+- Never deploy without explicit written approval (exact phrase: `dep`). Phrase changed from `Deploy to production.` on 2026-05-03 at operator's request — short trigger, treat case-insensitively but require it as a standalone message (not part of a longer sentence) to reduce false positives.
 - Never run destructive commands without explicit approval.
 - Never delete, rename, move, or overwrite files unless approved.
 - Never perform broad refactoring unless approved.
