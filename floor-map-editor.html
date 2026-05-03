@@ -58497,6 +58497,9 @@ function _renderBankConnections() {
     const refreshBtn = isActive
       ? `<button class="int-btn outline" ${isRefreshing ? 'disabled' : ''} style="flex:0 0 auto; padding:4px 10px; font-size:11px; opacity:${isRefreshing ? '0.6' : '1'};" onclick="refreshBankAccountNow('${fcId}')" title="Pull new transactions from Stripe right now (incremental since last poll).">${isRefreshing ? '⏳ Pulling…' : '↻ Refresh now'}</button>`
       : '';
+    const diagnoseBtn = isActive
+      ? `<button class="int-btn outline" style="flex:0 0 auto; padding:4px 10px; font-size:11px;" onclick="diagnoseBankAccountNow('${fcId}')" title="Show Stripe's live view of this account: permissions, transaction-refresh status, and a sample of what list returns.">🔍 Diagnose</button>`
+      : '';
     const disconnectBtn = isActive
       ? `<button class="int-btn outline" ${isRefreshing ? 'disabled' : ''} style="flex:0 0 auto; padding:4px 10px; font-size:11px; opacity:${isRefreshing ? '0.6' : '1'};" onclick="disconnectBankAccount('${fcId}')">Disconnect</button>`
       : '';
@@ -58549,10 +58552,11 @@ function _renderBankConnections() {
           ${disconnectBtn}${reconnectBtn}${removeBtn}
         </div>
         ${isActive ? `
-          <div style="display:flex; align-items:center; gap:8px; padding-left:28px; font-size:11px; color:var(--muted);">
+          <div style="display:flex; align-items:center; gap:8px; padding-left:28px; font-size:11px; color:var(--muted); flex-wrap:wrap;">
             <span>Poll cadence:</span>
             ${intervalSel}
             ${refreshBtn}
+            ${diagnoseBtn}
           </div>
         ` : ''}
         ${prepNote}
@@ -58574,6 +58578,74 @@ async function removeBankConnection(fcAccountId, label) {
   } catch (err) {
     setIntStatus('bankFeed', 'error', `⚠ ${esc(err?.message || String(err))}`);
   }
+}
+
+async function diagnoseBankAccountNow(fcAccountId) {
+  if (!fcAccountId) return;
+  setIntStatus('bankFeed', 'info', '🔍 Querying Stripe…');
+  try {
+    const fn = stripeCallable('diagnoseBankAccount');
+    const { data } = await fn({ stripeFcAccountId: fcAccountId });
+    setIntStatus('bankFeed', 'success', '✓ Diagnosis complete.');
+    _showBankDiagnosisModal(data);
+  } catch (err) {
+    setIntStatus('bankFeed', 'error', `⚠ ${esc(err?.message || String(err))}`);
+  }
+}
+
+function _showBankDiagnosisModal(d) {
+  const txnRefresh = d.transaction_refresh || {};
+  const lastAttempt = txnRefresh.last_attempted_at
+    ? new Date(txnRefresh.last_attempted_at * 1000).toLocaleString()
+    : '—';
+  const nextAvail = txnRefresh.next_refresh_available_at
+    ? new Date(txnRefresh.next_refresh_available_at * 1000).toLocaleString()
+    : '—';
+  const verdict = (() => {
+    if (d.status !== 'active') return { color: 'var(--danger)', text: `❌ Account status is "${d.status}" — Stripe considers this disconnected.` };
+    if (!d.hasTransactionsPermission) return { color: 'var(--danger)', text: '❌ Missing "transactions" permission — re-link the account and grant transaction access during Stripe FC consent.' };
+    if (!d.listSample?.ok) return { color: 'var(--danger)', text: `❌ list call failed: ${d.listSample?.error || 'unknown'}` };
+    if (txnRefresh.status === 'pending') return { color: '#a16207', text: '⏳ Stripe is still preparing transactions. This can take a few minutes after first connect, longer for large accounts. Wait + Refresh again.' };
+    if (txnRefresh.status === 'failed') return { color: 'var(--danger)', text: `❌ Stripe transaction refresh failed: ${(txnRefresh.last_attempted_error?.message) || 'unknown reason'}` };
+    if (d.listSample.count === 0 && txnRefresh.status === 'succeeded') return { color: '#a16207', text: '⚠ Refresh succeeded but Stripe returned 0 transactions. Likely the bank has not yet shared transaction history with Stripe (initial sync can take hours). Wait and Refresh again.' };
+    if (d.listSample.count > 0) return { color: 'var(--success)', text: `✓ Stripe returned ${d.listSample.count} sample transactions — listing works. Click Refresh now to load them.` };
+    return { color: 'var(--muted)', text: 'No clear verdict — see raw response below.' };
+  })();
+  const sampleHtml = (d.listSample?.sample || []).map(t => `
+    <li style="font-size:11px; padding:4px 0;">
+      <strong>${(t.amount/100).toFixed(2)}</strong> · ${esc(t.description || '(no description)')} ·
+      <span style="color:var(--muted);">${t.transacted_at ? new Date(t.transacted_at*1000).toLocaleDateString() : '—'}</span>
+    </li>
+  `).join('');
+  const html = `
+    <div style="position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:99999; display:flex; align-items:center; justify-content:center;" onclick="if(event.target===this) this.remove()">
+      <div style="background:var(--surface); border-radius:10px; padding:20px; max-width:600px; width:90%; max-height:85vh; overflow-y:auto;">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;">
+          <h3 style="margin:0; font-size:14px;">🔍 Stripe FC Diagnosis · ${esc(d.institution || '?')} ····${esc(d.last4 || '????')}</h3>
+          <button onclick="this.closest('[style*=fixed]').remove()" style="border:none; background:transparent; font-size:18px; cursor:pointer;">×</button>
+        </div>
+        <div style="background:rgba(99,91,255,0.08); padding:10px 12px; border-radius:6px; color:${verdict.color}; font-weight:600; font-size:12px; margin-bottom:14px;">
+          ${esc(verdict.text)}
+        </div>
+        <table style="width:100%; font-size:11.5px; border-collapse:collapse;">
+          <tr><td style="padding:4px 0; color:var(--muted); width:42%;">Account ID</td><td style="font-family:monospace;">${esc(d.id)}</td></tr>
+          <tr><td style="padding:4px 0; color:var(--muted);">Category / Subcategory</td><td>${esc(d.category)} / ${esc(d.subcategory || '—')}</td></tr>
+          <tr><td style="padding:4px 0; color:var(--muted);">Stripe status</td><td><strong>${esc(d.status)}</strong></td></tr>
+          <tr><td style="padding:4px 0; color:var(--muted);">Permissions granted</td><td>${(d.permissions || []).map(p => `<code style="padding:1px 5px; background:rgba(99,91,255,0.10); border-radius:3px; margin-right:3px; font-size:10.5px;">${esc(p)}</code>`).join('') || '<em>none</em>'}</td></tr>
+          <tr><td style="padding:4px 0; color:var(--muted);">Has "transactions"?</td><td><strong style="color:${d.hasTransactionsPermission ? 'var(--success)' : 'var(--danger)'};">${d.hasTransactionsPermission ? 'YES' : 'NO'}</strong></td></tr>
+          <tr><td style="padding:4px 0; color:var(--muted);">Transaction refresh status</td><td><strong>${esc(txnRefresh.status || '—')}</strong></td></tr>
+          <tr><td style="padding:4px 0; color:var(--muted);">Last refresh attempt</td><td>${esc(lastAttempt)}</td></tr>
+          <tr><td style="padding:4px 0; color:var(--muted);">Next refresh available</td><td>${esc(nextAvail)}</td></tr>
+          <tr><td style="padding:4px 0; color:var(--muted);">Latest refresh trigger</td><td><strong>${esc(d.latestRefreshTrigger?.transaction_refresh?.status || d.latestRefreshTrigger?.error || '—')}</strong></td></tr>
+          <tr><td style="padding:4px 0; color:var(--muted);">List sample</td><td>${d.listSample?.ok ? `${d.listSample.count} txns returned` : `<span style="color:var(--danger);">${esc(d.listSample?.error || 'failed')}</span>`}</td></tr>
+        </table>
+        ${sampleHtml ? `<div style="margin-top:12px;"><strong style="font-size:11px; color:var(--muted);">Sample transactions:</strong><ul style="margin:6px 0 0; padding-left:18px;">${sampleHtml}</ul></div>` : ''}
+      </div>
+    </div>
+  `;
+  const wrap = document.createElement('div');
+  wrap.innerHTML = html;
+  document.body.appendChild(wrap.firstElementChild);
 }
 
 async function setBankPollIntervalUI(fcAccountId, hoursStr) {

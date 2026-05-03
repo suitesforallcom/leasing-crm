@@ -4152,6 +4152,72 @@ exports.removeBankConnection = onCall(
   }
 );
 
+// Diagnostic: pull the live Stripe FC account state for a connection so the
+// operator can see why transactions aren't arriving (permissions missing,
+// refresh stuck, account inactive, etc.) without needing the Stripe Dashboard.
+exports.diagnoseBankAccount = onCall(
+  {secrets: [STRIPE_SECRET_KEY], timeoutSeconds: 30},
+  async (req) => {
+    await requireEditor(req.auth);
+    const fcAccountId = req.data?.stripeFcAccountId;
+    if (!fcAccountId) {
+      throw new HttpsError('invalid-argument', 'stripeFcAccountId is required');
+    }
+    const stripe = getStripe();
+    let acc = null;
+    try {
+      acc = await stripe.financialConnections.accounts.retrieve(fcAccountId);
+    } catch (err) {
+      throw new HttpsError('not-found', `Stripe could not retrieve ${fcAccountId}: ${err.message || err}`);
+    }
+    // Trigger a fresh refresh + capture its returned status.
+    let refreshResult = null;
+    try {
+      refreshResult = await stripe.financialConnections.accounts.refresh(
+        fcAccountId,
+        { features: ['transactions'] }
+      );
+    } catch (err) {
+      refreshResult = { error: err.message || String(err), code: err.code || null };
+    }
+    // Quick try at listing 1 transaction to see if list now works.
+    let listSample = null;
+    try {
+      const page = await stripe.financialConnections.transactions.list({
+        account: fcAccountId,
+        limit: 5,
+      });
+      listSample = {
+        ok: true,
+        count: page.data.length,
+        sample: page.data.slice(0, 2).map(t => ({
+          id: t.id, amount: t.amount, description: t.description,
+          transacted_at: t.transacted_at, status: t.status,
+        })),
+      };
+    } catch (err) {
+      listSample = { ok: false, error: err.message || String(err), code: err.code || null };
+    }
+    const summary = {
+      id: acc.id,
+      institution: acc.institution_name,
+      last4: acc.last4,
+      category: acc.category,
+      subcategory: acc.subcategory,
+      status: acc.status,
+      permissions: acc.permissions || [],
+      hasTransactionsPermission: (acc.permissions || []).includes('transactions'),
+      transaction_refresh: acc.transaction_refresh || null,
+      balance_refresh: acc.balance_refresh || null,
+      ownership_refresh: acc.ownership_refresh || null,
+      latestRefreshTrigger: refreshResult,
+      listSample,
+    };
+    logger.info(`[bank-feed] diagnoseBankAccount ${fcAccountId}: perms=${summary.permissions.join(',')} txnRefresh=${JSON.stringify(summary.transaction_refresh)} listOk=${listSample.ok} listCount=${listSample.count || 0}`);
+    return summary;
+  }
+);
+
 // Reconcile state.bankConnections against Stripe's authoritative list of
 // FC accounts attached to our operator Customer. Catches "ghost" accounts
 // linked in Stripe but missing from our state (e.g. from earlier sessions
@@ -4357,8 +4423,10 @@ async function _markAccountPolled({fcAccountId, scanned, written, transactionRef
     c.lastPollWritten = written;
     if (transactionRefreshStatus) {
       c.transactionRefreshStatus = transactionRefreshStatus;
-    } else if (written > 0) {
-      // First successful real pull — clear any stale "pending" state.
+    } else {
+      // Poll succeeded (no `transactionRefreshTriggered` flag) — Stripe is
+      // past the "preparing" stage. Clear any stale pending hint regardless
+      // of whether we got 0 or N transactions back.
       delete c.transactionRefreshStatus;
     }
   });
