@@ -19617,6 +19617,68 @@ function loadState() {
       }
       localStorage.setItem(ADD_SVC_SEED_MIGRATION_KEY, '1');
     }
+    // Leasing-model seed: создаёт state.settings.leasingModel[buildingId]
+    // дефолтами + проставляет f.leaseType на каждый этаж. Auto-detect
+    // 'full-floor' если хоть одна группа покрывает >=95% leasable-sqft
+    // этажа (это уже подразумевалось wholeFloorFlat-флагом forecast'а
+    // из коммита f8889ad — здесь делаем то же на уровне настроек этажа,
+    // чтобы Шаги 2-7 могли opt-in переключать его в UI). Мигрирует
+    // одноразово (флаг sfa_leasing_model_v1) и persist'ит в saveState.
+    const LEASING_MODEL_KEY = 'sfa_leasing_model_v1';
+    if (!localStorage.getItem(LEASING_MODEL_KEY)) {
+      try {
+        state.settings = state.settings || {};
+        state.settings.leasingModel = state.settings.leasingModel || {};
+        let seeded = 0, floorsTagged = 0, fullFloorDetected = 0;
+        for (const b of (state.buildings || [])) {
+          if (!state.settings.leasingModel[b.id]) {
+            state.settings.leasingModel[b.id] = (typeof _makeDefaultLeasingModel === 'function')
+              ? _makeDefaultLeasingModel()
+              : {
+                  strategy: 'sequential-bottom-up', customOrder: [],
+                  velocity: { mode: 'auto', targetMonths: 18, manualSqftPerMo: 0, manualAvgLeaseSize: 0 },
+                  defaults: { leaseTermMonths: 12, annualEscalationPct: 3, downtimeMonths: 1 },
+                  floorOverrides: {},
+                };
+            seeded++;
+          }
+          for (const f of (b.floors || [])) {
+            if (f.leaseType) continue;
+            // Авто-детект 'full-floor': если на этаже есть группа,
+            // покрывающая >=95% leasable-sqft, считаем floor full-floor.
+            // Иначе по умолчанию multi-suite (модель индивидуальных
+            // офисов — основная для SuitesForAll).
+            let detected = 'multi-suite';
+            try {
+              const leasable = (f.units || []).filter(u =>
+                u.rentable !== false && (!u.type || u.type === 'office'));
+              const totalSqft = leasable.reduce((s, u) => s + (+u.sqft || 0), 0);
+              if (totalSqft > 0) {
+                const groupSqft = new Map();
+                for (const u of leasable) {
+                  if (!u.groupId) continue;
+                  groupSqft.set(u.groupId, (groupSqft.get(u.groupId) || 0) + (+u.sqft || 0));
+                }
+                for (const gSqft of groupSqft.values()) {
+                  if (gSqft / totalSqft >= 0.95) {
+                    detected = 'full-floor';
+                    fullFloorDetected++;
+                    break;
+                  }
+                }
+              }
+            } catch {}
+            f.leaseType = detected;
+            floorsTagged++;
+          }
+        }
+        if (seeded > 0 || floorsTagged > 0) {
+          console.log(`[leasing-model seed] Seeded ${seeded} building model(s), tagged ${floorsTagged} floor(s) (${fullFloorDetected} auto-detected as full-floor)`);
+          setTimeout(() => { try { if (typeof saveState === 'function') saveState(); } catch {} }, 0);
+        }
+        localStorage.setItem(LEASING_MODEL_KEY, '1');
+      } catch (e) { console.warn('[leasing-model seed] failed:', e); }
+    }
     // Lease-head consolidation: for every multi-suite group, move ALL
     // financial state (combined rent, payments, deposit, late-fee config,
     // Stripe invoices) onto the head member (groupRole='primary'). Non-head
@@ -25012,6 +25074,161 @@ function _renderForecastFloorSummary() {
     try { _buildForecastFloorPicker(); } catch {}
   }
 }
+
+// =====================================================================
+// LEASING MODEL — операторская политика «как сдаётся это здание/этаж».
+// Шаг 1 из 7: schema + миграция + чистые helpers. Forecast их пока
+// не вызывает (поведение чисел не меняется); это фундамент для UI
+// (Шаг 2) и реального fill-engine (Шаги 3-4).
+//
+// Типы этажа (floor.leaseType):
+//   'multi-suite' — много отдельных suite разным тенантам, downtime
+//                   между лизами применяется, скорость заполнения =
+//                   velocity_sqft_per_mo.
+//   'full-floor'  — весь этаж (или >=95% sqft) одному анкору,
+//                   downtime не применяется, эскалация 3%/yr срабатывает
+//                   автоматически (см. wholeFloorFlat в forecast).
+// =====================================================================
+const LEASE_TYPE_MULTI_SUITE = 'multi-suite';
+const LEASE_TYPE_FULL_FLOOR  = 'full-floor';
+const LEASE_TYPES            = [LEASE_TYPE_MULTI_SUITE, LEASE_TYPE_FULL_FLOOR];
+const FILL_STRATEGIES = [
+  'sequential-bottom-up',
+  'sequential-top-down',
+  'sequential-custom',
+  'distributed',
+];
+const VELOCITY_MODES = ['auto', 'target-months', 'manual'];
+
+// Фабрика дефолтов. buildingId сохраняется снаружи (как ключ карты),
+// внутри объекта не дублируем — иначе рискуем рассинхроном при
+// переименованиях здания.
+function _makeDefaultLeasingModel() {
+  return {
+    strategy: 'sequential-bottom-up',
+    customOrder: [],            // массив floorId — для strategy='sequential-custom'
+    velocity: {
+      mode: 'auto',             // 'auto' | 'target-months' | 'manual'
+      targetMonths: 18,         // используется при mode='target-months'
+      manualSqftPerMo: 0,       // mode='manual'
+      manualAvgLeaseSize: 0,    // mode='manual', sqft на один новый лиз
+    },
+    defaults: {
+      leaseTermMonths: 12,
+      annualEscalationPct: 3,
+      downtimeMonths: 1,        // только для leaseType='multi-suite'
+    },
+    floorOverrides: {},         // { [floorId]: { state: 'hold' | 'priority' } }
+  };
+}
+
+// Достаёт модель для здания + защитный merge с дефолтами, чтобы
+// call-site'у не приходилось null-чекать каждое вложенное поле.
+function _getLeasingModel(buildingId) {
+  const root = (state && state.settings && state.settings.leasingModel) || {};
+  const stored = root[buildingId];
+  const def = _makeDefaultLeasingModel();
+  if (!stored || typeof stored !== 'object') return def;
+  return {
+    strategy: FILL_STRATEGIES.includes(stored.strategy) ? stored.strategy : def.strategy,
+    customOrder: Array.isArray(stored.customOrder) ? stored.customOrder.slice() : [],
+    velocity: {
+      mode: VELOCITY_MODES.includes(stored.velocity && stored.velocity.mode)
+        ? stored.velocity.mode : def.velocity.mode,
+      targetMonths: +(stored.velocity && stored.velocity.targetMonths) || def.velocity.targetMonths,
+      manualSqftPerMo: +(stored.velocity && stored.velocity.manualSqftPerMo) || 0,
+      manualAvgLeaseSize: +(stored.velocity && stored.velocity.manualAvgLeaseSize) || 0,
+    },
+    defaults: {
+      leaseTermMonths: +(stored.defaults && stored.defaults.leaseTermMonths) || def.defaults.leaseTermMonths,
+      annualEscalationPct: +(stored.defaults && stored.defaults.annualEscalationPct) || def.defaults.annualEscalationPct,
+      downtimeMonths: +(stored.defaults && stored.defaults.downtimeMonths) || 0,
+    },
+    floorOverrides: (stored.floorOverrides && typeof stored.floorOverrides === 'object')
+      ? stored.floorOverrides : {},
+  };
+}
+
+// Резолвит velocity модели в конкретные {sqftPerMo, avgLeaseSize, source}.
+// history = { avgSqftPerMo, avgLeaseSizeSqft } — то, что forecast уже
+// считает по последним 3-м месяцам (мы передадим эти числа из
+// _computeRevenueForecast в Шаге 4). scope = { totalVacantSqft }.
+function _resolveVelocity(model, scope, history) {
+  const v = (model && model.velocity) || {};
+  const h = history || {};
+  if (v.mode === 'manual') {
+    return {
+      sqftPerMo: +v.manualSqftPerMo || 0,
+      avgLeaseSize: +v.manualAvgLeaseSize || 0,
+      source: 'manual',
+    };
+  }
+  if (v.mode === 'target-months') {
+    const months = Math.max(1, +v.targetMonths || 18);
+    const totalVacant = +(scope && scope.totalVacantSqft) || 0;
+    return {
+      sqftPerMo: totalVacant / months,
+      avgLeaseSize: +h.avgLeaseSizeSqft || 1500,
+      source: 'target-months',
+    };
+  }
+  // 'auto' — производное из истории
+  return {
+    sqftPerMo: +h.avgSqftPerMo || 0,
+    avgLeaseSize: +h.avgLeaseSizeSqft || 0,
+    source: 'auto',
+  };
+}
+
+// Строит упорядоченный список этажей, в порядке которого velocity
+// должна заполнять. floors = [{id, number, name, leaseType, ...}].
+// 'hold' этажи исключаются полностью; 'priority' выходят в начало,
+// сохраняя bottom-up порядок внутри priority-bakета.
+function _buildFillQueue(model, floors) {
+  const overrides = (model && model.floorOverrides) || {};
+  const _state = (id) => (overrides[id] && overrides[id].state) || 'active';
+  const eligible = (floors || []).filter(f => _state(f.id) !== 'hold');
+  const priority = eligible.filter(f => _state(f.id) === 'priority');
+  const rest     = eligible.filter(f => _state(f.id) !== 'priority');
+  const strategy = (model && model.strategy) || 'sequential-bottom-up';
+  if (strategy === 'sequential-top-down') {
+    rest.sort((a, b) => (b.number || 0) - (a.number || 0));
+  } else if (strategy === 'sequential-custom') {
+    const order = Array.isArray(model.customOrder) ? model.customOrder : [];
+    const idx = new Map(order.map((id, i) => [id, i]));
+    rest.sort((a, b) => {
+      const ia = idx.has(a.id) ? idx.get(a.id) : 1e9;
+      const ib = idx.has(b.id) ? idx.get(b.id) : 1e9;
+      if (ia !== ib) return ia - ib;
+      return (a.number || 0) - (b.number || 0);
+    });
+  } else {
+    // 'sequential-bottom-up' (default) и 'distributed' оба сортируем
+    // по номеру; 'distributed' просто потом обработает очередь как
+    // один пул в Шаге 4 forecast'а (sortировка всё равно даёт
+    // детерминированный порядок для UI).
+    rest.sort((a, b) => (a.number || 0) - (b.number || 0));
+  }
+  // priority всегда bottom-up между собой
+  priority.sort((a, b) => (a.number || 0) - (b.number || 0));
+  return [...priority, ...rest];
+}
+
+// Console-debugging хук. Шаги 4-7 будут вызывать helpers напрямую;
+// этот namespace удобен для проверки в DevTools без перерасчёта
+// всего forecast'а.
+//   > _leasingModel.get('bldg_xxx')
+//   > _leasingModel.queue(_leasingModel.get(id), state.buildings[0].floors)
+window._leasingModel = {
+  get: _getLeasingModel,
+  velocity: _resolveVelocity,
+  queue: _buildFillQueue,
+  default: _makeDefaultLeasingModel,
+  TYPE_MULTI_SUITE: LEASE_TYPE_MULTI_SUITE,
+  TYPE_FULL_FLOOR:  LEASE_TYPE_FULL_FLOOR,
+  STRATEGIES: FILL_STRATEGIES,
+  VELOCITY_MODES,
+};
 
 function _computeRevenueForecast(nonRenewalPct, floorFilter) {
   const rate = Math.max(0, Math.min(100, +nonRenewalPct || 0)) / 100;
