@@ -22,7 +22,7 @@ You are working on a business-critical website. The website generates leads and 
 - If the working tree has uncommitted changes, stop and ask the user.
 - Always work on a separate branch.
 - Never edit production directly. Production = `https://suitesforall.web.app`. Source files become production only on deploy.
-- Never deploy without explicit written approval (exact phrase: `dep`). Phrase changed from `Deploy to production.` on 2026-05-03 at operator's request — short trigger, treat case-insensitively but require it as a standalone message (not part of a longer sentence) to reduce false positives.
+- **Auto-deploy mode (set 2026-05-03 at operator's request — option A: «сразу запускать Development не жди меня не запрашивай каждый раз»).** No per-deploy approval phrase required. After every commit on the active feature branch — once parse-check (`new Function(scriptText)` on every inline `<script>` block) passes and the commit is created — run `firebase deploy --only hosting` immediately, without asking. Always render the deploy command in a fenced ```bash code block (Section 13) so the operator sees what fired, and include the resulting Hosting URL in the Final Report. Prior policy required the explicit `dep` phrase (originally `Deploy to production.`); that gate is removed for routine deploys but the safety rules below still apply: destructive ops, schema migrations, dependency changes, auth/payment logic, and CI/CD config still require explicit approval before commit, regardless of auto-deploy.
 - Never run destructive commands without explicit approval.
 - Never delete, rename, move, or overwrite files unless approved.
 - Never perform broad refactoring unless approved.
@@ -102,8 +102,7 @@ Ask for approval before:
 - changing forms or CRM integration
 - changing SEO structure
 - adding new dependencies
-- changing hosting/deployment configuration
-- deploying to production
+- changing hosting/deployment configuration (firebase.json, channels, target sites)
 - making large visual redesigns
 - removing old code that may still be used
 - broad refactoring
