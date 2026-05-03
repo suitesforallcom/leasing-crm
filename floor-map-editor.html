@@ -41387,12 +41387,12 @@ function renderDetail() {
           const lt = _f.leaseType || 'multi-suite';
           const _name = esc(_f.name || `Floor ${_f.number || '?'}`);
           return `
-            <div class="field" title="Тип лизинга всего этажа: multi-suite — индивидуальные офисы; full-floor — один большой arendатор на (почти) весь этаж. Влияет на Revenue Forecast (full-floor получает annual escalation, multi-suite — downtime между лизами).">
+            <div class="field" title="Lease type for the whole floor: Multi-tenant — individual offices leased separately; Single tenant — one anchor tenant on (almost) the entire floor. Affects Revenue Forecast (single-tenant gets annual escalation, multi-tenant gets downtime between leases).">
               <label>Floor lease type <span style="color:var(--muted); font-weight:400;">(${_name})</span></label>
               <select id="fFloorLeaseType" ${ro}
                       onchange="${editOn ? `_saveFloorLeaseType('${esc(_f.id)}', this.value)` : ''}">
-                <option value="multi-suite" ${lt === 'multi-suite' ? 'selected' : ''}>Multi-suite (individual offices)</option>
-                <option value="full-floor"  ${lt === 'full-floor'  ? 'selected' : ''}>Full-floor (one anchor tenant)</option>
+                <option value="multi-suite" ${lt === 'multi-suite' ? 'selected' : ''}>Multi-tenant (offices)</option>
+                <option value="full-floor"  ${lt === 'full-floor'  ? 'selected' : ''}>Single tenant (whole floor)</option>
               </select>
             </div>
           `;
@@ -67647,7 +67647,7 @@ function renderLeasingModelPanel() {
                  onchange="_saveLmVelocity('mode','auto')" style="margin-top:2px;">
           <div style="flex:1;">
             <div style="font-size: 12.5px; font-weight: 600;">Auto (from history)</div>
-            <div style="font-size: 11px; color: var(--muted); margin-top: 2px;">Производное из последних 3 месяцев — sqft/мес и средний размер лиза.</div>
+            <div style="font-size: 11px; color: var(--muted); margin-top: 2px;">Derived from the last 3 months — sqft / month and average lease size.</div>
           </div>
         </label>
 
@@ -67656,7 +67656,7 @@ function renderLeasingModelPanel() {
                  onchange="_saveLmVelocity('mode','target-months')" style="margin-top:2px;">
           <div style="flex:1;">
             <div style="font-size: 12.5px; font-weight: 600;">Target months to fill</div>
-            <div style="font-size: 11px; color: var(--muted); margin-top: 2px;">За сколько месяцев заполнить весь vacant inventory. По умолчанию 18.</div>
+            <div style="font-size: 11px; color: var(--muted); margin-top: 2px;">Months to fully absorb all vacant inventory. Default 18.</div>
             ${v.mode === 'target-months' ? `
               <div style="margin-top: 6px; display: flex; align-items: center; gap: 6px;">
                 <input type="number" min="1" step="1" value="${+v.targetMonths || 18}"
@@ -67673,7 +67673,7 @@ function renderLeasingModelPanel() {
                  onchange="_saveLmVelocity('mode','manual')" style="margin-top:2px;">
           <div style="flex:1;">
             <div style="font-size: 12.5px; font-weight: 600;">Manual</div>
-            <div style="font-size: 11px; color: var(--muted); margin-top: 2px;">Жёстко зафиксировать sqft/мес и средний размер лиза.</div>
+            <div style="font-size: 11px; color: var(--muted); margin-top: 2px;">Hard-code sqft / month and average lease size.</div>
             ${v.mode === 'manual' ? `
               <div style="margin-top: 6px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
                 <div>
@@ -67708,21 +67708,21 @@ function renderLeasingModelPanel() {
           <input type="number" min="1" step="1" value="${+d.leaseTermMonths || 12}"
                  onchange="_saveLmDefault('leaseTermMonths', this.value)"
                  class="rr-select" style="width:100%; padding: 6px 8px; font-size: 12px; text-align: right;"
-                 title="Стандартный срок нового лиза (месяцы)">
+                 title="Standard new-lease term (months)">
           <div style="font-size: 10.5px; color: var(--muted); margin-top: 2px;">Lease term (months)</div>
         </div>
         <div>
           <input type="number" min="0" max="100" step="0.1" value="${+d.annualEscalationPct || 3}"
                  onchange="_saveLmDefault('annualEscalationPct', this.value)"
                  class="rr-select" style="width:100%; padding: 6px 8px; font-size: 12px; text-align: right;"
-                 title="Ежегодный rent bump (типично 2-4%/год для CRE)">
+                 title="Annual rent bump (typically 2–4% / year for CRE)">
           <div style="font-size: 10.5px; color: var(--muted); margin-top: 2px;">Annual escalation (%)</div>
         </div>
         <div>
           <input type="number" min="0" step="1" value="${+d.downtimeMonths || 0}"
                  onchange="_saveLmDefault('downtimeMonths', this.value)"
                  class="rr-select" style="width:100%; padding: 6px 8px; font-size: 12px; text-align: right;"
-                 title="Downtime между лизами в multi-suite этажах. Для full-floor и коворкингов игнорируется.">
+                 title="Downtime between leases on multi-tenant floors. Ignored for single-tenant (whole-floor) and coworking.">
           <div style="font-size: 10.5px; color: var(--muted); margin-top: 2px;">Downtime (months)</div>
         </div>
       </div>
@@ -67751,7 +67751,7 @@ function renderLeasingModelPanel() {
     return `
       <div data-floor-id="${esc(f.id)}" ${dragAttrs}
            style="display:grid; grid-template-columns: 18px 28px 1fr auto auto; gap:8px; align-items:center; padding:8px 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 4px; cursor: ${cursor}; user-select: none; ${held ? 'opacity: 0.55;' : ''}">
-        <span style="color: var(--muted); font-size: 14px; text-align: center;" title="${held ? 'Этаж в Hold — вне очереди' : 'Перетащи строку, чтобы изменить порядок'}">${handle}</span>
+        <span style="color: var(--muted); font-size: 14px; text-align: center;" title="${held ? 'Floor on hold — out of fill queue' : 'Drag the row to reorder'}">${handle}</span>
         <span style="color: var(--muted); font-size: 12px; text-align: right;">${held ? '—' : (i + 1) + '.'}</span>
         <span style="font-weight: 600; font-size: 12.5px;">
           <span style="color: var(--muted); font-weight: 400; font-size: 11.5px;">#${f.number || '?'}</span>
@@ -67760,14 +67760,14 @@ function renderLeasingModelPanel() {
         </span>
         <select class="rr-select"
                 onchange="_saveFloorLeaseType('${esc(f.id)}', this.value)"
-                title="Тип аренды этого этажа.&#10;Multi-suite — каждый офис сдаётся отдельно.&#10;Full-floor — весь этаж одному арендатору (anchor)."
-                style="padding: 3px 6px; font-size: 11.5px; width: 130px;">
-          <option value="multi-suite" ${lt === 'multi-suite' ? 'selected' : ''}>Multi-suite</option>
-          <option value="full-floor"  ${lt === 'full-floor'  ? 'selected' : ''}>Full-floor</option>
+                title="Lease type for this floor.&#10;Multi-tenant (offices) — each office leased separately.&#10;Single tenant (whole floor) — entire floor to one anchor tenant."
+                style="padding: 3px 6px; font-size: 11.5px; width: 190px;">
+          <option value="multi-suite" ${lt === 'multi-suite' ? 'selected' : ''}>Multi-tenant (offices)</option>
+          <option value="full-floor"  ${lt === 'full-floor'  ? 'selected' : ''}>Single tenant (whole floor)</option>
         </select>
         <button class="rr-btn ${held ? 'primary' : ''}"
                 onclick="_toggleFloorHold('${esc(f.id)}')"
-                title="${held ? 'Click to put floor back into the fill queue' : 'Hold = исключить из forecast (стройка, реновация и т.п.)'}"
+                title="${held ? 'Click to put floor back into the fill queue' : 'Hold = exclude from forecast (construction, renovation, etc.)'}"
                 style="padding: 4px 10px; font-size: 11.5px;">${held ? '↩ Resume' : 'Hold'}</button>
       </div>
     `;
@@ -67780,7 +67780,7 @@ function renderLeasingModelPanel() {
     <div>
       <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); font-weight: 600; margin-bottom: 6px;">Fill order</div>
       <div style="font-size: 11px; color: var(--muted); margin-bottom: 8px; line-height: 1.5;">
-        Порядок, в котором forecast будет заполнять vacant-площади. Самый верхний — первым. Перетащи строку за ⋮⋮ слева, чтобы изменить порядок. Справа выбери тип аренды этажа (Multi-suite или Full-floor). Кнопка Hold выводит этаж из очереди (стройка, реновация и т.п.).
+        Order in which the forecast fills vacant space — top row goes first. Drag a row by the ⋮⋮ handle on the left to reorder. Pick the lease type on the right (Multi-tenant or Single tenant). Hold takes a floor out of the queue (construction, renovation, etc.).
       </div>
       <div id="lmFillOrder">
         ${queueRowsHTML}
@@ -67796,7 +67796,7 @@ function renderLeasingModelPanel() {
     <div class="panel-title">Leasing Model</div>
     <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
       <div style="font-size: 11.5px; color: var(--muted); margin-bottom: 12px; line-height: 1.5;">
-        Эти настройки управляют тем, как Revenue Forecast предсказывает заполнение vacant-площадей. Меняй их, если у здания специфический leasing pattern (например, 18 месяцев на full lease-up или особый порядок этажей).
+        These settings control how Revenue Forecast predicts vacant-space absorption. Adjust them if the building has a specific leasing pattern (e.g. 18 months to full lease-up or a non-default floor order).
       </div>
       ${velHTML}
       ${defHTML}
