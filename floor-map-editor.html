@@ -41457,12 +41457,30 @@ function _renderUnitV2Header(u, editOn) {
   } else if (_rentState === 'open') {
     pillLabel = 'Due';                pillCls = 'upv2-pill-due';
   } else if (_rentState === 'paid') {
-    // Append the current-month abbreviation so the pill reads "Paid · Apr"
-    // instead of a flat "Paid". Lets the operator see at a glance which
-    // billing period was actually paid (the rent state always refers to
-    // the *current* calendar month — that's what _unitRentCurrentStatus
-    // checks — so we use today's month name).
-    const _paidMonth = new Date().toLocaleDateString('en-US', { month: 'short' });
+    // Find the LATEST month that actually has a paid/free record in
+    // u.payments. Older code assumed `_rentState === 'paid'` always
+    // meant the current month was paid, but _unitRentCurrentStatus
+    // also returns 'paid' for the "deposit paid, awaiting next rent
+    // invoice" fallback — labelling that case "Paid · {currentMonth}"
+    // misled operators into thinking the current month was settled.
+    // Using the actual last-paid month makes the pill truthful in both
+    // the genuine-current-paid case AND the awaiting-next-invoice case.
+    const _now = new Date();
+    const _curYm = `${_now.getFullYear()}-${String(_now.getMonth()+1).padStart(2,'0')}`;
+    const _payments = (typeof _unitLeaseHead === 'function' ? _unitLeaseHead(u) : u)?.payments || {};
+    let _paidYm = null;
+    if (_payments[_curYm]?.status === 'paid' || _payments[_curYm]?.status === 'free') {
+      _paidYm = _curYm;
+    } else {
+      const _paidKeys = Object.keys(_payments)
+        .filter(k => k !== 'deposit' && /^\d{4}-\d{2}$/.test(k) &&
+                     (_payments[k]?.status === 'paid' || _payments[k]?.status === 'free'))
+        .sort();
+      _paidYm = _paidKeys[_paidKeys.length - 1] || null;
+    }
+    const _paidMonth = _paidYm
+      ? new Date(_paidYm + '-01T00:00:00').toLocaleDateString('en-US', { month: 'short' })
+      : _now.toLocaleDateString('en-US', { month: 'short' });
     pillLabel = `Paid · ${_paidMonth}`;
     pillCls   = 'upv2-pill-paid';
   } else if (status === 'reserved') {
