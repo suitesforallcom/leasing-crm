@@ -1595,6 +1595,45 @@
   .stacking-view .sv-title-floors { font-style: italic; color: #1a3a5c; }
   .stacking-view .sv-meta { font-size: 13px; color: #6b655b; margin-top: 6px; }
 
+  /* Occupancy KPI strip — sits directly under the address meta line so the
+     "what's leased / what's free" answer reads at a glance, before the
+     operator scans the floor stack. Two pills + a thin progress bar. */
+  .stacking-view .sv-occ {
+    display: flex; align-items: center; gap: 14px;
+    margin-top: 10px; flex-wrap: wrap;
+  }
+  .stacking-view .sv-occ-bar {
+    position: relative; height: 8px; width: 220px; max-width: 100%;
+    background: #efeadf; border-radius: 4px; overflow: hidden;
+    box-shadow: inset 0 1px 2px rgba(40,30,20,0.05);
+  }
+  .stacking-view .sv-occ-bar-fill {
+    position: absolute; top: 0; left: 0; bottom: 0;
+    background: linear-gradient(90deg, #1a3a5c, #2c5a8a);
+    border-radius: 4px;
+  }
+  .stacking-view .sv-occ-stat {
+    display: inline-flex; align-items: baseline; gap: 5px;
+    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px; color: #4b443c;
+  }
+  .stacking-view .sv-occ-stat .sv-occ-num {
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-size: 18px; font-weight: 400; line-height: 1; color: #1a1815;
+  }
+  .stacking-view .sv-occ-stat .sv-occ-pct {
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-size: 14px; font-style: italic; color: #6b655b;
+  }
+  .stacking-view .sv-occ-stat.is-leased .sv-occ-num { color: #1a3a5c; }
+  .stacking-view .sv-occ-stat.is-vacant .sv-occ-num { color: #6b655b; }
+  .stacking-view .sv-occ-dot {
+    width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+    margin-right: 2px; vertical-align: 1px;
+  }
+  .stacking-view .sv-occ-dot.is-leased { background: #1a3a5c; }
+  .stacking-view .sv-occ-dot.is-vacant { background: #c7bfae; }
+
   .stacking-view .sv-header-right { display: flex; gap: 8px; align-items: center; }
   .stacking-view .sv-bldg-switcher {
     display: flex; flex-wrap: wrap;               /* extra buildings wrap to a second row */
@@ -29607,12 +29646,22 @@ function _renderStackingHeader(b) {
   const host = document.getElementById('svHeader'); if (!host) return;
   const floorCount = (b.floors || []).length;
   const buildings = (state.buildings || []).filter(x => (typeof canAccessBuilding === 'function') ? canAccessBuilding(x.id) : true);
-  let totalSqft = 0;
+  // Walk every office unit once; partition into leased / vacant by status.
+  // Uses the same _stIsOffice predicate the chart filters with so the
+  // header numbers exactly match what's drawn below — no chance of the
+  // KPI saying "85% leased" while the chart shows a different ratio.
+  let totalSqft = 0, leasedSqft = 0;
   for (const f of (b.floors || [])) {
     for (const u of (f.units || [])) {
-      if (!isArchived(u) && u.rentable !== false && u.type === 'office') totalSqft += +u.sqft || 0;
+      if (!_stIsOffice(u)) continue;
+      const sf = +u.sqft || 0;
+      totalSqft += sf;
+      if (u.status === 'occupied') leasedSqft += sf;
     }
   }
+  const vacantSqft = Math.max(0, totalSqft - leasedSqft);
+  const leasedPct  = totalSqft ? Math.round(leasedSqft / totalSqft * 100) : 0;
+  const vacantPct  = totalSqft ? 100 - leasedPct : 0;
   const yearBuilt = b.yearBuilt || b.year || '';
   // Meta line keeps the FULL address so operator still sees city/zip for
   // context; the hero title and switcher use the short version.
@@ -29621,6 +29670,14 @@ function _renderStackingHeader(b) {
     yearBuilt ? `Built ${yearBuilt}` : '',
     totalSqft ? `${totalSqft.toLocaleString()} sqft leasable` : '',
   ].filter(Boolean).join(' · ');
+  // Occupancy strip — only renders when there's leasable area to report.
+  const occHtml = totalSqft ? `
+    <div class="sv-occ" title="Leased ${leasedSqft.toLocaleString()} ft² of ${totalSqft.toLocaleString()} ft² total">
+      <div class="sv-occ-bar"><div class="sv-occ-bar-fill" style="width:${leasedPct}%"></div></div>
+      <span class="sv-occ-stat is-leased"><span class="sv-occ-dot is-leased"></span><span class="sv-occ-num">${leasedSqft.toLocaleString()}</span> ft² leased <span class="sv-occ-pct">${leasedPct}%</span></span>
+      <span class="sv-occ-stat is-vacant"><span class="sv-occ-dot is-vacant"></span><span class="sv-occ-num">${vacantSqft.toLocaleString()}</span> ft² vacant <span class="sv-occ-pct">${vacantPct}%</span></span>
+    </div>
+  ` : '';
   host.innerHTML = `
     <div>
       <div class="sv-kicker">Stacking view</div>
@@ -29629,6 +29686,7 @@ function _renderStackingHeader(b) {
         <span class="sv-title-sep">·</span><span class="sv-title-floors">${floorCount} floor${floorCount === 1 ? '' : 's'}</span>
       </h1>
       <div class="sv-meta">${esc(meta || '—')}</div>
+      ${occHtml}
     </div>
     <div class="sv-header-right">
       <div class="sv-bldg-switcher">
