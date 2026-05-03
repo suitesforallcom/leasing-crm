@@ -25040,10 +25040,23 @@ function _computeRevenueForecast(nonRenewalPct, floorFilter) {
   // wildly mis-modelled the renewal cliff distribution.
   const allActive = [];
   let currentMRR = 0;
+  // Свободная ёмкость в выбранном scope: сумма asking-rent по всем
+  // вакантным office-юнитам, которые ФИЗИЧЕСКИ можно сдать. Используется
+  // ниже как cap на проекцию новых аренд — нельзя нагенерить больше
+  // нового дохода, чем есть свободных метров. Без этого 100%-занятый
+  // 1-й этаж всё равно «росший» от месяца к месяцу за счёт скорости из
+  // последних 6 мес, хотя сдавать там физически нечего. Используем
+  // _stRentableUnits(f), чтобы не задвоить метраж от sub-room'ов
+  // (тот же fix, что в Building Summary).
+  let vacantCapacity = 0;
+  const _vacantInScope = (typeof _stRentableUnits === 'function')
+    ? (f) => _stRentableUnits(f).filter(u => u.status !== 'occupied')
+    : null;
   for (const b of (state.buildings || [])) {
     if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
     for (const f of (b.floors || [])) {
       if (!_floorOk(b.id, f.id)) continue;
+      // Шаг 1: занятые юниты — копим в allActive + currentMRR.
       for (const u of (f.units || [])) {
         if (u.rentable === false || (u.type && u.type !== 'office')) continue;
         if (u.status !== 'occupied' || (!u.tenant && !u.company)) continue;
@@ -25053,8 +25066,8 @@ function _computeRevenueForecast(nonRenewalPct, floorFilter) {
         const endStr   = u.until || u.leaseEnd || '';
         const startMs  = startStr ? new Date(startStr + 'T00:00:00').getTime() : null;
         const endMs    = endStr   ? new Date(endStr   + 'T00:00:00').getTime() : null;
-        // Resolve term in months. Priority: u.leaseTerm dropdown value
-        // (validated UI input) → derived from end-start dates → default 12.
+        // Срок аренды в месяцах. Приоритет: u.leaseTerm (валидированный
+        // ввод из дропдауна) → вычислен из дат end-start → по умолчанию 12.
         let term = 12;
         const tRaw = String(u.leaseTerm || '').trim().toLowerCase();
         if (tRaw === 'mtm' || tRaw === 'm2m') term = 0;
@@ -25064,6 +25077,24 @@ function _computeRevenueForecast(nonRenewalPct, floorFilter) {
         }
         currentMRR += rent;
         allActive.push({ startMs, endMs, rent, term });
+      }
+      // Шаг 2: свободная ёмкость от вакантных юнитов того же этажа.
+      // Берём asking-rent (proforma): contractRent если задан, иначе rent.
+      // Юниты, которые _stRentableUnits отфильтрует как «sub-room под
+      // видимым родителем», не учитываем — иначе задвоим площадь.
+      if (_vacantInScope) {
+        for (const u of _vacantInScope(f)) {
+          const ask = +u.contractRent || +u.rent || 0;
+          if (ask > 0) vacantCapacity += ask;
+        }
+      } else {
+        // Фолбэк, если хелпер недоступен: грубый подсчёт без дедупа.
+        for (const u of (f.units || [])) {
+          if (u.rentable === false || (u.type && u.type !== 'office')) continue;
+          if (u.status === 'occupied') continue;
+          const ask = +u.contractRent || +u.rent || 0;
+          if (ask > 0) vacantCapacity += ask;
+        }
       }
     }
   }
@@ -25284,11 +25315,19 @@ function _computeRevenueForecast(nonRenewalPct, floorFilter) {
     });
   }
 
+  // Динамическая ёмкость: стартует с вакантных метров и пополняется,
+  // когда аренды слетают (renewal-non-renewal или collections). Cap для
+  // прогнозных новых аренд — нельзя добавить больше дохода, чем есть
+  // свободной площади. Это устраняет фантомный рост на 100%-занятых
+  // этажах, где скорость велосити прошлых месяцев не имеет смысла
+  // экстраполировать вперёд (физически некуда).
+  let availableCapacity = vacantCapacity;
+
   for (let i = 0; i < 12; i++) {
     const mStart = new Date(today.getFullYear(), today.getMonth() + i, 1);
     const mEnd   = new Date(today.getFullYear(), today.getMonth() + i + 1, 0);
 
-    // Snapshot revenue BEFORE this month's renewals/attrition apply.
+    // Снапшот выручки ДО ренью / оттока этого месяца.
     let beforeAlive = 0;
     for (const l of ledger) beforeAlive += l.rent * l.alive;
 
@@ -25341,18 +25380,33 @@ function _computeRevenueForecast(nonRenewalPct, floorFilter) {
       ? Math.max(0, afterAlive - realNewThisMonthRent)
       : afterAlive;
 
-    // New rent — real data for current month (i=0), forecast for future.
-    // Forecast = last-3mo flat baseline. Slope is computed but not
-    // applied (see comment near baseRevPerMonth).
-    const newRent  = (i === 0) ? realNewThisMonthRent  : baseRevPerMonth;
-    const newCount = (i === 0) ? realNewThisMonthCount : avgNewPerMonth;
+    // Освободившиеся метры от лизов, которые не продлились или ушли в
+    // collections, возвращают ёмкость в пул — теперь эту площадь снова
+    // можно сдать. Делаем ДО расчёта newRent, чтобы потерянные в этом
+    // же месяце метры могли быть тут же «перезаняты» новой арендой.
+    availableCapacity += lostThisMonth;
 
-    // Add forecasted new leases as cohorts in the ledger, split across
-    // the observed term distribution. Each split sub-cohort tracks its
-    // own renewal schedule. For i=0 we DON'T add a synthetic cohort —
-    // the real April leases are already in the existing ledger
-    // (counted in currentMRR / realNewThisMonth). Adding again would
-    // double-count.
+    // Новые аренды: для текущего месяца (i=0) — реальные данные, для
+    // будущих — base velocity ИЗ последних 3-х мес, но НЕ БОЛЬШЕ, чем
+    // есть свободной ёмкости. Это и есть фикс: на 100%-занятом scope
+    // (1-й этаж в скриншоте оператора) availableCapacity = 0, поэтому
+    // velocity клампится в 0 и прогноз остаётся плоским — как и должно
+    // быть, физически новых тенантов туда поселить некуда.
+    const projected = (i === 0) ? realNewThisMonthRent : baseRevPerMonth;
+    const newRent   = (i === 0) ? projected : Math.min(projected, Math.max(0, availableCapacity));
+    const newCount  = (i === 0) ? realNewThisMonthCount
+                                 : (projected > 0 ? avgNewPerMonth * (newRent / projected) : 0);
+
+    // Списываем занятую ёмкость. Текущий месяц (i=0) тоже учитываем,
+    // т.к. реально въехавшие тенанты уже занимают метры — иначе
+    // следующий месяц решит, что капасити ещё свободна.
+    availableCapacity = Math.max(0, availableCapacity - newRent);
+
+    // Добавляем спрогнозированные новые аренды как когорты в ledger,
+    // распределённые по term distribution. Каждая суб-когорта ведёт
+    // собственный график ренью. Для i=0 синтетическую когорту НЕ
+    // добавляем — реальные апрельские лизы уже в ledger из allActive
+    // (учтены в currentMRR / realNewThisMonth). Добавление задвоило бы.
     if (i > 0 && newRent > 0) {
       for (const td of termDistribution) {
         ledger.push({
