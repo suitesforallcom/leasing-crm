@@ -4873,7 +4873,12 @@ exports.listBankTransactions = onCall(
   async (req) => {
     await requireEditor(req.auth);
     const filter = req.data?.filter || 'pending';   // 'pending' | 'all' | 'confirmed' | 'dismissed'
-    const limit = Math.min(+req.data?.limit || 200, 500);
+    // Cap at 2000 — operator wants to see at least 12 months of activity in
+    // one shot, and a busy property's monthly volume can easily exceed 100
+    // transactions, so the original 500 cap was clipping ~half the year off
+    // the queue. Firestore's where('in') + sort-in-JS approach scales fine
+    // up to a few thousand docs (workspace's bank-txn collection is bounded).
+    const limit = Math.min(+req.data?.limit || 200, 2000);
     const col = db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`);
     let q = col;
     if (filter === 'pending') {

@@ -58939,7 +58939,11 @@ async function renderBankActivityPanel(opts) {
     tbody.innerHTML = '<tr><td colspan="5" style="padding:20px; text-align:center; color:var(--muted);">Loading…</td></tr>';
     try {
       const fn = stripeCallable('listBankTransactions');
-      const { data } = await fn({ filter, limit: 300 });
+      // Pull up to 2000 — covers ~12 months of activity even on a busy
+      // property. The previous 300 cap was hiding everything older than the
+      // first ~3 months on the queue and the operator couldn't reach
+      // historical bank credits (e.g. December rent payments) from the UI.
+      const { data } = await fn({ filter, limit: 2000 });
       _bankActivityCache = { filter, items: data?.items || [] };
       _bankActivityLastLoad = Date.now();
     } catch (err) {
