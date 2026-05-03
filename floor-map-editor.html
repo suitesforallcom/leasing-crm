@@ -8904,6 +8904,30 @@
   .mpm-bf-use-btn.mpm-bf-use-btn-selected {
     background: transparent; color: var(--success); border-color: var(--success);
   }
+  /* Collapsed mode — when one suggestion has been picked, hide the
+     other rows so the modal stays compact. The expand toggle is the
+     only way to reveal them again. */
+  .mpm-bf-card.mpm-bf-card-collapsed .mpm-bf-row:not(.mpm-bf-row-selected) {
+    display: none;
+  }
+  .mpm-bf-card.mpm-bf-card-collapsed.mpm-bf-card-expanded .mpm-bf-row {
+    display: flex;
+  }
+  .mpm-bf-toggle {
+    display: none; align-items: center; justify-content: center; gap: 4px;
+    width: 100%; margin-top: 4px;
+    padding: 4px 8px;
+    background: transparent; color: var(--muted);
+    border: 1px dashed var(--border); border-radius: 6px;
+    cursor: pointer; font: 600 11.5px system-ui;
+    transition: background .12s, color .12s, border-color .12s;
+  }
+  .mpm-bf-toggle:hover {
+    background: rgba(14,165,233,0.06);
+    color: var(--accent);
+    border-color: rgba(14,165,233,0.40);
+  }
+  .mpm-bf-card.mpm-bf-card-collapsed .mpm-bf-toggle { display: flex; }
   .mpm-bf-foot {
     margin-top: 8px; padding-top: 8px;
     border-top: 1px solid rgba(14,165,233,0.20);
@@ -81600,13 +81624,18 @@ async function _mpmRenderBankSuggestions(u, ym) {
       </div>`;
   }).join('');
 
+  const hasSel = !!(_mpmCtx?.linkedBankTxn);
+  const otherCount = Math.max(0, items.length - (hasSel ? 1 : 0));
   card.innerHTML = `
-    <div class="mpm-bf-card">
+    <div class="mpm-bf-card ${hasSel ? 'mpm-bf-card-collapsed' : ''}" id="mpmBankFeedInner">
       <div class="mpm-bf-head">
         <span>🏦 Bank feed suggestions for ${esc(_fmtMonthName(ym))}</span>
         <span class="mpm-bf-acct">${accountLabel}</span>
       </div>
       <div class="mpm-bf-rows">${rows}</div>
+      <button type="button" class="mpm-bf-toggle" id="mpmBankFeedToggle" onclick="_mpmToggleBankFeedExpand()">
+        <span class="mpm-bf-toggle-text">Show ${otherCount} other match${otherCount === 1 ? '' : 'es'} ▾</span>
+      </button>
       ${tenantName ? `<div class="mpm-bf-foot"><a href="javascript:void(0)" onclick="_mpmOpenBankActivityForTenant('${esc(tenantName)}')">→ View all bank activity for ${esc(tenantName)}</a></div>` : ''}
     </div>`;
 
@@ -81675,7 +81704,9 @@ function _mpmUseBankTxn(txnId) {
 function _mpmPaintBankRowSelection(selectedTxnId) {
   const card = document.getElementById('mpmBankFeedCard');
   if (!card) return;
+  let totalRows = 0;
   card.querySelectorAll('[data-bf-row]').forEach(row => {
+    totalRows += 1;
     const isSel = row.getAttribute('data-bf-row') === selectedTxnId;
     row.classList.toggle('mpm-bf-row-selected', isSel);
   });
@@ -81684,6 +81715,35 @@ function _mpmPaintBankRowSelection(selectedTxnId) {
     btn.classList.toggle('mpm-bf-use-btn-selected', isSel);
     btn.textContent = isSel ? '✓ Selected' : '✓ Use this';
   });
+  // Collapse: when a selection is active, hide the other rows. Always
+  // reset the "expanded" state so a fresh selection starts collapsed.
+  const inner = document.getElementById('mpmBankFeedInner');
+  if (inner) {
+    const hasSel = !!selectedTxnId;
+    inner.classList.toggle('mpm-bf-card-collapsed', hasSel);
+    inner.classList.remove('mpm-bf-card-expanded');
+    const toggleTxt = inner.querySelector('.mpm-bf-toggle-text');
+    if (toggleTxt) {
+      const otherCount = Math.max(0, totalRows - (hasSel ? 1 : 0));
+      toggleTxt.textContent = `Show ${otherCount} other match${otherCount === 1 ? '' : 'es'} ▾`;
+    }
+  }
+}
+
+// Expand/collapse the "other matches" list inside the bank-feed card.
+function _mpmToggleBankFeedExpand() {
+  const inner = document.getElementById('mpmBankFeedInner');
+  if (!inner) return;
+  const expanded = inner.classList.toggle('mpm-bf-card-expanded');
+  const toggleTxt = inner.querySelector('.mpm-bf-toggle-text');
+  if (!toggleTxt) return;
+  if (expanded) {
+    toggleTxt.textContent = 'Hide other matches ▴';
+  } else {
+    const total = inner.querySelectorAll('[data-bf-row]').length;
+    const otherCount = Math.max(0, total - 1);
+    toggleTxt.textContent = `Show ${otherCount} other match${otherCount === 1 ? '' : 'es'} ▾`;
+  }
 }
 
 // Remove the bank-txn link without clearing form fields — operator may
