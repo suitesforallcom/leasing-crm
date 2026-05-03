@@ -8792,6 +8792,93 @@
   }
   .mpm-inv-link:hover { text-decoration: underline; }
 
+  /* Bank-feed suggestions card — sits below the invoice card. Surfaces
+     credits from connected bank accounts that match this lease/month so
+     the operator can apply with one click instead of typing manually. */
+  .mpm-bf-card {
+    background: rgba(14,165,233,0.05);
+    border: 1px solid rgba(14,165,233,0.30);
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin: 4px 0 14px;
+  }
+  .mpm-bf-card-empty {
+    background: var(--surface-2);
+    border: 1px dashed var(--border);
+  }
+  .mpm-bf-card-loading { opacity: 0.85; }
+  .mpm-bf-card-error {
+    background: rgba(220,38,38,0.06);
+    border: 1px solid rgba(220,38,38,0.30);
+  }
+  .mpm-bf-head {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 10px;
+    font: 600 12.5px system-ui; color: var(--text);
+    padding-bottom: 8px;
+  }
+  .mpm-bf-card:not(.mpm-bf-card-empty):not(.mpm-bf-card-loading):not(.mpm-bf-card-error) .mpm-bf-head {
+    border-bottom: 1px solid rgba(14,165,233,0.20);
+    margin-bottom: 8px;
+  }
+  .mpm-bf-acct, .mpm-bf-spinner {
+    font: 500 11px system-ui; color: var(--muted);
+  }
+  .mpm-bf-rows { display: flex; flex-direction: column; gap: 6px; }
+  .mpm-bf-row {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 10px;
+    padding: 6px 8px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .mpm-bf-row-main { flex: 1; min-width: 0; }
+  .mpm-bf-row-amt {
+    font: 700 13px system-ui; color: var(--text);
+    font-variant-numeric: tabular-nums;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .mpm-bf-row-meta {
+    font-size: 11.5px; color: var(--muted);
+    margin-top: 2px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .mpm-bf-exact {
+    font: 700 9.5px system-ui; letter-spacing: 0.05em;
+    background: rgba(16,185,129,0.18); color: #047857;
+    padding: 1px 5px; border-radius: 3px;
+  }
+  .mpm-bf-close {
+    font: 700 9.5px system-ui; letter-spacing: 0.05em;
+    background: rgba(245,158,11,0.18); color: #b45309;
+    padding: 1px 5px; border-radius: 3px;
+  }
+  .mpm-bf-state-suggested {
+    font: 600 10px system-ui; color: #0284c7;
+    margin-left: 4px;
+  }
+  .mpm-bf-use-btn {
+    flex: 0 0 auto;
+    background: var(--success); color: #fff; border-color: var(--success);
+  }
+  .mpm-bf-foot {
+    margin-top: 8px; padding-top: 8px;
+    border-top: 1px solid rgba(14,165,233,0.20);
+    font-size: 11.5px;
+  }
+  .mpm-bf-foot a, .mpm-bf-empty-sub a {
+    color: var(--accent); text-decoration: none; font-weight: 600;
+  }
+  .mpm-bf-foot a:hover, .mpm-bf-empty-sub a:hover { text-decoration: underline; }
+  .mpm-bf-empty-sub {
+    font-size: 11.5px; color: var(--muted); line-height: 1.5;
+  }
+  .mpm-bf-error {
+    font-size: 11.5px; color: #b91c1c; line-height: 1.5;
+    margin-top: 4px;
+  }
+
   /* Inline copy button — used next to email / phone / text fields.
      Ghost chrome until hover so it doesn't compete with the input. */
   .field-with-copy { display: flex; gap: 6px; align-items: stretch; }
@@ -17381,6 +17468,15 @@
          hosted-URL link. Hidden when no matching invoice is found. -->
     <div id="mpmInvoiceCard"></div>
 
+    <!-- Bank-feed suggestions — populated by _mpmRenderBankSuggestions().
+         When the operator has connected ≥1 bank account via Stripe
+         Financial Connections, we surface incoming credits that match
+         this lease's expected amount/month so they can apply the actual
+         bank transaction with one click instead of retyping check #,
+         amount, and date by hand. Hidden when no matches are found
+         (or no bank is connected). -->
+    <div id="mpmBankFeedCard"></div>
+
     <div class="stripe-modal-row">
       <div class="label"><b>Method</b></div>
       <select id="mpmMethod" onchange="_mpmOnMethodChange()" style="padding:6px 8px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); min-width:180px;">
@@ -17441,7 +17537,12 @@
         <b>Reference #</b>
         <div class="hint">Check #, ACH/wire confirmation, receipt #</div>
       </div>
-      <input id="mpmReference" type="text" placeholder="e.g. 1425" style="padding:6px 8px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); width:200px;">
+      <div style="display:flex; flex-direction:column; gap:4px;">
+        <input id="mpmReference" type="text" placeholder="e.g. 1425" style="padding:6px 8px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); width:200px;">
+        <!-- "Linked to bank txn" pill — shown when operator picked a
+             suggested transaction. Clicking × unlinks it (manual entry mode). -->
+        <div id="mpmLinkedBankPill" style="display:none;"></div>
+      </div>
     </div>
 
     <div class="stripe-modal-row" id="mpmAmountRow" style="align-items: flex-start;">
@@ -80479,7 +80580,221 @@ async function submitSendLease() {
 // the row-level menu. Stores method, reference, memo, and an optional
 // receipt image on u.payments[ym].
 // =========================================================================
-let _mpmCtx = null;   // { buildingId, floorId, unitId, ym }
+let _mpmCtx = null;   // { buildingId, floorId, unitId, ym, linkedBankTxn? }
+
+// In-flight token used to discard stale bank-suggestion fetches when
+// the operator changes the billing month rapidly.
+let _mpmBankFetchSeq = 0;
+
+// Tiny per-(unitId,ym) cache so reopening the same modal twice doesn't
+// re-hit the CF. Keyed by `${unitId}|${ym}|${accountIds}`. 30s TTL.
+const _mpmBankCache = new Map();
+function _mpmBankCacheKey(unitId, ym, accountIds) {
+  return `${unitId}|${ym}|${(accountIds || []).slice().sort().join(',')}`;
+}
+
+// Map a bank description to the closest payment method. Operator can
+// always override after auto-fill — this is just a sane default.
+function _mpmGuessMethodFromDesc(desc) {
+  const d = String(desc || '').toLowerCase();
+  if (d.includes('check')) return 'check';
+  if (d.includes('wire'))  return 'wire';
+  if (d.includes('ach') || d.includes('transfer') || d.includes('zelle')
+      || d.includes('venmo') || d.includes('deposit')) return 'ach';
+  if (d.includes('stripe')) return 'stripe';
+  return 'other';
+}
+
+// Pull bank suggestions from CF and render them inside the modal. Called
+// on modal open + every billing-month change. Idempotent.
+async function _mpmRenderBankSuggestions(u, ym) {
+  const card = document.getElementById('mpmBankFeedCard');
+  if (!card) return;
+  // Hide entirely when no bank connection exists — the section would
+  // just be dead UI. Also hide on waiver months (zero-dollar by def).
+  const conns = (state.bankConnections || []).filter(c => c.status === 'active');
+  if (!conns.length) { card.innerHTML = ''; return; }
+  if (document.getElementById('mpmMethod')?.value === 'waived') { card.innerHTML = ''; return; }
+  if (typeof stripeCallable !== 'function') { card.innerHTML = ''; return; }
+
+  const targetCents = Math.round(((+u.contractRent) || (+u.rent) || 0) * 100);
+  const accountIds = []; // empty = all connected accounts (multi-acct dropdown later)
+  const cacheKey = _mpmBankCacheKey(u.id, ym, accountIds);
+  const cached = _mpmBankCache.get(cacheKey);
+  const fresh = cached && (Date.now() - cached.at < 30000);
+  // Loading skeleton
+  if (!fresh) {
+    card.innerHTML = `
+      <div class="mpm-bf-card mpm-bf-card-loading">
+        <div class="mpm-bf-head">
+          <span>🏦 Bank feed suggestions for ${esc(_fmtMonthName(ym))}</span>
+          <span class="mpm-bf-spinner">⏳ scanning…</span>
+        </div>
+      </div>`;
+  }
+
+  const seq = ++_mpmBankFetchSeq;
+  let items = cached?.items;
+  if (!fresh) {
+    try {
+      const fn = stripeCallable('listBankTransactionsForUnit');
+      const { data } = await fn({
+        ym,
+        amountCents: targetCents,
+        amountTolerancePct: 15,
+        dateRangeDays: 30,
+        accountIds,
+        limit: 8,
+      });
+      items = data?.items || [];
+      _mpmBankCache.set(cacheKey, { at: Date.now(), items });
+    } catch (err) {
+      // Stale fetch — operator already moved on; don't paint over fresh state.
+      if (seq !== _mpmBankFetchSeq) return;
+      card.innerHTML = `
+        <div class="mpm-bf-card mpm-bf-card-error">
+          <div class="mpm-bf-head">🏦 Bank feed</div>
+          <div class="mpm-bf-error">Couldn't load suggestions: ${esc(err?.message || String(err))}</div>
+        </div>`;
+      return;
+    }
+  }
+  if (seq !== _mpmBankFetchSeq) return;
+
+  const tenantName = u.company || u.tenant || '';
+  const accountLabel = conns.length === 1
+    ? `${esc(conns[0].institutionName || 'Bank')} ····${esc(conns[0].accountLast4 || '')}`
+    : `${conns.length} accounts`;
+
+  if (!items.length) {
+    card.innerHTML = `
+      <div class="mpm-bf-card mpm-bf-card-empty">
+        <div class="mpm-bf-head">
+          <span>🏦 No bank-feed match for ${esc(_fmtMonthName(ym))} (±30d, ±15%)</span>
+        </div>
+        <div class="mpm-bf-empty-sub">
+          Searched <b>${accountLabel}</b> for credits near <b>$${(targetCents / 100).toLocaleString()}</b>.
+          ${tenantName ? `<a href="javascript:void(0)" onclick="_mpmOpenBankActivityForTenant('${esc(tenantName)}')">→ View all bank activity for ${esc(tenantName)}</a>` : ''}
+        </div>
+      </div>`;
+    return;
+  }
+
+  const rows = items.map(t => {
+    const dt = t.transactedAt ? new Date(t.transactedAt * 1000) : null;
+    const dateStr = dt ? dt.toLocaleDateString() : '—';
+    const amount = (+t.amount || 0) / 100;
+    const amtStr = `$${amount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+    const exact = targetCents > 0 && Math.round(amount * 100) === targetCents;
+    const closeDelta = targetCents > 0 ? Math.round(amount * 100) - targetCents : 0;
+    const closeNote = exact
+      ? `<span class="mpm-bf-exact">EXACT</span>`
+      : (closeDelta !== 0
+          ? `<span class="mpm-bf-close" title="Off by $${(Math.abs(closeDelta) / 100).toLocaleString()}">${closeDelta > 0 ? '+' : '−'}$${(Math.abs(closeDelta) / 100).toLocaleString()}</span>`
+          : '');
+    const stateBadge = t.matchState === 'suggested'
+      ? `<span class="mpm-bf-state mpm-bf-state-suggested" title="Matcher already flagged this">★ suggested</span>`
+      : '';
+    return `
+      <div class="mpm-bf-row">
+        <div class="mpm-bf-row-main">
+          <div class="mpm-bf-row-amt">${amtStr} ${closeNote}</div>
+          <div class="mpm-bf-row-meta">${esc(dateStr)} · ${esc(t.description || '(no description)')} ${stateBadge}</div>
+        </div>
+        <button class="rr-btn ar-btn-sm mpm-bf-use-btn" onclick="_mpmUseBankTxn('${esc(t.id)}')" title="Apply this transaction to the form">✓ Use this</button>
+      </div>`;
+  }).join('');
+
+  card.innerHTML = `
+    <div class="mpm-bf-card">
+      <div class="mpm-bf-head">
+        <span>🏦 Bank feed suggestions for ${esc(_fmtMonthName(ym))}</span>
+        <span class="mpm-bf-acct">${accountLabel}</span>
+      </div>
+      <div class="mpm-bf-rows">${rows}</div>
+      ${tenantName ? `<div class="mpm-bf-foot"><a href="javascript:void(0)" onclick="_mpmOpenBankActivityForTenant('${esc(tenantName)}')">→ View all bank activity for ${esc(tenantName)}</a></div>` : ''}
+    </div>`;
+
+  // Stash items so _mpmUseBankTxn can find the picked row without a refetch.
+  _mpmBankCache.set(cacheKey, { at: Date.now(), items });
+}
+
+// Operator clicked "✓ Use this" — auto-fill Method/Reference/Amount/Date
+// from the bank txn and stash the link so submitManualPayment can confirm
+// the bank-side record after the local payment is saved.
+function _mpmUseBankTxn(txnId) {
+  if (!_mpmCtx) return;
+  // Find the txn in any cache entry (we may have several, e.g. after ym change).
+  let txn = null;
+  for (const v of _mpmBankCache.values()) {
+    txn = (v.items || []).find(t => t.id === txnId);
+    if (txn) break;
+  }
+  if (!txn) { toast('Bank transaction not in cache — try Reload', 'error'); return; }
+  const amount = (+txn.amount || 0) / 100;
+  const dt = txn.transactedAt ? new Date(txn.transactedAt * 1000) : new Date();
+  const isoDate = dt.toISOString().slice(0, 10);
+  const guessedMethod = _mpmGuessMethodFromDesc(txn.description);
+  // Apply to form fields. Reference takes the first chunk of the description
+  // (cleaned) so the Activity Log row shows something meaningful.
+  const refText = String(txn.description || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  document.getElementById('mpmMethod').value = guessedMethod;
+  _mpmOnMethodChange();
+  document.getElementById('mpmReference').value = refText;
+  document.getElementById('mpmAmount').value = amount.toFixed(2);
+  document.getElementById('mpmDate').value = isoDate;
+  // Stash for submitManualPayment.
+  _mpmCtx.linkedBankTxn = {
+    id: txn.id,
+    amount: txn.amount,
+    description: txn.description || '',
+    transactedAt: txn.transactedAt || null,
+    accountId: txn.accountId || null,
+  };
+  _mpmRenderLinkedPill();
+}
+
+// Remove the bank-txn link without clearing form fields — operator may
+// want to keep the auto-filled values but record manually instead.
+function _mpmUnlinkBankTxn() {
+  if (!_mpmCtx) return;
+  delete _mpmCtx.linkedBankTxn;
+  _mpmRenderLinkedPill();
+}
+
+function _mpmRenderLinkedPill() {
+  const pill = document.getElementById('mpmLinkedBankPill');
+  if (!pill) return;
+  const linked = _mpmCtx?.linkedBankTxn;
+  if (!linked) { pill.style.display = 'none'; pill.innerHTML = ''; return; }
+  const dt = linked.transactedAt ? new Date(linked.transactedAt * 1000) : null;
+  const dateStr = dt ? dt.toLocaleDateString() : '—';
+  const amount = (+linked.amount || 0) / 100;
+  pill.style.display = '';
+  pill.innerHTML = `
+    <span style="display:inline-flex; align-items:center; gap:6px; padding:3px 8px; background:rgba(16,185,129,0.10); border:1px solid rgba(16,185,129,0.40); border-radius:14px; font-size:11.5px; color:var(--success);">
+      🔗 Linked: $${amount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} · ${esc(dateStr)}
+      <button type="button" onclick="_mpmUnlinkBankTxn()" title="Unlink (still records the payment, but doesn't mark the bank txn as confirmed)" style="background:none; border:none; cursor:pointer; color:var(--success); font-size:14px; line-height:1; padding:0;">×</button>
+    </span>`;
+}
+
+// Close the modal, switch to Bank Activity, pre-fill the search box with
+// the tenant name so the operator can scan / pick a transaction. Called
+// from the "→ View all bank activity for X" link.
+function _mpmOpenBankActivityForTenant(tenantName) {
+  closeManualPaymentModal();
+  if (typeof showBilling === 'function') showBilling();
+  setTimeout(() => {
+    if (typeof setBillingTab === 'function') setBillingTab('bankActivity');
+    setTimeout(() => {
+      const search = document.getElementById('bankActivitySearch');
+      if (search && tenantName) {
+        search.value = String(tenantName);
+        if (typeof renderBankActivityPanel === 'function') renderBankActivityPanel();
+      }
+    }, 80);
+  }, 80);
+}
 
 // Method picker change — toggle waiver-only fields and adjust the
 // rest of the form based on whether this is a real payment or a
@@ -80521,6 +80836,12 @@ function _mpmOnYmChange() {
   // Refresh the prorate hint — flips on / off based on whether the
   // newly-selected month is the prorated lease-start month.
   if (typeof _mpmUpdateAmountHint === 'function') _mpmUpdateAmountHint(u, ym);
+  // Bank-feed suggestions are month-specific too — refresh so the operator
+  // sees credits in the new billing window. Drop any prior link since the
+  // selected txn was for a different month.
+  if (_mpmCtx) delete _mpmCtx.linkedBankTxn;
+  _mpmRenderLinkedPill();
+  _mpmRenderBankSuggestions(u, ym);
 }
 
 function _mpmOnMethodChange() {
@@ -80927,6 +81248,10 @@ function openManualPaymentModal(buildingId, floorId, unitId, ym) {
   // smaller-than-full-rent default ($120 instead of $600) is intentional
   // for the lease-start month.
   _mpmUpdateAmountHint(u, ym);
+  // Bank-feed suggestions — pulled async, paints into mpmBankFeedCard
+  // when ready. Hidden if no bank account is connected.
+  _mpmRenderLinkedPill();
+  _mpmRenderBankSuggestions(u, ym);
 
   document.getElementById('manualPaymentModal').classList.add('active');
 }
@@ -81157,6 +81482,13 @@ async function submitManualPayment() {
         // Drop receipt fields — waivers don't have receipts.
       };
     } else {
+      // If the operator picked a bank-feed transaction inside the modal,
+      // mirror its identity onto the payment record so future reconcilers
+      // and the Activity Log can trace this payment back to the actual
+      // bank credit. The bank-side doc is also flipped to 'confirmed'
+      // below (post-save) so it stops appearing in the Bank Activity
+      // pending queue.
+      const linkedBank = _mpmCtx.linkedBankTxn || null;
       u.payments[ym] = {
         ...existing,
         status: 'paid',
@@ -81169,6 +81501,11 @@ async function submitManualPayment() {
         paidBy: fbSync?.user?.email || fbSync?.uid || 'admin',
         recordedAt: new Date().toISOString(),
         ...(receiptUrl ? { receiptUrl, receiptPath } : {}),
+        ...(linkedBank ? {
+          source: 'bank-feed',
+          bankTxnId: linkedBank.id,
+          bankAccountId: linkedBank.accountId || null,
+        } : {}),
       };
       // Drop waiver-specific fields if this entry was previously a waiver.
       delete u.payments[ym].waiverReason;
@@ -81227,6 +81564,26 @@ async function submitManualPayment() {
         .catch(e => console.warn('[manual-payment field-level push]', e?.message || e));
     }
     saveState({ priority: 'money', dirty: ['payments'] });
+    // If a bank txn was linked, flip its server-side matchState to
+    // 'confirmed' so it stops appearing in the pending queue. We pass
+    // recordPayment:false because the local u.payments[ym] write above
+    // (+ the field-level push) is already authoritative — we only need
+    // the server to update the bankTransactions doc + audit fields.
+    // Fire-and-forget; failures are non-blocking and surfaced as a toast.
+    const linkedBankForConfirm = (!isWaived && _mpmCtx.linkedBankTxn) ? _mpmCtx.linkedBankTxn : null;
+    if (linkedBankForConfirm && typeof stripeCallable === 'function') {
+      const cfn = stripeCallable('confirmBankMatch');
+      cfn({ txnId: linkedBankForConfirm.id, unitId: u.id, ym, recordPayment: false })
+        .then(() => {
+          // Drop the cached pending list so the Bank Activity panel
+          // refresh after this submit reflects the new state.
+          if (typeof _bankActivityCache !== 'undefined') _bankActivityCache = null;
+        })
+        .catch(e => {
+          console.warn('[manual-payment bank-link]', e?.message || e);
+          toast('Payment saved, but the bank transaction link failed: ' + (e?.message || e), 'error');
+        });
+    }
     closeManualPaymentModal();
     if (typeof renderAgingPanel === 'function') renderAgingPanel();
     if (state?.ui?.activeView === 'payments' && typeof renderPayments === 'function') renderPayments();

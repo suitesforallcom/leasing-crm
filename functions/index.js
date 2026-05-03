@@ -4770,12 +4770,22 @@ function _matchTransaction(state, txn) {
   }));
 
   // J: ambiguity penalty — if >1 candidate exact-matched the amount, −30 each
+  // K: uniqueness bonus — if EXACTLY 1 candidate exact-matched, +20.
+  // Rationale: when only one tenant in the entire portfolio has an unpaid
+  // invoice for this exact amount, that's a strong signal even when the
+  // bank description ("Customer Deposit", "Mobile Deposit", "Paid Check")
+  // contains zero tenant text. Without this, a bare exactInvoice match
+  // scores 50 (under the 60 threshold) and the operator gets "No match"
+  // for a transaction we could have confidently routed.
   const exactMatchers = scored.filter(s => s.exactInvoice);
   if (exactMatchers.length > 1) {
     for (const s of exactMatchers) {
       s.points -= 30;
       s.breakdown.push(['ambiguityPenalty', -30]);
     }
+  } else if (exactMatchers.length === 1) {
+    exactMatchers[0].points += 20;
+    exactMatchers[0].breakdown.push(['uniqueAmountBonus', 20]);
   }
 
   let best = null;
@@ -4878,6 +4888,80 @@ exports.listBankTransactions = onCall(
     const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     items.sort((a, b) => (b.transactedAt || 0) - (a.transactedAt || 0));
     return { items: items.slice(0, limit) };
+  }
+);
+
+// Suggest bank transactions to attach to a specific lease/month inside the
+// "Record Manual Payment" modal. Filters server-side so the modal pulls a
+// short list of plausible matches instead of all 300+ pending rows.
+//
+// Inputs (req.data):
+//   ym                 'YYYY-MM' — the billing month the operator picked
+//   amountCents        target amount in cents (the modal's expected rent)
+//   amountTolerancePct ±N% window around amountCents (default 15)
+//   dateRangeDays      ±N days window around the billing month (default 30)
+//   accountIds         optional whitelist of bank-account ids; empty = all
+//   includeStates      ['unmatched','suggested'] by default — operator
+//                      almost never wants 'confirmed' here, but allow override
+//   limit              up to 25
+//
+// Output: { items: [...txns sorted by amount-distance then date-distance] }
+exports.listBankTransactionsForUnit = onCall(
+  {timeoutSeconds: 30, memory: '256MiB'},
+  async (req) => {
+    await requireEditor(req.auth);
+    const ym = String(req.data?.ym || '');
+    if (!/^\d{4}-\d{2}$/.test(ym)) {
+      throw new HttpsError('invalid-argument', 'ym (YYYY-MM) required');
+    }
+    const targetCents = +req.data?.amountCents || 0;
+    const tolPct = Math.max(0, Math.min(100, +req.data?.amountTolerancePct || 15));
+    const rangeDays = Math.max(1, Math.min(120, +req.data?.dateRangeDays || 30));
+    const accountIds = Array.isArray(req.data?.accountIds) ? req.data.accountIds.filter(Boolean) : [];
+    const includeStates = Array.isArray(req.data?.includeStates) && req.data.includeStates.length
+      ? req.data.includeStates : ['unmatched', 'suggested'];
+    const limit = Math.max(1, Math.min(25, +req.data?.limit || 10));
+
+    // Compute the date window: month-of-ym ± rangeDays. Anchored at the
+    // start of `ym` and the end of `ym` so a January query gets December
+    // 15 → February 14 by default (covers "rent paid early" + "paid late").
+    const monthStart = Math.floor(Date.UTC(+ym.slice(0, 4), +ym.slice(5, 7) - 1, 1) / 1000);
+    const monthEnd = Math.floor(Date.UTC(+ym.slice(0, 4), +ym.slice(5, 7), 1) / 1000) - 1;
+    const fromUnix = monthStart - rangeDays * 86400;
+    const toUnix = monthEnd + rangeDays * 86400;
+
+    const col = db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`);
+    const snap = await col
+      .where('matchState', 'in', includeStates)
+      .get();
+
+    const tolCents = targetCents > 0 ? Math.max(2000, Math.round(targetCents * tolPct / 100)) : Infinity;
+    const rows = [];
+    for (const d of snap.docs) {
+      const t = d.data();
+      // Credits only — debits can never be a rent payment.
+      if (!(+t.amount > 0)) continue;
+      // Account whitelist (when provided).
+      if (accountIds.length && !accountIds.includes(t.accountId)) continue;
+      // Date window — skip transactions with no transactedAt rather than
+      // include-and-confuse-the-operator.
+      if (!t.transactedAt || t.transactedAt < fromUnix || t.transactedAt > toUnix) continue;
+      // Amount window — skip if we have a target and this is way off.
+      if (targetCents > 0 && Math.abs(+t.amount - targetCents) > tolCents) continue;
+      rows.push({ id: d.id, ...t });
+    }
+
+    // Rank: closest amount first, then closest to the middle of the month.
+    const monthMid = (monthStart + monthEnd) / 2;
+    rows.sort((a, b) => {
+      const aAmt = targetCents > 0 ? Math.abs(+a.amount - targetCents) : 0;
+      const bAmt = targetCents > 0 ? Math.abs(+b.amount - targetCents) : 0;
+      if (aAmt !== bAmt) return aAmt - bAmt;
+      const aDt = Math.abs((a.transactedAt || 0) - monthMid);
+      const bDt = Math.abs((b.transactedAt || 0) - monthMid);
+      return aDt - bDt;
+    });
+    return { items: rows.slice(0, limit) };
   }
 );
 
