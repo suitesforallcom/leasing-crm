@@ -4016,10 +4016,30 @@ exports.finalizeBankConnection = onCall(
     await mutateWorkspaceState((s) => {
       s.bankConnections = s.bankConnections || [];
       for (const acc of accounts) {
-        // Dedup by Stripe FC account id — operator may re-run connect
-        // for the same bank, we don't want N copies of the same record.
-        // If a previously-disconnected record exists, reactivate it.
-        const existing = s.bankConnections.find(c => c.stripeFcAccountId === acc.id);
+        // Dedup pass 1: same Stripe FC account id → reactivate.
+        let existing = s.bankConnections.find(c => c.stripeFcAccountId === acc.id);
+        // Dedup pass 2: re-connecting the same bank typically gets a
+        // *new* FC account ID from Stripe (the old one was disconnected).
+        // Match by institution + last4 against any disconnected record so
+        // the operator's Reconnect flow replaces the ghost cleanly instead
+        // of leaving a dead row + a fresh duplicate.
+        if (!existing) {
+          const last4 = (acc.last4 || '').toLowerCase();
+          const inst = (acc.institution_name || '').toLowerCase();
+          if (last4 && inst) {
+            existing = s.bankConnections.find(c =>
+              c.status === 'disconnected'
+              && (c.accountLast4 || '').toLowerCase() === last4
+              && (c.institutionName || '').toLowerCase() === inst
+            );
+            if (existing) {
+              // Replace ghost: keep its lastPolledAt watermark but swap in
+              // the new FC account id so subsequent pulls/disconnects work.
+              existing.stripeFcAccountId = acc.id;
+              existing.id = 'bc_' + acc.id;
+            }
+          }
+        }
         if (existing) {
           existing.status = acc.status || 'active';
           existing.permissions = acc.permissions || existing.permissions || [];
@@ -4086,6 +4106,40 @@ exports.disconnectBankAccount = onCall(
       }
     });
     return { detached, detachError };
+  }
+);
+
+// Hard-delete a disconnected bank-connection record from state. Operator
+// uses this to clean up "ghost" rows from cancelled connect flows or
+// long-gone accounts. SAFETY: only deletes if status === 'disconnected' so
+// an active feed can never be wiped by accident.
+exports.removeBankConnection = onCall(
+  {timeoutSeconds: 30},
+  async (req) => {
+    await requireEditor(req.auth);
+    const fcAccountId = req.data?.stripeFcAccountId;
+    if (!fcAccountId) {
+      throw new HttpsError('invalid-argument', 'stripeFcAccountId is required');
+    }
+    let removed = false;
+    let blockedActive = false;
+    await mutateWorkspaceState((s) => {
+      if (!Array.isArray(s.bankConnections)) return;
+      const idx = s.bankConnections.findIndex(c => c.stripeFcAccountId === fcAccountId);
+      if (idx < 0) return;
+      if (s.bankConnections[idx].status !== 'disconnected') {
+        blockedActive = true;
+        return;
+      }
+      s.bankConnections.splice(idx, 1);
+      removed = true;
+    });
+    if (blockedActive) {
+      throw new HttpsError('failed-precondition',
+        'Account is still active — disconnect it first, then remove.');
+    }
+    logger.info(`[bank-feed] removeBankConnection: deleted record ${fcAccountId} (removed=${removed})`);
+    return { removed };
   }
 );
 

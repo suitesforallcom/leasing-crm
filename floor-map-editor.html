@@ -58494,6 +58494,14 @@ function _renderBankConnections() {
     const disconnectBtn = isActive
       ? `<button class="int-btn outline" ${isRefreshing ? 'disabled' : ''} style="flex:0 0 auto; padding:4px 10px; font-size:11px; opacity:${isRefreshing ? '0.6' : '1'};" onclick="disconnectBankAccount('${fcId}')">Disconnect</button>`
       : '';
+    // Disconnected card: offer Reconnect (re-runs OAuth, server merges with
+    // this ghost record by institution+last4) and Remove (hard-delete).
+    const reconnectBtn = !isActive
+      ? `<button class="int-btn" style="flex:0 0 auto; padding:4px 10px; font-size:11px;" onclick="connectBankAccount()" title="Re-link this bank. Stripe will reuse this record if institution + last4 match.">↻ Reconnect</button>`
+      : '';
+    const removeBtn = !isActive
+      ? `<button class="int-btn outline" style="flex:0 0 auto; padding:4px 10px; font-size:11px;" onclick="removeBankConnection('${fcId}', '${esc((c.institutionName || '') + ' ····' + (c.accountLast4 || ''))}')" title="Permanently delete this row from the list.">🗑 Remove</button>`
+      : '';
     // Indeterminate progress bar — reuses the .recon-progress-fill keyframe
     // (reconShimmer) defined alongside the reconciliation widget so we don't
     // need a new <style> rule. Fills width 100% with a flowing gradient.
@@ -58532,7 +58540,7 @@ function _renderBankConnections() {
               · ${polled}
             </div>
           </div>
-          ${disconnectBtn}
+          ${disconnectBtn}${reconnectBtn}${removeBtn}
         </div>
         ${isActive ? `
           <div style="display:flex; align-items:center; gap:8px; padding-left:28px; font-size:11px; color:var(--muted);">
@@ -58545,6 +58553,20 @@ function _renderBankConnections() {
       </div>
     `;
   }).join('');
+}
+
+async function removeBankConnection(fcAccountId, label) {
+  if (!fcAccountId) return;
+  if (!confirm(`Permanently remove the ghost record for ${label || fcAccountId} from the list? Stripe-side data is unaffected — this just hides the row.`)) return;
+  setIntStatus('bankFeed', 'info', '⏳ Removing record…');
+  try {
+    const fn = stripeCallable('removeBankConnection');
+    await fn({ stripeFcAccountId: fcAccountId });
+    setIntStatus('bankFeed', 'success', '✓ Record removed.');
+    _renderBankConnections();
+  } catch (err) {
+    setIntStatus('bankFeed', 'error', `⚠ ${esc(err?.message || String(err))}`);
+  }
 }
 
 async function setBankPollIntervalUI(fcAccountId, hoursStr) {
