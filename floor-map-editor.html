@@ -25758,11 +25758,17 @@ function renderHomeForecast() {
   const showCeiling = (f.vacantCapacity || 0) > 0 && capacityCeiling > 0;
   const ceilingY = pad.t + chartH - (capacityCeiling / maxStack) * chartH;
   const ceilingLbl = `100% leased: $${Math.round(capacityCeiling).toLocaleString()}/mo`;
+  // Подпись потолка — в верхней служебной строке чарта (одна линия с
+  // `$X potential`), а не под самой линией. Лежать на барах подпись
+  // не должна — это перекрывает зелёный/синий стек и плохо читается.
+  // Сама линия — пунктир без подписи; значение даёт верхняя плашка.
   const ceilingLine = showCeiling ? `
     <line x1="${pad.l}" y1="${ceilingY}" x2="${W - pad.r}" y2="${ceilingY}"
           stroke="#7c3aed" stroke-width="1.2" stroke-dasharray="5 4" opacity="0.85" />
-    <text x="${W - pad.r - 4}" y="${ceilingY - 4}" text-anchor="end"
-          font-size="10" font-weight="600" fill="#7c3aed"
+  ` : '';
+  const ceilingTopLbl = showCeiling ? `
+    <text x="${W - pad.r}" y="10" text-anchor="end"
+          font-size="9.5" font-weight="600" fill="#7c3aed"
           font-family="Inter, system-ui, sans-serif"
           style="font-variant-numeric: tabular-nums;">${esc(ceilingLbl)}</text>
   ` : '';
@@ -25791,6 +25797,7 @@ function renderHomeForecast() {
     <svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none" style="display:block;">
       <line x1="${pad.l}" y1="${pad.t}" x2="${W - pad.r}" y2="${pad.t}" stroke="var(--border)" stroke-dasharray="2 3" />
       <text x="${pad.l}" y="10" font-size="9.5" fill="var(--muted)" font-family="Inter, system-ui, sans-serif">${peakStackLbl} potential</text>
+      ${ceilingTopLbl}
       ${separator}
       ${bars}
       ${ceilingLine}
