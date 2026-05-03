@@ -72118,8 +72118,10 @@ function _pnlCollect() {
     if (bldgFilter && b.id !== bldgFilter) continue;
     for (const f of (b.floors || [])) {
       for (const u of (f.units || [])) {
+        if (typeof _isInactiveSubRoom === 'function' && _isInactiveSubRoom(u)) continue;
         const pays = u.payments || {};
         for (const ym of Object.keys(pays)) {
+          if (!/^\d{4}-\d{2}$/.test(ym)) continue;   // skip 'deposit' etc. — not rent
           const p = pays[ym];
           if (!p) continue;
           const mkey = _pnlMonthKey(p, ym);
@@ -72370,7 +72372,9 @@ function exportScheduleECsv() {
     const occupiedDaysByUnit = new Map();
     for (const f of (b.floors || [])) {
       for (const u of (f.units || [])) {
+        if (typeof _isInactiveSubRoom === 'function' && _isInactiveSubRoom(u)) continue;
         for (const ym of Object.keys(u.payments || {})) {
+          if (!/^\d{4}-\d{2}$/.test(ym)) continue;   // skip 'deposit' etc. — not rent
           const p = u.payments[ym];
           if (!p) continue;
           // Bucket by p.date year (preferred — actual cash year), fall back to ym.
