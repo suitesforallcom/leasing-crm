@@ -57841,10 +57841,17 @@ function _dashNeedsToggleExpandAll(kind) {
 // full re-render. Falls back to a manual sequence if the helper isn't
 // available for any reason.
 function _dashOpenUnit(buildingId, floorId, unitId) {
-  // Открываем правый tenant-drawer с деталями юнита, не переключая
-  // вид (оператор остаётся на Dashboard / Billing). До этого код
-  // прыгал на Floor Plan через stackingJumpToUnit — оператор просил
-  // slide-out drawer вместо принудительного перехода.
+  // Открываем правый slide-out с тем же контентом, что в левом sidebar'е
+  // Floor Plan'а после клика по юниту (rent card / lease / payments /
+  // Stripe / late fees). Оператор остаётся на Dashboard / Billing —
+  // никакого принудительного перехода на Floor Plan. Раньше тут был
+  // узкий tenant-drawer (только aging-сводка); оператор попросил
+  // полную «офисную» панель, как на карте.
+  if (typeof _openMapDetailDrawer === 'function') {
+    try { if (_openMapDetailDrawer(buildingId, floorId, unitId)) return; }
+    catch (e) { console.warn('[dash-open-unit map-detail]', e); }
+  }
+  // Фолбэк — старый tenant-drawer.
   if (typeof openTenantDrawer === 'function') {
     try { openTenantDrawer(buildingId, floorId, unitId); return; } catch {}
   }
@@ -71302,9 +71309,18 @@ function _hvRenderActivity() {
 function _hvQueueClick(uid) {
   const [bId, fId, uId] = (uid || '').split('|');
   if (!bId) return;
-  // Открываем правый tenant-drawer прямо поверх Home View — оператор
-  // остаётся на главной, drawer выезжает справа. Раньше клик принудительно
-  // прыгал на Floor Plan (showFloorPlan + selectUnit), оператор просил slide-out.
+  // Открываем правый slide-out с тем же контентом, что в левом sidebar'е
+  // Floor Plan'а после клика по юниту: rent card, lease, оплата по месяцам,
+  // Stripe, late fees и т.д. Оператор остаётся на Home View — никакого
+  // принудительного перехода. Раньше тут открывался узкий tenant-drawer
+  // с aging-сводкой (контакты + Aging breakdown + Ledger); оператор
+  // попросил полную «офисную» панель, как на карте.
+  if (typeof _openMapDetailDrawer === 'function') {
+    try { if (_openMapDetailDrawer(bId, fId, uId)) return; }
+    catch (e) { console.warn('[hv-queue-click map-detail]', e); }
+  }
+  // Фолбэк — старый tenant-drawer, если по каким-то причинам новый
+  // helper не загружен.
   if (typeof openTenantDrawer === 'function') {
     try { openTenantDrawer(bId, fId, uId); return; } catch (e) { console.warn('[hv-queue-click drawer]', e); }
   }
@@ -77294,7 +77310,101 @@ function closeTenantDrawer() {
   document.getElementById('tenantDrawer').classList.remove('open');
   document.getElementById('tenantDrawerBackdrop').classList.remove('open');
   _drawerCtx = null;
+  // Если drawer был открыт в map-detail режиме — телепортируем #detail
+  // обратно в #sbUnit и восстанавливаем исходный Floor Plan контекст.
+  // Иначе при следующем открытии Floor Plan вкладка «Unit» будет пустой.
+  if (_mapDetailDrawerMode && _mapDetailOrigCtx) {
+    const detailEl = document.getElementById('detail');
+    const ctx = _mapDetailOrigCtx;
+    if (detailEl && ctx.parent) {
+      try {
+        if (ctx.nextSibling && ctx.nextSibling.parentNode === ctx.parent) {
+          ctx.parent.insertBefore(detailEl, ctx.nextSibling);
+        } else {
+          ctx.parent.appendChild(detailEl);
+        }
+      } catch (e) { console.warn('[map-detail-drawer] restore parent', e); }
+    }
+    try {
+      if (state.ui) {
+        state.ui.currentBuildingId = ctx.bId;
+        state.ui.currentFloorId    = ctx.fId;
+      }
+      if (typeof selectedIds !== 'undefined') selectedIds = ctx.selIds || [];
+      if (typeof renderDetail === 'function') renderDetail();
+    } catch {}
+    _mapDetailDrawerMode = false;
+    _mapDetailOrigCtx = null;
+  }
 }
+
+// ============================================================
+// Map-detail drawer — slide-in справа с тем же контентом, что
+// показывает левый sidebar Floor Plan'а после клика по юниту.
+// Используется из Home View (Needs attention) и Dashboard виджетов:
+// оператор остаётся на главной, но видит полную карточку юнита
+// (rent card, lease, оплата по месяцам, Stripe, late fees и т.д.)
+// в правом slide-out, без принудительного перехода на Floor Plan.
+//
+// Реализация: телепортируем живой <div id="detail"> внутрь
+// #tenantDrawerBody. Listeners + input state переезжают вместе
+// с DOM-узлом — никакой перерисовки специально для drawer'а не
+// нужно. На close телепортируем обратно и восстанавливаем
+// исходный selectedIds / currentBuildingId / currentFloorId.
+// ============================================================
+let _mapDetailDrawerMode = false;
+let _mapDetailOrigCtx    = null;
+
+function _openMapDetailDrawer(buildingId, floorId, unitId) {
+  const r = _agingResolveSel(`${buildingId}|${floorId}|${unitId}`);
+  if (!r) return false;
+  const { b, f, u } = r;
+
+  const detailEl = document.getElementById('detail');
+  const drawer   = document.getElementById('tenantDrawer');
+  const body     = document.getElementById('tenantDrawerBody');
+  const backdrop = document.getElementById('tenantDrawerBackdrop');
+  const titleEl  = document.getElementById('tenantDrawerTitle');
+  const subEl    = document.getElementById('tenantDrawerSub');
+  if (!detailEl || !drawer || !body) return false;
+
+  // Сохраняем исходный контекст до подмены — нужен на close.
+  _mapDetailOrigCtx = {
+    parent: detailEl.parentNode,
+    nextSibling: detailEl.nextSibling,
+    bId: state.ui ? state.ui.currentBuildingId : undefined,
+    fId: state.ui ? state.ui.currentFloorId : undefined,
+    selIds: (typeof selectedIds !== 'undefined' && Array.isArray(selectedIds)) ? selectedIds.slice() : []
+  };
+
+  // Переключаем глобальный контекст на нужный юнит и пере-рендерим
+  // #detail. renderDetail() пишет innerHTML внутрь #detail, поэтому
+  // делаем это ДО переноса узла в drawer — так под капотом всё то же
+  // самое, что при клике по юниту на Floor Plan.
+  if (state.ui) {
+    state.ui.currentBuildingId = buildingId;
+    state.ui.currentFloorId    = floorId;
+  }
+  if (typeof selectedIds !== 'undefined') selectedIds = [unitId];
+  try { if (typeof renderDetail === 'function') renderDetail(); }
+  catch (e) { console.warn('[map-detail-drawer] renderDetail', e); }
+
+  // Заголовок + подзаголовок drawer'а — как у tenant-drawer'а.
+  if (titleEl) titleEl.textContent = u.tenant || u.company || `Suite ${u.id}`;
+  if (subEl)   subEl.innerHTML = `Suite <b>${esc(u.id)}</b> · ${esc(b.name || b.address || '')} · ${esc(f.name || '')}`;
+
+  // Чистим тело drawer'а и переносим живой #detail внутрь. appendChild
+  // автоматически удаляет узел из старого parent'а; listeners + input
+  // state сохраняются.
+  body.innerHTML = '';
+  body.appendChild(detailEl);
+
+  drawer.classList.add('open');
+  if (backdrop) backdrop.classList.add('open');
+  _mapDetailDrawerMode = true;
+  return true;
+}
+window._openMapDetailDrawer = _openMapDetailDrawer;
 function _renderTenantDrawerBody(r) {
   const { b, f, u } = r;
   const rows = buildAgingRows();
