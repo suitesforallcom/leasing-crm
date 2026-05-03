@@ -25453,6 +25453,10 @@ function _computeRevenueForecast(nonRenewalPct, floorFilter) {
     collectionsCount6mo,        // # of cases sent to collections in last 6mo
     collectionsRent6mo,         // sum of their monthly contractRent
     collectionsMonthlyRate,     // per-lease per-month probability
+    // Свободная ёмкость scope (asking-rent всех вакантных юнитов).
+    // Используется UI для отрисовки потолка «100% leased» на графике,
+    // чтобы оператор видел, насколько ещё можно вырасти физически.
+    vacantCapacity,
   };
 }
 
@@ -25640,7 +25644,16 @@ function renderHomeForecast() {
   const W = 900, H = 232, pad = { l: 6, r: 6, t: 30, b: 36 };
   const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
   const colCount = f.months.length;   // 3 past + 12 future = 15
-  const maxStack = Math.max(1, ...f.months.map(m => m.continuingRent + m.newRent + m.lostRent));
+  // Потолок «100% leased» — текущий MRR + asking-rent всей вакансии
+  // в scope. Это физический максимум, который теоретически достижим
+  // если завтра сдать все свободные юниты по их proforma-цене.
+  // Включаем его в maxStack, чтобы линия не уезжала за верх чарта.
+  const capacityCeiling = (f.currentMRR || 0) + (f.vacantCapacity || 0);
+  const maxStack = Math.max(
+    1,
+    capacityCeiling,
+    ...f.months.map(m => m.continuingRent + m.newRent + m.lostRent)
+  );
   const barW = chartW / colCount - 6;
   const today = new Date();
   const COL_OLD  = '#16a34a';   // green — continuing (existing tenants)
@@ -25737,6 +25750,22 @@ function renderHomeForecast() {
     <text x="${sepX + 4}" y="${pad.t + 10}" text-anchor="start" font-size="9.5" fill="var(--accent)" font-family="Inter, system-ui, sans-serif" font-weight="600">forecast →</text>
   ` : '';
   const peakStackLbl = `$${Math.round(maxStack).toLocaleString()}`;
+  // Линия «потолок 100% leased» — горизонтальная пунктирная,
+  // протягивается через весь чарт (включая past — для исторической
+  // сверки тоже полезно). Показываем только если scope не на 100%
+  // занят: при vacantCapacity == 0 потолок совпадает с текущим MRR
+  // и линия превращается в шум.
+  const showCeiling = (f.vacantCapacity || 0) > 0 && capacityCeiling > 0;
+  const ceilingY = pad.t + chartH - (capacityCeiling / maxStack) * chartH;
+  const ceilingLbl = `100% leased: $${Math.round(capacityCeiling).toLocaleString()}/mo`;
+  const ceilingLine = showCeiling ? `
+    <line x1="${pad.l}" y1="${ceilingY}" x2="${W - pad.r}" y2="${ceilingY}"
+          stroke="#7c3aed" stroke-width="1.2" stroke-dasharray="5 4" opacity="0.85" />
+    <text x="${W - pad.r - 4}" y="${ceilingY - 4}" text-anchor="end"
+          font-size="10" font-weight="600" fill="#7c3aed"
+          font-family="Inter, system-ui, sans-serif"
+          style="font-variant-numeric: tabular-nums;">${esc(ceilingLbl)}</text>
+  ` : '';
   const chartEl = document.getElementById('hvFcstChart');
   if (chartEl) chartEl.innerHTML = `
     <div style="display:flex; gap: 14px; flex-wrap: wrap; font-size:11px; color: var(--muted); margin-bottom: 8px;">
@@ -25752,6 +25781,11 @@ function renderHomeForecast() {
         <span style="display:inline-block; width:10px; height:10px; border-radius:2px; background:${COL_LOST};"></span>
         Non-renewals (will leave)
       </span>
+      ${showCeiling ? `
+      <span style="display:inline-flex; align-items:center; gap:5px;" title="Текущий MRR + asking-rent всех вакантных юнитов в scope. Физический максимум выручки, если завтра сдать всё свободное по proforma.">
+        <span style="display:inline-block; width:14px; height:0; border-top: 1.5px dashed #7c3aed;"></span>
+        Capacity ceiling (100% leased)
+      </span>` : ''}
       <span style="margin-left: auto; color: var(--muted); opacity: 0.7;">left = past · right = forecast</span>
     </div>
     <svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none" style="display:block;">
@@ -25759,6 +25793,7 @@ function renderHomeForecast() {
       <text x="${pad.l}" y="10" font-size="9.5" fill="var(--muted)" font-family="Inter, system-ui, sans-serif">${peakStackLbl} potential</text>
       ${separator}
       ${bars}
+      ${ceilingLine}
     </svg>`;
 }
 
