@@ -75488,12 +75488,19 @@ function setSettingsTab(tabId) {
   // working Disconnect button. Throttled to 1/min to avoid hammering
   // Stripe on rapid tab toggles.
   if (tabId === 'integrations' && typeof _renderBankConnections === 'function') {
-    setTimeout(() => { try { _renderBankConnections(); } catch (e) { console.warn(e); } }, 0);
+    setTimeout(() => {
+      try { _renderBankConnections(); } catch (e) { console.warn(e); }
+      // Re-apply collapse + sort order so any badge change since the
+      // last open bubbles green→yellow→grey. Cheap (~5 DOM ops).
+      try { _wireIntegrationAccordions(); } catch {}
+    }, 0);
     if (typeof syncBankConnectionsFromStripe === 'function') {
       const last = window._bankSyncLastAt || 0;
       if (Date.now() - last > 60_000) {
         window._bankSyncLastAt = Date.now();
-        setTimeout(() => syncBankConnectionsFromStripe({ silent: true }).catch(() => {}), 250);
+        setTimeout(() => syncBankConnectionsFromStripe({ silent: true })
+          .catch(() => {})
+          .finally(() => { try { _wireIntegrationAccordions(); } catch {} }), 250);
       }
     }
   }
@@ -75703,12 +75710,26 @@ function _wireIntegrationAccordions() {
         });
       }
     }
-    // Open if disconnected (badge says so), otherwise collapse.
-    const badge = sec.querySelector('.int-badge');
-    const badgeText = (badge?.textContent || '').toLowerCase();
-    const isConnected = badge?.classList.contains('active') || /connected|ready|active/.test(badgeText);
-    sec.classList.toggle('int-collapsed', isConnected);
+    // Always collapse on (re-)open — operator scans the badge column to
+    // see what's connected, then expands only what they want to act on.
+    sec.classList.add('int-collapsed');
   });
+  // Sort cards: green (active) → yellow (phase2 / re-auth) → everything
+  // else (grey "not connected", phase3 purple, plain status). Done by
+  // re-appending in priority order; only sorts cards inside the
+  // Integrations panel and skips non-section siblings (intro <p> etc.).
+  const panel = document.querySelector('#settingsModal .st-tab-panel[data-st-panel="integrations"]');
+  if (panel) {
+    const cards = Array.from(panel.querySelectorAll(':scope > .int-section'));
+    const priority = (sec) => {
+      const badge = sec.querySelector('.int-badge');
+      if (badge?.classList.contains('active')) return 0;
+      if (badge?.classList.contains('phase2')) return 1;
+      return 2;
+    };
+    cards.sort((a, b) => priority(a) - priority(b));
+    cards.forEach(c => panel.appendChild(c));
+  }
 }
 
 // =============================================================
