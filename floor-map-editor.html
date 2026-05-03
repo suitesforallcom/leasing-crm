@@ -18067,9 +18067,18 @@
     <h2 style="margin-top: 0; display: flex; align-items: center; gap: 8px;">
       <span>🔍</span><span>Browse all transactions</span>
     </h2>
-    <div class="modal-sub" id="txnBrowserSub">—</div>
 
-    <div style="display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap;">
+    <!-- Persistent context bar — крупная строка с задачей, чтобы оператор
+         не терял контекст при скролле. Заполняется в _openTxnBrowser. -->
+    <div id="txnBrowserCtxBar"
+         style="margin-top: 10px; padding: 10px 14px;
+                background: linear-gradient(135deg, rgba(14,165,233,0.10), rgba(99,91,255,0.08));
+                border: 1px solid rgba(14,165,233,0.25); border-radius: 8px;
+                font-size: 13.5px; color: var(--text); line-height: 1.4;">
+      <span style="color: var(--muted);">→ Recording rent for</span>
+    </div>
+
+    <div style="display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap;">
       <div style="flex: 1; min-width: 220px; position: relative;">
         <input type="text" id="txnBrowserSearch" placeholder="Search by description, customer, invoice #, amount…"
                oninput="_renderTxnBrowserList(); _txnBrowserSearchToggleClear()"
@@ -18112,13 +18121,18 @@
         <option value="">Any month</option>
         <!-- populated dynamically from loaded items -->
       </select>
+      <!-- Range — НЕ "last N months from today", а "±N months around billing month".
+           Centered on the ym оператор записывает, не на сегодняшней дате.
+           Это значит для Nov 2025 при range=2 грузим Sep 2025 → Jan 2026,
+           а не Feb–May 2026 (что было бы Last 3 months from today=2026-05).
+           Дефолт ±2 — узко, но покрывает «paid early/late» сценарий. -->
       <select id="txnBrowserRange" onchange="_refreshTxnBrowser()"
-              title="How many months back to load"
+              title="Date window centered on the billing month"
               style="padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font-size: 12.5px;">
-        <option value="3" selected>Last 3 months</option>
-        <option value="6">Last 6 months</option>
-        <option value="12">Last 12 months</option>
-        <option value="24">Last 24 months</option>
+        <option value="1">±1 month around billing</option>
+        <option value="2" selected>±2 months around billing</option>
+        <option value="6">±6 months around billing</option>
+        <option value="12">±12 months around billing</option>
         <option value="0">All available</option>
       </select>
       <button type="button" class="rr-btn" onclick="_refreshTxnBrowser()"
@@ -18132,7 +18146,25 @@
       <!-- populated by _renderTxnBrowserList -->
     </div>
 
-    <div class="modal-actions" style="margin-top: 14px; display: flex; justify-content: flex-end; gap: 8px;">
+    <!-- Help footer — выход из тупика «не нашёл нужную транзакцию».
+         Три действия: расширить диапазон / импортнуть выписку / просто закрыть.
+         Видим всегда, не зависит от состояния списка. -->
+    <div style="margin-top: 10px; padding: 8px 12px; background: var(--surface-2, rgba(0,0,0,0.02));
+                border: 1px dashed var(--border); border-radius: 6px;
+                display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+                font-size: 12px; color: var(--muted);">
+      <span><b>Don't see it?</b></span>
+      <a href="#" onclick="_txnBrowserExpandRange(event)"
+         style="color: #0ea5e9; text-decoration: none; cursor: pointer;">Expand date range →</a>
+      <span style="color: var(--border);">·</span>
+      <a href="#" onclick="_txnBrowserOpenImport(event)"
+         style="color: #0ea5e9; text-decoration: none; cursor: pointer;">📥 Import bank statement</a>
+      <span style="color: var(--border);">·</span>
+      <a href="#" onclick="_txnBrowserCloseAndKeepForm(event)"
+         style="color: #0ea5e9; text-decoration: none; cursor: pointer;">Record without bank match</a>
+    </div>
+
+    <div class="modal-actions" style="margin-top: 12px; display: flex; justify-content: flex-end; gap: 8px;">
       <button type="button" class="rr-btn" onclick="_closeTxnBrowser()">Close</button>
     </div>
   </div>
@@ -83458,13 +83490,26 @@ function _openTxnBrowser(buildingId, floorId, unitId, ym) {
   _txnBrowserCtx = { buildingId, floorId, unitId, ym: ym || _mpmCtx?.ym || '' };
   _txnBrowserBankItems = [];
   _txnBrowserStripeItems = _txnBrowserCollectStripe(u);
-  const sub = document.getElementById('txnBrowserSub');
-  if (sub) {
+  // Persistent context bar — крупная строка с задачей. Показываем
+  // tenant + suite + billing month + expected amount, чтобы оператор
+  // не терял контекст при скролле длинного списка.
+  const ctxBar = document.getElementById('txnBrowserCtxBar');
+  if (ctxBar) {
     const tenantName = u.company || u.tenant || '(no tenant)';
     const targetCents = Math.round(((+u.contractRent) || (+u.rent) || 0) * 100);
-    const targetStr = targetCents > 0 ? `$${(targetCents / 100).toLocaleString()}` : '—';
+    const targetStr = targetCents > 0
+      ? `$${(targetCents / 100).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
+      : '—';
     const ymStr = _txnBrowserCtx.ym ? esc(_fmtMonthName(_txnBrowserCtx.ym)) : '—';
-    sub.innerHTML = `Pick a transaction for Suite <b>${esc(u.id)}</b> · ${esc(tenantName)} · billing month <b>${ymStr}</b> · expected <b>${targetStr}</b>`;
+    ctxBar.innerHTML = `
+      <span style="color: var(--muted);">→ Recording</span>
+      <b style="color: var(--text);">${targetStr}</b>
+      <span style="color: var(--muted);">rent for Suite</span>
+      <b style="color: var(--text);">${esc(u.id)}</b>
+      <span style="color: var(--muted);">·</span>
+      <b style="color: var(--text);">${esc(tenantName)}</b>
+      <span style="color: var(--muted);">· billing month</span>
+      <b style="color: var(--text);">${ymStr}</b>`;
   }
   const searchEl = document.getElementById('txnBrowserSearch');
   if (searchEl) searchEl.value = '';
@@ -83475,8 +83520,10 @@ function _openTxnBrowser(buildingId, floorId, unitId, ym) {
   if (stripeChk) stripeChk.checked = true;
   const monthEl = document.getElementById('txnBrowserMonth');
   if (monthEl) monthEl.value = '';
+  // Дефолт ±2 месяца вокруг billing month — узко, но покрывает
+  // «paid early/late» сценарий. Оператор может расширить через footer-link.
   const rangeEl = document.getElementById('txnBrowserRange');
-  if (rangeEl) rangeEl.value = '3';
+  if (rangeEl) rangeEl.value = '2';
   if (typeof _txnBrowserSearchToggleClear === 'function') _txnBrowserSearchToggleClear();
   document.getElementById('txnBrowserModal').classList.add('active');
   // Сразу подтягиваем bank — Stripe уже в _invoicesCache, пере-фетчить
@@ -83490,6 +83537,48 @@ function _closeTxnBrowser() {
   _txnBrowserCtx = null;
   _txnBrowserBankItems = [];
   _txnBrowserStripeItems = [];
+}
+
+// Footer-link: «Don't see it? → Expand date range».
+// Бампим dropdown на следующее более широкое значение и пере-фетчим.
+// Если уже на «All available» — toast'им вместо no-op.
+function _txnBrowserExpandRange(e) {
+  if (e && e.preventDefault) e.preventDefault();
+  const sel = document.getElementById('txnBrowserRange');
+  if (!sel) return;
+  // Порядок ладдера должен совпадать с <option value> в HTML.
+  const ladder = ['1', '2', '6', '12', '0'];
+  const cur = String(sel.value || '2');
+  const idx = ladder.indexOf(cur);
+  if (idx < 0 || idx >= ladder.length - 1) {
+    try { toast?.('Already showing all available transactions', 'info'); } catch {}
+    return;
+  }
+  sel.value = ladder[idx + 1];
+  try { toast?.(`Expanded range to ${sel.options[sel.selectedIndex].text}`, 'info'); } catch {}
+  _refreshTxnBrowser();
+}
+
+// Footer-link: «Don't see it? → 📥 Import bank statement».
+// Закрываем browser, открываем CSV/XLSX импорт. После импорта оператор
+// сможет открыть browser заново через MPM, и новые строки будут видны.
+function _txnBrowserOpenImport(e) {
+  if (e && e.preventDefault) e.preventDefault();
+  _closeTxnBrowser();
+  if (typeof openBankImportModal === 'function') {
+    openBankImportModal();
+  } else {
+    try { toast?.('Bank import modal not available', 'error'); } catch {}
+  }
+}
+
+// Footer-link: «Record without bank match».
+// Просто закрываем browser, оставляя MPM открытым с пустым linkedBankTxn.
+// Оператор заполнит payment date + amount вручную и нажмёт Save.
+function _txnBrowserCloseAndKeepForm(e) {
+  if (e && e.preventDefault) e.preventDefault();
+  _closeTxnBrowser();
+  // MPM остаётся открыт сам по себе (он не привязан к browser-modal).
 }
 
 function _txnBrowserSearchToggleClear() {
@@ -83521,9 +83610,14 @@ async function _refreshTxnBrowser() {
     return;
   }
   const rangeSel = document.getElementById('txnBrowserRange');
-  const monthsBack = +(rangeSel?.value ?? 3);
-  // 0 = «All available» → берём максимум, что сервер отдаст за разумное окно.
-  const days = monthsBack === 0 ? 730 : Math.max(30, monthsBack * 31);
+  // Семантика: НЕ «last N months from today», а «±N months around billing
+  // month». CF (`listBankTransactionsForUnit`) уже строит окно ym-centered:
+  // `[monthStart - rangeDays, monthEnd + rangeDays]`. Поэтому нам достаточно
+  // передать `dateRangeDays = monthsAround * 31` — CF растянет это в обе
+  // стороны от ym, а не от today. Дефолт ±2 → 62 дня в каждую сторону.
+  const monthsAround = +(rangeSel?.value ?? 2);
+  // 0 = «All available» → cap CF (800 days в browse-mode), почти весь архив.
+  const days = monthsAround === 0 ? 800 : Math.max(30, monthsAround * 31);
   const btn = document.querySelector('#txnBrowserModal .rr-btn[onclick="_refreshTxnBrowser()"]');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Loading…'; }
   const counter = document.getElementById('txnBrowserCount');
@@ -83576,6 +83670,152 @@ function _txnBrowserPopulateMonths(rows) {
   else sel.value = '';
 }
 
+// Скоринг строки 0..1+ для секции «Best matches».
+// Идея: оператор обычно знает примерную сумму (rent) и месяц, но не точную
+// дату. Поднимаем строки с близкой суммой и близкой датой; добавляем boost
+// для уже-suggested-by-matcher (для bank) и для invoice того же ym (Stripe).
+// Threshold для попадания в Best matches задан в _renderTxnBrowserList.
+function _txnBrowserScore(r, targetCents, billingYm) {
+  if (!r) return 0;
+  let amtScore = 0, dateScore = 0, boost = 0;
+
+  // Amount: 1.0 на точном, ~0.85 при ±5%, 0.5 при ±15%, 0 за пределами 30%.
+  if (targetCents > 0) {
+    const cents = Math.round((r.amount || 0) * 100);
+    const delta = Math.abs(cents - targetCents);
+    const pct = delta / targetCents;
+    if (pct === 0)        amtScore = 1.00;
+    else if (pct <= 0.05) amtScore = 0.85;
+    else if (pct <= 0.15) amtScore = 0.50;
+    else if (pct <= 0.30) amtScore = 0.20;
+    else                  amtScore = 0;
+  } else {
+    amtScore = 0.30; // нет target — даём слабый базовый
+  }
+
+  // Date: 1.0 если ym строки == billingYm, иначе линейно затухает по месяцам.
+  if (billingYm && r.ym) {
+    if (r.ym === billingYm) {
+      dateScore = 1.0;
+    } else {
+      const [by, bm] = billingYm.split('-').map(Number);
+      const [ry, rm] = r.ym.split('-').map(Number);
+      const monthsApart = Math.abs((by - ry) * 12 + (bm - rm));
+      dateScore = monthsApart === 1 ? 0.55 : (monthsApart === 2 ? 0.20 : 0);
+    }
+  } else if (r.ts) {
+    dateScore = 0.30;
+  }
+
+  // Boost: matcher уже подсветил bank-row → суббонус. Stripe «paid»/«open»
+  // в нужном ym — тоже сильный сигнал.
+  if (r.kind === 'bank' && r.matchState === 'suggested') boost += 0.20;
+  if (r.kind === 'stripe') {
+    const s = (r.statusLabel || '').toLowerCase();
+    if (s === 'paid' || s === 'open' || s === 'past_due') boost += 0.10;
+  }
+
+  // Композит: 60% amount + 35% date + boost. Best-matches threshold: 0.55.
+  return 0.60 * amtScore + 0.35 * dateScore + boost;
+}
+
+// Сборщик одной строки таблицы. Извлечён, чтобы Best/All использовали
+// тот же markup без дублирования.
+function _txnBrowserBuildRow(r, targetCents, billingYm) {
+  const dateStr = r.ts ? new Date(r.ts).toLocaleDateString() : '—';
+  const amtStr = `$${(r.amount || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+  const typeBadge = r.kind === 'bank'
+    ? `<span style="display:inline-block; padding:2px 8px; background:rgba(14,165,233,0.12); color:#0ea5e9; border-radius:10px; font-size:10.5px; font-weight:600;">🏦 Bank</span>`
+    : `<span style="display:inline-block; padding:2px 8px; background:rgba(99,91,255,0.12); color:#635bff; border-radius:10px; font-size:10.5px; font-weight:600;">💳 Stripe</span>`;
+
+  // Match column — ТОЛЬКО про сумму vs expected (отдельно от Status).
+  let matchBadge = '';
+  if (targetCents > 0) {
+    const cents = Math.round((r.amount || 0) * 100);
+    const delta = cents - targetCents;
+    if (delta === 0) {
+      matchBadge = `<span style="display:inline-block; padding:2px 8px; background:rgba(16,185,129,0.18); color:var(--success); border-radius:10px; font-size:10.5px; font-weight:700;" title="Exact amount match">EXACT</span>`;
+    } else if (Math.abs(delta) <= targetCents * 0.05) {
+      matchBadge = `<span style="display:inline-block; padding:2px 8px; background:rgba(14,165,233,0.15); color:#0ea5e9; border-radius:10px; font-size:10.5px;" title="Off by $${(Math.abs(delta)/100).toLocaleString()}">${delta > 0 ? '+' : '−'}$${(Math.abs(delta)/100).toLocaleString()}</span>`;
+    } else if (Math.abs(delta) <= targetCents * 0.15) {
+      matchBadge = `<span style="display:inline-block; padding:2px 8px; background:rgba(245,158,11,0.15); color:#f59e0b; border-radius:10px; font-size:10.5px;" title="Off by $${(Math.abs(delta)/100).toLocaleString()}">${delta > 0 ? '+' : '−'}$${(Math.abs(delta)/100).toLocaleString()}</span>`;
+    } else {
+      matchBadge = `<span style="color: var(--muted); font-size: 11px;">${delta > 0 ? '+' : '−'}$${(Math.abs(delta)/100).toLocaleString()}</span>`;
+    }
+  }
+
+  // Status column — банковский matchState ИЛИ Stripe bucket.
+  let statusBadge = '';
+  if (r.kind === 'bank') {
+    if (r.matchState === 'suggested') {
+      statusBadge = `<span style="display:inline-block; padding:2px 8px; background:rgba(99,91,255,0.12); color:#635bff; border-radius:10px; font-size:10.5px;" title="Auto-matcher already flagged this">★ suggested</span>`;
+    } else if (r.matchState === 'confirmed') {
+      statusBadge = `<span style="display:inline-block; padding:2px 8px; background:rgba(16,185,129,0.10); color:var(--success); border-radius:10px; font-size:10.5px;" title="Already linked to a payment">linked</span>`;
+    } else {
+      statusBadge = `<span style="color: var(--muted); font-size: 11px;">unmatched</span>`;
+    }
+  } else {
+    const s = (r.statusLabel || '').toLowerCase();
+    const palette = {
+      paid:         ['rgba(16,185,129,0.15)', 'var(--success)'],
+      open:         ['rgba(14,165,233,0.15)', '#0ea5e9'],
+      past_due:     ['rgba(239,68,68,0.15)',  '#ef4444'],
+      draft:        ['rgba(148,163,184,0.18)','var(--muted)'],
+      void:         ['rgba(148,163,184,0.18)','var(--muted)'],
+      uncollectible:['rgba(148,163,184,0.18)','var(--muted)'],
+    };
+    const [bg, fg] = palette[s] || ['rgba(148,163,184,0.18)','var(--muted)'];
+    statusBadge = s
+      ? `<span style="display:inline-block; padding:2px 8px; background:${bg}; color:${fg}; border-radius:10px; font-size:10.5px; font-weight:600;">${esc(s.replace('_', ' ').toUpperCase())}</span>`
+      : '';
+  }
+
+  // Per-row preview hint — что именно уйдёт в форму при клике «Use this».
+  // Bank: дата + amount (как paymentDate + amount). Stripe: invoice# + ym.
+  let hintLine = '';
+  if (r.kind === 'bank') {
+    const parts = [];
+    if (dateStr !== '—') parts.push(`fills payment date <b>${esc(dateStr)}</b>`);
+    parts.push(`+ amount <b>${esc(amtStr)}</b>`);
+    hintLine = `<div style="font-size: 11px; color: var(--muted); margin-top: 2px;">→ ${parts.join(' ')}</div>`;
+  } else {
+    const num = r.raw?.number ? `#${esc(r.raw.number)}` : (r.id ? esc(r.id.slice(-8)) : '');
+    const ymHint = r.ym ? esc(_fmtMonthName(r.ym)) : '';
+    hintLine = `<div style="font-size: 11px; color: var(--muted); margin-top: 2px;">→ links invoice <b>${num}</b>${ymHint ? ` for <b>${ymHint}</b>` : ''}</div>`;
+  }
+
+  const isSelected = r.kind === 'bank'
+    ? !!(_mpmCtx?.linkedBankTxn && _mpmCtx.linkedBankTxn.id === r.id)
+    : !!(_mpmCtx?.linkedStripeInvoice && _mpmCtx.linkedStripeInvoice.id === r.id);
+  const btnLabel = isSelected ? '✓ Selected' : '✓ Use this';
+  const btnStyle = isSelected
+    ? 'background:rgba(16,185,129,0.15); color:var(--success); border-color:rgba(16,185,129,0.5);'
+    : '';
+  return `
+    <div style="display: grid;
+                grid-template-columns: 92px 78px 1fr 110px 100px 96px 100px;
+                gap: 10px;
+                padding: 10px 14px;
+                border-bottom: 1px solid var(--border);
+                align-items: center;
+                font-size: 12.5px;">
+      <div style="color: var(--muted);">${esc(dateStr)}</div>
+      <div>${typeBadge}</div>
+      <div style="min-width: 0;">
+        <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${esc(r.description || '')}">${esc(r.description || '(no description)')}</div>
+        ${hintLine}
+      </div>
+      <div style="text-align: right; font-weight: 600;">${amtStr}</div>
+      <div>${matchBadge}</div>
+      <div>${statusBadge}</div>
+      <div style="text-align: right;">
+        <button type="button" class="rr-btn ar-btn-sm" style="${btnStyle}"
+                onclick="_txnBrowserUse('${esc(r.kind)}','${esc(r.id)}')"
+                title="Apply this ${r.kind === 'bank' ? 'transaction' : 'invoice'} to the form">${btnLabel}</button>
+      </div>
+    </div>`;
+}
+
 function _renderTxnBrowserList() {
   const body = document.getElementById('txnBrowserBody');
   const counter = document.getElementById('txnBrowserCount');
@@ -83583,6 +83823,7 @@ function _renderTxnBrowserList() {
   const { u } = _resolveDrawerCtx(_txnBrowserCtx.buildingId, _txnBrowserCtx.floorId, _txnBrowserCtx.unitId);
   if (!u) return;
   const targetCents = Math.round(((+u.contractRent) || (+u.rent) || 0) * 100);
+  const billingYm = _txnBrowserCtx.ym || '';
 
   // Объединяем источники в общий список «row».
   // Bank: показываем ТОЛЬКО депозиты (credits, amount>0). Дебиты
@@ -83626,29 +83867,49 @@ function _renderTxnBrowserList() {
     if (hay.includes(search)) return true;
     if (searchDigits && /^\d+(\.\d+)?$/.test(searchDigits) && amtRounded.includes(searchDigits)) return true;
     return false;
-  }).sort((a, z) => (z.ts || 0) - (a.ts || 0));
+  });
+
+  // Скорим каждую отфильтрованную строку.
+  const scored = filtered.map(r => ({ r, score: _txnBrowserScore(r, targetCents, billingYm) }));
+
+  // Best matches: score >= 0.55, top-5 (UX best practice — short list,
+  // не перегружаем «звёздочками»). Остальные → All transactions.
+  const BEST_THRESHOLD = 0.55;
+  const BEST_MAX = 5;
+  const bestList = scored
+    .filter(x => x.score >= BEST_THRESHOLD)
+    .sort((a, z) => z.score - a.score)
+    .slice(0, BEST_MAX)
+    .map(x => x.r);
+  const bestIds = new Set(bestList.map(r => `${r.kind}:${r.id}`));
+  const otherList = scored
+    .filter(x => !bestIds.has(`${x.r.kind}:${x.r.id}`))
+    .map(x => x.r)
+    .sort((a, z) => (z.ts || 0) - (a.ts || 0));
 
   if (counter) {
     const totalCount = all.length;
-    counter.textContent = filtered.length === totalCount
-      ? `Showing all ${totalCount} transaction${totalCount === 1 ? '' : 's'} (${bankRows.length} bank · ${stripeRows.length} Stripe)`
-      : `Showing ${filtered.length} of ${totalCount} (filtered)`;
+    const showCount = bestList.length + otherList.length;
+    counter.textContent = showCount === totalCount
+      ? `Showing all ${totalCount} transaction${totalCount === 1 ? '' : 's'} (${bankRows.length} bank · ${stripeRows.length} Stripe)${bestList.length ? ` · ${bestList.length} best match${bestList.length === 1 ? '' : 'es'}` : ''}`
+      : `Showing ${showCount} of ${totalCount} (filtered)${bestList.length ? ` · ${bestList.length} best match${bestList.length === 1 ? '' : 'es'}` : ''}`;
   }
 
-  if (!filtered.length) {
+  if (!bestList.length && !otherList.length) {
     body.innerHTML = `
       <div style="padding: 28px 16px; text-align: center; color: var(--muted); font-size: 13px;">
         ${all.length === 0
-          ? 'No transactions found for this tenant. Try widening the range above and click <b>↻ Refresh</b>.'
+          ? 'No transactions found for this tenant. Try widening the date range above and click <b>↻ Refresh</b>.'
           : 'No transactions match your filter.'}
       </div>`;
     return;
   }
 
-  // Header row — общий для bank + stripe.
+  // Header row — общий для Best и All. Колонки: Date, Type, Description+hint,
+  // Amount, Match (delta vs expected), Status (matchState/bucket), Action.
   const header = `
     <div style="display: grid;
-                grid-template-columns: 100px 80px 1fr 120px 120px 110px;
+                grid-template-columns: 92px 78px 1fr 110px 100px 96px 100px;
                 gap: 10px;
                 padding: 10px 14px;
                 background: var(--surface-2);
@@ -83658,74 +83919,40 @@ function _renderTxnBrowserList() {
       <div>Type</div>
       <div>Description</div>
       <div style="text-align: right;">Amount</div>
-      <div>Status / Match</div>
+      <div title="How close to the expected rent for this month">Match</div>
+      <div title="Bank match-state OR Stripe invoice status">Status</div>
       <div></div>
     </div>`;
 
-  const rows = filtered.slice(0, 300).map(r => {
-    const dateStr = r.ts ? new Date(r.ts).toLocaleDateString() : '—';
-    const amtStr = `$${(r.amount || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
-    const typeBadge = r.kind === 'bank'
-      ? `<span style="display:inline-block; padding:2px 8px; background:rgba(14,165,233,0.12); color:#0ea5e9; border-radius:10px; font-size:10.5px; font-weight:600;">🏦 Bank</span>`
-      : `<span style="display:inline-block; padding:2px 8px; background:rgba(99,91,255,0.12); color:#635bff; border-radius:10px; font-size:10.5px; font-weight:600;">💳 Stripe</span>`;
+  let html = '';
 
-    let statusBadge = '';
-    if (r.kind === 'bank') {
-      const exact = targetCents > 0 && Math.round((r.amount || 0) * 100) === targetCents;
-      const closeDelta = targetCents > 0 ? Math.round((r.amount || 0) * 100) - targetCents : 0;
-      statusBadge = exact
-        ? `<span style="display:inline-block; padding:2px 8px; background:rgba(16,185,129,0.15); color:var(--success); border-radius:10px; font-size:10.5px; font-weight:700;">EXACT</span>`
-        : (targetCents > 0 && Math.abs(closeDelta) <= targetCents * 0.15
-            ? `<span style="display:inline-block; padding:2px 8px; background:rgba(14,165,233,0.15); color:#0ea5e9; border-radius:10px; font-size:10.5px;" title="Off by $${(Math.abs(closeDelta) / 100).toLocaleString()}">${closeDelta > 0 ? '+' : '−'}$${(Math.abs(closeDelta) / 100).toLocaleString()}</span>`
-            : (r.matchState === 'suggested'
-                ? `<span style="display:inline-block; padding:2px 8px; background:rgba(99,91,255,0.12); color:#635bff; border-radius:10px; font-size:10.5px;">★ suggested</span>`
-                : ''));
-    } else {
-      // Stripe — показываем bucket / status.
-      const s = (r.statusLabel || '').toLowerCase();
-      const palette = {
-        paid:         ['rgba(16,185,129,0.15)', 'var(--success)'],
-        open:         ['rgba(14,165,233,0.15)', '#0ea5e9'],
-        past_due:     ['rgba(239,68,68,0.15)',  '#ef4444'],
-        draft:        ['rgba(148,163,184,0.18)','var(--muted)'],
-        void:         ['rgba(148,163,184,0.18)','var(--muted)'],
-        uncollectible:['rgba(148,163,184,0.18)','var(--muted)'],
-      };
-      const [bg, fg] = palette[s] || ['rgba(148,163,184,0.18)','var(--muted)'];
-      statusBadge = s
-        ? `<span style="display:inline-block; padding:2px 8px; background:${bg}; color:${fg}; border-radius:10px; font-size:10.5px; font-weight:600;">${esc(s.replace('_', ' ').toUpperCase())}</span>`
-        : '';
-    }
-
-    const isSelected = r.kind === 'bank'
-      ? !!(_mpmCtx?.linkedBankTxn && _mpmCtx.linkedBankTxn.id === r.id)
-      : !!(_mpmCtx?.linkedStripeInvoice && _mpmCtx.linkedStripeInvoice.id === r.id);
-    const btnLabel = isSelected ? '✓ Selected' : '✓ Use this';
-    const btnStyle = isSelected
-      ? 'background:rgba(16,185,129,0.15); color:var(--success); border-color:rgba(16,185,129,0.5);'
-      : '';
-    return `
-      <div style="display: grid;
-                  grid-template-columns: 100px 80px 1fr 120px 120px 110px;
-                  gap: 10px;
-                  padding: 10px 14px;
+  if (bestList.length) {
+    html += `
+      <div style="padding: 8px 14px; background: linear-gradient(135deg, rgba(16,185,129,0.06), rgba(14,165,233,0.04));
                   border-bottom: 1px solid var(--border);
-                  align-items: center;
-                  font-size: 12.5px;">
-        <div style="color: var(--muted);">${esc(dateStr)}</div>
-        <div>${typeBadge}</div>
-        <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${esc(r.description || '')}">${esc(r.description || '(no description)')}</div>
-        <div style="text-align: right; font-weight: 600;">${amtStr}</div>
-        <div>${statusBadge}</div>
-        <div style="text-align: right;">
-          <button type="button" class="rr-btn ar-btn-sm" style="${btnStyle}"
-                  onclick="_txnBrowserUse('${esc(r.kind)}','${esc(r.id)}')"
-                  title="Apply this ${r.kind === 'bank' ? 'transaction' : 'invoice'} to the form">${btnLabel}</button>
-        </div>
+                  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+                  color: var(--success); display: flex; align-items: center; gap: 6px;">
+        <span>⭐ Best matches</span>
+        <span style="color: var(--muted); font-weight: 500; text-transform: none; letter-spacing: 0;">— ranked by amount + month proximity</span>
       </div>`;
-  }).join('');
+    html += bestList.map(r => _txnBrowserBuildRow(r, targetCents, billingYm)).join('');
+  }
 
-  body.innerHTML = header + rows;
+  if (otherList.length) {
+    // Если Best есть — All Transactions начинается свёрнутым; если нет — открыт.
+    const open = bestList.length === 0;
+    html += `
+      <details ${open ? 'open' : ''} style="border-top: ${bestList.length ? '1px solid var(--border)' : 'none'};">
+        <summary style="padding: 8px 14px; background: var(--surface-2); cursor: pointer;
+                        font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+                        color: var(--muted); list-style: none;">
+          ▾ All transactions (${otherList.length})${bestList.length ? ' — click to expand' : ''}
+        </summary>
+        ${otherList.slice(0, 300).map(r => _txnBrowserBuildRow(r, targetCents, billingYm)).join('')}
+      </details>`;
+  }
+
+  body.innerHTML = header + html;
 }
 
 // Диспетч клика «✓ Use this» по типу строки.
@@ -83765,6 +83992,9 @@ window._renderTxnBrowserList = _renderTxnBrowserList;
 window._txnBrowserUse = _txnBrowserUse;
 window._txnBrowserClearSearch = _txnBrowserClearSearch;
 window._txnBrowserSearchToggleClear = _txnBrowserSearchToggleClear;
+window._txnBrowserExpandRange = _txnBrowserExpandRange;
+window._txnBrowserOpenImport = _txnBrowserOpenImport;
+window._txnBrowserCloseAndKeepForm = _txnBrowserCloseAndKeepForm;
 
 // ===== Stripe-invoice suggestions card (зеркало bank-feed) ===============
 // Источник данных — локальный _invoicesCache (наполняется через
