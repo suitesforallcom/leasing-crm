@@ -28870,12 +28870,26 @@ function _renderStackingHeader(b) {
 // across the whole app.
 function _isInactiveSubRoom(u) {
   if (!u || !u.parentId) return false;
-  if (typeof _unitParent !== 'function') return false;
-  const p = _unitParent(u);
-  if (!p) return false;
-  const parentDirectRented = (p.tenant || p.company) && p.status === 'occupied';
-  const parentInGroup      = !!p.groupId;
-  return parentDirectRented || parentInGroup;
+  // Walk floors directly — do NOT use _unitParent() which scopes lookup
+  // to currentFloor() (whatever the UI is showing). Stacking / Rent Roll
+  // / Dashboard iterate units across ALL floors; a sub-room on L1 while
+  // the UI sits on L4 would miss its L1 parent → return false → sub-room
+  // leaks into the chart and shows as a vacant strip next to the
+  // whole-rented parent. Identity-match the floor that contains `u`,
+  // then look up parent in that floor's units. O(total units) per call
+  // but cheap in practice (a few hundred units max).
+  for (const b of (state.buildings || [])) {
+    for (const f of (b.floors || [])) {
+      if (!Array.isArray(f.units)) continue;
+      if (!f.units.includes(u)) continue;
+      const parent = f.units.find(x => x && x.id === u.parentId);
+      if (!parent) return false;
+      const parentDirectRented = (parent.tenant || parent.company) && parent.status === 'occupied';
+      const parentInGroup      = !!parent.groupId;
+      return parentDirectRented || parentInGroup;
+    }
+  }
+  return false;
 }
 
 // Shared filter for "is this unit a leasable office?" — used by every
