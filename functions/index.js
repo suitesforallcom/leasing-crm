@@ -4080,3 +4080,85 @@ exports.disconnectBankAccount = onCall(
     return { detached, detachError };
   }
 );
+
+// Reconcile state.bankConnections against Stripe's authoritative list of
+// FC accounts attached to our operator Customer. Catches "ghost" accounts
+// linked in Stripe but missing from our state (e.g. from earlier sessions
+// that landed at Stripe but failed to round-trip into our state) and
+// surfaces real-time status changes (Stripe can mark an account inactive
+// without us calling disconnect).
+exports.syncBankConnections = onCall(
+  {secrets: [STRIPE_SECRET_KEY], timeoutSeconds: 30},
+  async (req) => {
+    await requireEditor(req.auth);
+    const stripe = getStripe();
+    const state = await readWorkspaceState();
+    const customerId = state.operatorStripeCustomerId;
+    if (!customerId) {
+      // Nothing to sync — operator has never opened the FC widget.
+      return { added: 0, updated: 0, total: 0, accounts: [] };
+    }
+    // Page through every FC account attached to this customer.
+    const stripeAccounts = [];
+    let startingAfter = undefined;
+    for (;;) {
+      const page = await stripe.financialConnections.accounts.list({
+        account_holder: { customer: customerId },
+        limit: 100,
+        ...(startingAfter ? { starting_after: startingAfter } : {}),
+      });
+      stripeAccounts.push(...page.data);
+      if (!page.has_more) break;
+      startingAfter = page.data[page.data.length - 1].id;
+    }
+    let added = 0, updated = 0;
+    const operatorEmail = (req.auth?.token?.email || '').toLowerCase();
+    await mutateWorkspaceState((s) => {
+      s.bankConnections = s.bankConnections || [];
+      for (const acc of stripeAccounts) {
+        const existing = s.bankConnections.find(c => c.stripeFcAccountId === acc.id);
+        if (existing) {
+          // Refresh mutable fields. Stripe is authoritative for status,
+          // permissions, and last4/institution (rarely change but possible
+          // after a re-auth / institution rename).
+          if (existing.status !== (acc.status || existing.status)) updated++;
+          existing.status = acc.status || existing.status || 'active';
+          existing.permissions = acc.permissions || existing.permissions || [];
+          existing.institutionName = acc.institution_name || existing.institutionName;
+          existing.accountLast4 = acc.last4 || existing.accountLast4;
+          existing.accountCategory = acc.category || existing.accountCategory;
+          existing.accountSubcategory = acc.subcategory || existing.accountSubcategory;
+          existing.lastSyncedAt = new Date().toISOString();
+          continue;
+        }
+        s.bankConnections.push({
+          id: 'bc_' + acc.id,
+          stripeFcAccountId: acc.id,
+          institutionName: acc.institution_name || 'Unknown bank',
+          accountLast4: acc.last4 || '',
+          accountCategory: acc.category || '',
+          accountSubcategory: acc.subcategory || '',
+          displayName: acc.display_name
+            || `${acc.institution_name || 'Bank'} ····${acc.last4 || '????'}`,
+          permissions: acc.permissions || [],
+          status: acc.status || 'active',
+          connectedAt: new Date().toISOString(),
+          connectedBy: operatorEmail,
+          lastPolledAt: null,
+          lastSyncedAt: new Date().toISOString(),
+          syncedFromStripe: true,  // marks records reconciled (not freshly OAuthed)
+        });
+        added++;
+      }
+    });
+    logger.info(`[bank-feed] syncBankConnections: customer=${customerId} stripe=${stripeAccounts.length} added=${added} updated=${updated}`);
+    return {
+      added,
+      updated,
+      total: stripeAccounts.length,
+      accounts: stripeAccounts.map(a => ({
+        id: a.id, last4: a.last4, status: a.status, institution: a.institution_name,
+      })),
+    };
+  }
+);

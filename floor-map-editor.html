@@ -14785,6 +14785,9 @@
           <svg viewBox="0 0 24 24"><path d="M3 21h18M3 10h18M5 6l7-3 7 3M4 10v11M20 10v11M8 14v3M12 14v3M16 14v3"/></svg>
           Connect bank account
         </button>
+        <button class="int-btn outline" id="bankFeedSyncBtn" onclick="syncBankConnectionsFromStripe()" title="Pull the authoritative list of linked accounts from Stripe — surfaces any account that exists in Stripe but is missing from this view (e.g. from earlier connect attempts).">
+          ↻ Sync from Stripe
+        </button>
       </div>
       <div class="int-status-msg" id="bankFeedStatusMsg"></div>
       <div class="int-help" style="margin-top:10px; font-size:11px;">
@@ -58348,6 +58351,33 @@ async function disconnectBankAccount(fcAccountId) {
   }
 }
 
+async function syncBankConnectionsFromStripe(opts) {
+  const silent = opts && opts.silent;
+  const btn = document.getElementById('bankFeedSyncBtn');
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; }
+  if (!silent) setIntStatus('bankFeed', 'info', '⏳ Syncing from Stripe…');
+  try {
+    const fn = stripeCallable('syncBankConnections');
+    const { data } = await fn({});
+    const total = data?.total || 0;
+    const added = data?.added || 0;
+    const updated = data?.updated || 0;
+    if (!silent) {
+      let msg;
+      if (!total) msg = 'No accounts linked at Stripe yet — click "Connect bank account" to add one.';
+      else if (added) msg = `✓ Found ${total} account(s) at Stripe — added ${added} missing record(s)${updated ? `, refreshed ${updated}` : ''}. Each row below has a Disconnect button.`;
+      else msg = `✓ In sync — ${total} account(s) at Stripe, ${updated} refreshed. Already showing all of them below.`;
+      setIntStatus('bankFeed', 'success', msg);
+    }
+    _renderBankConnections();
+  } catch (err) {
+    if (!silent) setIntStatus('bankFeed', 'error', `⚠ Sync failed: ${esc(err?.message || String(err))}`);
+    console.warn('[bank-feed] sync failed:', err);
+  } finally {
+    if (btn) { btn.disabled = false; btn.style.opacity = ''; }
+  }
+}
+
 function _renderBankConnections() {
   const host = document.getElementById('bankFeedConnectionsList');
   if (!host) return;
@@ -75453,8 +75483,19 @@ function setSettingsTab(tabId) {
   }
   // Bank Connections — same idea: re-render on open so newly-connected
   // accounts (or status changes from another tab) reflect immediately.
+  // Then silently reconcile against Stripe so any "ghost" account that
+  // exists at Stripe but is missing from local state shows up with a
+  // working Disconnect button. Throttled to 1/min to avoid hammering
+  // Stripe on rapid tab toggles.
   if (tabId === 'integrations' && typeof _renderBankConnections === 'function') {
     setTimeout(() => { try { _renderBankConnections(); } catch (e) { console.warn(e); } }, 0);
+    if (typeof syncBankConnectionsFromStripe === 'function') {
+      const last = window._bankSyncLastAt || 0;
+      if (Date.now() - last > 60_000) {
+        window._bankSyncLastAt = Date.now();
+        setTimeout(() => syncBankConnectionsFromStripe({ silent: true }).catch(() => {}), 250);
+      }
+    }
   }
   // Templates panel also renders the Common charges list — defined
   // alongside document templates because both are workspace-level
