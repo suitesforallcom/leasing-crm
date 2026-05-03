@@ -19038,44 +19038,52 @@ function loadState() {
       }
       localStorage.setItem(ADD_SVC_SEED_MIGRATION_KEY, '1');
     }
-    // One-time lease-head consolidation: for every multi-suite group, move
-    // ALL financial state (combined rent, payments, deposit, late-fee config,
+    // Lease-head consolidation: for every multi-suite group, move ALL
+    // financial state (combined rent, payments, deposit, late-fee config,
     // Stripe invoices) onto the head member (groupRole='primary'). Non-head
     // members retain only structural fields (geometry, sqft, suite#) and
     // mirrored tenant identity. Without this, a single combined rent check
     // landing on the head leaves the other members showing phantom "X
     // months unpaid" overdue badges. See _isFinanceShadow / _unitLeaseHead.
-    const LEASE_HEAD_MIGRATION_KEY = 'sfa_lease_head_consolidation_v1';
-    if (!localStorage.getItem(LEASE_HEAD_MIGRATION_KEY)) {
-      try {
-        if (typeof _localBackupCreate === 'function') {
-          _localBackupCreate('pre-mutation', 'Before lease-head consolidation');
-        }
-      } catch (e) { console.warn('[lease-head] snapshot failed', e); }
-      try {
-        const groupIds = new Set();
-        for (const b of (state.buildings || [])) {
-          for (const f of (b.floors || [])) {
-            for (const u of (f.units || [])) {
-              if (u && u.groupId) groupIds.add(u.groupId);
-            }
+    //
+    // Two-phase design (so a Firestore-side restore can't un-consolidate
+    // a group without re-running this):
+    //   Phase A (one-time, guarded by sfa_lease_head_consolidation_v1):
+    //       merge payments + Stripe + deposit + late-fee fields onto head
+    //       and CLEAR them on members. These are destructive merges that
+    //       must not run twice.
+    //   Phase B (idempotent, every load):
+    //       recompute head.contractRent / head.rent as the sum across all
+    //       members and zero members. Self-healing — even if Firestore
+    //       sync replaces state with a pre-consolidation copy, the next
+    //       load restores the lease-head invariant.
+    try {
+      const groupIds = new Set();
+      for (const b of (state.buildings || [])) {
+        for (const f of (b.floors || [])) {
+          for (const u of (f.units || [])) {
+            if (u && u.groupId) groupIds.add(u.groupId);
           }
         }
-        let consolidated = 0;
-        for (const gid of groupIds) {
-          const members = (typeof _unitsInGroup === 'function') ? _unitsInGroup(gid) : [];
-          if (members.length < 2) continue;
-          const head = (typeof _groupPrimary === 'function') ? _groupPrimary(gid) : null;
-          if (!head) continue;
-          // Compute combined rent BEFORE we mutate.
-          let combinedContract = 0, combinedRent = 0;
-          for (const m of members) {
-            combinedContract += (+m.contractRent) || 0;
-            combinedRent     += (+m.rent) || 0;
+      }
+      const LEASE_HEAD_MIGRATION_KEY = 'sfa_lease_head_consolidation_v1';
+      const phaseADone = !!localStorage.getItem(LEASE_HEAD_MIGRATION_KEY);
+      if (!phaseADone && groupIds.size > 0) {
+        try {
+          if (typeof _localBackupCreate === 'function') {
+            _localBackupCreate('pre-mutation', 'Before lease-head consolidation');
           }
-          // Merge payments — head's existing keys win on conflict (production
-          // groups have ZERO payment records anyway, so this is mostly a
-          // forward-compat safety net).
+        } catch (e) { console.warn('[lease-head] snapshot failed', e); }
+      }
+      let phaseAconsolidated = 0;
+      let phaseBchanged = 0;
+      for (const gid of groupIds) {
+        const members = (typeof _unitsInGroup === 'function') ? _unitsInGroup(gid) : [];
+        if (members.length < 2) continue;
+        const head = (typeof _groupPrimary === 'function') ? _groupPrimary(gid) : null;
+        if (!head) continue;
+        // ----- Phase A: destructive merges (run once per browser) -----
+        if (!phaseADone) {
           head.payments = head.payments || {};
           for (const m of members) {
             if (m === head) continue;
@@ -19084,8 +19092,6 @@ function loadState() {
             }
             m.payments = {};
           }
-          // Carry money-bearing fields from members to head if head doesn't
-          // already have them (head wins on conflict). Then strip from members.
           for (const m of members) {
             if (m === head) continue;
             for (const k of ['stripe', 'extraCharges', 'lateFeeInvoices', 'lateFeeDismissed', 'lateFeeOverride']) {
@@ -19094,20 +19100,29 @@ function loadState() {
             }
             if ((+m.deposit) > 0 && !(+head.deposit)) head.deposit = m.deposit;
             delete m.deposit;
-            m.contractRent = 0;
-            m.rent = 0;
           }
-          head.contractRent = combinedContract;
-          head.rent = combinedRent;
-          consolidated++;
+          phaseAconsolidated++;
         }
-        if (consolidated > 0) {
-          console.log('[lease-head] Consolidated ' + consolidated + ' multi-suite group(s) onto head member');
-          setTimeout(() => { try { if (typeof saveState === 'function') saveState(); } catch {} }, 0);
+        // ----- Phase B: idempotent rent rollup (every load) -----
+        let combinedContract = 0, combinedRent = 0;
+        for (const m of members) {
+          combinedContract += (+m.contractRent) || 0;
+          combinedRent     += (+m.rent) || 0;
         }
-      } catch (e) { console.warn('[lease-head] migration failed', e); }
-      localStorage.setItem(LEASE_HEAD_MIGRATION_KEY, '1');
-    }
+        for (const m of members) {
+          if (m === head) continue;
+          if ((+m.contractRent) !== 0) { m.contractRent = 0; phaseBchanged++; }
+          if ((+m.rent) !== 0)         { m.rent = 0;         phaseBchanged++; }
+        }
+        if ((+head.contractRent) !== combinedContract) { head.contractRent = combinedContract; phaseBchanged++; }
+        if ((+head.rent) !== combinedRent)             { head.rent = combinedRent;             phaseBchanged++; }
+      }
+      if (phaseAconsolidated > 0 || phaseBchanged > 0) {
+        console.log('[lease-head] Phase A consolidated=' + phaseAconsolidated + ', Phase B fields changed=' + phaseBchanged);
+        setTimeout(() => { try { if (typeof saveState === 'function') saveState(); } catch {} }, 0);
+      }
+      if (!phaseADone) localStorage.setItem(LEASE_HEAD_MIGRATION_KEY, '1');
+    } catch (e) { console.warn('[lease-head] migration failed', e); }
     // Self-healing leaseTerm derivation: every load, derive `u.leaseTerm`
     // from (leaseStart, until) using the end-of-month convention. The
     // previous version gated this behind a localStorage flag, but the
@@ -60949,6 +60964,35 @@ function _leaseDocActiveRent(u) {
 // requiring a separate "publish rent" step from the operator.
 function _leaseDocSyncContractRent(u) {
   if (!u) return false;
+  // Multi-suite group handling: the lease is conceptually ONE contract
+  // covering all members but each suite still has its own lease-doc
+  // record (legacy: pro-rata splits). Roll up to the head:
+  //   - head.contractRent = sum of every member's active lease-doc rent
+  //   - non-head members.contractRent = 0
+  // This keeps `_leaseDocSyncContractRent` from reverting the lease-head
+  // migration's combined total back to a single suite's pro-rata share.
+  if (u.groupId) {
+    const head = (typeof _unitLeaseHead === 'function') ? _unitLeaseHead(u) : u;
+    if (u !== head && (typeof _unitIsLeaseHead === 'function') && !_unitIsLeaseHead(u)) {
+      if (+u.contractRent !== 0) { u.contractRent = 0; return true; }
+      return false;
+    }
+    if (u === head) {
+      const members = (typeof _unitsInGroup === 'function') ? _unitsInGroup(u.groupId) : [u];
+      let combined = 0;
+      for (const m of members) {
+        const r = _leaseDocActiveRent(m);
+        if (r != null) combined += +r || 0;
+      }
+      if (combined > 0) {
+        if (+head.contractRent === combined) return false;
+        head.contractRent = combined;
+        return true;
+      }
+      // No active lease docs anywhere in the group — fall through to
+      // single-unit logic so nothing is changed unexpectedly.
+    }
+  }
   const next = _leaseDocActiveRent(u);
   if (next == null) return false;
   if (+u.contractRent === +next) return false;
