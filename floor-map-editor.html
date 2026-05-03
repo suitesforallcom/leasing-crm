@@ -71302,6 +71302,13 @@ function _hvRenderActivity() {
 function _hvQueueClick(uid) {
   const [bId, fId, uId] = (uid || '').split('|');
   if (!bId) return;
+  // Открываем правый tenant-drawer прямо поверх Home View — оператор
+  // остаётся на главной, drawer выезжает справа. Раньше клик принудительно
+  // прыгал на Floor Plan (showFloorPlan + selectUnit), оператор просил slide-out.
+  if (typeof openTenantDrawer === 'function') {
+    try { openTenantDrawer(bId, fId, uId); return; } catch (e) { console.warn('[hv-queue-click drawer]', e); }
+  }
+  // Фолбэк: если drawer-helper не загружен — старое поведение (прыжок на план).
   try {
     state.ui = state.ui || {};
     state.ui.currentBuildingId = bId;
