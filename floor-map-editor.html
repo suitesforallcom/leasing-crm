@@ -35730,66 +35730,10 @@ function _renderUnitSubRoomBanner(u) {
       </div>`;
   }
 
-  // isParent path — list sub-rooms with quick-jump
-  const fmt = (n) => '$' + (+n || 0).toLocaleString();
-  // Parent is "whole-rented" if it has a tenant + occupied status OR it's
-  // part of a multi-suite-lease group (grouped suites are treated as
-  // occupied even if the operator hasn't explicitly flipped status). Sub-
-  // rooms of a whole-rented parent should NOT display as "vacant" — they
-  // are covered by the parent's lease.
-  const inGroup = !!u.groupId;
-  const groupTenant = inGroup && typeof _groupPrimary === 'function'
-    ? (() => {
-        const p = _groupPrimary(u.groupId);
-        return p ? (p.tenant || p.company || '').trim() : '';
-      })()
-    : '';
-  const wholeRented = !!((u.tenant || u.company) && u.status === 'occupied') || (inGroup && groupTenant);
-  const parentTenantName = (u.tenant || u.company || groupTenant || '').trim();
-  const occupiedKids = children.filter(c => c.status === 'occupied');
-  const subRoomRows = children.map(c => {
-    const tenant = (c.tenant || c.company || '').trim();
-    const rent = +c.contractRent || +c.rent || 0;
-    const isOccupied = c.status === 'occupied';
-    // When the parent is whole-rented, sub-rooms aren't "vacant" — they
-    // are inactive because the parent's lease covers the whole physical
-    // space. Show that explicitly with an amber dot + plain-language
-    // label, instead of a grey dot + "vacant" italic that misleadingly
-    // implies "available to rent".
-    const dot = wholeRented ? '#f59e0b' : (isOccupied ? '#16a34a' : '#94a3b8');
-    const labelHtml = wholeRented
-      ? `<span style="color:#92400e;">Covered by parent lease${parentTenantName ? ` · ${esc(parentTenantName)}` : ''}</span>`
-      : (tenant ? esc(tenant) : '<i style="color: #94a3b8;">vacant</i>');
-    return `
-      <div style="display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; cursor: pointer; transition: background 0.1s;" onmouseover="this.style.background='#fff'" onmouseout="this.style.background='transparent'" onclick="_unitJumpTo('${esc(c.id)}')">
-        <span style="display: inline-block; width: 8px; height: 8px; background: ${dot}; border-radius: 50%; flex-shrink: 0;"></span>
-        <span style="font-weight: 700; color: #0f172a; min-width: 50px;">${esc(c.id)}</span>
-        <span style="flex: 1; color: #475569; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-          ${labelHtml}
-        </span>
-        ${rent > 0 && !wholeRented ? `<span style="color: #475569; font-size: 11px; font-variant-numeric: tabular-nums;">${esc(fmt(rent))}/mo</span>` : ''}
-      </div>`;
-  }).join('');
-  const summary = wholeRented
-    ? (inGroup
-        ? `Whole-rented (multi-suite lease) · sub-rooms covered by parent lease`
-        : `Whole-rented · sub-rooms covered by parent lease`)
-    : `${occupiedKids.length} of ${children.length} room${children.length === 1 ? '' : 's'} rented`;
-
-  return `
-    <div style="margin: 6px 16px 10px; padding: 10px 12px; background: ${wholeRented ? '#fef3c7' : '#f0f9ff'}; border: 1px solid ${wholeRented ? '#fcd34d' : '#bae6fd'}; border-radius: 8px; font-size: 12.5px;">
-      <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 6px;">
-        <span style="font-size: 16px; flex-shrink: 0;">🏢</span>
-        <div style="flex: 1;">
-          <div style="font-weight: 700; color: #0f172a;">Suite hosts ${children.length} sub-room${children.length === 1 ? '' : 's'}</div>
-          <div style="font-size: 11.5px; color: ${wholeRented ? '#92400e' : '#075985'}; margin-top: 2px;">${esc(summary)}</div>
-        </div>
-        ${state.settings.editMode && !u.parentId ? `<button type="button" onclick="_unitAddSubRoomChoose('${esc(u.id)}')" style="padding: 4px 10px; border: 0; background: #0284c7; color: #fff; border-radius: 5px; font-weight: 700; font-size: 11px; cursor: pointer; flex-shrink: 0;">+ Add room</button>` : ''}
-      </div>
-      <div style="background: #f8fafc; border-radius: 6px; padding: 4px;">
-        ${subRoomRows}
-      </div>
-    </div>`;
+  // Parent banner (the "Suite hosts N sub-rooms" panel) intentionally not
+  // rendered — sub-rooms redirect to parent on click and the multi-suite-
+  // lease banner already conveys group context.
+  return '';
 }
 
 // Quick-jump from one unit to another (parent ↔ child link in the banner).
@@ -40162,14 +40106,18 @@ function renderDetail() {
     ? _renderUnitTenantGroupBanner(u)
     : '';
 
+  // Tab nav sits directly under the rent card so the tab strip is always
+  // the next thing the operator sees after the header (operator request).
+  // Multi-suite + sub-room context banners moved into the Overview pane
+  // so they don't push tabs out of view on tabs that don't need them.
+  const overviewPaneHtml = `${tenantGroupBanner}${subRoomBanner}${panes.overview}`;
+  const panesOrdered = { ...panes, overview: overviewPaneHtml };
   el.innerHTML = `
     <div class="unit-panel-v2">
       ${v2Header}
-      ${tenantGroupBanner}
-      ${subRoomBanner}
       ${v2Tabs}
       <div class="upv2-content">
-        ${Object.entries(panes).map(([name, html]) =>
+        ${Object.entries(panesOrdered).map(([name, html]) =>
           `<div class="upv2-pane ${name === activeTab ? 'active' : ''}" data-up-pane="${name}">${html}</div>`
         ).join('')}
       </div>
