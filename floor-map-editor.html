@@ -46632,7 +46632,12 @@ function _renderUnitPaymentHealth(u) {
       const methodLabels = { check:'Check', ach:'Bank transfer', wire:'Wire', cash:'Cash', stripe:'Stripe', backfill:'Backfilled (manual)', other:'Other' };
       const method = methodLabels[p.paidMethod || p.paidVia] || 'Paid';
       const isBackfill = (p.paidMethod === 'backfill' || p.paidVia === 'backfill');
-      const paidAt = p.date ? new Date(p.date + 'T00:00:00') : null;
+      // Prefer bank's authoritative date when available — bankPaidAt is set
+      // by submitManualPayment whenever the operator linked a bank-feed
+      // transaction. Falls back to p.date (operator-typed) for legacy /
+      // non-bank-linked payments.
+      const paidDateStr = p.bankPaidAt || p.date || '';
+      const paidAt = paidDateStr ? new Date(paidDateStr + 'T00:00:00') : null;
       // Late-paid detection — graceDays=5 means "by the 5th of the
       // month" (calendar day 5 inclusive). Day 5 is 4 calendar days
       // after the 1st, so the cutoff is `(graceDays - 1)` days after
@@ -46881,7 +46886,7 @@ function _renderUnitPaymentHealth(u) {
                     return `<div class="ph-cell ph-empty"
                                  onclick="openManualPaymentModal('${esc(b.id)}','${esc(f.id)}','${esc(u.id)}','${ymHere}')"
                                  style="cursor: pointer;"
-                                 title="${esc(tip)}\n\nClick to record a payment for this month.">
+                                 data-tt-portal="${esc(tip + '\n\nClick to record a payment for this month.')}">
                               <div class="ph-cell-label">${monthLetters[idx]}</div>
                             </div>`;
                   }
@@ -46896,11 +46901,12 @@ function _renderUnitPaymentHealth(u) {
                     c.cls === 'pre-tenancy' ? '\n\nClick to record a payment for this month.' :
                     c.cls === 'future'      ? '\n\nClick to record an advance payment.' :
                                               '';
+                  const _phTipText = `${c.tooltip}${c.feePaid ? '\n\n💰 Late fee invoice paid this cycle' : ''}${hint}`;
                   return `
                     <div class="ph-cell ${c.cls}${c.feePaid ? ' fee-paid' : ''}"
                          onclick="openManualPaymentModal('${esc(b.id)}','${esc(f.id)}','${esc(u.id)}','${c.ym}')"
                          style="cursor: pointer;"
-                         title="${esc(c.tooltip)}${c.feePaid ? '\n\n💰 Late fee invoice paid this cycle' : ''}${hint}">
+                         data-tt-portal="${esc(_phTipText)}">
                       <div class="ph-cell-label">${esc(c.label)}</div>
                       ${c.feePaid ? '<div class="ph-cell-fee-dot" title="Late fee paid">$</div>' : ''}
                     </div>`;
@@ -81555,6 +81561,13 @@ async function submitManualPayment() {
           source: 'bank-feed',
           bankTxnId: linkedBank.id,
           bankAccountId: linkedBank.accountId || null,
+          // Bank's authoritative payment date — preserved even if operator
+          // later edits the form's date field. Surfaced in the payment-history
+          // hover tooltip so the date the BANK saw the money matches the date
+          // shown in the UI.
+          bankPaidAt: linkedBank.transactedAt
+            ? new Date(linkedBank.transactedAt * 1000).toISOString().slice(0, 10)
+            : null,
         } : {}),
       };
       // Drop waiver-specific fields if this entry was previously a waiver.
