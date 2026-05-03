@@ -25066,27 +25066,73 @@ function _computeRevenueForecast(nonRenewalPct, floorFilter) {
     if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
     for (const f of (b.floors || [])) {
       if (!_floorOk(b.id, f.id)) continue;
-      // Шаг 1: занятые юниты — копим в allActive + currentMRR.
-      for (const u of (f.units || [])) {
-        if (u.rentable === false || (u.type && u.type !== 'office')) continue;
-        if (u.status !== 'occupied' || (!u.tenant && !u.company)) continue;
-        const rent = +u.contractRent || +u.rent || 0;
-        if (rent <= 0) continue;
-        const startStr = u.leaseStart || u.signed || '';
-        const endStr   = u.until || u.leaseEnd || '';
+      // Шаг 1: занятые юниты — консолидируем по groupId (один групповой
+      // лиз = одна запись), считаем wholeFloorFlat и копим в allActive.
+      //
+      // ПОЧЕМУ консолидация: до этого фикса каждый member группы шёл
+      // отдельной записью. Если у members чуть разные end-даты (data
+      // drift / lease ещё не мигрирован под lease-head-architecture),
+      // их renewal-циклы раскидывались по разным месяцам — на чарте
+      // вылезали фантомные lost+new в произвольных месяцах (Jan/Feb
+      // в скриншоте оператора). После консолидации один group = один
+      // ledger-entry с одной датой ренью.
+      //
+      // wholeFloorFlat: если bucket покрывает >=95% leasable-sqft
+      // этажа, считаем его «арендой на весь этаж» — для таких лизов
+      // в monthly-loop применяем 3% годовую эскалацию (стандарт CRE).
+      const _floorLeasableUnits = _allLeasableInScope
+        ? _allLeasableInScope(f)
+        : (f.units || []).filter(u => u.rentable !== false && (!u.type || u.type === 'office'));
+      const _floorLeasableSqft = _floorLeasableUnits.reduce((s, u) => s + (+u.sqft || 0), 0);
+      // Бакетизация: groupId → массив members, или 'solo:'+u.id для
+      // одиночных юнитов. Берём ВСЕ leasable-юниты этажа, чтобы
+      // правильно сосчитать bucketSqft (включая тех members группы,
+      // что числятся не occupied — для group-лиза они часть площади).
+      const _buckets = new Map();
+      for (const u of _floorLeasableUnits) {
+        const key = u.groupId ? `g:${u.groupId}` : `solo:${u.id}`;
+        if (!_buckets.has(key)) _buckets.set(key, []);
+        _buckets.get(key).push(u);
+      }
+      for (const [, members] of _buckets) {
+        // Голова бакета: для группы — groupRole='primary' (если есть);
+        // иначе первый member.
+        const primary = members.find(m => m.groupRole === 'primary') || members[0];
+        // Лиз считается «активным» если голова занята и есть тенант.
+        if (primary.status !== 'occupied' || (!primary.tenant && !primary.company)) continue;
+        // Сумма ренты по бакету: голова post-lease-head хранит
+        // комбинированную ренту, остальные нули; pre-migration —
+        // pro-rata по members. Берём max(headRent, sumOfMembers),
+        // чтобы оба сценария дали верный итог.
+        const headRent = +primary.contractRent || +primary.rent || 0;
+        let sumMembersRent = 0;
+        let bucketSqft = 0;
+        for (const m of members) {
+          sumMembersRent += +m.contractRent || +m.rent || 0;
+          bucketSqft += +m.sqft || 0;
+        }
+        const bucketRent = Math.max(headRent, sumMembersRent);
+        if (bucketRent <= 0) continue;
+        const startStr = primary.leaseStart || primary.signed || '';
+        const endStr   = primary.until || primary.leaseEnd || '';
         const startMs  = startStr ? new Date(startStr + 'T00:00:00').getTime() : null;
         const endMs    = endStr   ? new Date(endStr   + 'T00:00:00').getTime() : null;
-        // Срок аренды в месяцах. Приоритет: u.leaseTerm (валидированный
-        // ввод из дропдауна) → вычислен из дат end-start → по умолчанию 12.
+        // Срок аренды: приоритет — u.leaseTerm головы → derived из
+        // дат → 12 по умолчанию.
         let term = 12;
-        const tRaw = String(u.leaseTerm || '').trim().toLowerCase();
+        const tRaw = String(primary.leaseTerm || '').trim().toLowerCase();
         if (tRaw === 'mtm' || tRaw === 'm2m') term = 0;
         else if (/^\d+$/.test(tRaw)) term = parseInt(tRaw, 10);
         else if (startMs && endMs && endMs > startMs) {
           term = Math.max(1, Math.round((endMs - startMs) / (86400000 * 30.4375)));
         }
-        currentMRR += rent;
-        allActive.push({ startMs, endMs, rent, term });
+        // Полно-этажный флэт: bucket покрывает почти всю leasable
+        // площадь этажа. Порог 95% — допускает погрешность сумм sqft
+        // (округления, мелкие service-юниты вне группы).
+        const wholeFloorFlat = _floorLeasableSqft > 0
+          && (bucketSqft / _floorLeasableSqft) >= 0.95;
+        currentMRR += bucketRent;
+        allActive.push({ startMs, endMs, rent: bucketRent, term, wholeFloorFlat });
       }
       // Шаг 2: свободная ёмкость от вакантных юнитов того же этажа.
       // Берём asking-rent (proforma): contractRent если задан, иначе rent.
@@ -25329,6 +25375,14 @@ function _computeRevenueForecast(nonRenewalPct, floorFilter) {
       nextRenewalAt,
       isExisting: true,
       cohortMonth: -1,    // existed before forecast started
+      // Поля для 3% годовой эскалации полно-этажных флэт-аренд:
+      // — wholeFloorFlat: триггер
+      // — startMs:        дата старта, по ней считаем годовщины
+      // — _lastEscMonths: сколько месяцев с старта мы УЖЕ применили
+      //                   эскалацию (защита от повторного применения)
+      wholeFloorFlat: !!a.wholeFloorFlat,
+      startMs: a.startMs || null,
+      _lastEscMonths: 0,
     });
   }
 
@@ -25343,6 +25397,30 @@ function _computeRevenueForecast(nonRenewalPct, floorFilter) {
   for (let i = 0; i < 12; i++) {
     const mStart = new Date(today.getFullYear(), today.getMonth() + i, 1);
     const mEnd   = new Date(today.getFullYear(), today.getMonth() + i + 1, 0);
+
+    // 3% годовая эскалация для full-floor flat-аренд. На каждой
+    // годовщине стартовой даты лиза умножаем l.rent на 1.03. Чек по
+    // _lastEscMonths гарантирует, что в одном месяце годовщина
+    // применится один раз, даже если функция forecast пере-вызывается
+    // в той же сессии. ANNUAL_ESCALATION_RATE захардкожен 3% — это
+    // стандартная ставка эскалации для коммерческой office-аренды
+    // в США (2-4%/yr); если оператор захочет настраивать — вынесем
+    // в setting позже.
+    const ANNUAL_ESCALATION_RATE = 0.03;
+    const _mStartMs = mStart.getTime();
+    for (const l of ledger) {
+      if (!l.wholeFloorFlat || !l.startMs) continue;
+      const monthsSinceStart = Math.round((_mStartMs - l.startMs) / (86400000 * 30.4375));
+      if (monthsSinceStart <= 0) continue;
+      // Сколько годовщин уже должно было сработать к этому месяцу.
+      const dueAnniversaries = Math.floor(monthsSinceStart / 12);
+      const appliedAnniversaries = Math.floor(l._lastEscMonths / 12);
+      const pendingCount = dueAnniversaries - appliedAnniversaries;
+      if (pendingCount > 0) {
+        l.rent *= Math.pow(1 + ANNUAL_ESCALATION_RATE, pendingCount);
+        l._lastEscMonths = dueAnniversaries * 12;
+      }
+    }
 
     // Снапшот выручки ДО ренью / оттока этого месяца.
     let beforeAlive = 0;
@@ -25777,7 +25855,12 @@ function renderHomeForecast() {
   // сверки тоже полезно). Показываем только если scope не на 100%
   // занят: при vacantCapacity == 0 потолок совпадает с текущим MRR
   // и линия превращается в шум.
-  const showCeiling = (f.vacantCapacity || 0) > 0 && capacityCeiling > 0;
+  // Ceiling-линию показываем всегда, когда есть положительный
+  // capacityCeiling — даже на 100%-занятых scope'ах (там она совпадёт
+  // с верхом зелёного стека и сразу даст оператору сравнение прогноза
+  // с физическим максимумом). Раньше скрывали при vacantCapacity == 0,
+  // но оператор хочет видеть линию для одиночного этажа тоже.
+  const showCeiling = capacityCeiling > 0;
   const ceilingY = pad.t + chartH - (capacityCeiling / maxStack) * chartH;
   // Подпись потолка: основной ярлык — $/sqft/yr (стандартная котировка
   // коммерческой недвижимости). Это позволяет оператору сразу сравнить
