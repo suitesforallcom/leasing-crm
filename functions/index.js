@@ -4412,23 +4412,37 @@ async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, stat
 }
 
 // Update the watermark + call the matcher after a successful pull.
-async function _markAccountPolled({fcAccountId, scanned, written, transactionRefreshStatus}) {
+// `transactionRefreshTriggered` = poll bailed out because Stripe wasn't ready
+// yet; do NOT advance lastPolledAt or backfillCompleted, otherwise next poll's
+// incremental window will skip the historical transactions Stripe is about to
+// land. `written > 0` flips backfillCompleted=true so we can switch from the
+// 365-day backfill window to incremental polling thereafter.
+async function _markAccountPolled({fcAccountId, scanned, written, transactionRefreshStatus, transactionRefreshTriggered}) {
   const nowIso = new Date().toISOString();
   await mutateWorkspaceState((s) => {
     if (!Array.isArray(s.bankConnections)) return;
     const c = s.bankConnections.find(x => x.stripeFcAccountId === fcAccountId);
     if (!c) return;
+    if (transactionRefreshTriggered) {
+      // Stripe wasn't ready — record the attempt but do not advance the
+      // watermark, otherwise the next poll's incremental query will exclude
+      // historical transactions Stripe is about to backfill.
+      c.transactionRefreshStatus = transactionRefreshStatus || 'pending';
+      c.lastPollScanned = scanned;
+      c.lastPollWritten = written;
+      return;
+    }
     c.lastPolledAt = nowIso;
     c.lastPollScanned = scanned;
     c.lastPollWritten = written;
-    if (transactionRefreshStatus) {
-      c.transactionRefreshStatus = transactionRefreshStatus;
-    } else {
-      // Poll succeeded (no `transactionRefreshTriggered` flag) — Stripe is
-      // past the "preparing" stage. Clear any stale pending hint regardless
-      // of whether we got 0 or N transactions back.
-      delete c.transactionRefreshStatus;
+    if (written > 0) {
+      // We've actually pulled real data → backfill done, future polls go
+      // incremental from this lastPolledAt.
+      c.backfillCompleted = true;
     }
+    // Poll succeeded — clear any stale "preparing" hint regardless of
+    // whether we got 0 or N transactions back.
+    delete c.transactionRefreshStatus;
   });
 }
 
@@ -4451,7 +4465,12 @@ exports.pollBankTransactions = onCall(
     }
     const results = [];
     for (const c of conns) {
-      const since = isBackfill || !c.lastPolledAt
+      // Window decision: stay in 365-day backfill mode until we've actually
+      // pulled at least one transaction (`backfillCompleted`). Otherwise an
+      // initial poll that happens before Stripe finishes its first refresh
+      // would advance lastPolledAt to "now" and the next incremental poll
+      // would query `transacted_at >= now`, missing every historical txn.
+      const since = isBackfill || !c.backfillCompleted || !c.lastPolledAt
         ? Math.floor(Date.now() / 1000) - (BANK_FEED_BACKFILL_DAYS * 86400)
         : Math.floor(new Date(c.lastPolledAt).getTime() / 1000);
       try {
@@ -4466,6 +4485,7 @@ exports.pollBankTransactions = onCall(
           scanned: r.scanned,
           written: r.written,
           transactionRefreshStatus: r.transactionRefreshStatus,
+          transactionRefreshTriggered: r.transactionRefreshTriggered,
         });
         results.push({ fcAccountId: c.stripeFcAccountId, ...r, error: null });
         logger.info(`[bank-feed] poll ${c.stripeFcAccountId}: scanned=${r.scanned} written=${r.written} backfill=${isBackfill}${r.transactionRefreshTriggered ? ' (refresh-triggered)' : ''}`);
@@ -4512,9 +4532,12 @@ exports.bankFeedScheduledPoll = onSchedule(
     const stripe = getStripe();
     let totalWritten = 0;
     for (const c of due) {
-      const sinceUnix = c.lastPolledAt
-        ? Math.floor(new Date(c.lastPolledAt).getTime() / 1000)
-        : Math.floor(now / 1000) - (BANK_FEED_BACKFILL_DAYS * 86400);
+      // Same window logic as the on-demand poller: stay in 365-day backfill
+      // mode until backfillCompleted=true (set by _markAccountPolled when the
+      // first poll actually writes data).
+      const sinceUnix = (!c.backfillCompleted || !c.lastPolledAt)
+        ? Math.floor(now / 1000) - (BANK_FEED_BACKFILL_DAYS * 86400)
+        : Math.floor(new Date(c.lastPolledAt).getTime() / 1000);
       try {
         const r = await _pullTransactionsForAccount({
           stripe,
@@ -4527,6 +4550,7 @@ exports.bankFeedScheduledPoll = onSchedule(
           scanned: r.scanned,
           written: r.written,
           transactionRefreshStatus: r.transactionRefreshStatus,
+          transactionRefreshTriggered: r.transactionRefreshTriggered,
         });
         totalWritten += r.written;
         logger.info(`[bank-feed] cron ${c.stripeFcAccountId}: scanned=${r.scanned} written=${r.written}${r.transactionRefreshTriggered ? ' (refresh-triggered)' : ''}`);
