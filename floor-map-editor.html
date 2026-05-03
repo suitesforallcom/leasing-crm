@@ -67613,6 +67613,10 @@ function renderLeasingModelPanel() {
   if (!b) { panel.innerHTML = ''; return; }
   if (typeof _getLeasingModel !== 'function') { panel.innerHTML = ''; return; }
   const m = _getLeasingModel(b.id);
+  // Список этажей здания — нужен для построения очереди заполнения и для
+  // фильтра Hold-этажей. _buildFillQueue() уже сам сортирует, так что здесь
+  // оставляем «как есть».
+  const floors = b.floors || [];
 
   // === Velocity radio + conditional inputs ===
   const v = m.velocity || {};
