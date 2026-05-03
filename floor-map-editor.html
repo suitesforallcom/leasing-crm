@@ -10352,11 +10352,11 @@
      Without an explicit bump it'd render behind the drawer overlay,
      making the picker invisible. Lift it above. */
   #invoiceBrowserModal.modal-overlay { z-index: 10500; }
-  /* Bank Browser opens поверх Manual Payment modal-а (.stripe-modal
-     z-index 10100). Без override-а ушёл бы под MPM и оператор бы
-     его не увидел (фидбэк 2026-05-03). Та же высота, что у
-     #invoiceBrowserModal — оба зеркальны и оба зовутся из MPM. */
-  #bankBrowserModal.modal-overlay { z-index: 10500; }
+  /* Unified Transaction Browser (bank + Stripe в одной таблице) opens
+     поверх Manual Payment modal-а (.stripe-modal z-index 10100). Без
+     override-а ушёл бы под MPM и оператор бы его не увидел. Та же
+     высота, что у #invoiceBrowserModal — оба зовутся из MPM. */
+  #txnBrowserModal.modal-overlay { z-index: 10500; }
   /* "Link to which month?" picker is opened FROM the Invoice Browser
      and the tenant drawer. Must sit above both. */
   #linkRentMonthModal.modal-overlay { z-index: 10600; }
@@ -18049,63 +18049,74 @@
   </div>
 </div>
 
-<!-- Bank Browser modal — открывается из ссылки «→ Browse all bank
-     transactions for X» в bank-feed карточке Manual Payment. Зеркало
-     invoiceBrowserModal: тот же layout (search + range + Refresh +
-     прокручиваемая таблица), но источник данных — Cloud Function
-     listBankTransactionsForUnit с расширенными параметрами (большое
-     окно дат, без жёсткого фильтра по сумме). Цель — дать оператору
-     возможность выбрать любую транзакцию тенанта, не закрывая
-     Manual Payment modal. Клик «✓ Use this» прокидывает txn в
-     _mpmBankCache и зовёт _mpmUseBankTxn — карточка-источник
-     обновится автоматически при следующем render-е bank-feed. -->
-<div class="modal-overlay" id="bankBrowserModal">
-  <div class="modal" style="max-width: 1080px; width: 96vw; max-height: 90vh; display: flex; flex-direction: column;">
-    <button type="button" class="modal-x" onclick="_closeBankBrowser()" aria-label="Close"
+<!-- Unified Transaction Browser modal — открывается из «🔍 Browse all
+     transactions» в bank-feed / stripe-feed карточках Manual Payment.
+     Объединяет ОБА источника в одной таблице: bank transactions
+     (CF listBankTransactionsForUnit) + Stripe invoices (локальный
+     _invoicesCache). Фильтры: type (all/bank/stripe), month, range
+     back (фетч с сервера), search (description/customer/amount).
+     Клик «✓ Use this» диспетчит на _mpmUseBankTxn / _mpmUseStripeInv
+     по типу строки. MPM остаётся открытым после клика. -->
+<div class="modal-overlay" id="txnBrowserModal">
+  <div class="modal" style="max-width: 1100px; width: 96vw; max-height: 90vh; display: flex; flex-direction: column;">
+    <button type="button" class="modal-x" onclick="_closeTxnBrowser()" aria-label="Close"
             style="position: absolute; top: 12px; right: 12px; width: 30px; height: 30px;
                    background: transparent; border: none; border-radius: 6px;
                    font-size: 20px; line-height: 1; color: var(--muted); cursor: pointer;
                    display: flex; align-items: center; justify-content: center;">×</button>
     <h2 style="margin-top: 0; display: flex; align-items: center; gap: 8px;">
-      <span>🏦</span><span>Browse bank transactions</span>
+      <span>🔍</span><span>Browse all transactions</span>
     </h2>
-    <div class="modal-sub" id="bankBrowserSub">—</div>
+    <div class="modal-sub" id="txnBrowserSub">—</div>
 
     <div style="display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap;">
-      <div style="flex: 1; min-width: 240px; position: relative;">
-        <input type="text" id="bankBrowserSearch" placeholder="Filter by description or amount (e.g. 1500)…"
-               oninput="_renderBankBrowserList(); _bankBrowserSearchToggleClear()"
+      <div style="flex: 1; min-width: 220px; position: relative;">
+        <input type="text" id="txnBrowserSearch" placeholder="Search by description, customer, invoice #, amount…"
+               oninput="_renderTxnBrowserList(); _txnBrowserSearchToggleClear()"
                style="width: 100%; padding: 7px 32px 7px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font-size: 13px;">
-        <button type="button" id="bankBrowserSearchClear"
-                onclick="_bankBrowserClearSearch()"
+        <button type="button" id="txnBrowserSearchClear"
+                onclick="_txnBrowserClearSearch()"
                 aria-label="Clear search"
                 title="Clear search"
                 style="display: none; position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
                        width: 24px; height: 24px; padding: 0; border: 0; background: transparent;
                        color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1; border-radius: 50%;">×</button>
       </div>
-      <select id="bankBrowserRange" onchange="_refreshBankBrowser()"
-              title="How far back to fetch transactions"
+      <select id="txnBrowserType" onchange="_renderTxnBrowserList()"
+              title="Source type"
               style="padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font-size: 12.5px;">
-        <option value="30">Last 30 days</option>
-        <option value="60">Last 60 days</option>
-        <option value="90" selected>Last 90 days (3 mo)</option>
-        <option value="180">Last 180 days (6 mo)</option>
-        <option value="365">Last 12 months</option>
+        <option value="all">All types</option>
+        <option value="bank">🏦 Bank only</option>
+        <option value="stripe">💳 Stripe only</option>
       </select>
-      <button type="button" class="rr-btn" onclick="_refreshBankBrowser()"
-              title="Re-fetch bank transactions for this tenant">↻ Refresh</button>
+      <select id="txnBrowserMonth" onchange="_renderTxnBrowserList()"
+              title="Filter by transaction month"
+              style="padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font-size: 12.5px;">
+        <option value="">Any month</option>
+        <!-- populated dynamically from loaded items -->
+      </select>
+      <select id="txnBrowserRange" onchange="_refreshTxnBrowser()"
+              title="How many months back to load"
+              style="padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font-size: 12.5px;">
+        <option value="3" selected>Last 3 months</option>
+        <option value="6">Last 6 months</option>
+        <option value="12">Last 12 months</option>
+        <option value="24">Last 24 months</option>
+        <option value="0">All available</option>
+      </select>
+      <button type="button" class="rr-btn" onclick="_refreshTxnBrowser()"
+              title="Re-fetch from server">↻ Refresh</button>
     </div>
 
-    <div id="bankBrowserCount" style="font-size: 11.5px; color: var(--muted); margin-top: 6px;"></div>
+    <div id="txnBrowserCount" style="font-size: 11.5px; color: var(--muted); margin-top: 6px;"></div>
 
-    <div id="bankBrowserBody" style="flex: 1 1 auto; overflow-y: auto; margin-top: 8px;
+    <div id="txnBrowserBody" style="flex: 1 1 auto; overflow-y: auto; margin-top: 8px;
          border: 1px solid var(--border); border-radius: 6px;">
-      <!-- populated by _renderBankBrowserList -->
+      <!-- populated by _renderTxnBrowserList -->
     </div>
 
     <div class="modal-actions" style="margin-top: 14px; display: flex; justify-content: flex-end; gap: 8px;">
-      <button type="button" class="rr-btn" onclick="_closeBankBrowser()">Close</button>
+      <button type="button" class="rr-btn" onclick="_closeTxnBrowser()">Close</button>
     </div>
   </div>
 </div>
@@ -83055,7 +83066,7 @@ async function _mpmRenderBankSuggestions(u, ym) {
         </div>
         <div class="mpm-bf-empty-sub">
           Searched <b>${accountLabel}</b> for credits near <b>$${(targetCents / 100).toLocaleString()}</b>.
-          ${tenantName ? `<button type="button" class="rr-btn ar-btn-sm" onclick="_openBankBrowser('${esc(_mpmCtx.buildingId)}','${esc(_mpmCtx.floorId)}','${esc(_mpmCtx.unitId)}','${esc(ym)}')" style="margin-top:8px;">🔍 Browse all bank transactions for ${esc(tenantName)}</button>` : ''}
+          ${tenantName ? `<button type="button" class="rr-btn ar-btn-sm" onclick="_openTxnBrowser('${esc(_mpmCtx.buildingId)}','${esc(_mpmCtx.floorId)}','${esc(_mpmCtx.unitId)}','${esc(ym)}')" style="margin-top:8px;">🔍 Browse all transactions for ${esc(tenantName)}</button>` : ''}
         </div>
       </div>`;
     return;
@@ -83099,7 +83110,7 @@ async function _mpmRenderBankSuggestions(u, ym) {
       <button type="button" class="mpm-bf-toggle" id="mpmBankFeedToggle" onclick="_mpmToggleBankFeedExpand()">
         <span class="mpm-bf-toggle-text">Show ${otherCount} other match${otherCount === 1 ? '' : 'es'} ▾</span>
       </button>
-      ${tenantName ? `<div class="mpm-bf-foot" style="text-align:center;"><button type="button" class="rr-btn ar-btn-sm" onclick="_openBankBrowser('${esc(_mpmCtx.buildingId)}','${esc(_mpmCtx.floorId)}','${esc(_mpmCtx.unitId)}','${esc(ym)}')">🔍 Browse all bank transactions for ${esc(tenantName)}</button></div>` : ''}
+      ${tenantName ? `<div class="mpm-bf-foot" style="text-align:center;"><button type="button" class="rr-btn ar-btn-sm" onclick="_openTxnBrowser('${esc(_mpmCtx.buildingId)}','${esc(_mpmCtx.floorId)}','${esc(_mpmCtx.unitId)}','${esc(ym)}')">🔍 Browse all transactions for ${esc(tenantName)}</button></div>` : ''}
     </div>`;
 
   // Stash items so _mpmUseBankTxn can find the picked row without a refetch.
@@ -83252,222 +83263,343 @@ function _mpmOpenBankActivityForTenant(tenantName) {
   }, 80);
 }
 
-// ===== Bank Browser modal — popup поверх Manual Payment ===================
-// Зеркало _openInvoiceBrowser / invoiceBrowserModal, но для bank
-// transactions. Открывается из bank-feed карточки (ссылка
-// «→ Browse all bank transactions for X»). Цель — оператор хочет
-// выбрать ДРУГУЮ транзакцию помимо top-3, которые мы предлагаем
-// inline, но не теряя контекст Manual Payment modal-а (раньше
-// _mpmOpenBankActivityForTenant закрывал MPM и кидал в Billing,
-// что ломало flow).
+// ===== Unified Transaction Browser — popup поверх Manual Payment =========
+// Объединяет ОБА источника в одной таблице:
+//   - bank transactions (CF listBankTransactionsForUnit, фетч по range)
+//   - Stripe invoices    (локальный _invoicesCache, фильтр по тенанту)
+// Открывается из ОБОИХ Browse-кнопок (bank-feed + stripe-feed карточек
+// в Manual Payment) — оператор видит всю активность тенанта в одном
+// месте и может выбрать любую запись (фидбэк 2026-05-03: «там должно
+// быть все транзакции, чтобы я мог применить любую»).
 //
-// Использует ту же CF listBankTransactionsForUnit, но с расширенными
-// параметрами: широкое окно дат (range picker), большой лимит,
-// высокий tolerance — сервер всё равно фильтрует по identity тенанта.
-// Клик «✓ Use this» прокидывает txn в _mpmBankCache (так что
-// _mpmUseBankTxn найдёт строку без рефетча) и зовёт _mpmUseBankTxn.
-// Modal остаётся открытым — оператор может закрыть руками или
-// сразу нажать × у browser-а.
+// Фильтры: type (all/bank/stripe), month (any / выбранный YYYY-MM),
+// range (months back — управляет фетчем bank), search (description /
+// customer / invoice# / amount).
+// Клик «✓ Use this» диспетчит на _mpmUseBankTxn / _mpmUseStripeInv по
+// типу строки. MPM остаётся открытым.
 // =========================================================================
 
-let _bankBrowserCtx = null;
-// Кэш текущей пачки транзакций (для рендера / фильтра по поиску).
-let _bankBrowserItems = [];
-let _bankBrowserLoading = false;
+let _txnBrowserCtx = null;
+let _txnBrowserBankItems = [];   // pre-merged bank items (raw из CF)
+let _txnBrowserStripeItems = []; // snapshot _invoicesCache для тенанта
+let _txnBrowserLoading = false;
 
-function _openBankBrowser(buildingId, floorId, unitId, ym) {
+// Привести bank-row к единому формату «row».
+function _txnBrowserNormBank(t) {
+  const ts = t.transactedAt ? +t.transactedAt * 1000 : 0;
+  const d = ts ? new Date(ts) : null;
+  const ym = d ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` : '';
+  return {
+    kind: 'bank',
+    id: t.id,
+    ts,
+    ym,
+    amount: (+t.amount || 0) / 100,
+    description: t.description || '',
+    statusLabel: t.matchState === 'suggested' ? 'suggested' : '',
+    matchState: t.matchState || '',
+    raw: t,
+  };
+}
+
+// Привести Stripe-invoice к единому формату «row».
+function _txnBrowserNormStripe(inv) {
+  const ts = inv.created || (inv.dueDate || 0);
+  const d = ts ? new Date(ts) : null;
+  // Для месяца берём metadata.ym (если есть), иначе dueDate.month, иначе created.month.
+  let ym = '';
+  if (inv.metadata?.ym) ym = String(inv.metadata.ym);
+  else if (inv.dueDate) {
+    const dd = new Date(inv.dueDate);
+    if (!isNaN(dd.getTime())) ym = `${dd.getFullYear()}-${String(dd.getMonth() + 1).padStart(2, '0')}`;
+  } else if (d) {
+    ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  }
+  const purposeLabels = { rent:'Rent', late_fee:'Late fee', deposit:'Deposit', damages:'Damages', keys:'Keys', cleaning:'Cleaning', custom:'Charge' };
+  const purpose = purposeLabels[inv.metadata?.purpose || 'rent'] || 'Charge';
+  const num = inv.number || (inv.id ? inv.id.slice(-8) : '');
+  const desc = `${num} · ${purpose}${ym ? ' · ' + _fmtMonthName(ym) : ''}`;
+  // Для суммы: если есть amountRemaining (open/past_due), показываем его,
+  // иначе total (paid/void).
+  const amount = +inv.amountRemaining > 0 ? +inv.amountRemaining : +inv.total;
+  return {
+    kind: 'stripe',
+    id: inv.id,
+    ts,
+    ym,
+    amount,
+    description: desc,
+    statusLabel: (inv.bucket || inv.status || '').toLowerCase(),
+    matchState: '',
+    raw: inv,
+  };
+}
+
+// Собрать Stripe-invoices этого тенанта из кэша.
+function _txnBrowserCollectStripe(u) {
+  if (!Array.isArray(_invoicesCache) || !u) return [];
+  const customerId = (u.stripe?.customerId || '').trim();
+  const emailLower = (u.email || '').trim().toLowerCase();
+  if (!customerId && !emailLower) return [];
+  return _invoicesCache.filter(inv => {
+    if (!inv) return false;
+    if (customerId && inv.customerId === customerId) return true;
+    if (!customerId && emailLower && (inv.customerEmail || '').toLowerCase() === emailLower) return true;
+    return false;
+  });
+}
+
+function _openTxnBrowser(buildingId, floorId, unitId, ym) {
   const { u } = _resolveDrawerCtx(buildingId, floorId, unitId);
   if (!u) { try { toast?.('Unit not found', 'error'); } catch {} return; }
-  _bankBrowserCtx = { buildingId, floorId, unitId, ym: ym || _mpmCtx?.ym || '' };
-  _bankBrowserItems = [];
-  const sub = document.getElementById('bankBrowserSub');
+  _txnBrowserCtx = { buildingId, floorId, unitId, ym: ym || _mpmCtx?.ym || '' };
+  _txnBrowserBankItems = [];
+  _txnBrowserStripeItems = _txnBrowserCollectStripe(u);
+  const sub = document.getElementById('txnBrowserSub');
   if (sub) {
     const tenantName = u.company || u.tenant || '(no tenant)';
     const targetCents = Math.round(((+u.contractRent) || (+u.rent) || 0) * 100);
     const targetStr = targetCents > 0 ? `$${(targetCents / 100).toLocaleString()}` : '—';
-    const ymStr = _bankBrowserCtx.ym ? esc(_fmtMonthName(_bankBrowserCtx.ym)) : '—';
-    sub.innerHTML = `Pick a bank transaction for Suite <b>${esc(u.id)}</b> · ${esc(tenantName)} · billing month <b>${ymStr}</b> · expected <b>${targetStr}</b>`;
+    const ymStr = _txnBrowserCtx.ym ? esc(_fmtMonthName(_txnBrowserCtx.ym)) : '—';
+    sub.innerHTML = `Pick a transaction for Suite <b>${esc(u.id)}</b> · ${esc(tenantName)} · billing month <b>${ymStr}</b> · expected <b>${targetStr}</b>`;
   }
-  const searchEl = document.getElementById('bankBrowserSearch');
+  const searchEl = document.getElementById('txnBrowserSearch');
   if (searchEl) searchEl.value = '';
-  const rangeEl = document.getElementById('bankBrowserRange');
-  if (rangeEl) rangeEl.value = '90';
-  if (typeof _bankBrowserSearchToggleClear === 'function') _bankBrowserSearchToggleClear();
-  document.getElementById('bankBrowserModal').classList.add('active');
-  // Сразу подтягиваем транзакции — оператор не должен жать Refresh
-  // сам; он за этим и пришёл.
-  setTimeout(() => { try { _refreshBankBrowser(); } catch (e) { console.warn('[bank-browser refresh]', e); } }, 50);
+  const typeEl = document.getElementById('txnBrowserType');
+  if (typeEl) typeEl.value = 'all';
+  const monthEl = document.getElementById('txnBrowserMonth');
+  if (monthEl) monthEl.value = '';
+  const rangeEl = document.getElementById('txnBrowserRange');
+  if (rangeEl) rangeEl.value = '3';
+  if (typeof _txnBrowserSearchToggleClear === 'function') _txnBrowserSearchToggleClear();
+  document.getElementById('txnBrowserModal').classList.add('active');
+  // Сразу подтягиваем bank — Stripe уже в _invoicesCache, пере-фетчить
+  // не нужно (этот список наполняется через Billing tab).
+  setTimeout(() => { try { _refreshTxnBrowser(); } catch (e) { console.warn('[txn-browser refresh]', e); } }, 50);
 }
 
-function _closeBankBrowser() {
-  const m = document.getElementById('bankBrowserModal');
+function _closeTxnBrowser() {
+  const m = document.getElementById('txnBrowserModal');
   if (m) m.classList.remove('active');
-  _bankBrowserCtx = null;
-  _bankBrowserItems = [];
+  _txnBrowserCtx = null;
+  _txnBrowserBankItems = [];
+  _txnBrowserStripeItems = [];
 }
 
-function _bankBrowserSearchToggleClear() {
-  const input = document.getElementById('bankBrowserSearch');
-  const btn   = document.getElementById('bankBrowserSearchClear');
+function _txnBrowserSearchToggleClear() {
+  const input = document.getElementById('txnBrowserSearch');
+  const btn   = document.getElementById('txnBrowserSearchClear');
   if (!input || !btn) return;
   btn.style.display = (input.value || '').length > 0 ? '' : 'none';
 }
 
-function _bankBrowserClearSearch() {
-  const input = document.getElementById('bankBrowserSearch');
+function _txnBrowserClearSearch() {
+  const input = document.getElementById('txnBrowserSearch');
   if (!input) return;
   input.value = '';
-  _bankBrowserSearchToggleClear();
-  _renderBankBrowserList();
+  _txnBrowserSearchToggleClear();
+  _renderTxnBrowserList();
   input.focus();
 }
 
-async function _refreshBankBrowser() {
-  if (!_bankBrowserCtx) return;
-  if (_bankBrowserLoading) return; // защита от двойного клика
-  const { buildingId, floorId, unitId, ym } = _bankBrowserCtx;
+async function _refreshTxnBrowser() {
+  if (!_txnBrowserCtx) return;
+  if (_txnBrowserLoading) return;
+  const { buildingId, floorId, unitId, ym } = _txnBrowserCtx;
   const { u } = _resolveDrawerCtx(buildingId, floorId, unitId);
   if (!u) return;
+  // Пере-собираем Stripe из кэша — может пополниться, пока модалка открыта.
+  _txnBrowserStripeItems = _txnBrowserCollectStripe(u);
   if (typeof stripeCallable !== 'function') {
-    try { toast?.('Stripe callable not available', 'error'); } catch {}
+    _renderTxnBrowserList();
     return;
   }
-  const rangeSel = document.getElementById('bankBrowserRange');
-  const days = +(rangeSel?.value ?? 90);
-  const btn = document.querySelector('#bankBrowserModal .rr-btn[onclick="_refreshBankBrowser()"]');
+  const rangeSel = document.getElementById('txnBrowserRange');
+  const monthsBack = +(rangeSel?.value ?? 3);
+  // 0 = «All available» → берём максимум, что сервер отдаст за разумное окно.
+  const days = monthsBack === 0 ? 730 : Math.max(30, monthsBack * 31);
+  const btn = document.querySelector('#txnBrowserModal .rr-btn[onclick="_refreshTxnBrowser()"]');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Loading…'; }
-  const counter = document.getElementById('bankBrowserCount');
-  if (counter) counter.textContent = `Loading transactions for last ${days} days…`;
-  _bankBrowserLoading = true;
+  const counter = document.getElementById('txnBrowserCount');
+  if (counter) counter.textContent = `Loading bank transactions…`;
+  _txnBrowserLoading = true;
   try {
     const targetCents = Math.round(((+u.contractRent) || (+u.rent) || 0) * 100);
     const fn = stripeCallable('listBankTransactionsForUnit');
-    // amountCents=0 + tolerance=100 = «не фильтровать по сумме», limit=200,
-    // dateRangeDays из range-picker. Сервер всё равно фильтрует по
-    // identity тенанта (email / company / алиасы), так что мы получим
-    // только транзакции, релевантные этому юниту.
     const { data } = await fn({
       ym,
       amountCents: targetCents,
-      amountTolerancePct: 100,
+      amountTolerancePct: 100, // не фильтруем по сумме — оператор сам выберет
       dateRangeDays: days,
       accountIds: [],
       limit: 200,
     });
-    _bankBrowserItems = (data?.items || []).slice();
-    // Прокидываем в _mpmBankCache, чтобы _mpmUseBankTxn нашёл строку
-    // без рефетча — у него поиск по всем кэшам.
+    _txnBrowserBankItems = (data?.items || []).slice();
+    // Прокидываем в _mpmBankCache, чтобы _mpmUseBankTxn нашёл строку.
     if (_mpmCtx) {
-      const accountIds = []; // совпадает с тем, что использует _mpmRenderBankSuggestions
-      const cacheKey = _mpmBankCacheKey(_mpmCtx.unitId, _mpmCtx.ym, accountIds);
-      _mpmBankCache.set(cacheKey, { at: Date.now(), items: _bankBrowserItems });
+      const cacheKey = _mpmBankCacheKey(_mpmCtx.unitId, _mpmCtx.ym, []);
+      _mpmBankCache.set(cacheKey, { at: Date.now(), items: _txnBrowserBankItems });
     }
   } catch (err) {
-    console.error('[bank browser refresh]', err);
-    try { toast?.(`Refresh failed: ${err?.message || err}`, 'error'); } catch {}
-    _bankBrowserItems = [];
+    console.error('[txn-browser refresh bank]', err);
+    try { toast?.(`Bank refresh failed: ${err?.message || err}`, 'error'); } catch {}
+    _txnBrowserBankItems = [];
   } finally {
-    _bankBrowserLoading = false;
+    _txnBrowserLoading = false;
     if (btn) { btn.disabled = false; btn.textContent = '↻ Refresh'; }
-    _renderBankBrowserList();
+    _renderTxnBrowserList();
   }
 }
 
-function _renderBankBrowserList() {
-  const body = document.getElementById('bankBrowserBody');
-  const counter = document.getElementById('bankBrowserCount');
-  if (!body || !_bankBrowserCtx) return;
-  const { u } = _resolveDrawerCtx(_bankBrowserCtx.buildingId, _bankBrowserCtx.floorId, _bankBrowserCtx.unitId);
+// Перестроить выпадашку «месяц» из загруженных строк (bank + stripe).
+function _txnBrowserPopulateMonths(rows) {
+  const sel = document.getElementById('txnBrowserMonth');
+  if (!sel) return;
+  const prev = sel.value;
+  const months = Array.from(new Set(rows.map(r => r.ym).filter(Boolean)))
+    .sort((a, z) => z.localeCompare(a)); // newest first
+  const opts = ['<option value="">Any month</option>']
+    .concat(months.map(ym => `<option value="${esc(ym)}">${esc(_fmtMonthName(ym))}</option>`));
+  sel.innerHTML = opts.join('');
+  // Если выбранный месяц всё ещё в списке — оставляем; иначе сбрасываем.
+  if (prev && months.includes(prev)) sel.value = prev;
+  else sel.value = '';
+}
+
+function _renderTxnBrowserList() {
+  const body = document.getElementById('txnBrowserBody');
+  const counter = document.getElementById('txnBrowserCount');
+  if (!body || !_txnBrowserCtx) return;
+  const { u } = _resolveDrawerCtx(_txnBrowserCtx.buildingId, _txnBrowserCtx.floorId, _txnBrowserCtx.unitId);
   if (!u) return;
-  const items = Array.isArray(_bankBrowserItems) ? _bankBrowserItems : [];
   const targetCents = Math.round(((+u.contractRent) || (+u.rent) || 0) * 100);
 
-  const searchRaw = (document.getElementById('bankBrowserSearch')?.value || '').trim();
-  const search = searchRaw.toLowerCase();
+  // Объединяем источники в общий список «row».
+  const bankRows   = (_txnBrowserBankItems   || []).map(_txnBrowserNormBank);
+  const stripeRows = (_txnBrowserStripeItems || []).map(_txnBrowserNormStripe);
+  const all = bankRows.concat(stripeRows);
+
+  // Перестраиваем выпадашку месяцев каждый раз — данные могли поменяться.
+  _txnBrowserPopulateMonths(all);
+
+  const typeFilter   = (document.getElementById('txnBrowserType')?.value   || 'all').toLowerCase();
+  const monthFilter  = (document.getElementById('txnBrowserMonth')?.value  || '').trim();
+  const searchRaw    = (document.getElementById('txnBrowserSearch')?.value || '').trim();
+  const search       = searchRaw.toLowerCase();
   const searchDigits = searchRaw.replace(/[$,\s]/g, '');
 
-  const filtered = items.filter(t => {
+  const filtered = all.filter(r => {
+    if (typeFilter !== 'all' && r.kind !== typeFilter) return false;
+    if (monthFilter && r.ym !== monthFilter) return false;
     if (!search) return true;
-    const amount = (+t.amount || 0) / 100;
-    const amtPlain = String(Math.round(amount * 100) / 100);
-    const amtRounded = String(Math.round(amount));
-    const amtFormatted = amount.toLocaleString();
+    const amtPlain     = String(Math.round((r.amount || 0) * 100) / 100);
+    const amtRounded   = String(Math.round(r.amount || 0));
+    const amtFormatted = (r.amount || 0).toLocaleString();
+    const customerStr  = r.kind === 'stripe'
+      ? `${r.raw.customerName || ''} ${r.raw.customerEmail || ''}`
+      : '';
     const hay = [
-      t.description, t.id, t.accountId,
+      r.description, r.id, customerStr,
       amtPlain, amtRounded, amtFormatted,
     ].map(v => String(v || '').toLowerCase()).join(' ');
     if (hay.includes(search)) return true;
     if (searchDigits && /^\d+(\.\d+)?$/.test(searchDigits) && amtRounded.includes(searchDigits)) return true;
     return false;
-  }).sort((a, z) => (z.transactedAt || 0) - (a.transactedAt || 0));
+  }).sort((a, z) => (z.ts || 0) - (a.ts || 0));
 
   if (counter) {
-    counter.textContent = filtered.length === items.length
-      ? `Showing all ${items.length} transaction${items.length === 1 ? '' : 's'}`
-      : `Showing ${filtered.length} of ${items.length} (filtered)`;
+    const totalCount = all.length;
+    counter.textContent = filtered.length === totalCount
+      ? `Showing all ${totalCount} transaction${totalCount === 1 ? '' : 's'} (${bankRows.length} bank · ${stripeRows.length} Stripe)`
+      : `Showing ${filtered.length} of ${totalCount} (filtered)`;
   }
 
   if (!filtered.length) {
     body.innerHTML = `
       <div style="padding: 28px 16px; text-align: center; color: var(--muted); font-size: 13px;">
-        ${items.length === 0
-          ? 'No bank transactions found for this tenant. Try widening the date range above and click <b>↻ Refresh</b>.'
+        ${all.length === 0
+          ? 'No transactions found for this tenant. Try widening the range above and click <b>↻ Refresh</b>.'
           : 'No transactions match your filter.'}
       </div>`;
     return;
   }
 
-  // Header row
+  // Header row — общий для bank + stripe.
   const header = `
     <div style="display: grid;
-                grid-template-columns: 110px 1fr 130px 130px 110px;
+                grid-template-columns: 100px 80px 1fr 120px 120px 110px;
                 gap: 10px;
                 padding: 10px 14px;
                 background: var(--surface-2);
                 border-bottom: 1px solid var(--border);
                 font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted);">
       <div>Date</div>
+      <div>Type</div>
       <div>Description</div>
       <div style="text-align: right;">Amount</div>
-      <div>Match</div>
+      <div>Status / Match</div>
       <div></div>
     </div>`;
 
-  const rows = filtered.slice(0, 200).map(t => {
-    const dt = t.transactedAt ? new Date(t.transactedAt * 1000) : null;
-    const dateStr = dt ? dt.toLocaleDateString() : '—';
-    const amount = (+t.amount || 0) / 100;
-    const amtStr = `$${amount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
-    const exact = targetCents > 0 && Math.round(amount * 100) === targetCents;
-    const closeDelta = targetCents > 0 ? Math.round(amount * 100) - targetCents : 0;
-    const matchBadge = exact
-      ? `<span style="display:inline-block; padding:2px 8px; background:rgba(16,185,129,0.15); color:var(--success); border-radius:10px; font-size:10.5px; font-weight:700;">EXACT</span>`
-      : (targetCents > 0 && Math.abs(closeDelta) <= targetCents * 0.15
-          ? `<span style="display:inline-block; padding:2px 8px; background:rgba(14,165,233,0.15); color:#0ea5e9; border-radius:10px; font-size:10.5px;" title="Off by $${(Math.abs(closeDelta) / 100).toLocaleString()}">${closeDelta > 0 ? '+' : '−'}$${(Math.abs(closeDelta) / 100).toLocaleString()}</span>`
-          : (t.matchState === 'suggested'
-              ? `<span style="display:inline-block; padding:2px 8px; background:rgba(99,91,255,0.12); color:#635bff; border-radius:10px; font-size:10.5px;">★ suggested</span>`
-              : ''));
-    const isSelected = !!(_mpmCtx?.linkedBankTxn && _mpmCtx.linkedBankTxn.id === t.id);
+  const rows = filtered.slice(0, 300).map(r => {
+    const dateStr = r.ts ? new Date(r.ts).toLocaleDateString() : '—';
+    const amtStr = `$${(r.amount || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+    const typeBadge = r.kind === 'bank'
+      ? `<span style="display:inline-block; padding:2px 8px; background:rgba(14,165,233,0.12); color:#0ea5e9; border-radius:10px; font-size:10.5px; font-weight:600;">🏦 Bank</span>`
+      : `<span style="display:inline-block; padding:2px 8px; background:rgba(99,91,255,0.12); color:#635bff; border-radius:10px; font-size:10.5px; font-weight:600;">💳 Stripe</span>`;
+
+    let statusBadge = '';
+    if (r.kind === 'bank') {
+      const exact = targetCents > 0 && Math.round((r.amount || 0) * 100) === targetCents;
+      const closeDelta = targetCents > 0 ? Math.round((r.amount || 0) * 100) - targetCents : 0;
+      statusBadge = exact
+        ? `<span style="display:inline-block; padding:2px 8px; background:rgba(16,185,129,0.15); color:var(--success); border-radius:10px; font-size:10.5px; font-weight:700;">EXACT</span>`
+        : (targetCents > 0 && Math.abs(closeDelta) <= targetCents * 0.15
+            ? `<span style="display:inline-block; padding:2px 8px; background:rgba(14,165,233,0.15); color:#0ea5e9; border-radius:10px; font-size:10.5px;" title="Off by $${(Math.abs(closeDelta) / 100).toLocaleString()}">${closeDelta > 0 ? '+' : '−'}$${(Math.abs(closeDelta) / 100).toLocaleString()}</span>`
+            : (r.matchState === 'suggested'
+                ? `<span style="display:inline-block; padding:2px 8px; background:rgba(99,91,255,0.12); color:#635bff; border-radius:10px; font-size:10.5px;">★ suggested</span>`
+                : ''));
+    } else {
+      // Stripe — показываем bucket / status.
+      const s = (r.statusLabel || '').toLowerCase();
+      const palette = {
+        paid:         ['rgba(16,185,129,0.15)', 'var(--success)'],
+        open:         ['rgba(14,165,233,0.15)', '#0ea5e9'],
+        past_due:     ['rgba(239,68,68,0.15)',  '#ef4444'],
+        draft:        ['rgba(148,163,184,0.18)','var(--muted)'],
+        void:         ['rgba(148,163,184,0.18)','var(--muted)'],
+        uncollectible:['rgba(148,163,184,0.18)','var(--muted)'],
+      };
+      const [bg, fg] = palette[s] || ['rgba(148,163,184,0.18)','var(--muted)'];
+      statusBadge = s
+        ? `<span style="display:inline-block; padding:2px 8px; background:${bg}; color:${fg}; border-radius:10px; font-size:10.5px; font-weight:600;">${esc(s.replace('_', ' ').toUpperCase())}</span>`
+        : '';
+    }
+
+    const isSelected = r.kind === 'bank'
+      ? !!(_mpmCtx?.linkedBankTxn && _mpmCtx.linkedBankTxn.id === r.id)
+      : !!(_mpmCtx?.linkedStripeInvoice && _mpmCtx.linkedStripeInvoice.id === r.id);
     const btnLabel = isSelected ? '✓ Selected' : '✓ Use this';
     const btnStyle = isSelected
       ? 'background:rgba(16,185,129,0.15); color:var(--success); border-color:rgba(16,185,129,0.5);'
       : '';
     return `
       <div style="display: grid;
-                  grid-template-columns: 110px 1fr 130px 130px 110px;
+                  grid-template-columns: 100px 80px 1fr 120px 120px 110px;
                   gap: 10px;
                   padding: 10px 14px;
                   border-bottom: 1px solid var(--border);
                   align-items: center;
                   font-size: 12.5px;">
         <div style="color: var(--muted);">${esc(dateStr)}</div>
-        <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${esc(t.description || '')}">${esc(t.description || '(no description)')}</div>
+        <div>${typeBadge}</div>
+        <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${esc(r.description || '')}">${esc(r.description || '(no description)')}</div>
         <div style="text-align: right; font-weight: 600;">${amtStr}</div>
-        <div>${matchBadge}</div>
+        <div>${statusBadge}</div>
         <div style="text-align: right;">
           <button type="button" class="rr-btn ar-btn-sm" style="${btnStyle}"
-                  onclick="_bankBrowserUse('${esc(t.id)}')"
-                  title="Apply this transaction to the form">${btnLabel}</button>
+                  onclick="_txnBrowserUse('${esc(r.kind)}','${esc(r.id)}')"
+                  title="Apply this ${r.kind === 'bank' ? 'transaction' : 'invoice'} to the form">${btnLabel}</button>
         </div>
       </div>`;
   }).join('');
@@ -83475,38 +83607,43 @@ function _renderBankBrowserList() {
   body.innerHTML = header + rows;
 }
 
-// Оператор кликнул "✓ Use this" — прокидываем txn в _mpmBankCache (если
-// его там ещё нет), зовём существующий _mpmUseBankTxn (он сам заполнит
-// форму + поставит linkedBankTxn) и закрываем browser. Manual Payment
-// modal остаётся открытым.
-function _bankBrowserUse(txnId) {
-  if (!_mpmCtx) { _closeBankBrowser(); return; }
-  const txn = (_bankBrowserItems || []).find(t => t.id === txnId);
-  if (!txn) { try { toast?.('Transaction not in current page — Refresh and try again', 'error'); } catch {} return; }
-  // Гарантируем, что _mpmUseBankTxn найдёт строку в одном из своих кэшей.
-  const accountIds = [];
-  const cacheKey = _mpmBankCacheKey(_mpmCtx.unitId, _mpmCtx.ym, accountIds);
-  const existing = _mpmBankCache.get(cacheKey)?.items || [];
-  if (!existing.find(t => t.id === txnId)) {
-    _mpmBankCache.set(cacheKey, { at: Date.now(), items: existing.concat([txn]) });
+// Диспетч клика «✓ Use this» по типу строки.
+function _txnBrowserUse(kind, id) {
+  if (!_mpmCtx) { _closeTxnBrowser(); return; }
+  if (kind === 'bank') {
+    const txn = (_txnBrowserBankItems || []).find(t => t.id === id);
+    if (!txn) { try { toast?.('Bank transaction not in current page — Refresh and try again', 'error'); } catch {} return; }
+    // Гарантируем, что _mpmUseBankTxn найдёт строку в одном из своих кэшей.
+    const cacheKey = _mpmBankCacheKey(_mpmCtx.unitId, _mpmCtx.ym, []);
+    const existing = _mpmBankCache.get(cacheKey)?.items || [];
+    if (!existing.find(t => t.id === id)) {
+      _mpmBankCache.set(cacheKey, { at: Date.now(), items: existing.concat([txn]) });
+    }
+    if (typeof _mpmUseBankTxn === 'function') _mpmUseBankTxn(id);
+    try {
+      const { u } = _resolveDrawerCtx(_mpmCtx.buildingId, _mpmCtx.floorId, _mpmCtx.unitId);
+      if (u && typeof _mpmRenderBankSuggestions === 'function') _mpmRenderBankSuggestions(u, _mpmCtx.ym);
+    } catch (e) { console.warn('[txn-browser repaint bank]', e); }
+  } else if (kind === 'stripe') {
+    const inv = (_txnBrowserStripeItems || []).find(r => r && r.id === id)
+             || (Array.isArray(_invoicesCache) ? _invoicesCache.find(r => r && r.id === id) : null);
+    if (!inv) { try { toast?.('Invoice not in cache — reopen Billing tab to refresh', 'error'); } catch {} return; }
+    if (typeof _mpmUseStripeInv === 'function') _mpmUseStripeInv(id);
+    try {
+      const { u } = _resolveDrawerCtx(_mpmCtx.buildingId, _mpmCtx.floorId, _mpmCtx.unitId);
+      if (u && typeof _mpmRenderStripeSuggestions === 'function') _mpmRenderStripeSuggestions(u, _mpmCtx.ym);
+    } catch (e) { console.warn('[txn-browser repaint stripe]', e); }
   }
-  if (typeof _mpmUseBankTxn === 'function') _mpmUseBankTxn(txnId);
-  // Перерисуем bank-feed карточку в самом MPM, чтобы выбранная строка
-  // подсветилась там тоже (если попадает в top-3).
-  try {
-    const { u } = _resolveDrawerCtx(_mpmCtx.buildingId, _mpmCtx.floorId, _mpmCtx.unitId);
-    if (u && typeof _mpmRenderBankSuggestions === 'function') _mpmRenderBankSuggestions(u, _mpmCtx.ym);
-  } catch (e) { console.warn('[bank-browser refresh card]', e); }
-  _closeBankBrowser();
+  _closeTxnBrowser();
 }
 
-window._openBankBrowser = _openBankBrowser;
-window._closeBankBrowser = _closeBankBrowser;
-window._refreshBankBrowser = _refreshBankBrowser;
-window._renderBankBrowserList = _renderBankBrowserList;
-window._bankBrowserUse = _bankBrowserUse;
-window._bankBrowserClearSearch = _bankBrowserClearSearch;
-window._bankBrowserSearchToggleClear = _bankBrowserSearchToggleClear;
+window._openTxnBrowser = _openTxnBrowser;
+window._closeTxnBrowser = _closeTxnBrowser;
+window._refreshTxnBrowser = _refreshTxnBrowser;
+window._renderTxnBrowserList = _renderTxnBrowserList;
+window._txnBrowserUse = _txnBrowserUse;
+window._txnBrowserClearSearch = _txnBrowserClearSearch;
+window._txnBrowserSearchToggleClear = _txnBrowserSearchToggleClear;
 
 // ===== Stripe-invoice suggestions card (зеркало bank-feed) ===============
 // Источник данных — локальный _invoicesCache (наполняется через
@@ -83598,12 +83735,11 @@ function _mpmRenderStripeSuggestions(u, ym) {
   // в окне ничего нет (оператор может захотеть открыть полный список
   // транзакций / инвойсов через старый Stripe-modal). Считаем по
   // ВСЕМ инвойсам (paid + open), чтобы цифра была честной.
-  // Кнопка вместо ссылки — оператору сложно заметить мелкий «→» link.
-  // Открывает _openInvoiceBrowser (z-index 10500 > MPM 10100), даёт
-  // оператору руками выбрать ЛЮБОЙ инвойс, если auto-match не нашёл
-  // нужный (фидбэк 2026-05-03: «он все транзакции мне показал чтобы я
-  // мог найти мне нужную не просто одну или две»).
-  const browseLink = `<button type="button" class="rr-btn ar-btn-sm" onclick="_openInvoiceBrowser('${esc(_mpmCtx.buildingId)}','${esc(_mpmCtx.floorId)}','${esc(_mpmCtx.unitId)}','${esc(ym)}')">🔍 Browse all ${all.length} Stripe invoice${all.length === 1 ? '' : 's'} for this tenant</button>`;
+  // Единый browser (bank + Stripe в одной таблице). Открывается тот же
+  // popup, что и из bank-feed карточки — у оператора одна точка входа,
+  // фильтр type=Stripe сужает до инвойсов если нужно (фидбэк 2026-05-03:
+  // «давай объединим эти таблицу в одну»).
+  const browseLink = `<button type="button" class="rr-btn ar-btn-sm" onclick="_openTxnBrowser('${esc(_mpmCtx.buildingId)}','${esc(_mpmCtx.floorId)}','${esc(_mpmCtx.unitId)}','${esc(ym)}')">🔍 Browse all transactions for this tenant</button>`;
 
   // Если в окне пусто — пустое состояние со ссылкой на полный список.
   if (!inWindow.length) {
