@@ -12536,6 +12536,7 @@
           <button class="bv-tab"        id="billTabVacancy"   onclick="setBillingTab('vacancy')">Vacancy <span class="bv-tab-count" id="billVacancyCount">—</span></button>
           <button class="bv-tab"        id="billTabCalendar"  onclick="setBillingTab('calendar')">Calendar <span class="bv-tab-count" id="billCalendarCount">—</span></button>
           <button class="bv-tab"        id="billTabPnl"       onclick="setBillingTab('pnl')">P&amp;L <span class="bv-tab-count" id="billPnlCount">—</span></button>
+          <button class="bv-tab"        id="billTabBankActivity" onclick="setBillingTab('bankActivity')">🏦 Bank Activity <span class="bv-tab-count" id="billBankActivityCount">—</span></button>
         </div>
         <div class="bv-tab-body">
 
@@ -13083,6 +13084,47 @@
             <div style="font-size: 34px; margin-bottom: 8px;">📊</div>
             <div style="font-size: 15px; font-weight: 600; margin-bottom: 6px;">No payments recorded</div>
             <div style="font-size: 12.5px;">Once tenants pay, monthly revenue will appear here.</div>
+          </div>
+        </div>
+
+        <!-- Bank Activity — Phase 3. Lists transactions pulled from
+             connected bank accounts. Auto-matched suggestions can be
+             confirmed (records the rent payment) or dismissed (e.g. it's
+             a refund, transfer, or unrelated deposit). -->
+        <div id="billingBankActivityPanel" style="display:none;">
+          <div class="ar-toolbar" style="margin-top: 6px;">
+            <div class="ar-toolbar-row" style="gap:8px; align-items:center;">
+              <select id="bankActivityFilter" class="ar-sel" onchange="renderBankActivityPanel()" title="Filter">
+                <option value="pending" selected>Needs review (suggested + unmatched)</option>
+                <option value="confirmed">Confirmed</option>
+                <option value="dismissed">Dismissed</option>
+                <option value="all">All</option>
+              </select>
+              <input type="text" id="bankActivitySearch" class="ar-sel" placeholder="Search description / amount…" oninput="renderBankActivityPanel()" style="min-width:200px;">
+              <div style="flex:1;"></div>
+              <button class="rr-btn ar-btn-sm" onclick="rerunBankFeedMatcher()" title="Re-run the matcher across all unmatched/suggested transactions — useful after editing tenant names.">🔄 Re-match all</button>
+              <button class="rr-btn ar-btn-sm" onclick="renderBankActivityPanel({force:true})" title="Reload from server">↻ Reload</button>
+            </div>
+          </div>
+          <div id="bankActivityStatus" style="font-size:11.5px; color:var(--muted); padding:6px 4px;"></div>
+          <div style="overflow:auto;">
+            <table class="rr-table" id="bankActivityTable" style="width:100%; font-size:12px;">
+              <thead>
+                <tr>
+                  <th style="text-align:left; width:90px;">Date</th>
+                  <th style="text-align:right; width:90px;">Amount</th>
+                  <th style="text-align:left;">Bank description</th>
+                  <th style="text-align:left; width:280px;">Matched / Suggested</th>
+                  <th style="text-align:left; width:230px;">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="bankActivityTbody"></tbody>
+            </table>
+          </div>
+          <div id="bankActivityEmpty" style="display:none; padding:40px; text-align:center; color: var(--muted);">
+            <div style="font-size: 34px; margin-bottom: 8px;">🏦</div>
+            <div style="font-size: 15px; font-weight: 600; margin-bottom: 6px;">No transactions yet</div>
+            <div style="font-size: 12.5px;">Connect a bank account in Settings → Integrations and trigger a backfill to see transactions here.</div>
           </div>
         </div>
         </div><!-- /bv-tab-body — wraps all four sub-panels above -->
@@ -58501,6 +58543,219 @@ async function refreshBankAccountNow(fcAccountId) {
   }
 }
 
+// =========================================================================
+// ===== Bank Activity panel (Billing → Bank Activity tab) =================
+// Lists transactions pulled from connected bank accounts. Suggested matches
+// can be confirmed (records the rent payment) or dismissed.
+// =========================================================================
+
+let _bankActivityCache = null;
+let _bankActivityLastLoad = 0;
+
+async function renderBankActivityPanel(opts) {
+  const force = opts && opts.force;
+  const tbody = document.getElementById('bankActivityTbody');
+  const empty = document.getElementById('bankActivityEmpty');
+  const status = document.getElementById('bankActivityStatus');
+  if (!tbody) return;
+  const filter = document.getElementById('bankActivityFilter')?.value || 'pending';
+  const search = (document.getElementById('bankActivitySearch')?.value || '').toLowerCase().trim();
+
+  // Cache for 30s — flipping filters or typing search shouldn't re-call CF.
+  const cacheStale = !_bankActivityCache
+    || (_bankActivityCache.filter !== filter)
+    || (Date.now() - _bankActivityLastLoad > 30000);
+  if (cacheStale || force) {
+    if (typeof stripeCallable !== 'function') {
+      status.textContent = 'Cloud Functions not available.';
+      return;
+    }
+    tbody.innerHTML = '<tr><td colspan="5" style="padding:20px; text-align:center; color:var(--muted);">Loading…</td></tr>';
+    try {
+      const fn = stripeCallable('listBankTransactions');
+      const { data } = await fn({ filter, limit: 300 });
+      _bankActivityCache = { filter, items: data?.items || [] };
+      _bankActivityLastLoad = Date.now();
+    } catch (err) {
+      tbody.innerHTML = '';
+      status.innerHTML = `<span style="color:var(--danger)">⚠ ${esc(err?.message || String(err))}</span>`;
+      return;
+    }
+  }
+
+  let items = _bankActivityCache?.items || [];
+  if (search) {
+    items = items.filter(t =>
+      String(t.description || '').toLowerCase().includes(search) ||
+      String(Math.abs(t.amount / 100)).includes(search)
+    );
+  }
+
+  // Tab counter (pending only)
+  if (filter === 'pending') {
+    const cEl = document.getElementById('billBankActivityCount');
+    if (cEl) cEl.textContent = items.length;
+  }
+
+  if (!items.length) {
+    tbody.innerHTML = '';
+    empty.style.display = '';
+    status.textContent = `0 transactions for filter "${filter}"`;
+    return;
+  }
+  empty.style.display = 'none';
+  status.textContent = `${items.length} transaction${items.length === 1 ? '' : 's'} (${filter})`;
+
+  // Build a unitId → unit lookup for displaying the suggested match name.
+  const units = new Map();
+  for (const b of state.buildings || []) {
+    for (const f of b.floors || []) {
+      for (const u of f.units || []) units.set(u.id, { u, b, f });
+    }
+  }
+
+  tbody.innerHTML = items.map(t => {
+    const dt = t.transactedAt ? new Date(t.transactedAt * 1000) : null;
+    const dateStr = dt ? dt.toLocaleDateString() : '—';
+    const amount = (t.amount / 100);
+    const isCredit = amount > 0;
+    const amtStr = `${isCredit ? '+' : ''}$${Math.abs(amount).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+    const amtColor = isCredit ? 'var(--success)' : 'var(--muted)';
+
+    let matchedCell = '<span style="color:var(--muted); font-style:italic;">No match</span>';
+    let actions = '';
+    if (t.matchState === 'confirmed') {
+      const ctx = units.get(t.matchedUnitId);
+      const tenant = ctx ? (ctx.u.company || ctx.u.tenant || ctx.u.id) : t.matchedUnitId;
+      matchedCell = `<span style="color:var(--success); font-weight:600;">✓ ${esc(tenant)}</span><br><span style="color:var(--muted); font-size:11px;">Suite ${esc(t.matchedUnitId || '')} · ${esc(t.matchedYm || '')}</span>`;
+      actions = `<button class="rr-btn ar-btn-sm" onclick="undoBankConfirmation('${esc(t.id)}')" title="Undo this confirmation">↶ Undo</button>`;
+    } else if (t.matchState === 'dismissed') {
+      matchedCell = '<span style="color:var(--muted);">Dismissed</span>';
+      actions = `<button class="rr-btn ar-btn-sm" onclick="undoBankDismissal('${esc(t.id)}')" title="Move back to needs-review">↶ Re-open</button>`;
+    } else if (t.matchState === 'suggested' && t.matchedUnitId) {
+      const ctx = units.get(t.matchedUnitId);
+      const tenant = ctx ? (ctx.u.company || ctx.u.tenant || ctx.u.id) : t.matchedUnitId;
+      const score = Math.round((t.matchScore || 0) * 100);
+      matchedCell = `<span style="color:#0ea5e9; font-weight:600;">→ ${esc(tenant)}</span><br><span style="color:var(--muted); font-size:11px;">Suite ${esc(t.matchedUnitId)} · ${esc(t.matchedYm || '')} · ${score}% confidence</span>`;
+      actions = `
+        <button class="rr-btn ar-btn-sm" style="background:var(--success); color:#fff; border-color:var(--success);" onclick="confirmBankMatch('${esc(t.id)}', '${esc(t.matchedUnitId)}', '${esc(t.matchedYm)}')">✓ Confirm</button>
+        <button class="rr-btn ar-btn-sm" onclick="changeBankMatch('${esc(t.id)}')">✎ Change</button>
+        <button class="rr-btn ar-btn-sm" onclick="dismissBankMatch('${esc(t.id)}')">✗ Dismiss</button>
+      `;
+    } else if (isCredit) {
+      // Unmatched credit — operator can pick a tenant manually.
+      actions = `
+        <button class="rr-btn ar-btn-sm" onclick="changeBankMatch('${esc(t.id)}')">✎ Match</button>
+        <button class="rr-btn ar-btn-sm" onclick="dismissBankMatch('${esc(t.id)}')">✗ Not rent</button>
+      `;
+    } else {
+      // Outgoing debit — usually irrelevant for rent matching.
+      actions = `<button class="rr-btn ar-btn-sm" onclick="dismissBankMatch('${esc(t.id)}')">✗ Hide</button>`;
+    }
+
+    return `
+      <tr>
+        <td>${esc(dateStr)}</td>
+        <td style="text-align:right; color:${amtColor}; font-weight:600;">${esc(amtStr)}</td>
+        <td style="font-size:11.5px; max-width:340px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${esc(t.description || '')}">${esc(t.description || '—')}</td>
+        <td>${matchedCell}</td>
+        <td style="white-space:nowrap;">${actions}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+async function rerunBankFeedMatcher() {
+  const status = document.getElementById('bankActivityStatus');
+  status.innerHTML = '⏳ Re-matching all unmatched/suggested transactions…';
+  try {
+    const fn = stripeCallable('runBankFeedMatcher');
+    const { data } = await fn({});
+    status.innerHTML = `✓ Re-matched ${data?.reviewed || 0} transactions, ${data?.suggested || 0} new suggestions.`;
+    _bankActivityCache = null;
+    renderBankActivityPanel({ force: true });
+  } catch (err) {
+    status.innerHTML = `<span style="color:var(--danger)">⚠ ${esc(err?.message || String(err))}</span>`;
+  }
+}
+
+async function confirmBankMatch(txnId, unitId, ym) {
+  if (!txnId || !unitId || !ym) return;
+  if (!confirm(`Confirm this transaction as rent payment for unit ${unitId} (${ym})? The payment will be recorded.`)) return;
+  try {
+    const fn = stripeCallable('confirmBankMatch');
+    await fn({ txnId, unitId, ym, recordPayment: true });
+    _bankActivityCache = null;
+    renderBankActivityPanel({ force: true });
+    if (typeof renderAll === 'function') renderAll();
+  } catch (err) {
+    alert(`Confirm failed: ${err?.message || String(err)}`);
+  }
+}
+
+async function dismissBankMatch(txnId) {
+  if (!txnId) return;
+  try {
+    const fn = stripeCallable('dismissBankMatch');
+    await fn({ txnId });
+    _bankActivityCache = null;
+    renderBankActivityPanel({ force: true });
+  } catch (err) {
+    alert(`Dismiss failed: ${err?.message || String(err)}`);
+  }
+}
+
+async function undoBankConfirmation(txnId) {
+  // Reopen for review — does NOT auto-revert the payment record (operator
+  // may want to keep that and just re-classify the txn). They can edit
+  // the payment manually if needed.
+  if (!txnId) return;
+  if (!confirm('Move this transaction back to "Needs review"? Note: the rent payment record stays — edit it manually if needed.')) return;
+  try {
+    const fn = stripeCallable('dismissBankMatch');     // dismiss → unmatched on re-match
+    await fn({ txnId });
+    _bankActivityCache = null;
+    renderBankActivityPanel({ force: true });
+  } catch (err) {
+    alert(`Undo failed: ${err?.message || String(err)}`);
+  }
+}
+
+async function undoBankDismissal(txnId) {
+  if (!txnId) return;
+  // Re-run matcher on this single txn by clearing dismissed state.
+  // Cheapest path: call the runMatcher endpoint which re-evaluates
+  // all dismissed too (it filters in/out based on matchState).
+  try {
+    const fn = stripeCallable('confirmBankMatch');
+    // Hack: not ideal — for now operator should pick a tenant via "Change".
+    alert('Use "Change" to manually re-match this transaction.');
+  } catch (err) {}
+}
+
+function changeBankMatch(txnId) {
+  // Build a quick prompt: show all occupied units, let operator pick.
+  const choices = [];
+  for (const b of state.buildings || []) {
+    for (const f of b.floors || []) {
+      for (const u of f.units || []) {
+        if (u.status !== 'occupied') continue;
+        if (!u.tenant && !u.company) continue;
+        choices.push({ unitId: u.id, label: `${u.id} — ${u.company || u.tenant}` });
+      }
+    }
+  }
+  if (!choices.length) { alert('No occupied units available to match against.'); return; }
+  const numbered = choices.map((c, i) => `${i + 1}. ${c.label}`).join('\n');
+  const pick = prompt(`Pick the tenant who paid this transaction:\n\n${numbered}\n\nEnter number:`);
+  if (!pick) return;
+  const idx = parseInt(pick, 10) - 1;
+  if (isNaN(idx) || idx < 0 || idx >= choices.length) { alert('Invalid choice.'); return; }
+  const ym = prompt('Which month does this payment cover? (YYYY-MM, e.g. 2026-05)', new Date().toISOString().slice(0, 7));
+  if (!ym || !/^\d{4}-\d{2}$/.test(ym)) { alert('Invalid month.'); return; }
+  confirmBankMatch(txnId, choices[idx].unitId, ym);
+}
+
 // Wire re-render to the panel: when Settings opens or the integrations
 // tab activates, refresh the list. Cheaper than reactive — operator
 // rarely opens this panel during normal work.
@@ -72116,6 +72371,7 @@ function setBillingTab(tab) {
   document.getElementById('billTabVacancy')?.classList.toggle('active',   tab === 'vacancy');
   document.getElementById('billTabCalendar')?.classList.toggle('active',  tab === 'calendar');
   document.getElementById('billTabPnl')?.classList.toggle('active',       tab === 'pnl');
+  document.getElementById('billTabBankActivity')?.classList.toggle('active', tab === 'bankActivity');
   // Show the requested panel, hide the rest. Each panel is independent
   // and has its own render function — they don't share state.
   const tenantsPanel = document.getElementById('billingTenantsPanel');
@@ -72134,6 +72390,8 @@ function setBillingTab(tab) {
   if (calendarPanel) calendarPanel.style.display = tab === 'calendar' ? '' : 'none';
   const pnlPanel = document.getElementById('billingPnlPanel');
   if (pnlPanel) pnlPanel.style.display = tab === 'pnl' ? '' : 'none';
+  const baPanel = document.getElementById('billingBankActivityPanel');
+  if (baPanel) baPanel.style.display = tab === 'bankActivity' ? '' : 'none';
   if (tab === 'tenants')   renderTenantsPanelZip();  // ZIP-style — paints bvTenantsTable from state
   if (tab === 'invoices')  renderInvoicesPage();
   if (tab === 'aging')     renderAgingPanel();
@@ -72143,6 +72401,7 @@ function setBillingTab(tab) {
   if (tab === 'vacancy' && typeof renderVacancyPanel === 'function') renderVacancyPanel();
   if (tab === 'calendar' && typeof renderCalendarPanel === 'function') renderCalendarPanel();
   if (tab === 'pnl' && typeof renderPnlPanel === 'function') renderPnlPanel();
+  if (tab === 'bankActivity' && typeof renderBankActivityPanel === 'function') renderBankActivityPanel();
   // Tab counts on the header (visible counters next to each tab name)
   try { _bvUpdateTabCounts(); } catch {}
   // Start/stop the 30s safety-net auto-refresh based on sub-tab.

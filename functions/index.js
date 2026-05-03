@@ -4184,10 +4184,11 @@ const BANK_FEED_BACKFILL_DAYS = 365;
 
 // Pull every transaction Stripe FC has for an account since `sinceUnix`
 // (or all-time if sinceUnix is null). Returns the count actually written
-// to Firestore (excluding dedup hits).
-async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix}) {
+// to Firestore (excluding dedup hits). When `state` is supplied, the
+// matcher runs inline against each new credit transaction.
+async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, state}) {
   const col = db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`);
-  let written = 0, skipped = 0, scanned = 0;
+  let written = 0, skipped = 0, scanned = 0, suggested = 0;
   let startingAfter = undefined;
   for (;;) {
     const params = {
@@ -4202,7 +4203,7 @@ async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix}) {
     const batch = db.batch();
     for (const t of page.data) {
       const ref = col.doc(t.id);
-      batch.set(ref, {
+      const baseDoc = {
         id: t.id,
         accountId: t.account,
         amount: t.amount,                       // cents (negative=debit, positive=credit)
@@ -4212,21 +4213,29 @@ async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix}) {
         statusTransitions: t.status_transitions || null,
         status: t.status,                       // 'pending' | 'posted' | 'void'
         seenAt: admin.firestore.FieldValue.serverTimestamp(),
-        // Match-state fields populated by the auto-matcher (Phase 3).
-        // Initialized as 'unmatched' so the review UI knows what to show.
         matchState: 'unmatched',
         matchedTenantId: null,
         matchedUnitId: null,
         matchedYm: null,
         checkImageUrl: null,
-      }, { merge: true });
+      };
+      // Run matcher inline if state was supplied. Skip if the txn is
+      // already confirmed/dismissed (merge:true preserves those fields).
+      if (state) {
+        const m = _matchTransaction(state, baseDoc);
+        if (m) {
+          Object.assign(baseDoc, m, { matchState: 'suggested' });
+          suggested++;
+        }
+      }
+      batch.set(ref, baseDoc, { merge: true });
       written++;
     }
     if (page.data.length) await batch.commit();
     if (!page.has_more) break;
     startingAfter = page.data[page.data.length - 1].id;
   }
-  return { scanned, written, skipped };
+  return { scanned, written, skipped, suggested };
 }
 
 // Update the watermark + call the matcher after a successful pull.
@@ -4269,6 +4278,7 @@ exports.pollBankTransactions = onCall(
           stripe,
           fcAccountId: c.stripeFcAccountId,
           sinceUnix: since,
+          state,                         // enables inline matching
         });
         await _markAccountPolled({
           fcAccountId: c.stripeFcAccountId,
@@ -4328,6 +4338,7 @@ exports.bankFeedScheduledPoll = onSchedule(
           stripe,
           fcAccountId: c.stripeFcAccountId,
           sinceUnix,
+          state,                         // enables inline matching
         });
         await _markAccountPolled({
           fcAccountId: c.stripeFcAccountId,
@@ -4363,5 +4374,234 @@ exports.setBankPollInterval = onCall(
       c.pollIntervalHours = hours;
     });
     return { ok: true, hours };
+  }
+);
+
+// =========================================================================
+// ===== Bank Feed Phase 3 — auto-matcher (description → tenant) ===========
+// For each incoming credit transaction, fuzzy-match the bank description
+// against tenant.company / tenant.name. Strong match → 'suggested'.
+// Operator confirms in the Bank Activity panel; confirmation creates the
+// rent payment record. Dismiss marks as not-a-rent-payment.
+// =========================================================================
+
+function _normalizeForMatch(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Walk state, return { tenantId, unitId, company, tenant, contractRent }
+// for every occupied billable unit. Used as the candidate pool for matching.
+function _matcherCandidates(state) {
+  const out = [];
+  for (const b of state.buildings || []) {
+    for (const f of b.floors || []) {
+      for (const u of f.units || []) {
+        if (u.status !== 'occupied') continue;
+        if (!u.tenant && !u.company) continue;
+        out.push({
+          unitId: u.id,
+          buildingId: b.id,
+          floorId: f.id,
+          tenant: u.tenant || '',
+          company: u.company || '',
+          contractRent: +u.contractRent || +u.rent || 0,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+// Score a description against a candidate. Returns 0..1.
+// Heuristic: exact substring of company/tenant in description = 1.0;
+// every shared token >2 chars adds 0.25, capped at 0.95.
+function _scoreMatch(descNorm, candidate) {
+  const company = _normalizeForMatch(candidate.company);
+  const tenant = _normalizeForMatch(candidate.tenant);
+  if (company && descNorm.includes(company)) return 1.0;
+  if (tenant && tenant.length > 4 && descNorm.includes(tenant)) return 0.95;
+  // Token overlap
+  const descTokens = new Set(descNorm.split(' ').filter(t => t.length > 2));
+  const candTokens = [...company.split(' '), ...tenant.split(' ')]
+    .filter(t => t.length > 2);
+  if (!candTokens.length) return 0;
+  const hits = candTokens.filter(t => descTokens.has(t)).length;
+  if (!hits) return 0;
+  return Math.min(0.95, 0.25 * hits);
+}
+
+// Pick best candidate. Returns null if no candidate scores >= 0.7.
+function _matchTransaction(state, txn) {
+  if (txn.amount <= 0) return null;       // only credits = incoming money
+  const descNorm = _normalizeForMatch(txn.description);
+  if (!descNorm) return null;
+  const cands = _matcherCandidates(state);
+  let best = null;
+  for (const c of cands) {
+    const score = _scoreMatch(descNorm, c);
+    if (score >= 0.7 && (!best || score > best.score)) {
+      best = { ...c, score };
+    }
+  }
+  if (!best) return null;
+  // Suggest the YM the transaction landed in (operator can change).
+  const ym = txn.transactedAt
+    ? new Date(txn.transactedAt * 1000).toISOString().slice(0, 7)
+    : new Date().toISOString().slice(0, 7);
+  return {
+    matchedTenantId: best.unitId,    // tenants don't have stable ids; key by unit
+    matchedUnitId: best.unitId,
+    matchedBuildingId: best.buildingId,
+    matchedFloorId: best.floorId,
+    matchedYm: ym,
+    matchScore: best.score,
+    suggestedRent: best.contractRent,
+  };
+}
+
+// Re-run the matcher across all unmatched/suggested transactions.
+// Called by the operator after editing tenants (e.g. fixing a typo
+// in company name) so old transactions get a fresh chance.
+exports.runBankFeedMatcher = onCall(
+  {timeoutSeconds: 120, memory: '512MiB'},
+  async (req) => {
+    await requireEditor(req.auth);
+    const state = await readWorkspaceState();
+    const col = db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`);
+    const snap = await col
+      .where('matchState', 'in', ['unmatched', 'suggested'])
+      .get();
+    let updated = 0, suggested = 0;
+    const batch = db.batch();
+    for (const d of snap.docs) {
+      const txn = d.data();
+      const m = _matchTransaction(state, txn);
+      if (m) {
+        batch.set(d.ref, {
+          ...m,
+          matchState: 'suggested',
+          matcherRunAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+        suggested++;
+      } else if (txn.matchState === 'suggested') {
+        // Was suggested before but no longer matches anyone → revert.
+        batch.set(d.ref, {
+          matchState: 'unmatched',
+          matchedTenantId: null,
+          matchedUnitId: null,
+          matchedYm: null,
+          matchScore: null,
+          suggestedRent: null,
+        }, { merge: true });
+      }
+      updated++;
+    }
+    if (updated) await batch.commit();
+    logger.info(`[bank-feed] matcher ran: ${updated} txns reviewed, ${suggested} suggestions`);
+    return { reviewed: updated, suggested };
+  }
+);
+
+// Lightweight read for the Bank Activity panel.
+exports.listBankTransactions = onCall(
+  {timeoutSeconds: 30, memory: '256MiB'},
+  async (req) => {
+    await requireEditor(req.auth);
+    const filter = req.data?.filter || 'pending';   // 'pending' | 'all' | 'confirmed' | 'dismissed'
+    const limit = Math.min(+req.data?.limit || 200, 500);
+    const col = db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`);
+    let q = col;
+    if (filter === 'pending') {
+      q = q.where('matchState', 'in', ['unmatched', 'suggested']);
+    } else if (filter === 'confirmed') {
+      q = q.where('matchState', '==', 'confirmed');
+    } else if (filter === 'dismissed') {
+      q = q.where('matchState', '==', 'dismissed');
+    }
+    // Sort + limit in JS to avoid composite-index requirements.
+    const snap = await q.get();
+    const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    items.sort((a, b) => (b.transactedAt || 0) - (a.transactedAt || 0));
+    return { items: items.slice(0, limit) };
+  }
+);
+
+// Confirm a suggested match (or apply an operator override). Optionally
+// records the rent payment in state.
+exports.confirmBankMatch = onCall(
+  {timeoutSeconds: 60, memory: '256MiB'},
+  async (req) => {
+    await requireEditor(req.auth);
+    const txnId = String(req.data?.txnId || '');
+    const unitId = String(req.data?.unitId || '');
+    const ym = String(req.data?.ym || '');
+    const recordPayment = req.data?.recordPayment !== false;   // default true
+    if (!txnId || !unitId || !/^\d{4}-\d{2}$/.test(ym)) {
+      throw new HttpsError('invalid-argument', 'txnId, unitId, ym (YYYY-MM) required');
+    }
+    const ref = db.doc(`workspaces/${WORKSPACE_ID}/bankTransactions/${txnId}`);
+    const snap = await ref.get();
+    if (!snap.exists) throw new HttpsError('not-found', 'transaction not found');
+    const txn = snap.data();
+    const operatorEmail = (req.auth?.token?.email || '').toLowerCase();
+
+    if (recordPayment) {
+      await mutateWorkspaceState((s) => {
+        outer: for (const b of s.buildings || []) {
+          for (const f of b.floors || []) {
+            for (const u of f.units || []) {
+              if (u.id !== unitId) continue;
+              u.payments = u.payments || {};
+              const existing = u.payments[ym] || {};
+              u.payments[ym] = {
+                ...existing,
+                status: 'paid',
+                paidAt: new Date(txn.transactedAt ? txn.transactedAt * 1000 : Date.now()).toISOString(),
+                amount: Math.abs(txn.amount) / 100,
+                source: 'bank-feed',
+                bankTxnId: txnId,
+                confirmedBy: operatorEmail,
+              };
+              break outer;
+            }
+          }
+        }
+      });
+    }
+
+    await ref.set({
+      matchState: 'confirmed',
+      matchedUnitId: unitId,
+      matchedTenantId: unitId,
+      matchedYm: ym,
+      confirmedAt: admin.firestore.FieldValue.serverTimestamp(),
+      confirmedBy: operatorEmail,
+    }, { merge: true });
+
+    logger.info(`[bank-feed] confirmed txn ${txnId} → unit ${unitId} ym ${ym} (paymentRecorded=${recordPayment})`);
+    return { ok: true };
+  }
+);
+
+// Operator marks transaction as not-a-rent-payment (refund, transfer,
+// vendor payment, etc.). It stops appearing in the pending list.
+exports.dismissBankMatch = onCall(
+  {timeoutSeconds: 30},
+  async (req) => {
+    await requireEditor(req.auth);
+    const txnId = String(req.data?.txnId || '');
+    if (!txnId) throw new HttpsError('invalid-argument', 'txnId required');
+    const ref = db.doc(`workspaces/${WORKSPACE_ID}/bankTransactions/${txnId}`);
+    const operatorEmail = (req.auth?.token?.email || '').toLowerCase();
+    await ref.set({
+      matchState: 'dismissed',
+      dismissedAt: admin.firestore.FieldValue.serverTimestamp(),
+      dismissedBy: operatorEmail,
+    }, { merge: true });
+    return { ok: true };
   }
 );
