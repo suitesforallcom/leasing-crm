@@ -71678,6 +71678,11 @@ function renderBilling() {
   updateBillingOutstandingWidget();
   // Keep the topbar pill in sync too
   try { updateTopbarOutstandingPill(); } catch {}
+  // Legacy single-table UI was replaced by the ZIP-style panels (Tenants,
+  // Invoices, Aging, etc.). The DOM nodes below — billingKpis, billingTable,
+  // billingSearch, billingBuildingMS, billingStatusMS — no longer exist.
+  // Bail before any of them are touched.
+  if (!document.getElementById('billingKpis')) return;
   const search = (document.getElementById('billingSearch')?.value || '').toLowerCase();
   const bldgs  = getMSValues('billingBuildingMS');
   const states = getMSValues('billingStatusMS');
