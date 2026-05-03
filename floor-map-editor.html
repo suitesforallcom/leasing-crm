@@ -58497,16 +58497,30 @@ function _renderBankConnections() {
     // Indeterminate progress bar — reuses the .recon-progress-fill keyframe
     // (reconShimmer) defined alongside the reconciliation widget so we don't
     // need a new <style> rule. Fills width 100% with a flowing gradient.
-    const progressBar = isRefreshing
-      ? `<div style="padding-left:28px;">
+    let progressBar = '';
+    if (isRefreshing) {
+      progressBar = `<div style="padding-left:28px;">
            <div style="height:6px; background:rgba(99,91,255,0.12); border-radius:999px; overflow:hidden;">
              <div class="recon-progress-fill" style="width:100%; height:100%;"></div>
            </div>
            <div style="font-size:10.5px; color:var(--muted); margin-top:4px; display:flex; align-items:center; gap:6px;">
              <span>Pulling transactions from Stripe… (this can take 30–60s for fresh accounts)</span>
            </div>
-         </div>`
-      : '';
+         </div>`;
+    } else {
+      // Short-lived success/error banner after a refresh completes — gives
+      // the operator visible confirmation even when CF returned in <2s.
+      const last = _bankAccountsLastResult.get(c.stripeFcAccountId);
+      if (last && Date.now() < last.expiresAt) {
+        const bg = last.ok ? 'rgba(34,197,94,0.10)' : 'rgba(239,68,68,0.10)';
+        const fg = last.ok ? 'var(--success)' : 'var(--danger)';
+        progressBar = `<div style="padding-left:28px;">
+             <div style="background:${bg}; color:${fg}; padding:6px 10px; border-radius:6px; font-size:11px; font-weight:600;">
+               ${esc(last.message)}
+             </div>
+           </div>`;
+      }
+    }
     return `
       <div style="display:flex; flex-direction:column; gap:8px; padding:10px 12px; background:var(--surface); border:1px solid var(--border); border-radius:8px;">
         <div style="display:flex; align-items:center; gap:10px;">
@@ -58548,24 +58562,60 @@ async function setBankPollIntervalUI(fcAccountId, hoursStr) {
 // Tracks which bank accounts have an in-flight refresh so the UI can show
 // inline indeterminate progress bars per-card.
 const _bankAccountsRefreshing = new Set();
+// After a refresh finishes we keep a short-lived banner per-account so the
+// operator sees confirmation even when the CF returns in 1–2 sec (e.g. an
+// incremental poll with no new transactions). { ok, message, expiresAt }.
+const _bankAccountsLastResult = new Map();
+const _bankAccountsRefreshStarted = new Map();   // fcId → ms timestamp
+const _BANK_REFRESH_MIN_VISIBLE_MS = 1500;       // bar stays at least 1.5s
+const _BANK_REFRESH_BANNER_MS = 4000;            // success/error banner 4s
 
 async function refreshBankAccountNow(fcAccountId) {
   if (!fcAccountId) return;
   if (_bankAccountsRefreshing.has(fcAccountId)) return;     // already running
   _bankAccountsRefreshing.add(fcAccountId);
+  _bankAccountsRefreshStarted.set(fcAccountId, Date.now());
+  _bankAccountsLastResult.delete(fcAccountId);
   _renderBankConnections();   // re-paint to show progress bar + disabled btn
   setIntStatus('bankFeed', 'info', '⏳ Pulling new transactions from Stripe…');
+  let result = null;
   try {
     const fn = stripeCallable('pollBankTransactions');
     const { data } = await fn({ stripeFcAccountId: fcAccountId });
     const w = data?.totalWritten || 0;
+    const scanned = data?.accounts?.[0]?.scanned ?? 0;
+    result = { ok: true, message: w > 0
+      ? `✓ ${w} new transaction${w === 1 ? '' : 's'} pulled (${scanned} scanned).`
+      : `✓ Up to date — no new transactions (${scanned} scanned).` };
     setIntStatus('bankFeed', 'success', `✓ ${w} transaction(s) updated.`);
   } catch (err) {
+    result = { ok: false, message: `⚠ ${err?.message || String(err)}` };
     setIntStatus('bankFeed', 'error', `⚠ ${esc(err?.message || String(err))}`);
-  } finally {
-    _bankAccountsRefreshing.delete(fcAccountId);
-    _renderBankConnections();
   }
+  // Keep the bar visible for at least _BANK_REFRESH_MIN_VISIBLE_MS so the
+  // operator actually perceives that something happened. Without this the
+  // bar can flash for 200ms on a cached account and the operator thinks
+  // the click was ignored.
+  const elapsed = Date.now() - (_bankAccountsRefreshStarted.get(fcAccountId) || 0);
+  if (elapsed < _BANK_REFRESH_MIN_VISIBLE_MS) {
+    await new Promise(r => setTimeout(r, _BANK_REFRESH_MIN_VISIBLE_MS - elapsed));
+  }
+  _bankAccountsRefreshing.delete(fcAccountId);
+  _bankAccountsRefreshStarted.delete(fcAccountId);
+  _bankAccountsLastResult.set(fcAccountId, {
+    ...result,
+    expiresAt: Date.now() + _BANK_REFRESH_BANNER_MS,
+  });
+  _renderBankConnections();
+  // Auto-clear the inline banner after _BANK_REFRESH_BANNER_MS so the card
+  // returns to its normal compact state.
+  setTimeout(() => {
+    const r = _bankAccountsLastResult.get(fcAccountId);
+    if (r && Date.now() >= r.expiresAt) {
+      _bankAccountsLastResult.delete(fcAccountId);
+      _renderBankConnections();
+    }
+  }, _BANK_REFRESH_BANNER_MS + 50);
 }
 
 // =========================================================================
