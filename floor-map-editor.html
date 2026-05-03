@@ -77552,6 +77552,23 @@ function _openMapDetailDrawer(buildingId, floorId, unitId) {
   return true;
 }
 window._openMapDetailDrawer = _openMapDetailDrawer;
+
+// Универсальный helper: попробовать новый map-detail drawer, упасть на
+// старый узкий tenant-drawer. Используется из таблиц Aging / Rent Roll
+// и любых других списков, где клик по строке должен открывать «правую
+// панель офиса как на карте». Вынесено в одну функцию, чтобы не
+// дублировать try/catch в каждом onclick.
+function _openUnitDetailOrDrawer(bId, fId, uId) {
+  if (typeof _openMapDetailDrawer === 'function') {
+    try { if (_openMapDetailDrawer(bId, fId, uId)) return; }
+    catch (e) { console.warn('[open-unit-detail map-detail]', e); }
+  }
+  if (typeof openTenantDrawer === 'function') {
+    try { openTenantDrawer(bId, fId, uId); } catch (e) { console.warn('[open-unit-detail drawer]', e); }
+  }
+}
+window._openUnitDetailOrDrawer = _openUnitDetailOrDrawer;
+
 function _renderTenantDrawerBody(r) {
   const { b, f, u } = r;
   const rows = buildAgingRows();
@@ -79787,7 +79804,7 @@ function renderAgingPanel() {
       ? `\nHistorical on-time rate: ${r.recoveryPct}%`
       : '';
     const rowTitle = `${esc(r.u.tenant || r.u.company || r.u.id)}\n${lastContact}${lateFeeNote}${recoverNote}\n\nClick: open tenant drawer\nRight-click: quick actions`;
-    return `<tr data-sel-key="${esc(selKey)}" onclick="openTenantDrawer('${esc(r.b.id)}','${esc(r.f.id)}','${esc(r.u.id)}')" oncontextmenu="event.preventDefault(); openAgingRowMenu(event, '${esc(r.b.id)}','${esc(r.f.id)}','${esc(r.u.id)}')" title="${esc(rowTitle)}" style="cursor: pointer;">
+    return `<tr data-sel-key="${esc(selKey)}" onclick="_openUnitDetailOrDrawer('${esc(r.b.id)}','${esc(r.f.id)}','${esc(r.u.id)}')" oncontextmenu="event.preventDefault(); openAgingRowMenu(event, '${esc(r.b.id)}','${esc(r.f.id)}','${esc(r.u.id)}')" title="${esc(rowTitle)}" style="cursor: pointer;">
       <td onclick="event.stopPropagation();" style="text-align:center;"><input type="checkbox" class="aging-row-check" ${isChecked ? 'checked' : ''} onchange="agingToggleRow('${esc(selKey)}', this.checked)"></td>
       <td>
         <b>${esc(r.u.tenant || r.u.company || '(no name)')}</b>
