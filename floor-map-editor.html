@@ -19642,7 +19642,7 @@ function loadState() {
             state.settings.leasingModel[b.id] = (typeof _makeDefaultLeasingModel === 'function')
               ? _makeDefaultLeasingModel()
               : {
-                  strategy: 'sequential-bottom-up', customOrder: [],
+                  strategy: 'sequential-bottom-up',
                   velocity: { mode: 'auto', targetMonths: 18, manualSqftPerMo: 0, manualAvgLeaseSize: 0 },
                   defaults: { leaseTermMonths: 12, annualEscalationPct: 3, downtimeMonths: 1 },
                   floorOverrides: {},
@@ -25102,7 +25102,6 @@ const LEASE_TYPES            = [LEASE_TYPE_MULTI_SUITE, LEASE_TYPE_FULL_FLOOR];
 const FILL_STRATEGIES = [
   'sequential-bottom-up',
   'sequential-top-down',
-  'sequential-custom',
   'distributed',
 ];
 const VELOCITY_MODES = ['auto', 'target-months', 'manual'];
@@ -25113,7 +25112,6 @@ const VELOCITY_MODES = ['auto', 'target-months', 'manual'];
 function _makeDefaultLeasingModel() {
   return {
     strategy: 'sequential-bottom-up',
-    customOrder: [],            // массив floorId — для strategy='sequential-custom'
     velocity: {
       mode: 'auto',             // 'auto' | 'target-months' | 'manual'
       targetMonths: 18,         // используется при mode='target-months'
@@ -25131,6 +25129,11 @@ function _makeDefaultLeasingModel() {
 
 // Достаёт модель для здания + защитный merge с дефолтами, чтобы
 // call-site'у не приходилось null-чекать каждое вложенное поле.
+// Для legacy-данных (strategy='sequential-custom' из v1 UI) FILL_STRATEGIES
+// теперь не включает 'sequential-custom' → fall through к default
+// 'sequential-bottom-up', и legacy customOrder просто игнорируется
+// (пере-saveState'ом удаляется из JSON, потому что мы его не читаем
+// и не сохраняем в новой схеме).
 function _getLeasingModel(buildingId) {
   const root = (state && state.settings && state.settings.leasingModel) || {};
   const stored = root[buildingId];
@@ -25138,7 +25141,6 @@ function _getLeasingModel(buildingId) {
   if (!stored || typeof stored !== 'object') return def;
   return {
     strategy: FILL_STRATEGIES.includes(stored.strategy) ? stored.strategy : def.strategy,
-    customOrder: Array.isArray(stored.customOrder) ? stored.customOrder.slice() : [],
     velocity: {
       mode: VELOCITY_MODES.includes(stored.velocity && stored.velocity.mode)
         ? stored.velocity.mode : def.velocity.mode,
@@ -25200,15 +25202,6 @@ function _buildFillQueue(model, floors) {
   const strategy = (model && model.strategy) || 'sequential-bottom-up';
   if (strategy === 'sequential-top-down') {
     rest.sort((a, b) => (b.number || 0) - (a.number || 0));
-  } else if (strategy === 'sequential-custom') {
-    const order = Array.isArray(model.customOrder) ? model.customOrder : [];
-    const idx = new Map(order.map((id, i) => [id, i]));
-    rest.sort((a, b) => {
-      const ia = idx.has(a.id) ? idx.get(a.id) : 1e9;
-      const ib = idx.has(b.id) ? idx.get(b.id) : 1e9;
-      if (ia !== ib) return ia - ib;
-      return (a.number || 0) - (b.number || 0);
-    });
   } else {
     // 'sequential-bottom-up' (default) и 'distributed' оба сортируем
     // по номеру; 'distributed' просто потом обработает очередь как
@@ -67442,7 +67435,7 @@ function renderSettingsFloors() {
 //   - Defaults   — стандартные параметры новых лизов (term/escalation/downtime)
 //   - Per-floor  — тип этажа (multi-suite / full-floor) + override (active/hold/priority)
 // Панель самообновляется через renderLeasingModelPanel() после каждого
-// сохранения. Drag-drop priority queue включается только при strategy='sequential-custom'.
+// сохранения.
 // Все save-handlers идут через pushHistory() + saveState() — обычный
 // undo-friendly паттерн всего остального state-mutate'а.
 
@@ -67544,8 +67537,9 @@ function renderLeasingModelPanel() {
   if (typeof _getLeasingModel !== 'function') { panel.innerHTML = ''; return; }
   const m = _getLeasingModel(b.id);
 
-  // Этажи в порядке номера для всех секций кроме custom-order (там
-  // используем сохранённый customOrder, дополняя «новыми» этажами в конце).
+  // Этажи в порядке номера. Custom-order стратегия удалена в v2 —
+  // вместо неё точечные исключения через Priority/Hold per-floor
+  // (та же модель экспрессивности на 4-10 этажах, без drag-drop UI).
   const floors = (b.floors || []).slice().sort((a, b2) => (a.number || 0) - (b2.number || 0));
 
   // === Strategy radio ===
@@ -67554,8 +67548,6 @@ function renderLeasingModelPanel() {
       hint: 'Заполняем по очереди снизу вверх — типичный leasing pattern.' },
     { id: 'sequential-top-down',  label: 'Top-down (N → 1)',
       hint: 'Сверху вниз — для зданий с premium-этажами на верху.' },
-    { id: 'sequential-custom',    label: 'Custom order',
-      hint: 'Drag-and-drop порядок. Подходит, когда leasing-команда знает, какие этажи продаются первыми.' },
     { id: 'distributed',          label: 'Distributed',
       hint: 'Все этажи заполняются параллельно (single pool). Для коворкингов и multi-floor одновременных кампаний.' },
   ];
@@ -67576,38 +67568,6 @@ function renderLeasingModelPanel() {
       </div>
     </div>
   `;
-
-  // === Custom order (drag-drop) — только для sequential-custom ===
-  // Берём model.customOrder + добавляем «отсутствующие» этажи в конец
-  // (они появляются после добавления нового этажа — без этого новый
-  // этаж выпадал бы из очереди, пока оператор сам не перетащит).
-  let customHTML = '';
-  if (m.strategy === 'sequential-custom') {
-    const ordered = [];
-    const seen = new Set();
-    for (const fid of (m.customOrder || [])) {
-      const f = floors.find(x => x.id === fid);
-      if (f && !seen.has(fid)) { ordered.push(f); seen.add(fid); }
-    }
-    for (const f of floors) if (!seen.has(f.id)) ordered.push(f);
-
-    customHTML = `
-      <div style="margin-bottom: 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px;">
-        <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); font-weight: 600; margin-bottom: 6px;">Custom order — drag to reorder</div>
-        <div id="lmCustomOrder" style="display: flex; flex-direction: column; gap: 4px;">
-          ${ordered.map((f, i) => `
-            <div data-floor-id="${esc(f.id)}" draggable="true"
-                 style="display:flex; align-items:center; gap:8px; padding:8px 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; cursor: grab; user-select: none;">
-              <span style="color: var(--muted); font-size: 12px; min-width: 22px;">${i + 1}.</span>
-              <span style="color: var(--muted); font-size: 14px;">⋮⋮</span>
-              <span style="color: var(--muted); font-weight: 400; font-size: 11.5px;">#${f.number || '?'}</span>
-              <span style="font-weight: 600; font-size: 13px;">${esc(f.name)}</span>
-            </div>
-          `).join('')}
-        </div>
-      </div>
-    `;
-  }
 
   // === Velocity radio + conditional inputs ===
   const v = m.velocity || {};
@@ -67750,54 +67710,11 @@ function renderLeasingModelPanel() {
         Эти настройки управляют тем, как Revenue Forecast предсказывает заполнение vacant-площадей. Меняй их, если у здания специфический leasing pattern (например, 18 месяцев на full lease-up или приоритет верхних этажей).
       </div>
       ${stratHTML}
-      ${customHTML}
       ${velHTML}
       ${defHTML}
       ${perFloorHTML}
     </div>
   `;
-
-  if (m.strategy === 'sequential-custom') _wireLeasingModelDnD(b.id);
-}
-
-// HTML5 drag-drop для Custom order. Перевешиваем listeners каждый раз
-// после re-render (innerHTML очищает старые). dragId хранится в closure
-// этого вызова — каждый wire создаёт свой scope.
-function _wireLeasingModelDnD(buildingId) {
-  const list = document.getElementById('lmCustomOrder');
-  if (!list) return;
-  let dragId = null;
-  list.querySelectorAll('[data-floor-id]').forEach(row => {
-    row.addEventListener('dragstart', (e) => {
-      dragId = row.dataset.floorId;
-      row.style.opacity = '0.4';
-      try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', dragId); } catch {}
-    });
-    row.addEventListener('dragend', () => {
-      row.style.opacity = '';
-      list.querySelectorAll('[data-floor-id]').forEach(r => { r.style.outline = ''; });
-      dragId = null;
-    });
-    row.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      try { e.dataTransfer.dropEffect = 'move'; } catch {}
-      row.style.outline = '2px dashed var(--accent)';
-    });
-    row.addEventListener('dragleave', () => { row.style.outline = ''; });
-    row.addEventListener('drop', (e) => {
-      e.preventDefault();
-      row.style.outline = '';
-      const targetId = row.dataset.floorId;
-      if (!dragId || dragId === targetId) return;
-      const ids = Array.from(list.querySelectorAll('[data-floor-id]')).map(r => r.dataset.floorId);
-      const fromIdx = ids.indexOf(dragId);
-      const toIdx   = ids.indexOf(targetId);
-      if (fromIdx < 0 || toIdx < 0) return;
-      ids.splice(fromIdx, 1);
-      ids.splice(toIdx, 0, dragId);
-      _saveLeasingModel(buildingId, m => { m.customOrder = ids; });
-    });
-  });
 }
 
 // Update a floor's GFA or RSF field
