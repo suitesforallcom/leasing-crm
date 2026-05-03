@@ -82997,82 +82997,153 @@ function _mpmGuessMethodFromDesc(desc) {
   return 'other';
 }
 
-// Pull bank suggestions from CF and render them inside the modal. Called
-// on modal open + every billing-month change. Idempotent.
+// Объединённый рендерер: bank-feed + Stripe-инвойсы в одну карточку
+// (#mpmBankFeedCard). Раньше это были две отдельные карточки —
+// #mpmBankFeedCard и #mpmStripeFeedCard, оператор жаловался на
+// «два отдельных окна» (фидбэк 2026-05-03). Теперь одна карточка с
+// одним заголовком, одной строкой источников и одной Browse-кнопкой.
+// _mpmRenderStripeSuggestions стал no-op — рендер делается тут.
+//
+// Async: bank-часть тянется через CF, Stripe-часть — синхронно из
+// локального _invoicesCache. Скелет показывает уже готовые Stripe-rows,
+// пока тянется bank.
 async function _mpmRenderBankSuggestions(u, ym) {
   const card = document.getElementById('mpmBankFeedCard');
   if (!card) return;
-  // Hide entirely when no bank connection exists — the section would
-  // just be dead UI. Also hide on waiver months (zero-dollar by def).
-  const conns = (state.bankConnections || []).filter(c => c.status === 'active');
-  if (!conns.length) { card.innerHTML = ''; return; }
+  if (!u) { card.innerHTML = ''; return; }
+  // На waived вся карточка скрывается (нет смысла предлагать что-то под $0).
   if (document.getElementById('mpmMethod')?.value === 'waived') { card.innerHTML = ''; return; }
-  if (typeof stripeCallable !== 'function') { card.innerHTML = ''; return; }
 
-  const targetCents = Math.round(((+u.contractRent) || (+u.rent) || 0) * 100);
-  const accountIds = []; // empty = all connected accounts (multi-acct dropdown later)
-  const cacheKey = _mpmBankCacheKey(u.id, ym, accountIds);
-  const cached = _mpmBankCache.get(cacheKey);
-  const fresh = cached && (Date.now() - cached.at < 30000);
-  // Loading skeleton
-  if (!fresh) {
-    card.innerHTML = `
-      <div class="mpm-bf-card mpm-bf-card-loading">
-        <div class="mpm-bf-head">
-          <span>🏦 Bank feed suggestions for ${esc(_fmtMonthName(ym))}</span>
-          <span class="mpm-bf-spinner">⏳ scanning…</span>
-        </div>
-      </div>`;
-  }
+  const conns = (state.bankConnections || []).filter(c => c.status === 'active');
+  const hasBank = conns.length > 0 && typeof stripeCallable === 'function';
 
-  const seq = ++_mpmBankFetchSeq;
-  let items = cached?.items;
-  if (!fresh) {
-    try {
-      const fn = stripeCallable('listBankTransactionsForUnit');
-      const { data } = await fn({
-        ym,
-        amountCents: targetCents,
-        amountTolerancePct: 15,
-        dateRangeDays: 30,
-        accountIds,
-        limit: 4,
-      });
-      items = data?.items || [];
-      _mpmBankCache.set(cacheKey, { at: Date.now(), items });
-    } catch (err) {
-      // Stale fetch — operator already moved on; don't paint over fresh state.
-      if (seq !== _mpmBankFetchSeq) return;
-      card.innerHTML = `
-        <div class="mpm-bf-card mpm-bf-card-error">
-          <div class="mpm-bf-head">🏦 Bank feed</div>
-          <div class="mpm-bf-error">Couldn't load suggestions: ${esc(err?.message || String(err))}</div>
-        </div>`;
-      return;
-    }
-  }
-  if (seq !== _mpmBankFetchSeq) return;
+  // ---- Stripe-источник: локальный кэш, ±1 месяц от выбранного ym ----
+  const allStripe = _mpmCollectStripeInvoicesForUnit(u);
+  const openStripe = allStripe.filter(inv => {
+    const b = (inv.bucket || inv.status || '').toLowerCase();
+    return b !== 'paid' && b !== 'void' && b !== 'uncollectible';
+  });
+  const STRIPE_WINDOW = 1;
+  const _ymOfInv = (inv) => {
+    if (inv.metadata?.ym) return String(inv.metadata.ym);
+    const ts = inv.dueDate || inv.created;
+    if (!ts) return '';
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return '';
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  };
+  const stripeInWindow = openStripe.filter(inv => {
+    const invYm = _ymOfInv(inv);
+    if (!invYm) return false;
+    return Math.abs(_mpmYmDelta(invYm, ym)) <= STRIPE_WINDOW;
+  });
+  stripeInWindow.sort((a, b) => {
+    const da = Math.abs(_mpmYmDelta(_ymOfInv(a), ym));
+    const db = Math.abs(_mpmYmDelta(_ymOfInv(b), ym));
+    if (da !== db) return da - db;
+    return (b.created || 0) - (a.created || 0);
+  });
+  const stripeItems = stripeInWindow.slice(0, 4);
 
   const tenantName = u.company || u.tenant || '';
-  const accountLabel = conns.length === 1
-    ? `${esc(conns[0].institutionName || 'Bank')} ····${esc(conns[0].accountLast4 || '')}`
-    : `${conns.length} accounts`;
+  const customerLabel = u.stripe?.customerId
+    ? `Stripe ····${esc(String(u.stripe.customerId).slice(-4))}`
+    : '';
+  const accountLabel = !hasBank
+    ? ''
+    : (conns.length === 1
+        ? `${esc(conns[0].institutionName || 'Bank')} ····${esc(conns[0].accountLast4 || '')}`
+        : `${conns.length} bank accounts`);
+  const sourcesLabel = [accountLabel, customerLabel].filter(Boolean).join(' · ');
+  const monthName = esc(_fmtMonthName(ym));
 
-  if (!items.length) {
-    card.innerHTML = `
-      <div class="mpm-bf-card mpm-bf-card-empty">
-        <div class="mpm-bf-head">
-          <span>🏦 No bank-feed match for ${esc(_fmtMonthName(ym))} (±30d, ±15%)</span>
+  const browseFoot = `<div class="mpm-bf-foot" style="text-align:center;"><button type="button" class="rr-btn ar-btn-sm" onclick="_openTxnBrowser('${esc(_mpmCtx.buildingId)}','${esc(_mpmCtx.floorId)}','${esc(_mpmCtx.unitId)}','${esc(ym)}')">🔍 Browse all transactions for ${esc(tenantName || 'this tenant')}</button></div>`;
+
+  const purposeLabels = { rent:'Rent', late_fee:'Late fee', deposit:'Deposit', damages:'Damages', keys:'Keys', cleaning:'Cleaning', custom:'Charge' };
+  const fmtAmt = c => '$' + ((+c || 0)).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+
+  // Стрипо-строки рендерим один раз (синхронно), переиспользуем в скелете и финале.
+  const stripeRowsHtml = stripeItems.map(inv => {
+    const bucket = (inv.bucket || inv.status || 'open').toLowerCase();
+    const bucketLabel = bucket === 'past_due' ? 'PAST DUE' : bucket.toUpperCase();
+    const created = inv.created ? new Date(inv.created).toLocaleDateString() : '—';
+    const dueAt = inv.dueDate ? new Date(inv.dueDate).toLocaleDateString() : null;
+    const amt = +inv.amountRemaining > 0 ? +inv.amountRemaining : +inv.total;
+    const amtStr = fmtAmt(amt);
+    const purpose = purposeLabels[inv.metadata?.purpose || 'rent'] || 'Charge';
+    const invYm = inv.metadata?.ym ? esc(_fmtMonthName(inv.metadata.ym)) : '';
+    const num = inv.number || (inv.id ? inv.id.slice(-8) : '');
+    const isSelected = !!(_mpmCtx?.linkedStripeInvoice && _mpmCtx.linkedStripeInvoice.id === inv.id);
+    return `
+      <div class="mpm-bf-row mpm-bf-row-stripe ${isSelected ? 'mpm-bf-row-selected' : ''}" data-st-row="${esc(inv.id)}">
+        <div class="mpm-bf-row-main">
+          <div class="mpm-bf-row-amt"><span class="mpm-bf-kind" title="Stripe invoice">💳</span> ${amtStr} <span class="mpm-st-bucket mpm-st-bucket-${esc(bucket)}">${esc(bucketLabel)}</span></div>
+          <div class="mpm-bf-row-meta">${esc(num)} · ${esc(purpose)}${invYm ? ' · ' + invYm : ''} · ${dueAt ? 'due ' + esc(dueAt) : 'issued ' + esc(created)}</div>
         </div>
-        <div class="mpm-bf-empty-sub">
-          Searched <b>${accountLabel}</b> for credits near <b>$${(targetCents / 100).toLocaleString()}</b>.
-          ${tenantName ? `<button type="button" class="rr-btn ar-btn-sm" onclick="_openTxnBrowser('${esc(_mpmCtx.buildingId)}','${esc(_mpmCtx.floorId)}','${esc(_mpmCtx.unitId)}','${esc(ym)}')" style="margin-top:8px;">🔍 Browse all transactions for ${esc(tenantName)}</button>` : ''}
-        </div>
+        <button type="button" class="rr-btn ar-btn-sm mpm-bf-use-btn ${isSelected ? 'mpm-bf-use-btn-selected' : ''}" data-st-btn="${esc(inv.id)}" onclick="_mpmUseStripeInv('${esc(inv.id)}')" title="Apply this invoice to the form">${isSelected ? '✓ Selected' : '✓ Use this'}</button>
       </div>`;
-    return;
+  }).join('');
+
+  // ---- Bank-источник: CF + cache ----
+  const targetCents = Math.round(((+u.contractRent) || (+u.rent) || 0) * 100);
+  const accountIds = [];
+  let bankItems = [];
+  if (hasBank) {
+    const cacheKey = _mpmBankCacheKey(u.id, ym, accountIds);
+    const cached = _mpmBankCache.get(cacheKey);
+    const fresh = cached && (Date.now() - cached.at < 30000);
+
+    // Скелет: показываем уже готовые Stripe-rows + spinner для bank.
+    if (!fresh) {
+      card.innerHTML = `
+        <div class="mpm-bf-card mpm-bf-card-loading" id="mpmBankFeedInner">
+          <div class="mpm-bf-head">
+            <span>💸 Payment suggestions for ${monthName}</span>
+            <span class="mpm-bf-acct">${sourcesLabel}</span>
+          </div>
+          <div class="mpm-bf-rows">${stripeRowsHtml}</div>
+          <div class="mpm-bf-bank-loading" style="padding:6px 12px; color:var(--muted); font-size:12px;">⏳ scanning bank feed…</div>
+          ${browseFoot}
+        </div>`;
+    }
+
+    const seq = ++_mpmBankFetchSeq;
+    if (fresh) {
+      bankItems = cached.items || [];
+    } else {
+      try {
+        const fn = stripeCallable('listBankTransactionsForUnit');
+        const { data } = await fn({
+          ym,
+          amountCents: targetCents,
+          amountTolerancePct: 15,
+          dateRangeDays: 30,
+          accountIds,
+          limit: 4,
+        });
+        bankItems = data?.items || [];
+        _mpmBankCache.set(cacheKey, { at: Date.now(), items: bankItems });
+      } catch (err) {
+        if (seq !== _mpmBankFetchSeq) return;
+        // Bank упал — показываем Stripe-часть + ошибку bank, не теряя UX.
+        card.innerHTML = `
+          <div class="mpm-bf-card mpm-bf-card-error" id="mpmBankFeedInner">
+            <div class="mpm-bf-head">
+              <span>💸 Payment suggestions for ${monthName}</span>
+              <span class="mpm-bf-acct">${sourcesLabel}</span>
+            </div>
+            <div class="mpm-bf-rows">${stripeRowsHtml}</div>
+            <div class="mpm-bf-error">🏦 Bank feed unavailable: ${esc(err?.message || String(err))}</div>
+            ${browseFoot}
+          </div>`;
+        return;
+      }
+    }
+    if (seq !== _mpmBankFetchSeq) return;
   }
 
-  const rows = items.map(t => {
+  // ---- Финальный рендер ----
+  const bankRowsHtml = bankItems.map(t => {
     const dt = t.transactedAt ? new Date(t.transactedAt * 1000) : null;
     const dateStr = dt ? dt.toLocaleDateString() : '—';
     const amount = (+t.amount || 0) / 100;
@@ -83089,32 +83160,47 @@ async function _mpmRenderBankSuggestions(u, ym) {
       : '';
     const isSelected = !!(_mpmCtx?.linkedBankTxn && _mpmCtx.linkedBankTxn.id === t.id);
     return `
-      <div class="mpm-bf-row ${isSelected ? 'mpm-bf-row-selected' : ''}" data-bf-row="${esc(t.id)}">
+      <div class="mpm-bf-row mpm-bf-row-bank ${isSelected ? 'mpm-bf-row-selected' : ''}" data-bf-row="${esc(t.id)}">
         <div class="mpm-bf-row-main">
-          <div class="mpm-bf-row-amt">${amtStr} ${closeNote}</div>
+          <div class="mpm-bf-row-amt"><span class="mpm-bf-kind" title="Bank transaction">🏦</span> ${amtStr} ${closeNote}</div>
           <div class="mpm-bf-row-meta">${esc(dateStr)} · ${esc(t.description || '(no description)')} ${stateBadge}</div>
         </div>
         <button class="rr-btn ar-btn-sm mpm-bf-use-btn ${isSelected ? 'mpm-bf-use-btn-selected' : ''}" data-bf-btn="${esc(t.id)}" onclick="_mpmUseBankTxn('${esc(t.id)}')" title="Apply this transaction to the form">${isSelected ? '✓ Selected' : '✓ Use this'}</button>
       </div>`;
   }).join('');
 
-  const hasSel = !!(_mpmCtx?.linkedBankTxn);
-  const otherCount = Math.max(0, items.length - (hasSel ? 1 : 0));
+  const totalRows = stripeItems.length + bankItems.length;
+  if (totalRows === 0) {
+    card.innerHTML = `
+      <div class="mpm-bf-card mpm-bf-card-empty" id="mpmBankFeedInner">
+        <div class="mpm-bf-head">
+          <span>💸 No payment match for ${monthName}</span>
+          <span class="mpm-bf-acct">${sourcesLabel}</span>
+        </div>
+        <div class="mpm-bf-empty-sub" style="padding:6px 12px;">
+          ${hasBank ? `Searched bank feed for credits near <b>$${(targetCents / 100).toLocaleString()}</b>.` : 'No bank connection.'} No open Stripe invoices for this window.
+        </div>
+        ${browseFoot}
+      </div>`;
+    return;
+  }
+
+  const hasSel = !!(_mpmCtx?.linkedBankTxn) || !!(_mpmCtx?.linkedStripeInvoice);
+  const otherCount = Math.max(0, totalRows - (hasSel ? 1 : 0));
   card.innerHTML = `
     <div class="mpm-bf-card ${hasSel ? 'mpm-bf-card-collapsed' : ''}" id="mpmBankFeedInner">
       <div class="mpm-bf-head">
-        <span>🏦 Bank feed suggestions for ${esc(_fmtMonthName(ym))}</span>
-        <span class="mpm-bf-acct">${accountLabel}</span>
+        <span>💸 Payment suggestions for ${monthName}</span>
+        <span class="mpm-bf-acct">${sourcesLabel}</span>
       </div>
-      <div class="mpm-bf-rows">${rows}</div>
+      <div class="mpm-bf-rows">${stripeRowsHtml}${bankRowsHtml}</div>
       <button type="button" class="mpm-bf-toggle" id="mpmBankFeedToggle" onclick="_mpmToggleBankFeedExpand()">
         <span class="mpm-bf-toggle-text">Show ${otherCount} other match${otherCount === 1 ? '' : 'es'} ▾</span>
       </button>
-      ${tenantName ? `<div class="mpm-bf-foot" style="text-align:center;"><button type="button" class="rr-btn ar-btn-sm" onclick="_openTxnBrowser('${esc(_mpmCtx.buildingId)}','${esc(_mpmCtx.floorId)}','${esc(_mpmCtx.unitId)}','${esc(ym)}')">🔍 Browse all transactions for ${esc(tenantName)}</button></div>` : ''}
+      ${browseFoot}
     </div>`;
 
-  // Stash items so _mpmUseBankTxn can find the picked row without a refetch.
-  _mpmBankCache.set(cacheKey, { at: Date.now(), items });
+  if (hasBank) _mpmBankCache.set(_mpmBankCacheKey(u.id, ym, accountIds), { at: Date.now(), items: bankItems });
 }
 
 // Update the check-copy drop-zone label to reflect the picked file.
@@ -83684,116 +83770,16 @@ function _mpmYmDelta(ymA, ymB) {
   return (ya * 12 + ma) - (yb * 12 + mb);
 }
 
-// Отрисовать карточку Stripe-предложений в #mpmStripeFeedCard.
-// Скрывается полностью, если у юнита нет stripe customerId / email
-// или если в кэше нет ни одного инвойса этого тенанта.
+// No-op: Stripe-инвойсы теперь рендерятся внутри объединённой
+// карточки #mpmBankFeedCard через _mpmRenderBankSuggestions
+// (фидбэк 2026-05-03: «объедини два окна в одно»). Эта функция
+// оставлена как заглушка, чтобы сохранить совместимость с существующими
+// call-site (4 места: _mpmOnMethodChange, _mpmRefreshFromInvoiceCache,
+// открытие модала, смена ym). Только чистит карточку, если в ней
+// случайно остался прошлый рендер.
 function _mpmRenderStripeSuggestions(u, ym) {
   const card = document.getElementById('mpmStripeFeedCard');
-  if (!card) return;
-  if (!u) { card.innerHTML = ''; return; }
-  // Не показываем на waived (нет смысла предлагать инвойс под $0).
-  if (document.getElementById('mpmMethod')?.value === 'waived') { card.innerHTML = ''; return; }
-
-  const all = _mpmCollectStripeInvoicesForUnit(u);
-  if (!all.length) { card.innerHTML = ''; return; }
-
-  // Скрываем полностью оплаченные / void — операторы хотят видеть, что
-  // ещё нужно закрыть, а не историю успешных платежей.
-  const open = all.filter(inv => {
-    const b = (inv.bucket || inv.status || '').toLowerCase();
-    return b !== 'paid' && b !== 'void' && b !== 'uncollectible';
-  });
-
-  // Жёсткое окно ±1 месяц от выбранного ym. Если у инвойса нет
-  // metadata.ym — fallback на месяц dueDate / created. Без окна
-  // одинокий инвойс на любой месяц всплывал как «match» для любого
-  // билинг-месяца, что путало оператора (фидбэк 2026-05-03: «никак
-  // не в мае, когда я записываю за ноябрь»).
-  const WINDOW = 1;
-  const _ymOfInv = (inv) => {
-    if (inv.metadata?.ym) return String(inv.metadata.ym);
-    const ts = inv.dueDate || inv.created;
-    if (!ts) return '';
-    const d = new Date(ts);
-    if (isNaN(d.getTime())) return '';
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-  };
-  const inWindow = open.filter(inv => {
-    const invYm = _ymOfInv(inv);
-    if (!invYm) return false;
-    return Math.abs(_mpmYmDelta(invYm, ym)) <= WINDOW;
-  });
-
-  const purposeLabels = { rent:'Rent', late_fee:'Late fee', deposit:'Deposit', damages:'Damages', keys:'Keys', cleaning:'Cleaning', custom:'Charge' };
-  const fmtAmt = c => '$' + ((+c || 0)).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
-  const tenantName = u.company || u.tenant || '';
-  const customerLabel = u.stripe?.customerId
-    ? `${esc(tenantName || 'tenant')} · ${esc(String(u.stripe.customerId).slice(-8))}`
-    : esc(tenantName || u.email || 'tenant');
-
-  // «→ Browse all N invoices» — всегда в подвале карточки, даже если
-  // в окне ничего нет (оператор может захотеть открыть полный список
-  // транзакций / инвойсов через старый Stripe-modal). Считаем по
-  // ВСЕМ инвойсам (paid + open), чтобы цифра была честной.
-  // Единый browser (bank + Stripe в одной таблице). Открывается тот же
-  // popup, что и из bank-feed карточки — у оператора одна точка входа,
-  // фильтр type=Stripe сужает до инвойсов если нужно (фидбэк 2026-05-03:
-  // «давай объединим эти таблицу в одну»).
-  const browseLink = `<button type="button" class="rr-btn ar-btn-sm" onclick="_openTxnBrowser('${esc(_mpmCtx.buildingId)}','${esc(_mpmCtx.floorId)}','${esc(_mpmCtx.unitId)}','${esc(ym)}')">🔍 Browse all transactions for this tenant</button>`;
-
-  // Если в окне пусто — пустое состояние со ссылкой на полный список.
-  if (!inWindow.length) {
-    card.innerHTML = `
-      <div class="mpm-st-card mpm-st-card-empty" id="mpmStripeFeedInner">
-        <div class="mpm-st-head">
-          <span>💳 No Stripe invoice for ${esc(_fmtMonthName(ym))} (±${WINDOW}mo)</span>
-          <span class="mpm-st-acct">${customerLabel}</span>
-        </div>
-        <div class="mpm-st-foot" style="border-top:0; padding-top:6px; margin-top:6px; text-align:center;">${browseLink}</div>
-      </div>`;
-    return;
-  }
-
-  // Сортировка внутри окна: ближайший месяц → дальше → по дате создания.
-  inWindow.sort((a, b) => {
-    const da = Math.abs(_mpmYmDelta(_ymOfInv(a), ym));
-    const db = Math.abs(_mpmYmDelta(_ymOfInv(b), ym));
-    if (da !== db) return da - db;
-    return (b.created || 0) - (a.created || 0);
-  });
-  // Top 4 — как у bank-feed, чтобы карточки были одинаковой высоты.
-  const items = inWindow.slice(0, 4);
-
-  const rows = items.map(inv => {
-    const bucket = (inv.bucket || inv.status || 'open').toLowerCase();
-    const bucketLabel = bucket === 'past_due' ? 'PAST DUE' : bucket.toUpperCase();
-    const created = inv.created ? new Date(inv.created).toLocaleDateString() : '—';
-    const dueAt = inv.dueDate ? new Date(inv.dueDate).toLocaleDateString() : null;
-    const amt = +inv.amountRemaining > 0 ? +inv.amountRemaining : +inv.total;
-    const amtStr = fmtAmt(amt);
-    const purpose = purposeLabels[inv.metadata?.purpose || 'rent'] || 'Charge';
-    const invYm = inv.metadata?.ym ? esc(_fmtMonthName(inv.metadata.ym)) : '';
-    const num = inv.number || (inv.id ? inv.id.slice(-8) : '');
-    const isSelected = !!(_mpmCtx?.linkedStripeInvoice && _mpmCtx.linkedStripeInvoice.id === inv.id);
-    return `
-      <div class="mpm-st-row ${isSelected ? 'mpm-st-row-selected' : ''}" data-st-row="${esc(inv.id)}">
-        <div class="mpm-st-row-main">
-          <div class="mpm-st-row-amt">${amtStr} <span class="mpm-st-bucket mpm-st-bucket-${esc(bucket)}">${esc(bucketLabel)}</span></div>
-          <div class="mpm-st-row-meta">${esc(num)} · ${esc(purpose)}${invYm ? ' · ' + invYm : ''} · ${dueAt ? 'due ' + esc(dueAt) : 'issued ' + esc(created)}</div>
-        </div>
-        <button type="button" class="rr-btn ar-btn-sm mpm-st-use-btn ${isSelected ? 'mpm-st-use-btn-selected' : ''}" data-st-btn="${esc(inv.id)}" onclick="_mpmUseStripeInv('${esc(inv.id)}')" title="Apply this invoice to the form">${isSelected ? '✓ Selected' : '✓ Use this'}</button>
-      </div>`;
-  }).join('');
-
-  card.innerHTML = `
-    <div class="mpm-st-card" id="mpmStripeFeedInner">
-      <div class="mpm-st-head">
-        <span>💳 Stripe invoice suggestions for ${esc(_fmtMonthName(ym))} (±${WINDOW}mo)</span>
-        <span class="mpm-st-acct">${customerLabel}</span>
-      </div>
-      <div class="mpm-st-rows">${rows}</div>
-      <div class="mpm-st-foot" style="text-align:center;">${browseLink}</div>
-    </div>`;
+  if (card && card.innerHTML) card.innerHTML = '';
 }
 
 // Оператор кликнул "✓ Use this" на инвойсе — заполняем форму.
@@ -83843,18 +83829,35 @@ function _mpmUnlinkStripeInv() {
   _mpmPaintStripeRowSelection(null);
 }
 
-// Подсветка выбранной строки в Stripe-карточке без полного re-render.
+// Подсветка выбранной строки Stripe-инвойса без полного re-render.
+// После объединения двух карточек в одну Stripe-rows живут внутри
+// #mpmBankFeedCard рядом с bank-rows. Ищем там.
 function _mpmPaintStripeRowSelection(selectedInvId) {
-  const card = document.getElementById('mpmStripeFeedCard');
+  const card = document.getElementById('mpmBankFeedCard');
   if (!card) return;
   card.querySelectorAll('[data-st-row]').forEach(row => {
-    row.classList.toggle('mpm-st-row-selected', row.getAttribute('data-st-row') === selectedInvId);
+    // Используем mpm-bf-row-selected (объединённый класс), чтобы CSS-collapse
+    // и pill-логика подхватили оба источника одинаково.
+    row.classList.toggle('mpm-bf-row-selected', row.getAttribute('data-st-row') === selectedInvId);
   });
   card.querySelectorAll('[data-st-btn]').forEach(btn => {
     const isSel = btn.getAttribute('data-st-btn') === selectedInvId;
-    btn.classList.toggle('mpm-st-use-btn-selected', isSel);
+    btn.classList.toggle('mpm-bf-use-btn-selected', isSel);
     btn.textContent = isSel ? '✓ Selected' : '✓ Use this';
   });
+  // Сворачиваем карточку как при выборе bank-txn — модал остаётся компактным.
+  const inner = document.getElementById('mpmBankFeedInner');
+  if (inner) {
+    const hasSel = !!selectedInvId;
+    inner.classList.toggle('mpm-bf-card-collapsed', hasSel);
+    inner.classList.remove('mpm-bf-card-expanded');
+    const toggleTxt = inner.querySelector('.mpm-bf-toggle-text');
+    if (toggleTxt) {
+      const totalRows = inner.querySelectorAll('.mpm-bf-row').length;
+      const otherCount = Math.max(0, totalRows - (hasSel ? 1 : 0));
+      toggleTxt.textContent = `Show ${otherCount} other match${otherCount === 1 ? '' : 'es'} ▾`;
+    }
+  }
 }
 
 // Pill "🔗 Linked to Stripe invoice ..." — отрисовывается под полем
