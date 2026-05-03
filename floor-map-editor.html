@@ -29648,13 +29648,11 @@ function _renderStackingHeader(b) {
   const floorCount = (b.floors || []).length;
   const buildings = (state.buildings || []).filter(x => (typeof canAccessBuilding === 'function') ? canAccessBuilding(x.id) : true);
   // Walk every office unit once; partition into leased / vacant by status.
-  // Uses the same _stIsOffice predicate the chart filters with so the
-  // header numbers exactly match what's drawn below — no chance of the
-  // KPI saying "85% leased" while the chart shows a different ratio.
+  // Uses _stRentableUnits (NOT raw _stIsOffice) so vacant-parent suites
+  // don't double-count their sub-rooms' footprint into the totals.
   let totalSqft = 0, leasedSqft = 0;
   for (const f of (b.floors || [])) {
-    for (const u of (f.units || [])) {
-      if (!_stIsOffice(u)) continue;
+    for (const u of _stRentableUnits(f)) {
       const sf = +u.sqft || 0;
       totalSqft += sf;
       if (u.status === 'occupied') leasedSqft += sf;
@@ -29751,6 +29749,27 @@ function _stIsOffice(u) {
   if (u.type !== 'office' || u.rentable === false) return false;
   if (_isInactiveSubRoom(u)) return false;
   return true;
+}
+
+// "Distinct leasable units for area / rent aggregation" on a floor.
+//
+// Why this is separate from _stIsOffice: when a parent suite is VACANT,
+// _isInactiveSubRoom returns false for its sub-rooms (they CAN lease
+// independently in that case), so _stIsOffice includes BOTH the parent
+// AND each sub-room. Summing sqft over that set double-counts the
+// parent's footprint — the sub-rooms are physical subdivisions inside
+// the parent, not extra space (e.g., L2 showing Rentable 13,454 ft² >
+// Total 12,900 ft²). For aggregation we drop sub-rooms whose parent is
+// also in the leasable set; the parent's sqft already covers them.
+//
+// Chart-row rendering (which draws each sub-room as its own bar) keeps
+// using _stIsOffice — only the numeric roll-ups use this dedup view.
+function _stRentableUnits(f) {
+  const us = (f.units || []).filter(_stIsOffice);
+  if (us.length < 2) return us;
+  const parentIds = new Set();
+  for (const u of us) if (!u.parentId) parentIds.add(u.id);
+  return us.filter(u => !(u.parentId && parentIds.has(u.parentId)));
 }
 
 // Convert a floor's drawn outline polygon to square feet using the
@@ -30035,13 +30054,19 @@ function _renderStackingChart(b) {
   // the visual schematic. Same data as the right-sidebar "By floor"
   // table but wider, with more columns + clearer formatting.
   const summaryRows = floors.map(f => {
-    const us = (f.units || []).filter(_stIsOffice);
-    const occ = us.filter(u => stackingUnitStatus(u) !== 'vacant');
-    const rentSqft = us.reduce((x, u) => x + (+u.sqft || 0), 0);
-    const lsdSqft  = occ.reduce((x, u) => x + (+u.sqft || 0), 0);
+    // Suite COUNT keeps every leasable unit (operator wants to see all
+    // rentable spaces). Area / rent SUMS use the dedup view so vacant-
+    // parent suites don't add their sub-rooms' footprint on top of the
+    // parent's — that's what made L2 show Rentable > Total.
+    const us       = (f.units || []).filter(_stIsOffice);
+    const usForSum = _stRentableUnits(f);
+    const occ        = us.filter(u => stackingUnitStatus(u) !== 'vacant');
+    const occForSum  = usForSum.filter(u => stackingUnitStatus(u) !== 'vacant');
+    const rentSqft = usForSum.reduce((x, u) => x + (+u.sqft || 0), 0);
+    const lsdSqft  = occForSum.reduce((x, u) => x + (+u.sqft || 0), 0);
     const totSqft  = _stOutlineAreaSqft(f);
-    const rent     = us.reduce((x, u) => x + (+u.contractRent || +u.rent || 0), 0);
-    const lsdRent  = occ.reduce((x, u) => x + (+u.contractRent || +u.rent || 0), 0);
+    const rent     = usForSum.reduce((x, u) => x + (+u.contractRent || +u.rent || 0), 0);
+    const lsdRent  = occForSum.reduce((x, u) => x + (+u.contractRent || +u.rent || 0), 0);
     return {
       number: f.number || 0,
       name: f.name || `Floor ${f.number || ''}`,
@@ -30279,13 +30304,18 @@ function _renderStackingSidebar(b) {
     const perFloor = (b.floors || []).slice()
       .sort((a, c) => (c.number || 0) - (a.number || 0))
       .map(f => {
-        const us = (f.units || []).filter(_stIsOffice);
-        const occ = us.filter(u => stackingUnitStatus(u) !== 'vacant');
-        const rentSqft = us.reduce((x, u) => x + (+u.sqft || 0), 0);
-        const lsdSqft  = occ.reduce((x, u) => x + (+u.sqft || 0), 0);
+        // Same dedup as the Building Summary table — counts include
+        // every leasable unit, but area / rent sums skip sub-rooms whose
+        // parent is also visible (parent's sqft already covers them).
+        const us       = (f.units || []).filter(_stIsOffice);
+        const usForSum = _stRentableUnits(f);
+        const occ        = us.filter(u => stackingUnitStatus(u) !== 'vacant');
+        const occForSum  = usForSum.filter(u => stackingUnitStatus(u) !== 'vacant');
+        const rentSqft = usForSum.reduce((x, u) => x + (+u.sqft || 0), 0);
+        const lsdSqft  = occForSum.reduce((x, u) => x + (+u.sqft || 0), 0);
         const totSqft  = _stOutlineAreaSqft(f);
-        const rent     = us.reduce((x, u) => x + (+u.contractRent || +u.rent || 0), 0);
-        const lsdRent  = occ.reduce((x, u) => x + (+u.contractRent || +u.rent || 0), 0);
+        const rent     = usForSum.reduce((x, u) => x + (+u.contractRent || +u.rent || 0), 0);
+        const lsdRent  = occForSum.reduce((x, u) => x + (+u.contractRent || +u.rent || 0), 0);
         return {
           number: f.number || 0,
           name: f.name || `Floor ${f.number || ''}`,
