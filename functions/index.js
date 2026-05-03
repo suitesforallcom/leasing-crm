@@ -4067,6 +4067,15 @@ exports.finalizeBankConnection = onCall(
       }
     });
     logger.info(`[bank-feed] finalizeBankConnection: linked ${newConnections.length} new account(s), reactivated ${accounts.length - newConnections.length} (session ${sessionId})`);
+    // Trigger transaction refresh for every linked/reactivated account so
+    // Stripe starts preparing transactions immediately. Without this the
+    // first poll throws `financial_connections_no_successful_transaction_refresh`
+    // and returns 0 transactions even when the account has months of history.
+    // Refresh is async on Stripe's side (1-2 min); we don't await per-account
+    // success — just kick it off so it's ready by next poll.
+    for (const acc of accounts) {
+      await _ensureTransactionRefresh(stripe, acc.id);
+    }
     return {
       connected: newConnections.length,
       reactivated: accounts.length - newConnections.length,
@@ -4242,6 +4251,24 @@ exports.syncBankConnections = onCall(
 
 const BANK_FEED_BACKFILL_DAYS = 365;
 
+// Stripe FC requires an explicit transaction-feature refresh before
+// `transactions.list` will return data on a freshly-connected account.
+// Without it, `list` throws `financial_connections_no_successful_transaction_refresh`.
+// Calling refresh is idempotent — Stripe coalesces concurrent requests.
+async function _ensureTransactionRefresh(stripe, fcAccountId) {
+  try {
+    const r = await stripe.financialConnections.accounts.refresh(
+      fcAccountId,
+      { features: ['transactions'] }
+    );
+    logger.info(`[bank-feed] triggered transaction refresh ${fcAccountId}: status=${r?.transaction_refresh?.status || 'unknown'}`);
+    return { ok: true, status: r?.transaction_refresh?.status || null };
+  } catch (err) {
+    logger.warn(`[bank-feed] transaction refresh ${fcAccountId} failed: ${err?.message || err}`);
+    return { ok: false, error: err?.message || String(err) };
+  }
+}
+
 // Pull every transaction Stripe FC has for an account since `sinceUnix`
 // (or all-time if sinceUnix is null). Returns the count actually written
 // to Firestore (excluding dedup hits). When `state` is supplied, the
@@ -4250,6 +4277,7 @@ async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, stat
   const col = db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`);
   let written = 0, skipped = 0, scanned = 0, suggested = 0;
   let startingAfter = undefined;
+  let refreshTriggered = false;
   for (;;) {
     const params = {
       account: fcAccountId,
@@ -4257,7 +4285,26 @@ async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, stat
       ...(startingAfter ? { starting_after: startingAfter } : {}),
       ...(sinceUnix ? { transacted_at: { gte: sinceUnix } } : {}),
     };
-    const page = await stripe.financialConnections.transactions.list(params);
+    let page;
+    try {
+      page = await stripe.financialConnections.transactions.list(params);
+    } catch (err) {
+      // Stripe FC has not yet successfully refreshed transactions for this
+      // account — trigger refresh and bail out so the operator's UI can show
+      // a helpful "preparing" message. Next poll (cron or manual) will succeed
+      // once Stripe finishes processing (typically 1-2 min).
+      if (err?.code === 'financial_connections_no_successful_transaction_refresh'
+          || /no_successful_transaction_refresh/i.test(err?.message || '')) {
+        const r = await _ensureTransactionRefresh(stripe, fcAccountId);
+        return {
+          scanned, written, skipped, suggested,
+          transactionRefreshTriggered: true,
+          transactionRefreshStatus: r.status || 'pending',
+          notice: 'Stripe is preparing transactions for this account. Try again in 1-2 minutes.',
+        };
+      }
+      throw err;
+    }
     scanned += page.data.length;
     // Batched writes — Firestore caps at 500 ops per batch; we use 100.
     const batch = db.batch();
@@ -4299,7 +4346,7 @@ async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, stat
 }
 
 // Update the watermark + call the matcher after a successful pull.
-async function _markAccountPolled({fcAccountId, scanned, written}) {
+async function _markAccountPolled({fcAccountId, scanned, written, transactionRefreshStatus}) {
   const nowIso = new Date().toISOString();
   await mutateWorkspaceState((s) => {
     if (!Array.isArray(s.bankConnections)) return;
@@ -4308,6 +4355,12 @@ async function _markAccountPolled({fcAccountId, scanned, written}) {
     c.lastPolledAt = nowIso;
     c.lastPollScanned = scanned;
     c.lastPollWritten = written;
+    if (transactionRefreshStatus) {
+      c.transactionRefreshStatus = transactionRefreshStatus;
+    } else if (written > 0) {
+      // First successful real pull — clear any stale "pending" state.
+      delete c.transactionRefreshStatus;
+    }
   });
 }
 
@@ -4344,9 +4397,10 @@ exports.pollBankTransactions = onCall(
           fcAccountId: c.stripeFcAccountId,
           scanned: r.scanned,
           written: r.written,
+          transactionRefreshStatus: r.transactionRefreshStatus,
         });
         results.push({ fcAccountId: c.stripeFcAccountId, ...r, error: null });
-        logger.info(`[bank-feed] poll ${c.stripeFcAccountId}: scanned=${r.scanned} written=${r.written} backfill=${isBackfill}`);
+        logger.info(`[bank-feed] poll ${c.stripeFcAccountId}: scanned=${r.scanned} written=${r.written} backfill=${isBackfill}${r.transactionRefreshTriggered ? ' (refresh-triggered)' : ''}`);
       } catch (err) {
         logger.error(`[bank-feed] poll ${c.stripeFcAccountId} failed:`, err);
         results.push({ fcAccountId: c.stripeFcAccountId, error: err.message || String(err) });
@@ -4404,9 +4458,10 @@ exports.bankFeedScheduledPoll = onSchedule(
           fcAccountId: c.stripeFcAccountId,
           scanned: r.scanned,
           written: r.written,
+          transactionRefreshStatus: r.transactionRefreshStatus,
         });
         totalWritten += r.written;
-        logger.info(`[bank-feed] cron ${c.stripeFcAccountId}: scanned=${r.scanned} written=${r.written}`);
+        logger.info(`[bank-feed] cron ${c.stripeFcAccountId}: scanned=${r.scanned} written=${r.written}${r.transactionRefreshTriggered ? ' (refresh-triggered)' : ''}`);
       } catch (err) {
         logger.error(`[bank-feed] cron ${c.stripeFcAccountId} failed:`, err);
       }

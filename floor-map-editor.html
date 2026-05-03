@@ -58481,6 +58481,12 @@ function _renderBankConnections() {
             ? ` · ${c.lastPollWritten} new`
             : '')
       : 'Never polled';
+    // Stripe FC sometimes needs 1-2 min to prep transactions on a freshly
+    // connected account. While prep is pending the operator's Refresh attempts
+    // return 0 — show an inline note so they know to wait, not click again.
+    const prepNote = (c.transactionRefreshStatus === 'pending' && isActive)
+      ? `<div style="padding-left:28px; font-size:11px; color:#a16207; background:rgba(245,158,11,0.10); padding:6px 10px; border-radius:6px; margin-top:2px;">⏳ Stripe is preparing transactions for this account. First poll may return 0 — try Refresh again in 1-2 min.</div>`
+      : '';
     const fcId = esc(c.stripeFcAccountId);
     const isRefreshing = _bankAccountsRefreshing.has(c.stripeFcAccountId);
     const intervalSel = isActive
@@ -58549,6 +58555,7 @@ function _renderBankConnections() {
             ${refreshBtn}
           </div>
         ` : ''}
+        ${prepNote}
         ${progressBar}
       </div>
     `;
@@ -58605,11 +58612,20 @@ async function refreshBankAccountNow(fcAccountId) {
     const fn = stripeCallable('pollBankTransactions');
     const { data } = await fn({ stripeFcAccountId: fcAccountId });
     const w = data?.totalWritten || 0;
-    const scanned = data?.accounts?.[0]?.scanned ?? 0;
-    result = { ok: true, message: w > 0
-      ? `✓ ${w} new transaction${w === 1 ? '' : 's'} pulled (${scanned} scanned).`
-      : `✓ Up to date — no new transactions (${scanned} scanned).` };
-    setIntStatus('bankFeed', 'success', `✓ ${w} transaction(s) updated.`);
+    const acc = data?.accounts?.[0] || {};
+    const scanned = acc.scanned ?? 0;
+    if (acc.transactionRefreshTriggered) {
+      // Stripe FC has not finished preparing transactions for this account.
+      // Triggering a refresh kicks off the prep; next poll (in ~1-2 min)
+      // should return real data.
+      result = { ok: true, message: `⏳ Stripe is preparing transactions for this account. Try Refresh again in 1-2 minutes.` };
+      setIntStatus('bankFeed', 'info', '⏳ Stripe preparing transactions — try again in 1-2 min.');
+    } else {
+      result = { ok: true, message: w > 0
+        ? `✓ ${w} new transaction${w === 1 ? '' : 's'} pulled (${scanned} scanned).`
+        : `✓ Up to date — no new transactions (${scanned} scanned).` };
+      setIntStatus('bankFeed', 'success', `✓ ${w} transaction(s) updated.`);
+    }
   } catch (err) {
     result = { ok: false, message: `⚠ ${err?.message || String(err)}` };
     setIntStatus('bankFeed', 'error', `⚠ ${esc(err?.message || String(err))}`);
