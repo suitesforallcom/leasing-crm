@@ -3526,10 +3526,11 @@ exports.listBackups = onCall(
   async (req) => {
     await requireEditor(req.auth);
     const col = db.collection(`workspaces/${WORKSPACE_ID}/backups`);
-    const snap = await col
-      .orderBy(admin.firestore.FieldPath.documentId(), 'desc')
-      .limit(120)
-      .get();
+    // Doc IDs are YYYY-MM-DD (and YYYY-MM-DD-manual-HHMM) — lex-sortable.
+    // Sorting server-side by __name__ DESC requires a custom Firestore
+    // index; backup count is bounded by 90-day retention so it's
+    // cheaper to fetch all and sort in JS than to maintain the index.
+    const snap = await col.get();
     const items = snap.docs.map(d => {
       const x = d.data() || {};
       return {
@@ -3541,7 +3542,8 @@ exports.listBackups = onCall(
         sizeBytes: x.sizeBytes || 0,
       };
     });
-    return { items };
+    items.sort((a, b) => b.id.localeCompare(a.id));
+    return { items: items.slice(0, 120) };
   }
 );
 
