@@ -19038,6 +19038,76 @@ function loadState() {
       }
       localStorage.setItem(ADD_SVC_SEED_MIGRATION_KEY, '1');
     }
+    // One-time lease-head consolidation: for every multi-suite group, move
+    // ALL financial state (combined rent, payments, deposit, late-fee config,
+    // Stripe invoices) onto the head member (groupRole='primary'). Non-head
+    // members retain only structural fields (geometry, sqft, suite#) and
+    // mirrored tenant identity. Without this, a single combined rent check
+    // landing on the head leaves the other members showing phantom "X
+    // months unpaid" overdue badges. See _isFinanceShadow / _unitLeaseHead.
+    const LEASE_HEAD_MIGRATION_KEY = 'sfa_lease_head_consolidation_v1';
+    if (!localStorage.getItem(LEASE_HEAD_MIGRATION_KEY)) {
+      try {
+        if (typeof _localBackupCreate === 'function') {
+          _localBackupCreate('pre-mutation', 'Before lease-head consolidation');
+        }
+      } catch (e) { console.warn('[lease-head] snapshot failed', e); }
+      try {
+        const groupIds = new Set();
+        for (const b of (state.buildings || [])) {
+          for (const f of (b.floors || [])) {
+            for (const u of (f.units || [])) {
+              if (u && u.groupId) groupIds.add(u.groupId);
+            }
+          }
+        }
+        let consolidated = 0;
+        for (const gid of groupIds) {
+          const members = (typeof _unitsInGroup === 'function') ? _unitsInGroup(gid) : [];
+          if (members.length < 2) continue;
+          const head = (typeof _groupPrimary === 'function') ? _groupPrimary(gid) : null;
+          if (!head) continue;
+          // Compute combined rent BEFORE we mutate.
+          let combinedContract = 0, combinedRent = 0;
+          for (const m of members) {
+            combinedContract += (+m.contractRent) || 0;
+            combinedRent     += (+m.rent) || 0;
+          }
+          // Merge payments — head's existing keys win on conflict (production
+          // groups have ZERO payment records anyway, so this is mostly a
+          // forward-compat safety net).
+          head.payments = head.payments || {};
+          for (const m of members) {
+            if (m === head) continue;
+            for (const k of Object.keys(m.payments || {})) {
+              if (!(k in head.payments)) head.payments[k] = m.payments[k];
+            }
+            m.payments = {};
+          }
+          // Carry money-bearing fields from members to head if head doesn't
+          // already have them (head wins on conflict). Then strip from members.
+          for (const m of members) {
+            if (m === head) continue;
+            for (const k of ['stripe', 'extraCharges', 'lateFeeInvoices', 'lateFeeDismissed', 'lateFeeOverride']) {
+              if (m[k] != null && head[k] == null) head[k] = m[k];
+              delete m[k];
+            }
+            if ((+m.deposit) > 0 && !(+head.deposit)) head.deposit = m.deposit;
+            delete m.deposit;
+            m.contractRent = 0;
+            m.rent = 0;
+          }
+          head.contractRent = combinedContract;
+          head.rent = combinedRent;
+          consolidated++;
+        }
+        if (consolidated > 0) {
+          console.log('[lease-head] Consolidated ' + consolidated + ' multi-suite group(s) onto head member');
+          setTimeout(() => { try { if (typeof saveState === 'function') saveState(); } catch {} }, 0);
+        }
+      } catch (e) { console.warn('[lease-head] migration failed', e); }
+      localStorage.setItem(LEASE_HEAD_MIGRATION_KEY, '1');
+    }
     // Self-healing leaseTerm derivation: every load, derive `u.leaseTerm`
     // from (leaseStart, until) using the end-of-month convention. The
     // previous version gated this behind a localStorage flag, but the
@@ -19934,6 +20004,23 @@ async function stripeEnsureCustomer({email, name, unitId, buildingId}) {
 }
 
 async function stripeCreateInvoice({buildingId, floorId, unitId, ym, daysUntilDue, purpose, description, privateNote, amountOverride, emailOverride, tenantNameOverride, autoPayConsent, allowDuplicate, idempotencyKey, extraLineItems}) {
+  // Multi-suite lease: route every invoice to the lease head so all
+  // Stripe state lives on one unit. Without this, a click on member
+  // Suite 102 would create a second customer + second invoice stream
+  // alongside the head's existing one.
+  if (typeof _unitLeaseHead === 'function' && buildingId && floorId && unitId) {
+    try {
+      const b = (state.buildings || []).find(x => x.id === buildingId);
+      const f = b && (b.floors || []).find(x => x.id === floorId);
+      const member = f && (f.units || []).find(x => x.id === unitId);
+      if (member && member.groupId && member.groupRole !== 'primary') {
+        const head = _unitLeaseHead(member);
+        if (head && head !== member) {
+          unitId = head.id;
+        }
+      }
+    } catch (e) { /* fall through with original ids */ }
+  }
   // ===== Client-side duplicate-invoice guard =====
   // Before hitting the backend, scan the local invoice cache for any
   // recent (≤ 24h) un-voided invoice matching the same (unitId, purpose,
@@ -25123,7 +25210,10 @@ function _compute30DayActivity() {
         if (u.rentable === false) continue;
         if (u.type && u.type !== 'office') continue;
 
-        // Occupancy snapshot
+        // Occupancy snapshot — counts PHYSICAL suites (e.g. "9/10
+        // occupied"), so non-head group members DO count here. MRR sum
+        // works correctly post-migration because non-head members carry
+        // contractRent=0 (head holds the combined lease total).
         const isRented = u.status === 'occupied' || (!!u.tenant && u.status !== 'vacant');
         if (isRented) {
           occupied++;
@@ -25136,6 +25226,11 @@ function _compute30DayActivity() {
         } else {
           vacant++;
         }
+
+        // Lease-level metrics (signed-count, signed-rent, move-out
+        // count/rent, newLeases[], moveOuts[]) below: skip non-head
+        // members so a 9-suite lease counts as ONE new lease, not 9.
+        if (typeof _isFinanceShadow === 'function' && _isFinanceShadow(u)) continue;
 
         // New leases — tenancy STARTED within the window. We deliberately
         // do NOT use _unitTenantSignedAt() here: that helper returns the
@@ -27898,8 +27993,9 @@ function _autoBackfillContractRentOnce() {
 // =====================================================================
 function markUnitDepositPaid(unitId) {
   if (!canEdit()) { toast('Your role cannot edit', 'error'); return; }
-  const u = currentUnits().find(x => x.id === unitId);
-  if (!u) { toast('Unit not found', 'error'); return; }
+  const member = currentUnits().find(x => x.id === unitId);
+  if (!member) { toast('Unit not found', 'error'); return; }
+  const u = (typeof _unitLeaseHead === 'function') ? _unitLeaseHead(member) : member;
   const deposit = +u.deposit || 0;
   if (deposit <= 0) {
     toast('Set a deposit amount first', 'error');
@@ -27935,8 +28031,9 @@ function markUnitDepositPaid(unitId) {
 // it removes a paid stamp.
 function markUnitDepositUnpaid(unitId) {
   if (!canEdit()) { toast('Your role cannot edit', 'error'); return; }
-  const u = currentUnits().find(x => x.id === unitId);
-  if (!u) { toast('Unit not found', 'error'); return; }
+  const member = currentUnits().find(x => x.id === unitId);
+  if (!member) { toast('Unit not found', 'error'); return; }
+  const u = (typeof _unitLeaseHead === 'function') ? _unitLeaseHead(member) : member;
   if (!confirm(
     `Remove the "paid" stamp from ${u.tenant || u.company || 'this tenant'}'s security deposit ($${(+u.deposit || 0).toLocaleString()})?\n\n` +
     `Use this if the payment bounced or was never actually received. The deposit returns to "unpaid" status.`
@@ -33010,8 +33107,13 @@ function renderUnits() {
         // showing the proforma asking rent for any unit not actively
         // billed.
         const _isUnitRented = (u.status === 'occupied');
-        const _labelRent    = _isUnitRented ? (+u.contractRent || 0)
-                                            : (+u.rent || 0);
+        // Multi-suite lease members hold $0 — the head suite shows the
+        // combined rent. Suppress the $ label here so members read as
+        // part of the same leased region rather than "vacant" suites.
+        const _isGroupShadow = !!(u.groupId && u.groupRole !== 'primary');
+        const _labelRent    = _isGroupShadow ? 0
+                            : _isUnitRented  ? (+u.contractRent || 0)
+                                             : (+u.rent || 0);
         if (showRent && _labelRent > 0) {
           // Pushed down +4px from the prior y=35 to give the suite ID
           // a bit more breathing room before the price line. Matches
@@ -39042,18 +39144,20 @@ function _groupCreate(unitIds, tenantData) {
   });
   const primary = sorted[0];
 
+  // Lease-head model: ALL rent for the lease lives on the primary
+  // (head). Non-head members carry zero so portfolio aggregations
+  // count the lease exactly once via _isFinanceShadow. The right-side
+  // unit panel's rent card already aggregates members via reduce —
+  // sum of [head_total, 0, 0, …] = head_total, so the visible rent on
+  // every member's panel still reads as the combined lease total.
   const totalRent = +tenantData.totalRent || 0;
-  const totalSqft = units.reduce((x, u) => x + (+u.sqft || 0), 0) || 1;
-  let assigned = 0;
   for (const u of sorted) {
     if (u === primary) continue;
-    const share = Math.round((+u.sqft || 0) / totalSqft * totalRent);
-    u.contractRent = share;
-    u.rent = share;
-    assigned += share;
+    u.contractRent = 0;
+    u.rent = 0;
   }
-  primary.contractRent = Math.max(0, totalRent - assigned);
-  primary.rent = primary.contractRent;
+  primary.contractRent = totalRent;
+  primary.rent = totalRent;
 
   // Copy tenant + lease fields to every member
   const fields = ['tenant', 'company', 'email', 'tel', 'leaseStart', 'until', 'signed', 'deposit'];
@@ -39109,12 +39213,50 @@ function _groupSyncFromPrimary(groupId) {
   return touched;
 }
 
+// =========================================================================
+// LEASE HEAD MODEL
+// =========================================================================
+// One designated member of a multi-suite group ("primary" by groupRole) owns
+// 100% of the lease's financial state: combined rent, all u.payments[ym],
+// deposit + late-fee config, Stripe invoices. Other members are structural
+// (geometry, sqft, suite#) + mirror tenant identity for display, but their
+// money fields are zero/empty.
+//
+// Operator's mental model: one tenant, one lease, one bill. Splitting
+// payments per-suite caused phantom "X months unpaid" badges on members
+// when a single combined check landed on the head. Consolidating on the
+// head matches the lease and removes the fragmentation.
+//
+// Use _isFinanceShadow(u) in any aggregation that walks units; it returns
+// true for both inactive sub-rooms (existing pattern) AND non-head group
+// members (new), so each lease counts exactly once.
+function _unitLeaseHead(u) {
+  if (!u || !u.groupId) return u;
+  return _groupPrimary(u.groupId) || u;
+}
+function _unitIsLeaseHead(u) {
+  if (!u || !u.groupId) return true;
+  return u.groupRole === 'primary';
+}
+// Skip-me filter for financial aggregations. Composes the existing
+// inactive-sub-room rule with the new non-head-member rule so callers
+// only need ONE check.
+function _isFinanceShadow(u) {
+  if (!u) return false;
+  if (typeof _isInactiveSubRoom === 'function' && _isInactiveSubRoom(u)) return true;
+  if (u.groupId && u.groupRole !== 'primary') return true;
+  return false;
+}
+
 // Console exposure for debugging / scripted ops.
 window._unitsInGroup = _unitsInGroup;
 window._groupPrimary = _groupPrimary;
 window._groupCreate  = _groupCreate;
 window._groupDissolve = _groupDissolve;
 window._groupSyncFromPrimary = _groupSyncFromPrimary;
+window._unitLeaseHead = _unitLeaseHead;
+window._unitIsLeaseHead = _unitIsLeaseHead;
+window._isFinanceShadow = _isFinanceShadow;
 
 // ----- Group & Assign Tenant modal -----------------------------------
 // Stash: which units the operator is grouping. Captured on modal open so
@@ -42037,6 +42179,11 @@ function _renderUnitV2Tabs(u, activeTab) {
 //    (default day 5, matches the late-fee policy default).
 // =============================================================
 function _computeUnitMoney(u) {
+  // Multi-suite lease: financial state (rent, payments, late-fee config)
+  // lives on the head. Redirect so any caller using a member sees the
+  // same overdue / outstanding / paidYtd numbers as the head — this is
+  // what kills the phantom "X months unpaid" badge on member suites.
+  if (typeof _unitLeaseHead === 'function') u = _unitLeaseHead(u);
   const rent = +u.contractRent || +u.rent || 0;
   const now = new Date();
   const startIso = u.leaseStart || u.signed || '';
@@ -46778,6 +46925,10 @@ function _isUnitPendingOnboarding(u) {
 // u.leaseStart. Earliest of the two wins. Compares year-month only.
 function _firstTenancyYm(u) {
   if (!u) return null;
+  // Multi-suite lease: honeymoon month is a property of the LEASE, not
+  // the suite. Read it from the head so all members share the same
+  // first-tenancy month + skip late-fee accrual on the same month.
+  if (typeof _unitLeaseHead === 'function') u = _unitLeaseHead(u);
   let earliestMs = Infinity;
   for (const ref of [u._tenantAddedAt, u.leaseStart]) {
     if (!ref) continue;
@@ -49424,6 +49575,7 @@ function _moveInInvoicePill(s, invoiceId) {
 // chip, map color etc) so they all agree.
 function _isDepositPaid(u) {
   if (!u) return false;
+  if (typeof _unitLeaseHead === 'function') u = _unitLeaseHead(u);
   const dp = u.payments?.deposit;
   if (dp?.status === 'paid' || dp?.status === 'free') return true;
   const di = u.stripe?.depositInvoice;
@@ -67914,6 +68066,7 @@ function _hvRenderRevenueChart() {
       for (const f of (b.floors || [])) {
         for (const u of (f.units || [])) {
           if (u.status !== 'occupied') continue;
+          if (typeof _isFinanceShadow === 'function' && _isFinanceShadow(u)) continue;
           const rent = +u.contractRent || +u.rent || 0;
           if (rent <= 0) continue;
           const p = u.payments?.[ym];
@@ -69025,11 +69178,12 @@ function buildRentRollRows() {
         // Skip non-rentable (stairs, atrium, etc.)
         if (u.rentable === false) continue;
         if (u.type && !['office', 'kitchen', 'storage', 'conf'].includes(u.type) && u.type !== undefined) continue;
-        // Skip sub-rooms of a whole-rented / group-leased parent — the
-        // parent's lease covers their physical space; listing them as
-        // separate vacant rows would mislead the operator into thinking
-        // they're available to rent.
-        if (typeof _isInactiveSubRoom === 'function' && _isInactiveSubRoom(u)) continue;
+        // Skip sub-rooms of a whole-rented / group-leased parent + non-head
+        // members of a multi-suite lease — both are covered by another
+        // unit's lease, so listing them as separate Rent Roll rows would
+        // mislead the operator into thinking they're available or owe rent
+        // independently.
+        if (typeof _isFinanceShadow === 'function' && _isFinanceShadow(u)) continue;
         rows.push({
           buildingId: b.id,
           floorId: f.id,
@@ -70869,6 +71023,10 @@ function renderBillingKpiStrip() {
       for (const u of (f.units || [])) {
         if (typeof isArchived === 'function' && isArchived(u)) continue;
         if (u.rentable === false || (u.type && u.type !== 'office')) continue;
+        // Skip non-head members of multi-suite leases — head holds the
+        // combined rent, so summing across all members would multiply
+        // outstanding/overdue by the group size.
+        if (typeof _isFinanceShadow === 'function' && _isFinanceShadow(u)) continue;
         const rent = +u.contractRent || +u.rent || 0;
         const occupied = u.status === 'occupied';
 
@@ -70950,6 +71108,7 @@ function renderBillingKpiStrip() {
       for (const f of (b.floors || [])) {
         for (const u of (f.units || [])) {
           if (u.status !== 'occupied') continue;
+          if (typeof _isFinanceShadow === 'function' && _isFinanceShadow(u)) continue;
           const rent = +u.contractRent || +u.rent || 0;
           if (rent <= 0) continue;
           const p = u.payments?.[ym];
@@ -71000,6 +71159,10 @@ function renderTenantsPanelZip() {
       for (const u of (f.units || [])) {
         if (u.status !== 'occupied') continue;
         if (!u.tenant && !u.company) continue;
+        // Skip non-head members of multi-suite leases — head represents
+        // the WHOLE lease as one row, with combined MRR + a "N suites"
+        // hint in the suite column.
+        if (typeof _isFinanceShadow === 'function' && _isFinanceShadow(u)) continue;
         const tenantStatus = _bvDeriveTenantStatus(u, ymThis);
         if (statusFilter && tenantStatus !== statusFilter) continue;
 
@@ -71009,13 +71172,20 @@ function renderTenantsPanelZip() {
         const mrr = +u.contractRent || +u.rent || 0;
         const bal = _bvComputeTenantBalance(u, ymThis);
         const outstanding = _bvCountOutstandingMonths(u, ymThis);
+        // Multi-suite lease label: "101 +8" so operator sees the lease
+        // covers more than one suite at a glance.
+        let suiteLabel = u.id;
+        if (u.groupId && typeof _unitsInGroup === 'function') {
+          const memberCount = _unitsInGroup(u.groupId).length;
+          if (memberCount > 1) suiteLabel = `${u.id} +${memberCount - 1}`;
+        }
         rows.push({
           uid: `${b.id}|${f.id}|${u.id}`,
           name: u.tenant || u.company || '(no name)',
           company: u.company || '',
           email: u.email || '',
           phone: u.tel || '',
-          suite: u.id,
+          suite: suiteLabel,
           buildingName: b.name || b.id,
           mrr,
           balance: bal,
@@ -71114,6 +71284,7 @@ function _bvStatusPill(status) {
 
 // Derive a tenant's status this month from their payment record.
 function _bvDeriveTenantStatus(u, ym) {
+  if (typeof _unitLeaseHead === 'function') u = _unitLeaseHead(u);
   const p = u.payments?.[ym];
   if (p?.status === 'paid' || p?.status === 'free') return 'paid';
   if (p?.status === 'late' || p?.status === 'overdue') return 'overdue';
@@ -71126,6 +71297,7 @@ function _bvDeriveTenantStatus(u, ym) {
 
 // Sum unpaid rent across this and prior months, capped at 12 months back.
 function _bvComputeTenantBalance(u, ymThis) {
+  if (typeof _unitLeaseHead === 'function') u = _unitLeaseHead(u);
   const rent = +u.contractRent || +u.rent || 0;
   if (rent <= 0) return 0;
   let bal = 0;
@@ -71147,6 +71319,7 @@ function _bvComputeTenantBalance(u, ymThis) {
 
 // Count of months back this tenant has unpaid rent (capped at 12).
 function _bvCountOutstandingMonths(u, ymThis) {
+  if (typeof _unitLeaseHead === 'function') u = _unitLeaseHead(u);
   let n = 0;
   const [y, m] = ymThis.split('-').map(Number);
   for (let i = 0; i < 12; i++) {
@@ -71733,7 +71906,7 @@ function _bvUpdateTabCounts() {
       if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
       for (const f of (b.floors || [])) {
         for (const u of (f.units || [])) {
-          if (typeof _isInactiveSubRoom === 'function' && _isInactiveSubRoom(u)) continue;
+          if (typeof _isFinanceShadow === 'function' && _isFinanceShadow(u)) continue;
           const endStr   = u.until || u.leaseEnd || '';
           const startStr = u.leaseStart || u.signed || '';
           if (u.status === 'occupied' && endStr) {
@@ -71759,6 +71932,7 @@ function _bvUpdateTabCounts() {
       if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
       for (const f of (b.floors || [])) {
         for (const u of (f.units || [])) {
+          if (typeof _isFinanceShadow === 'function' && _isFinanceShadow(u)) continue;
           const pays = u.payments || {};
           for (const ym of Object.keys(pays)) {
             const p = pays[ym];
@@ -71951,7 +72125,9 @@ function _calendarCollect() {
     if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
     for (const f of (b.floors || [])) {
       for (const u of (f.units || [])) {
-        if (typeof _isInactiveSubRoom === 'function' && _isInactiveSubRoom(u)) continue;
+        // Skip non-head members so a 9-suite group emits ONE move-in/out
+        // event (on the head's lease dates), not 9 duplicates.
+        if (typeof _isFinanceShadow === 'function' && _isFinanceShadow(u)) continue;
         const endStr   = u.until || u.leaseEnd || '';
         const startStr = u.leaseStart || u.signed || '';
         const rent = +u.rent || 0;
@@ -72132,7 +72308,8 @@ function _pnlCollect() {
     if (bldgFilter && b.id !== bldgFilter) continue;
     for (const f of (b.floors || [])) {
       for (const u of (f.units || [])) {
-        if (typeof _isInactiveSubRoom === 'function' && _isInactiveSubRoom(u)) continue;
+        // Skip non-head members — head holds all payments for the lease.
+        if (typeof _isFinanceShadow === 'function' && _isFinanceShadow(u)) continue;
         const pays = u.payments || {};
         for (const ym of Object.keys(pays)) {
           if (!/^\d{4}-\d{2}$/.test(ym)) continue;   // skip 'deposit' etc. — not rent
@@ -72386,7 +72563,9 @@ function exportScheduleECsv() {
     const occupiedDaysByUnit = new Map();
     for (const f of (b.floors || [])) {
       for (const u of (f.units || [])) {
-        if (typeof _isInactiveSubRoom === 'function' && _isInactiveSubRoom(u)) continue;
+        // Skip non-head members — head holds all payments + counts the
+        // group's days-rented once.
+        if (typeof _isFinanceShadow === 'function' && _isFinanceShadow(u)) continue;
         for (const ym of Object.keys(u.payments || {})) {
           if (!/^\d{4}-\d{2}$/.test(ym)) continue;   // skip 'deposit' etc. — not rent
           const p = u.payments[ym];
@@ -73580,6 +73759,7 @@ function getLateFeeConfig(u) {
     suspendAccessAfterLate: false,
   };
   const global = Object.assign({}, def, state?.settings?.lateFee || {});
+  if (typeof _unitLeaseHead === 'function') u = _unitLeaseHead(u);
   if (u && u.lateFeeOverride && typeof u.lateFeeOverride === 'object') {
     return Object.assign({}, global, u.lateFeeOverride);
   }
