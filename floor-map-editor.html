@@ -77097,6 +77097,9 @@ function updatePaymentsOutstandingWidget() {
 function updateBillingOutstandingWidget() {
   const card = document.getElementById('billingOutstandingCard');
   if (!card) return;
+  const amtEl = document.getElementById('billingOutstandingAmt');
+  const subEl = document.getElementById('billingOutstandingSub');
+  if (!amtEl || !subEl) { card.style.display = 'none'; return; }
   const rows = buildAgingRows();
   const today = new Date();
   const curYm = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}`;
