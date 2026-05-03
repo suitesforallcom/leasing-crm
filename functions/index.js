@@ -4164,3 +4164,204 @@ exports.syncBankConnections = onCall(
     };
   }
 );
+
+// =========================================================================
+// ===== Bank Feed Phase 2 — transaction polling ===========================
+// Cron + on-demand puller for incoming bank transactions (rent payments,
+// wire deposits, ACH credits) from connected Stripe Financial Connections
+// accounts. Storage: /workspaces/{wsId}/bankTransactions/{txnId}.
+//
+// First connect: backfill 365 days. Subsequent polls: incremental from
+// the account's lastPolledAt watermark.
+//
+// Per-account polling cadence is configurable via
+// bankConnections[].pollIntervalHours (1, 6, 24, 168, or 0=manual-only).
+// Default 24. The bankFeedScheduledPoll cron runs hourly and only polls
+// accounts whose last poll is older than their interval.
+// =========================================================================
+
+const BANK_FEED_BACKFILL_DAYS = 365;
+
+// Pull every transaction Stripe FC has for an account since `sinceUnix`
+// (or all-time if sinceUnix is null). Returns the count actually written
+// to Firestore (excluding dedup hits).
+async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix}) {
+  const col = db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`);
+  let written = 0, skipped = 0, scanned = 0;
+  let startingAfter = undefined;
+  for (;;) {
+    const params = {
+      account: fcAccountId,
+      limit: 100,
+      ...(startingAfter ? { starting_after: startingAfter } : {}),
+      ...(sinceUnix ? { transacted_at: { gte: sinceUnix } } : {}),
+    };
+    const page = await stripe.financialConnections.transactions.list(params);
+    scanned += page.data.length;
+    // Batched writes — Firestore caps at 500 ops per batch; we use 100.
+    const batch = db.batch();
+    for (const t of page.data) {
+      const ref = col.doc(t.id);
+      batch.set(ref, {
+        id: t.id,
+        accountId: t.account,
+        amount: t.amount,                       // cents (negative=debit, positive=credit)
+        currency: t.currency,
+        description: t.description || '',
+        transactedAt: t.transacted_at || null,  // unix seconds
+        statusTransitions: t.status_transitions || null,
+        status: t.status,                       // 'pending' | 'posted' | 'void'
+        seenAt: admin.firestore.FieldValue.serverTimestamp(),
+        // Match-state fields populated by the auto-matcher (Phase 3).
+        // Initialized as 'unmatched' so the review UI knows what to show.
+        matchState: 'unmatched',
+        matchedTenantId: null,
+        matchedUnitId: null,
+        matchedYm: null,
+        checkImageUrl: null,
+      }, { merge: true });
+      written++;
+    }
+    if (page.data.length) await batch.commit();
+    if (!page.has_more) break;
+    startingAfter = page.data[page.data.length - 1].id;
+  }
+  return { scanned, written, skipped };
+}
+
+// Update the watermark + call the matcher after a successful pull.
+async function _markAccountPolled({fcAccountId, scanned, written}) {
+  const nowIso = new Date().toISOString();
+  await mutateWorkspaceState((s) => {
+    if (!Array.isArray(s.bankConnections)) return;
+    const c = s.bankConnections.find(x => x.stripeFcAccountId === fcAccountId);
+    if (!c) return;
+    c.lastPolledAt = nowIso;
+    c.lastPollScanned = scanned;
+    c.lastPollWritten = written;
+  });
+}
+
+// Manual / on-demand: pull a single account or all active accounts.
+// Operator hits "Refresh now" in Settings, or this is invoked at the
+// tail of finalizeBankConnection for the 365-day backfill.
+exports.pollBankTransactions = onCall(
+  {secrets: [STRIPE_SECRET_KEY], timeoutSeconds: 300, memory: '512MiB'},
+  async (req) => {
+    await requireEditor(req.auth);
+    const stripe = getStripe();
+    const targetFcId = req.data?.stripeFcAccountId || null;  // null = poll all
+    const isBackfill = req.data?.backfill === true;
+    const state = await readWorkspaceState();
+    const conns = (state.bankConnections || [])
+      .filter(c => c.status === 'active')
+      .filter(c => !targetFcId || c.stripeFcAccountId === targetFcId);
+    if (!conns.length) {
+      return { polled: 0, totalWritten: 0, accounts: [] };
+    }
+    const results = [];
+    for (const c of conns) {
+      const since = isBackfill || !c.lastPolledAt
+        ? Math.floor(Date.now() / 1000) - (BANK_FEED_BACKFILL_DAYS * 86400)
+        : Math.floor(new Date(c.lastPolledAt).getTime() / 1000);
+      try {
+        const r = await _pullTransactionsForAccount({
+          stripe,
+          fcAccountId: c.stripeFcAccountId,
+          sinceUnix: since,
+        });
+        await _markAccountPolled({
+          fcAccountId: c.stripeFcAccountId,
+          scanned: r.scanned,
+          written: r.written,
+        });
+        results.push({ fcAccountId: c.stripeFcAccountId, ...r, error: null });
+        logger.info(`[bank-feed] poll ${c.stripeFcAccountId}: scanned=${r.scanned} written=${r.written} backfill=${isBackfill}`);
+      } catch (err) {
+        logger.error(`[bank-feed] poll ${c.stripeFcAccountId} failed:`, err);
+        results.push({ fcAccountId: c.stripeFcAccountId, error: err.message || String(err) });
+      }
+    }
+    return {
+      polled: results.length,
+      totalWritten: results.reduce((sum, r) => sum + (r.written || 0), 0),
+      accounts: results,
+    };
+  }
+);
+
+// Hourly cron — checks each active connection's pollIntervalHours and
+// lastPolledAt and polls if due. Default interval 24h if unset.
+exports.bankFeedScheduledPoll = onSchedule(
+  {
+    schedule: '7 * * * *',           // every hour at :07 (offset from other crons)
+    timeZone: 'UTC',
+    memory: '512MiB',
+    timeoutSeconds: 540,
+    secrets: [STRIPE_SECRET_KEY],
+  },
+  async () => {
+    const state = await readWorkspaceState();
+    const conns = (state.bankConnections || []).filter(c => c.status === 'active');
+    if (!conns.length) return;
+    const now = Date.now();
+    const due = conns.filter(c => {
+      const intervalH = +c.pollIntervalHours;
+      const interval = Number.isFinite(intervalH) ? intervalH : 24;
+      if (interval === 0) return false;            // manual-only
+      if (!c.lastPolledAt) return true;            // never polled
+      const ageMs = now - new Date(c.lastPolledAt).getTime();
+      return ageMs >= interval * 3600 * 1000;
+    });
+    if (!due.length) {
+      logger.info(`[bank-feed] cron: 0/${conns.length} accounts due`);
+      return;
+    }
+    const stripe = getStripe();
+    let totalWritten = 0;
+    for (const c of due) {
+      const sinceUnix = c.lastPolledAt
+        ? Math.floor(new Date(c.lastPolledAt).getTime() / 1000)
+        : Math.floor(now / 1000) - (BANK_FEED_BACKFILL_DAYS * 86400);
+      try {
+        const r = await _pullTransactionsForAccount({
+          stripe,
+          fcAccountId: c.stripeFcAccountId,
+          sinceUnix,
+        });
+        await _markAccountPolled({
+          fcAccountId: c.stripeFcAccountId,
+          scanned: r.scanned,
+          written: r.written,
+        });
+        totalWritten += r.written;
+        logger.info(`[bank-feed] cron ${c.stripeFcAccountId}: scanned=${r.scanned} written=${r.written}`);
+      } catch (err) {
+        logger.error(`[bank-feed] cron ${c.stripeFcAccountId} failed:`, err);
+      }
+    }
+    logger.info(`[bank-feed] cron complete: ${due.length}/${conns.length} polled, ${totalWritten} new txns`);
+  }
+);
+
+// Update per-account polling cadence. Operator picks from Settings UI.
+exports.setBankPollInterval = onCall(
+  {timeoutSeconds: 30},
+  async (req) => {
+    await requireEditor(req.auth);
+    const fcAccountId = req.data?.stripeFcAccountId;
+    const hours = +req.data?.hours;
+    if (!fcAccountId) throw new HttpsError('invalid-argument', 'stripeFcAccountId is required');
+    const ALLOWED = [0, 1, 6, 24, 168];
+    if (!ALLOWED.includes(hours)) {
+      throw new HttpsError('invalid-argument', `hours must be one of ${ALLOWED.join(',')}`);
+    }
+    await mutateWorkspaceState((s) => {
+      if (!Array.isArray(s.bankConnections)) return;
+      const c = s.bankConnections.find(x => x.stripeFcAccountId === fcAccountId);
+      if (!c) return;
+      c.pollIntervalHours = hours;
+    });
+    return { ok: true, hours };
+  }
+);

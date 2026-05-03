@@ -58323,11 +58323,31 @@ async function connectBankAccount() {
     const finRes = await finalize({ sessionId: data.sessionId });
     const newCount = finRes.data?.connected || 0;
     const reCount = finRes.data?.reactivated || 0;
+    const newAccts = finRes.data?.accounts || [];
     let msg = `✓ <b>Connected ${newCount} new account(s).</b>`;
     if (reCount) msg += ` Reactivated ${reCount} previously-disconnected account(s).`;
-    msg += ' Phase 2 (scheduled poll + matcher) ships next.';
     setIntStatus('bankFeed', 'success', msg);
     _renderBankConnections();
+    // Phase 2 backfill — fire-and-forget per new account so the operator
+    // doesn't have to wait 365 days of pagination synchronously. Each
+    // pollBankTransactions call has its own 5-min timeout server-side.
+    for (const a of newAccts) {
+      const fcId = a.stripeFcAccountId;
+      if (!fcId) continue;
+      (async () => {
+        try {
+          setIntStatus('bankFeed', 'info', `⏳ Backfilling 365 days of transactions for ${esc(a.displayName || fcId)}…`);
+          const poll = stripeCallable('pollBankTransactions');
+          const r = await poll({ stripeFcAccountId: fcId, backfill: true });
+          const w = r.data?.totalWritten || 0;
+          setIntStatus('bankFeed', 'success', `✓ Backfilled ${w} transactions for ${esc(a.displayName || fcId)}.`);
+          _renderBankConnections();
+        } catch (e) {
+          console.warn('[bank-feed] backfill failed:', e);
+          setIntStatus('bankFeed', 'warn', `⚠ Backfill failed for ${esc(a.displayName || fcId)}: ${esc(e.message || String(e))}. Use "Refresh now" to retry.`);
+        }
+      })();
+    }
   } catch (err) {
     const m = err?.message || String(err);
     setIntStatus('bankFeed', 'error', `⚠ ${esc(m)}`);
@@ -58398,32 +58418,87 @@ function _renderBankConnections() {
     host.innerHTML = `<div style="font-size:11.5px; color:var(--muted); padding:6px 0;">No bank accounts connected yet.</div>`;
     return;
   }
+  const POLL_OPTIONS = [
+    { h: 1,   label: 'Every hour' },
+    { h: 6,   label: 'Every 6 hours' },
+    { h: 24,  label: 'Daily (default)' },
+    { h: 168, label: 'Weekly' },
+    { h: 0,   label: 'Manual only' },
+  ];
   host.innerHTML = conns.map(c => {
     const isActive = c.status !== 'disconnected';
     const statusColor = isActive ? 'var(--success)' : 'var(--muted)';
     const statusLabel = isActive ? c.status : 'Disconnected';
     const last4 = c.accountLast4 ? `····${esc(c.accountLast4)}` : '';
     const sub = c.accountSubcategory ? ` · ${esc(c.accountSubcategory)}` : '';
+    const interval = Number.isFinite(+c.pollIntervalHours) ? +c.pollIntervalHours : 24;
     const polled = c.lastPolledAt
-      ? `Last poll: ${esc(new Date(c.lastPolledAt).toLocaleString())}`
-      : 'Not yet polled (Phase 2)';
+      ? `Last poll: ${esc(new Date(c.lastPolledAt).toLocaleString())}` +
+          (typeof c.lastPollWritten === 'number'
+            ? ` · ${c.lastPollWritten} new`
+            : '')
+      : 'Never polled';
+    const fcId = esc(c.stripeFcAccountId);
+    const intervalSel = isActive
+      ? `<select onchange="setBankPollIntervalUI('${fcId}', this.value)" style="font-size:11px; padding:3px 6px; border:1px solid var(--border); border-radius:4px; background:var(--surface);">
+           ${POLL_OPTIONS.map(o => `<option value="${o.h}"${o.h === interval ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}
+         </select>`
+      : '';
+    const refreshBtn = isActive
+      ? `<button class="int-btn outline" style="flex:0 0 auto; padding:4px 10px; font-size:11px;" onclick="refreshBankAccountNow('${fcId}')" title="Pull new transactions from Stripe right now (incremental since last poll).">↻ Refresh now</button>`
+      : '';
     const disconnectBtn = isActive
-      ? `<button class="int-btn outline" style="flex:0 0 auto; padding:4px 10px; font-size:11px;" onclick="disconnectBankAccount('${esc(c.stripeFcAccountId)}')">Disconnect</button>`
+      ? `<button class="int-btn outline" style="flex:0 0 auto; padding:4px 10px; font-size:11px;" onclick="disconnectBankAccount('${fcId}')">Disconnect</button>`
       : '';
     return `
-      <div style="display:flex; align-items:center; gap:10px; padding:10px 12px; background:var(--surface); border:1px solid var(--border); border-radius:8px;">
-        <div style="font-size:18px;">🏦</div>
-        <div style="flex:1; min-width:0;">
-          <div style="font-size:12.5px; font-weight:600;">${esc(c.institutionName || 'Bank')} ${last4}${sub}</div>
-          <div style="font-size:10.5px; color:var(--muted); margin-top:2px;">
-            <span style="color:${statusColor}; font-weight:600; text-transform:uppercase; letter-spacing:0.3px;">${esc(statusLabel)}</span>
-            · ${polled}
+      <div style="display:flex; flex-direction:column; gap:8px; padding:10px 12px; background:var(--surface); border:1px solid var(--border); border-radius:8px;">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <div style="font-size:18px;">🏦</div>
+          <div style="flex:1; min-width:0;">
+            <div style="font-size:12.5px; font-weight:600;">${esc(c.institutionName || 'Bank')} ${last4}${sub}</div>
+            <div style="font-size:10.5px; color:var(--muted); margin-top:2px;">
+              <span style="color:${statusColor}; font-weight:600; text-transform:uppercase; letter-spacing:0.3px;">${esc(statusLabel)}</span>
+              · ${polled}
+            </div>
           </div>
+          ${disconnectBtn}
         </div>
-        ${disconnectBtn}
+        ${isActive ? `
+          <div style="display:flex; align-items:center; gap:8px; padding-left:28px; font-size:11px; color:var(--muted);">
+            <span>Poll cadence:</span>
+            ${intervalSel}
+            ${refreshBtn}
+          </div>
+        ` : ''}
       </div>
     `;
   }).join('');
+}
+
+async function setBankPollIntervalUI(fcAccountId, hoursStr) {
+  const hours = +hoursStr;
+  try {
+    const fn = stripeCallable('setBankPollInterval');
+    await fn({ stripeFcAccountId: fcAccountId, hours });
+    setIntStatus('bankFeed', 'success', `✓ Polling cadence updated.`);
+    _renderBankConnections();
+  } catch (err) {
+    setIntStatus('bankFeed', 'error', `⚠ ${esc(err?.message || String(err))}`);
+  }
+}
+
+async function refreshBankAccountNow(fcAccountId) {
+  if (!fcAccountId) return;
+  setIntStatus('bankFeed', 'info', '⏳ Pulling new transactions from Stripe…');
+  try {
+    const fn = stripeCallable('pollBankTransactions');
+    const { data } = await fn({ stripeFcAccountId: fcAccountId });
+    const w = data?.totalWritten || 0;
+    setIntStatus('bankFeed', 'success', `✓ ${w} transaction(s) updated.`);
+    _renderBankConnections();
+  } catch (err) {
+    setIntStatus('bankFeed', 'error', `⚠ ${esc(err?.message || String(err))}`);
+  }
 }
 
 // Wire re-render to the panel: when Settings opens or the integrations
