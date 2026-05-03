@@ -83538,7 +83538,11 @@ async function _refreshTxnBrowser() {
       amountTolerancePct: 100, // не фильтруем по сумме — оператор сам выберет
       dateRangeDays: days,
       accountIds: [],
-      limit: 200,
+      limit: 500,
+      // Browse-mode: бэкенд снимает matchState/debit/amount фильтры,
+      // поднимает cap'ы (rangeDays до 800, limit до 500). Без этого
+      // оператор видит только unmatched/suggested credits за 120d → 25 строк.
+      includeAllStates: true,
     });
     _txnBrowserBankItems = (data?.items || []).slice();
     // Прокидываем в _mpmBankCache, чтобы _mpmUseBankTxn нашёл строку.

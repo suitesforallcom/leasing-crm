@@ -4921,11 +4921,22 @@ exports.listBankTransactionsForUnit = onCall(
     }
     const targetCents = +req.data?.amountCents || 0;
     const tolPct = Math.max(0, Math.min(100, +req.data?.amountTolerancePct || 15));
-    const rangeDays = Math.max(1, Math.min(120, +req.data?.dateRangeDays || 30));
+    // includeAllStates=true (передаётся из Browse-all-transactions модалки)
+    // снимает все «продуктовые» фильтры — оператор хочет видеть АБСОЛЮТНО
+    // всё на счёте, чтобы вручную сматчить то, что автомат пропустил.
+    // В этом режиме поднимаем cap'ы на range/limit и отключаем
+    // matchState/debit/amount фильтры. Дефолты для inline-suggestions
+    // (узкие лимиты 25/120d) сохраняются для всех остальных вызовов.
+    const includeAllStates = !!req.data?.includeAllStates;
+    const rangeDays = includeAllStates
+      ? Math.max(1, Math.min(800, +req.data?.dateRangeDays || 90))
+      : Math.max(1, Math.min(120, +req.data?.dateRangeDays || 30));
     const accountIds = Array.isArray(req.data?.accountIds) ? req.data.accountIds.filter(Boolean) : [];
     const includeStates = Array.isArray(req.data?.includeStates) && req.data.includeStates.length
       ? req.data.includeStates : ['unmatched', 'suggested'];
-    const limit = Math.max(1, Math.min(25, +req.data?.limit || 10));
+    const limit = includeAllStates
+      ? Math.max(1, Math.min(500, +req.data?.limit || 100))
+      : Math.max(1, Math.min(25, +req.data?.limit || 10));
 
     // Compute the date window: month-of-ym ± rangeDays. Anchored at the
     // start of `ym` and the end of `ym` so a January query gets December
@@ -4936,23 +4947,27 @@ exports.listBankTransactionsForUnit = onCall(
     const toUnix = monthEnd + rangeDays * 86400;
 
     const col = db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`);
-    const snap = await col
-      .where('matchState', 'in', includeStates)
-      .get();
+    // В browse-режиме НЕ фильтруем по matchState — оператор хочет видеть
+    // даже уже подтверждённые/смэтченные строки. Иначе — узкая выборка.
+    const snap = includeAllStates
+      ? await col.get()
+      : await col.where('matchState', 'in', includeStates).get();
 
     const tolCents = targetCents > 0 ? Math.max(2000, Math.round(targetCents * tolPct / 100)) : Infinity;
     const rows = [];
     for (const d of snap.docs) {
       const t = d.data();
-      // Credits only — debits can never be a rent payment.
-      if (!(+t.amount > 0)) continue;
+      // В browse-режиме показываем дебиты тоже — оператор просил «все
+      // транзакции». В suggestion-режиме — только credits (rent = credit).
+      if (!includeAllStates && !(+t.amount > 0)) continue;
       // Account whitelist (when provided).
       if (accountIds.length && !accountIds.includes(t.accountId)) continue;
       // Date window — skip transactions with no transactedAt rather than
       // include-and-confuse-the-operator.
       if (!t.transactedAt || t.transactedAt < fromUnix || t.transactedAt > toUnix) continue;
-      // Amount window — skip if we have a target and this is way off.
-      if (targetCents > 0 && Math.abs(+t.amount - targetCents) > tolCents) continue;
+      // Amount window — пропускаем только в suggestion-режиме. В browse
+      // tolPct приходит =100 от клиента, так что эффективно тоже отключено.
+      if (!includeAllStates && targetCents > 0 && Math.abs(+t.amount - targetCents) > tolCents) continue;
       rows.push({ id: d.id, ...t });
     }
 
