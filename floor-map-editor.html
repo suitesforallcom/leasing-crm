@@ -2644,6 +2644,37 @@
   #rrTable tbody tr.rr-editing { background: var(--accent-light) !important; }
   #rrTable tbody tr.rr-editing td { padding-top: 4px; padding-bottom: 4px; }
 
+  /* Sub-room rows — visually nested under the parent suite. Faintly tinted
+     background + smaller suite font + tree connector glyph in the suite cell.
+     The "↳" sits in its own span so the indent stays consistent regardless
+     of suite-id length. The number-cells (sqft / rent) get a muted color
+     to telegraph "this is included in the parent's totals — don't sum me
+     into the floor area twice." */
+  #rrTable tbody tr.rr-subroom > td { background: rgba(168, 85, 247, 0.04); }
+  #rrTable tbody tr.rr-subroom > td:first-child + td,
+  #rrTable tbody tr.rr-subroom > td:first-child:not(:has(+ td)) {
+    /* (no-op fallback — most browsers ignore :has, but the .rr-subroom-suite
+       span below provides the actual indent) */
+  }
+  #rrTable tbody tr.rr-subroom .rr-subroom-suite {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding-left: 14px; font-weight: 500; color: var(--muted);
+  }
+  #rrTable tbody tr.rr-subroom .rr-subroom-tee {
+    color: #a855f7; font-weight: 600; font-size: 12px;
+    line-height: 1; user-select: none;
+  }
+  #rrTable tbody tr.rr-subroom .rr-subroom-num {
+    color: var(--muted); font-style: italic;
+  }
+  /* Parent row that has visible sub-rooms — a small muted hint after the
+     suite ID so the operator sees the count at a glance. */
+  #rrTable tbody tr.rr-has-subrooms .rr-parent-badge {
+    margin-left: 6px; padding: 1px 6px; border-radius: 8px;
+    background: rgba(168, 85, 247, 0.10); color: #7c3aed;
+    font-size: 10px; font-weight: 600; vertical-align: 1px;
+  }
+
   .rr-table-wrap {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 10px;
@@ -71076,12 +71107,13 @@ function buildRentRollRows() {
         // Skip non-rentable (stairs, atrium, etc.)
         if (u.rentable === false) continue;
         if (u.type && !['office', 'kitchen', 'storage', 'conf'].includes(u.type) && u.type !== undefined) continue;
-        // Skip sub-rooms of a whole-rented / group-leased parent + non-head
-        // members of a multi-suite lease — both are covered by another
-        // unit's lease, so listing them as separate Rent Roll rows would
-        // mislead the operator into thinking they're available or owe rent
-        // independently.
-        if (typeof _isFinanceShadow === 'function' && _isFinanceShadow(u)) continue;
+        // Skip non-head members of a multi-suite lease — they're covered by
+        // the head unit's lease and would mislead the operator into thinking
+        // they're available or owe rent independently. Sub-rooms (parentId)
+        // are NOT skipped here — they appear as nested rows under their
+        // parent so the operator can see the building's full unit hierarchy
+        // (and the totals exclude their sqft/rent to avoid double-counting).
+        if (u.groupId && u.groupRole !== 'primary') continue;
         rows.push({
           buildingId: b.id,
           floorId: f.id,
@@ -71116,6 +71148,12 @@ function buildRentRollRows() {
           // groupId without re-walking state.
           groupId: u.groupId || null,
           groupRole: u.groupRole || null,
+          // Sub-room metadata — populated when this unit is nested inside
+          // another. Drives indented rendering + total-exclusion so the
+          // Floor area sum doesn't count the sub-room's sqft on top of
+          // the parent's (the parent's sqft already includes it).
+          parentId: u.parentId || null,
+          isSubRoom: !!u.parentId,
           _u: u,  // reference for editing
         });
       }
@@ -71873,17 +71911,26 @@ function renderRentRoll() {
   // those floors. Use the status-filter-agnostic set (everything that passes building/
   // floor/search/expiring filters) so toggling Status doesn't hide from the Total.
   const scoped = applyScopingFilters(allRows);
-  const totalUnits = scoped.length;
-  const occ = scoped.filter(r => r.status === 'occupied');
-  const vac = scoped.filter(r => r.status === 'vacant');
+  // Sub-rooms whose parent is also in the scoped set are physically PART
+  // of the parent's footprint — counting their sqft / rent on top of the
+  // parent would double the floor area. Build a parent-id index so the
+  // aggregations below can skip those rows. Sub-rooms WITHOUT a visible
+  // parent (parent filtered out, or parent doesn't exist) still count —
+  // they're standalone leasable spaces in that case.
+  const _scopedParentIds = new Set(scoped.filter(r => !r.isSubRoom).map(r => r.unitId));
+  const _isCoveredSub = (r) => r.isSubRoom && _scopedParentIds.has(r.parentId);
+  const _kpiRows = scoped.filter(r => !_isCoveredSub(r));
+  const totalUnits = _kpiRows.length;
+  const occ = _kpiRows.filter(r => r.status === 'occupied');
+  const vac = _kpiRows.filter(r => r.status === 'vacant');
   // Actual collected revenue = sum of contract rent on occupied units (falls back to proforma if contract blank)
   const actualRevenue = occ.reduce((s, r) => s + (r.contractRent || r.rent), 0);
   // Potential revenue = sum of proforma rent across every rentable unit in scope
-  const potentialRevenue = scoped.reduce((s, r) => s + r.rent, 0);
+  const potentialRevenue = _kpiRows.reduce((s, r) => s + r.rent, 0);
   const occRate = totalUnits ? Math.round(occ.length / totalUnits * 100) : 0;
-  const expiring30 = scoped.filter(r => { const d = daysBetween(r.leaseEnd); return d !== null && d <= 30 && d >= 0; });
-  const expiring60 = scoped.filter(r => { const d = daysBetween(r.leaseEnd); return d !== null && d <= 60 && d >= 0; });
-  const totalSqft = scoped.reduce((s, r) => s + r.sqft, 0);
+  const expiring30 = _kpiRows.filter(r => { const d = daysBetween(r.leaseEnd); return d !== null && d <= 30 && d >= 0; });
+  const expiring60 = _kpiRows.filter(r => { const d = daysBetween(r.leaseEnd); return d !== null && d <= 60 && d >= 0; });
+  const totalSqft = _kpiRows.reduce((s, r) => s + r.sqft, 0);
   const occSqft = occ.reduce((s, r) => s + r.sqft, 0);
 
   // Scope subtitle — shows buildings and floors currently filtered in
@@ -71956,11 +72003,60 @@ function renderRentRoll() {
     tfoot.innerHTML = '';
     return;
   }
-  tbody.innerHTML = sorted.map(r => {
+  // Re-order so sub-rooms appear directly under their parent (when both are
+  // visible on the same floor in the filtered set). The user-chosen sort
+  // still drives the parent-row ordering — children attach immediately
+  // after their parent regardless of how the children themselves would
+  // sort. Children of a parent that's been filtered out fall through to
+  // their own sort position so they stay visible.
+  const _ordered = (() => {
+    const childrenByParent = new Map();
+    const visibleParents = new Set();
+    for (const r of sorted) {
+      if (!r.isSubRoom) visibleParents.add(`${r.buildingId}|${r.floorId}|${r.unitId}`);
+    }
+    for (const r of sorted) {
+      if (r.isSubRoom) {
+        const pKey = `${r.buildingId}|${r.floorId}|${r.parentId}`;
+        if (visibleParents.has(pKey)) {
+          if (!childrenByParent.has(pKey)) childrenByParent.set(pKey, []);
+          childrenByParent.get(pKey).push(r);
+        }
+      }
+    }
+    const out = [];
+    for (const r of sorted) {
+      if (r.isSubRoom) {
+        const pKey = `${r.buildingId}|${r.floorId}|${r.parentId}`;
+        if (visibleParents.has(pKey)) continue; // emitted by parent below
+      }
+      out.push(r);
+      const myKey = `${r.buildingId}|${r.floorId}|${r.unitId}`;
+      const kids = childrenByParent.get(myKey);
+      if (kids && kids.length) out.push(...kids);
+    }
+    return out;
+  })();
+
+  // For each parent row that has visible children, count them so the suite
+  // cell can render a "+ N rooms" badge. Build once, reuse in the cell renderer.
+  const _childCountByParent = new Map();
+  for (const r of _ordered) {
+    if (r.isSubRoom) {
+      const pKey = `${r.buildingId}|${r.floorId}|${r.parentId}`;
+      _childCountByParent.set(pKey, (_childCountByParent.get(pKey) || 0) + 1);
+    }
+  }
+
+  tbody.innerHTML = _ordered.map(r => {
     const isSelected = rrSelectedUnitRef && rrSelectedUnitRef.unitId === r.unitId && rrSelectedUnitRef.floorId === r.floorId;
     const isEditing = _rrEditKey === _rrKey(r);
     const key = `${r.buildingId}|${r.floorId}|${r.unitId}`;
     const isChecked = _rrSelection.has(key);
+    const childCount = _childCountByParent.get(key) || 0;
+    // Pass child count to renderRRCell via a per-row context (cheap mutation
+    // on the row reference — discarded when the next render rebuilds rows).
+    r._childCount = childCount;
     // While editing, suppress row click handlers so clicking inside inputs
     // doesn't trigger jump-to-unit or row-select shuffles.
     const clickHandlers = isEditing ? '' :
@@ -71968,7 +72064,13 @@ function renderRentRoll() {
     const checkCell = showCheckCol
       ? `<td style="text-align:center;" onclick="event.stopPropagation();"><input type="checkbox" class="rr-row-check" data-sel-key="${esc(key)}" ${isChecked ? 'checked' : ''} onchange="rrToggleRow('${esc(key)}', this.checked)"></td>`
       : '';
-    return `<tr data-rr-key="${esc(_rrKey(r))}" class="${isSelected ? 'selected' : ''}${isEditing ? ' rr-editing' : ''}"${clickHandlers}>` +
+    const rowCls = [
+      isSelected ? 'selected' : '',
+      isEditing ? 'rr-editing' : '',
+      r.isSubRoom ? 'rr-subroom' : '',
+      childCount > 0 ? 'rr-has-subrooms' : '',
+    ].filter(Boolean).join(' ');
+    return `<tr data-rr-key="${esc(_rrKey(r))}" class="${rowCls}"${clickHandlers}>` +
       checkCell +
       cols.map(c => `<td style="text-align:${c.align}" class="${c.key === 'email' || c.key === 'note' || c.key === 'company' ? 'truncate' : ''}">${renderRRCell(r, c)}</td>`).join('') +
     '</tr>';
@@ -72006,15 +72108,23 @@ window.addEventListener('resize', () => {
 // Builds a <tr> of totals for the currently filtered rows. Each column gets an
 // appropriate aggregation: sums for money/sqft, counts for status, blank otherwise.
 function renderRentRollFooter(rows, cols) {
-  const occCount = rows.filter(r => r.status === 'occupied').length;
-  const vacCount = rows.filter(r => r.status === 'vacant').length;
-  const resCount = rows.filter(r => r.status === 'reserved').length;
-  const sumSqft = rows.reduce((s, r) => s + (+r.sqft || 0), 0);
-  const sumCap = rows.reduce((s, r) => s + (+r.cap || 0), 0);
-  const sumRent = rows.reduce((s, r) => s + (+r.rent || 0), 0);                  // proforma
-  const sumContract = rows.reduce((s, r) => s + (r.status === 'occupied' ? (+r.contractRent || +r.rent || 0) : 0), 0); // current in-place
-  const sumDeposit = rows.reduce((s, r) => s + (+r.deposit || 0), 0);
-  const sumOccSqft = rows.reduce((s, r) => s + (r.status === 'occupied' ? (+r.sqft || 0) : 0), 0);
+  // Exclude sub-rooms whose parent is also visible — their sqft / rent
+  // is already in the parent's row, so summing both would double-count
+  // the floor area. Standalone sub-rooms (parent not visible) still
+  // count. Mirrors the KPI logic in renderRentRoll above.
+  const _parentIds = new Set(rows.filter(r => !r.isSubRoom).map(r => r.unitId));
+  const _isCoveredSub = (r) => r.isSubRoom && _parentIds.has(r.parentId);
+  const sumRows = rows.filter(r => !_isCoveredSub(r));
+
+  const occCount = sumRows.filter(r => r.status === 'occupied').length;
+  const vacCount = sumRows.filter(r => r.status === 'vacant').length;
+  const resCount = sumRows.filter(r => r.status === 'reserved').length;
+  const sumSqft = sumRows.reduce((s, r) => s + (+r.sqft || 0), 0);
+  const sumCap = sumRows.reduce((s, r) => s + (+r.cap || 0), 0);
+  const sumRent = sumRows.reduce((s, r) => s + (+r.rent || 0), 0);                  // proforma
+  const sumContract = sumRows.reduce((s, r) => s + (r.status === 'occupied' ? (+r.contractRent || +r.rent || 0) : 0), 0); // current in-place
+  const sumDeposit = sumRows.reduce((s, r) => s + (+r.deposit || 0), 0);
+  const sumOccSqft = sumRows.reduce((s, r) => s + (r.status === 'occupied' ? (+r.sqft || 0) : 0), 0);
   const rateAvg = sumSqft > 0 ? (sumRent * 12 / sumSqft) : 0;
 
   let firstFilled = false;
@@ -72025,7 +72135,10 @@ function renderRentRollFooter(rows, cols) {
       case 'suite':
       case 'building':
       case 'floor':
-        if (!firstFilled) { firstFilled = true; html = `TOTAL · ${rows.length}`; }
+        // Use sumRows (sub-rooms-of-visible-parent excluded) for the total
+        // count so the footer matches the KPI header — both telegraph the
+        // number of distinct lease/floor positions, not raw row count.
+        if (!firstFilled) { firstFilled = true; html = `TOTAL · ${sumRows.length}`; }
         else html = '';
         break;
       case 'status':
@@ -72208,8 +72321,13 @@ function renderRRCell(r, c) {
       return r.window ? '<span title="Window unit">🌞</span>' : '<span style="color:var(--muted)">—</span>';
     case 'sink':
       return r.sink ? '<span title="Unit has a sink / plumbing">🚰</span>' : '<span style="color:var(--muted)">—</span>';
-    case 'rent':
-      return r.rent ? '$' + r.rent.toLocaleString() : '<span style="color:var(--muted)">—</span>';
+    case 'rent': {
+      if (!r.rent) return '<span style="color:var(--muted)">—</span>';
+      if (r.isSubRoom) {
+        return `<span class="rr-subroom-num" title="Sub-room — covered by parent suite's lease, not summed in totals">($${r.rent.toLocaleString()})</span>`;
+      }
+      return '$' + r.rent.toLocaleString();
+    }
     case 'contractRent': {
       if (!r.contractRent) return '<span style="color:var(--muted)">—</span>';
       // Flag when contract rent lags proforma by more than 2%
@@ -72229,8 +72347,17 @@ function renderRRCell(r, c) {
       return r.rate ? '$' + r.rate.toFixed(2) : '<span style="color:var(--muted)">—</span>';
     case 'deposit':
       return r.deposit ? '$' + r.deposit.toLocaleString() : '<span style="color:var(--muted)">—</span>';
-    case 'sqft':
-      return r.sqft ? r.sqft.toLocaleString() : '<span style="color:var(--muted)">—</span>';
+    case 'sqft': {
+      if (!r.sqft) return '<span style="color:var(--muted)">—</span>';
+      // Sub-room sqft is shown for context but rendered muted-italic +
+      // parenthesised so the operator visually knows "this is included
+      // in the parent's area, not added on top". Keeps the column
+      // informative without inflating the perceived floor area.
+      if (r.isSubRoom) {
+        return `<span class="rr-subroom-num" title="Included in parent suite's area — not summed in totals">(${r.sqft.toLocaleString()})</span>`;
+      }
+      return r.sqft.toLocaleString();
+    }
     case 'cap':
       return r.cap || '<span style="color:var(--muted)">—</span>';
     case 'daysLeft': {
@@ -72332,7 +72459,25 @@ function renderRRCell(r, c) {
         const codeTip = _cf.code ? ' · ' + _cf.code : '';
         chargeFailedBadge = ` <span title="Auto-charge failed${esc(ymTip + attTip + codeTip)}" style="display:inline-block; min-width:14px; height:14px; padding:0 4px; line-height:14px; font-size:10px; font-weight:700; color:#fff; background:#dc2626; border-radius:7px; cursor:help; vertical-align:1px;">$</span>`;
       }
-      return '<b>' + esc(r.suite) + '</b>' + groupBadge + chargeFailedBadge;
+      // Sub-room: render an indented "↳ 2041" with a tree-tee glyph so the
+      // operator instantly sees this row is nested under the parent above.
+      // The parent ID is in the tooltip for context when the parent row
+      // is scrolled out of view.
+      if (r.isSubRoom) {
+        return `<span class="rr-subroom-suite" title="Sub-room of suite ${esc(r.parentId || '')}">` +
+                 `<span class="rr-subroom-tee">↳</span>` +
+                 `<span>${esc(r.suite)}</span>` +
+               `</span>` + groupBadge + chargeFailedBadge;
+      }
+      // Parent row that has visible sub-rooms — small purple count badge
+      // ("+ 4 rooms") so the operator sees the nesting at a glance even
+      // before reading the indented child rows below.
+      let parentBadge = '';
+      const _kids = +r._childCount || 0;
+      if (_kids > 0) {
+        parentBadge = ` <span class="rr-parent-badge" title="Suite contains ${_kids} sub-room${_kids === 1 ? '' : 's'} — listed indented below">+ ${_kids} ${_kids === 1 ? 'room' : 'rooms'}</span>`;
+      }
+      return '<b>' + esc(r.suite) + '</b>' + parentBadge + groupBadge + chargeFailedBadge;
     }
     case 'email':
       return r.email ? `<a href="mailto:${esc(r.email)}" style="color:var(--accent); text-decoration:none;">${esc(r.email)}</a>` : '<span style="color:var(--muted)">—</span>';
