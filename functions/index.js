@@ -4970,6 +4970,121 @@ exports.listBankTransactionsForUnit = onCall(
   }
 );
 
+// Operator-supplied bank statements (CSV / XLSX / OFX / QFX / QBO).
+// Used when Stripe Financial Connections + the bank only expose ~90 days
+// of history but the operator needs older months (Capital One typically
+// caps at 90d via Stripe FC). Items are written into the same
+// bankTransactions collection as Stripe-pulled rows so the matcher,
+// "Bank Activity" panel, and "Record Manual Payment" suggestions all
+// pick them up uniformly.
+//
+// Inputs (req.data):
+//   items: [{ date: 'YYYY-MM-DD', amountCents: number (negative=debit),
+//             description: string, externalId?: string }]
+//   sourceLabel: string (e.g. "Capital One CSV - 2026-05-03 12:34")
+//                — becomes accountId 'import:csv:<sourceLabel>' so
+//                  imported rows are visually distinguishable from Stripe
+//   runMatcher: bool — run inline matcher over each new credit row
+//   accountTag?: string — short label (e.g. 'Capital One …5709') for UI
+//
+// Dedup: each row gets a deterministic doc-id of
+//   imp_<first 16 hex chars of sha1(date|amountCents|description)>
+// so re-importing the same statement is a no-op (Firestore merge:true
+// replays the same id, count surfaces in `skipped`).
+exports.importBankTransactions = onCall(
+  {timeoutSeconds: 120, memory: '512MiB'},
+  async (req) => {
+    await requireEditor(req.auth);
+    const items = Array.isArray(req.data?.items) ? req.data.items : [];
+    if (!items.length) {
+      throw new HttpsError('invalid-argument', 'items[] is required');
+    }
+    if (items.length > 5000) {
+      throw new HttpsError('invalid-argument', 'max 5000 rows per import');
+    }
+    const sourceLabel = String(req.data?.sourceLabel || 'manual-import').slice(0, 120);
+    const accountTag = String(req.data?.accountTag || '').slice(0, 80);
+    const runMatcher = req.data?.runMatcher !== false;            // default true
+    const accountId = `import:${sourceLabel.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 100)}`;
+
+    const crypto = require('crypto');
+    const state = runMatcher ? await readWorkspaceState() : null;
+    const col = db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`);
+
+    let scanned = 0, written = 0, skipped = 0, suggested = 0, malformed = 0;
+    let batch = db.batch();
+    let inBatch = 0;
+    const seenIds = new Set();   // intra-batch dedup
+
+    for (const raw of items) {
+      scanned++;
+      const date = String(raw?.date || '').trim();
+      const desc = String(raw?.description || '').trim();
+      const amt = Math.round(+raw?.amountCents);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(amt) || amt === 0) {
+        malformed++;
+        continue;
+      }
+      const transactedAt = Math.floor(new Date(date + 'T12:00:00Z').getTime() / 1000);
+      if (!Number.isFinite(transactedAt)) { malformed++; continue; }
+
+      const hashSrc = `${date}|${amt}|${desc.toLowerCase()}`;
+      const hash = crypto.createHash('sha1').update(hashSrc).digest('hex').slice(0, 16);
+      const docId = `imp_${hash}`;
+      if (seenIds.has(docId)) { skipped++; continue; }    // dup within file
+      seenIds.add(docId);
+
+      // Pre-check existing — so we report a real "skipped" count to the
+      // operator (not just batch.set merge results which are silent).
+      const existing = await col.doc(docId).get();
+      if (existing.exists) { skipped++; continue; }
+
+      const baseDoc = {
+        id: docId,
+        accountId,
+        accountTag: accountTag || null,
+        amount: amt,
+        currency: 'usd',
+        description: desc || '(imported)',
+        transactedAt,
+        statusTransitions: null,
+        status: 'posted',
+        seenAt: admin.firestore.FieldValue.serverTimestamp(),
+        importedAt: admin.firestore.FieldValue.serverTimestamp(),
+        importedBy: req.auth?.uid || null,
+        importSource: sourceLabel,
+        matchState: 'unmatched',
+        matchedTenantId: null,
+        matchedUnitId: null,
+        matchedYm: null,
+        checkImageUrl: null,
+      };
+
+      if (runMatcher && state) {
+        const m = _matchTransaction(state, baseDoc);
+        if (m) {
+          Object.assign(baseDoc, m, { matchState: 'suggested' });
+          suggested++;
+        }
+      }
+
+      batch.set(col.doc(docId), baseDoc, { merge: true });
+      written++;
+      inBatch++;
+      // Firestore caps writes at 500 per batch — flush at 400 to stay safe.
+      if (inBatch >= 400) {
+        await batch.commit();
+        batch = db.batch();
+        inBatch = 0;
+      }
+    }
+    if (inBatch > 0) await batch.commit();
+
+    logger.info(`[bank-feed] import "${sourceLabel}": scanned=${scanned} written=${written} skipped=${skipped} suggested=${suggested} malformed=${malformed}`);
+    return { scanned, written, skipped, suggested, malformed };
+  }
+);
+
 // Confirm a suggested match (or apply an operator override). Optionally
 // records the rent payment in state.
 exports.confirmBankMatch = onCall(

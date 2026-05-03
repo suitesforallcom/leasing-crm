@@ -13225,6 +13225,7 @@
               </label>
               <div style="flex:1;"></div>
               <button class="rr-btn ar-btn-sm" id="bankActivityConfirmHighBtn" onclick="confirmAllHighConfidence()" title="Auto-confirm every suggested match with score ≥ 90 (high confidence). Records all rent payments in one batch." style="display:none; background:var(--success); color:#fff; border-color:var(--success);">✓ Confirm all high-confidence (<span id="bankActivityHighCount">0</span>)</button>
+              <button class="rr-btn ar-btn-sm" onclick="openBankImportModal()" title="Import a bank statement file (CSV, Excel, OFX, QFX, QBO) — for months Stripe doesn't reach back to.">📥 Import file</button>
               <button class="rr-btn ar-btn-sm" onclick="rerunBankFeedMatcher()" title="Re-run the matcher across all unmatched/suggested transactions — useful after editing tenant names.">🔄 Re-match all</button>
               <button class="rr-btn ar-btn-sm" onclick="renderBankActivityPanel({force:true})" title="Reload from server">↻ Reload</button>
             </div>
@@ -17613,6 +17614,100 @@
       <button class="rr-btn" id="mpmRemindBtn" onclick="mpmSendReminder()" style="display: none;" title="Re-email this invoice to the tenant via Stripe">✉ Send reminder</button>
       <button class="rr-btn" onclick="closeManualPaymentModal()">Pay later</button>
       <button class="rr-btn primary" id="mpmSubmitBtn" onclick="submitManualPayment()">Record payment</button>
+    </div>
+  </div>
+</div>
+
+<!-- Bank statement import modal.
+     Imports operator-supplied statement files (CSV, XLSX, OFX, QFX, QBO)
+     into the same bankTransactions collection as Stripe-pulled rows.
+     Used when Stripe Financial Connections only exposes ~90 days of
+     history (Capital One default) but the operator needs older months
+     reconciled. Rows are deduped by sha1(date|amount|description). -->
+<div class="stripe-modal" id="bankImportModal">
+  <div class="stripe-modal-card" style="max-width: 720px; position: relative;">
+    <button class="modal-x-close" type="button" onclick="closeBankImportModal()" aria-label="Close" title="Close (Esc)">×</button>
+    <h3>📥 Import bank statement</h3>
+    <div class="sub">Add transactions from a file when Stripe doesn't reach far enough back. Supports <b>CSV</b>, <b>Excel</b> (xlsx/xls), <b>OFX</b>, <b>QFX</b>, and <b>QBO</b> (QuickBooks).</div>
+
+    <div id="bankImportPickerRow" style="margin-top: 14px;">
+      <div style="border:2px dashed var(--border); border-radius:10px; padding:24px; text-align:center; background:var(--surface-2, rgba(0,0,0,0.02));"
+           id="bankImportDropzone">
+        <div style="font-size:28px; margin-bottom:6px;">📂</div>
+        <div style="font-size:14px; font-weight:600; margin-bottom:6px;">Drop a statement file here, or click to browse</div>
+        <div style="font-size:12px; color:var(--muted);">Accepted: .csv · .xlsx · .xls · .ofx · .qfx · .qbo (max 5 MB)</div>
+        <input type="file" id="bankImportFileInput" accept=".csv,.xlsx,.xls,.ofx,.qfx,.qbo,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+               style="display:none;" onchange="_bankImportOnFile(event)">
+        <button type="button" class="rr-btn" style="margin-top:10px;" onclick="document.getElementById('bankImportFileInput').click()">Choose file</button>
+      </div>
+      <div id="bankImportLoadStatus" style="margin-top:8px; font-size:12px; color:var(--muted);"></div>
+    </div>
+
+    <!-- Step 2: Column mapping (CSV / XLSX only — OFX/QFX/QBO are
+         structured so we know which field is which). -->
+    <div id="bankImportMapRow" style="display:none; margin-top:14px; padding:12px; border:1px solid var(--border); border-radius:8px; background:var(--surface);">
+      <div style="font-weight:600; font-size:13px; margin-bottom:8px;">Column mapping</div>
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+        <label style="font-size:12px;">Date column
+          <select id="bankImportColDate" class="ar-sel" style="width:100%; margin-top:2px;" onchange="_bankImportRebuildPreview()"></select>
+        </label>
+        <label style="font-size:12px;">Description column
+          <select id="bankImportColDesc" class="ar-sel" style="width:100%; margin-top:2px;" onchange="_bankImportRebuildPreview()"></select>
+        </label>
+        <label style="font-size:12px;">Amount column (signed: +credit / -debit)
+          <select id="bankImportColAmt" class="ar-sel" style="width:100%; margin-top:2px;" onchange="_bankImportRebuildPreview()"></select>
+        </label>
+        <label style="font-size:12px;">— or split: Credit / Debit columns
+          <span style="display:flex; gap:4px; margin-top:2px;">
+            <select id="bankImportColCredit" class="ar-sel" style="flex:1;" onchange="_bankImportRebuildPreview()"></select>
+            <select id="bankImportColDebit" class="ar-sel" style="flex:1;" onchange="_bankImportRebuildPreview()"></select>
+          </span>
+        </label>
+      </div>
+      <div style="font-size:11px; color:var(--muted); margin-top:6px;">If your file has a single signed Amount column, leave Credit/Debit on "(none)". Otherwise use the split columns.</div>
+    </div>
+
+    <!-- Step 3: Preview rows -->
+    <div id="bankImportPreviewRow" style="display:none; margin-top:14px;">
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+        <div style="font-weight:600; font-size:13px;">Preview</div>
+        <span id="bankImportPreviewStat" style="font-size:11.5px; color:var(--muted);"></span>
+      </div>
+      <div style="max-height: 240px; overflow:auto; border:1px solid var(--border); border-radius:8px;">
+        <table id="bankImportPreviewTable" style="width:100%; font-size:11.5px; border-collapse:collapse;">
+          <thead style="position:sticky; top:0; background:var(--surface); z-index:1;">
+            <tr>
+              <th style="text-align:left; padding:6px 8px; border-bottom:1px solid var(--border);">Date</th>
+              <th style="text-align:right; padding:6px 8px; border-bottom:1px solid var(--border);">Amount</th>
+              <th style="text-align:left; padding:6px 8px; border-bottom:1px solid var(--border);">Description</th>
+            </tr>
+          </thead>
+          <tbody id="bankImportPreviewBody"></tbody>
+        </table>
+      </div>
+
+      <div style="display:flex; gap:14px; margin-top:10px; align-items:center; flex-wrap:wrap;">
+        <label style="display:inline-flex; align-items:center; gap:5px; font-size:12.5px; cursor:pointer;">
+          <input type="checkbox" id="bankImportSkipDebits" checked style="margin:0;">
+          Skip debits (recommended — debits aren't rent)
+        </label>
+        <label style="display:inline-flex; align-items:center; gap:5px; font-size:12.5px; cursor:pointer;">
+          <input type="checkbox" id="bankImportRunMatcher" checked style="margin:0;">
+          Run matcher on import
+        </label>
+        <label style="display:inline-flex; align-items:center; gap:5px; font-size:12.5px;">
+          Account label:
+          <input type="text" id="bankImportAcctTag" class="ar-sel" placeholder="e.g. Capital One …5709" style="width:170px;">
+        </label>
+      </div>
+    </div>
+
+    <div id="bankImportSubmitStatus" style="margin-top:10px; font-size:12px; min-height:18px;"></div>
+
+    <div class="stripe-modal-actions" style="margin-top:14px;">
+      <button class="rr-btn" type="button" onclick="closeBankImportModal()">Cancel</button>
+      <button class="rr-btn primary" type="button" id="bankImportSubmitBtn"
+              onclick="_bankImportSubmit()" disabled>Import 0 rows</button>
     </div>
   </div>
 </div>
@@ -59131,6 +59226,408 @@ async function rerunBankFeedMatcher() {
   }
 }
 
+// =========================================================================
+// ===== Bank statement import (CSV / XLSX / OFX / QFX / QBO) =============
+// Used when Stripe FC's transaction window doesn't reach far enough back.
+// All five formats normalize to the same { date, amountCents, description }
+// row shape, then go through importBankTransactions cloud function which
+// dedupes by sha1 and runs the matcher inline.
+// =========================================================================
+
+let _bankImportState = null;   // { fileName, format, rows, headers?, ... }
+const _BANK_IMPORT_MAX_BYTES = 5 * 1024 * 1024;       // 5 MB
+const _BANK_IMPORT_MAX_ROWS  = 5000;
+const _SHEETJS_CDN = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+
+function openBankImportModal() {
+  _bankImportState = null;
+  document.getElementById('bankImportFileInput').value = '';
+  document.getElementById('bankImportLoadStatus').textContent = '';
+  document.getElementById('bankImportSubmitStatus').textContent = '';
+  document.getElementById('bankImportMapRow').style.display = 'none';
+  document.getElementById('bankImportPreviewRow').style.display = 'none';
+  const btn = document.getElementById('bankImportSubmitBtn');
+  btn.disabled = true;
+  btn.textContent = 'Import 0 rows';
+  document.getElementById('bankImportAcctTag').value = '';
+  document.getElementById('bankImportModal').style.display = 'flex';
+  // Drop-zone wiring (idempotent — we re-bind every open).
+  const dz = document.getElementById('bankImportDropzone');
+  dz.ondragover = e => { e.preventDefault(); dz.style.borderColor = 'var(--brand)'; };
+  dz.ondragleave = e => { e.preventDefault(); dz.style.borderColor = 'var(--border)'; };
+  dz.ondrop = e => {
+    e.preventDefault(); dz.style.borderColor = 'var(--border)';
+    const f = e.dataTransfer?.files?.[0];
+    if (f) _bankImportLoadFile(f);
+  };
+}
+
+function closeBankImportModal() {
+  document.getElementById('bankImportModal').style.display = 'none';
+  _bankImportState = null;
+}
+
+function _bankImportOnFile(ev) {
+  const f = ev?.target?.files?.[0];
+  if (f) _bankImportLoadFile(f);
+}
+
+async function _bankImportLoadFile(file) {
+  const status = document.getElementById('bankImportLoadStatus');
+  if (file.size > _BANK_IMPORT_MAX_BYTES) {
+    status.innerHTML = `<span style="color:var(--danger)">File too large (${(file.size/1048576).toFixed(1)} MB). Max 5 MB.</span>`;
+    return;
+  }
+  const name = file.name || 'statement';
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  status.textContent = `Reading ${name}…`;
+  try {
+    let parsed = null;
+    if (ext === 'csv' || (!['xlsx','xls','ofx','qfx','qbo'].includes(ext))) {
+      const text = await file.text();
+      // OFX/QFX/QBO can be served without the right extension — sniff content.
+      if (/<OFX>|<STMTTRN>/i.test(text.slice(0, 4096))) {
+        parsed = _bankImportParseOfx(text, name);
+      } else {
+        parsed = _bankImportParseCsv(text, name);
+      }
+    } else if (ext === 'ofx' || ext === 'qfx' || ext === 'qbo') {
+      const text = await file.text();
+      parsed = _bankImportParseOfx(text, name);
+    } else if (ext === 'xlsx' || ext === 'xls') {
+      const buf = await file.arrayBuffer();
+      await _bankImportEnsureSheetJs();
+      parsed = _bankImportParseXlsx(buf, name);
+    }
+    if (!parsed) throw new Error('Unknown file format');
+
+    _bankImportState = parsed;
+    const acctGuess = (name.match(/(\d{4})/) || [])[1];
+    if (acctGuess) {
+      document.getElementById('bankImportAcctTag').value = `Imported …${acctGuess}`;
+    }
+    status.innerHTML = `<span style="color:var(--success)">✓</span> Loaded <b>${esc(name)}</b> · format: <b>${parsed.format}</b> · ${parsed.rawRows ?? parsed.rows.length} raw rows`;
+    if (parsed.format === 'csv' || parsed.format === 'xlsx') {
+      _bankImportShowMapping(parsed);
+    } else {
+      // OFX/QFX/QBO are structured — go straight to preview.
+      document.getElementById('bankImportMapRow').style.display = 'none';
+      _bankImportRebuildPreview();
+    }
+  } catch (err) {
+    status.innerHTML = `<span style="color:var(--danger)">⚠ ${esc(err?.message || String(err))}</span>`;
+  }
+}
+
+// ---------- CSV parser ----------
+// Handles quoted fields, escaped quotes, CR/LF, BOM. Header row required.
+function _bankImportParseCsv(text, name) {
+  text = text.replace(/^\uFEFF/, '');
+  const rows = [];
+  let row = [], cell = '', inQ = false, i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"') {
+        if (text[i+1] === '"') { cell += '"'; i += 2; continue; }
+        inQ = false; i++; continue;
+      }
+      cell += c; i++; continue;
+    }
+    if (c === '"') { inQ = true; i++; continue; }
+    if (c === ',') { row.push(cell); cell = ''; i++; continue; }
+    if (c === '\r') { i++; continue; }
+    if (c === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; i++; continue; }
+    cell += c; i++;
+  }
+  if (cell.length || row.length) { row.push(cell); rows.push(row); }
+  if (rows.length < 2) throw new Error('CSV has no data rows');
+  // Some Capital One exports have a "Transactions" preamble line then a blank
+  // line before headers — skip leading rows whose first cell looks like prose.
+  while (rows.length && rows[0].length < 2) rows.shift();
+  const headers = rows.shift().map(h => String(h).trim());
+  const data = rows
+    .filter(r => r.some(c => String(c).trim() !== ''))
+    .map(r => {
+      const o = {};
+      for (let k = 0; k < headers.length; k++) o[headers[k]] = (r[k] ?? '').trim();
+      return o;
+    });
+  return { format: 'csv', fileName: name, headers, rows: data, rawRows: data.length };
+}
+
+// ---------- XLSX parser (SheetJS) ----------
+async function _bankImportEnsureSheetJs() {
+  if (typeof XLSX !== 'undefined') return;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = _SHEETJS_CDN;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('Failed to load SheetJS CDN — check your connection.'));
+    document.head.appendChild(s);
+  });
+}
+function _bankImportParseXlsx(buf, name) {
+  const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+  const firstSheet = wb.SheetNames[0];
+  if (!firstSheet) throw new Error('Workbook is empty');
+  const ws = wb.Sheets[firstSheet];
+  const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+  if (aoa.length < 2) throw new Error('Sheet has no data rows');
+  // Skip blank/preamble rows like CSV.
+  while (aoa.length && aoa[0].filter(c => c !== '').length < 2) aoa.shift();
+  const headers = (aoa.shift() || []).map(h => String(h).trim());
+  const data = aoa
+    .filter(r => r.some(c => c !== '' && c != null))
+    .map(r => {
+      const o = {};
+      for (let k = 0; k < headers.length; k++) {
+        let v = r[k];
+        if (v instanceof Date) v = v.toISOString().slice(0, 10);
+        o[headers[k]] = (v == null) ? '' : String(v).trim();
+      }
+      return o;
+    });
+  return { format: 'xlsx', fileName: name, headers, rows: data, rawRows: data.length, sheetName: firstSheet };
+}
+
+// ---------- OFX / QFX / QBO parser ----------
+// All three are SGML-flavored OFX. Extract <STMTTRN> blocks; each has
+// <DTPOSTED>, <TRNAMT>, <NAME>/<MEMO>. Works on both 1.x SGML (no slashes)
+// and 2.x XML (proper closing tags).
+function _bankImportParseOfx(text, name) {
+  const rows = [];
+  const re = /<STMTTRN>([\s\S]*?)<\/STMTTRN>/gi;
+  let m;
+  const tag = (block, t) => {
+    const r = new RegExp(`<${t}>([^<\\r\\n]+)`, 'i').exec(block);
+    return r ? r[1].trim() : '';
+  };
+  while ((m = re.exec(text)) !== null) {
+    const blk = m[1];
+    const dt = tag(blk, 'DTPOSTED');
+    const amt = tag(blk, 'TRNAMT');
+    const nm = tag(blk, 'NAME') || tag(blk, 'PAYEE') || '';
+    const memo = tag(blk, 'MEMO');
+    if (!dt || !amt) continue;
+    // OFX dates: YYYYMMDD or YYYYMMDDHHMMSS[.SSS][TZ]
+    const isoDate = `${dt.slice(0,4)}-${dt.slice(4,6)}-${dt.slice(6,8)}`;
+    const description = [nm, memo].filter(Boolean).join(' · ').slice(0, 240);
+    rows.push({
+      date: isoDate,
+      amountCents: Math.round(parseFloat(amt) * 100),
+      description,
+    });
+  }
+  if (!rows.length) throw new Error('No <STMTTRN> blocks found in file');
+  return { format: 'ofx', fileName: name, rows, rawRows: rows.length, normalized: true };
+}
+
+// ---------- Column mapping (CSV / XLSX) ----------
+// Heuristic auto-detect, then operator can override via dropdowns.
+function _bankImportShowMapping(parsed) {
+  const row = document.getElementById('bankImportMapRow');
+  row.style.display = '';
+  const headers = parsed.headers || [];
+  const opts = '<option value="">(none)</option>' + headers.map(h => `<option value="${esc(h)}">${esc(h)}</option>`).join('');
+  for (const id of ['bankImportColDate','bankImportColDesc','bankImportColAmt','bankImportColCredit','bankImportColDebit']) {
+    document.getElementById(id).innerHTML = opts;
+  }
+  // Auto-detect by header substring.
+  const find = (...patterns) => headers.find(h => patterns.some(p => p.test(h.toLowerCase())));
+  const dateCol = find(/^date$/, /transaction date/, /posted date/, /post date/, /\bdate\b/);
+  const descCol = find(/description/, /payee/, /memo/, /detail/, /merchant/);
+  const amtCol  = find(/^amount$/, /\bamount\b/, /transaction amount/);
+  const creditCol = find(/^credit$/, /\bcredit\b/, /deposit/);
+  const debitCol  = find(/^debit$/, /\bdebit\b/, /withdraw/);
+  const set = (id, v) => { if (v) document.getElementById(id).value = v; };
+  set('bankImportColDate', dateCol);
+  set('bankImportColDesc', descCol);
+  // Prefer signed Amount if present; otherwise fall back to split Credit/Debit.
+  if (amtCol && !creditCol && !debitCol) {
+    set('bankImportColAmt', amtCol);
+  } else if (creditCol || debitCol) {
+    set('bankImportColCredit', creditCol);
+    set('bankImportColDebit', debitCol);
+  } else if (amtCol) {
+    set('bankImportColAmt', amtCol);
+  }
+  _bankImportRebuildPreview();
+}
+
+// Date parser — accepts ISO, US (M/D/YYYY), EU (D/M/YYYY heuristically when day>12).
+function _bankImportParseDate(s) {
+  s = String(s || '').trim();
+  if (!s) return null;
+  // ISO YYYY-MM-DD or YYYY/MM/DD
+  let m = s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/);
+  if (m) return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
+  // M/D/YYYY or M/D/YY
+  m = s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2,4})/);
+  if (m) {
+    let yyyy = +m[3]; if (yyyy < 100) yyyy += 2000;
+    return `${yyyy}-${String(m[1]).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`;
+  }
+  // Excel may have given us a Date already serialized.
+  const d = new Date(s);
+  if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  return null;
+}
+
+// Money parser — handles "$1,234.56", "(123.45)" for negatives, "1.234,56" Euro style.
+function _bankImportParseMoney(s) {
+  if (s === '' || s == null) return null;
+  s = String(s).trim();
+  if (!s) return null;
+  let neg = false;
+  if (/^\(.*\)$/.test(s)) { neg = true; s = s.slice(1, -1); }
+  s = s.replace(/[^\d.,\-+]/g, '');
+  if (!s) return null;
+  // If both . and , present, the rightmost is the decimal separator.
+  if (s.includes(',') && s.includes('.')) {
+    if (s.lastIndexOf(',') > s.lastIndexOf('.')) {
+      s = s.replace(/\./g, '').replace(',', '.');
+    } else {
+      s = s.replace(/,/g, '');
+    }
+  } else if (s.includes(',') && !s.includes('.')) {
+    // Heuristic: 3-digit groups → thousands; otherwise decimal.
+    if (/^\d{1,3}(,\d{3})+$/.test(s)) s = s.replace(/,/g, '');
+    else s = s.replace(',', '.');
+  }
+  const n = parseFloat(s);
+  if (!isFinite(n)) return null;
+  return neg ? -n : n;
+}
+
+// Build normalized rows from the current mapping (CSV/XLSX), or use the
+// already-normalized rows directly (OFX). Returns { items, summary }.
+function _bankImportNormalize() {
+  if (!_bankImportState) return { items: [], summary: { total: 0, malformed: 0, debits: 0 } };
+  const skipDebits = document.getElementById('bankImportSkipDebits')?.checked;
+  const items = [];
+  let malformed = 0, debits = 0;
+
+  if (_bankImportState.normalized) {
+    // OFX path
+    for (const r of _bankImportState.rows) {
+      if (!r.date || !Number.isFinite(r.amountCents) || r.amountCents === 0) { malformed++; continue; }
+      if (skipDebits && r.amountCents < 0) { debits++; continue; }
+      items.push(r);
+    }
+  } else {
+    // CSV / XLSX path — apply column mapping.
+    const cDate = document.getElementById('bankImportColDate').value;
+    const cDesc = document.getElementById('bankImportColDesc').value;
+    const cAmt  = document.getElementById('bankImportColAmt').value;
+    const cCr   = document.getElementById('bankImportColCredit').value;
+    const cDr   = document.getElementById('bankImportColDebit').value;
+    if (!cDate || !(cAmt || cCr || cDr)) {
+      return { items: [], summary: { total: 0, malformed: 0, debits: 0, missingMap: true } };
+    }
+    for (const row of _bankImportState.rows) {
+      const date = _bankImportParseDate(row[cDate]);
+      let amt = null;
+      if (cAmt) amt = _bankImportParseMoney(row[cAmt]);
+      if (amt == null && (cCr || cDr)) {
+        const cr = cCr ? _bankImportParseMoney(row[cCr]) : null;
+        const dr = cDr ? _bankImportParseMoney(row[cDr]) : null;
+        amt = ((cr || 0) - Math.abs(dr || 0)) || null;
+      }
+      const desc = cDesc ? String(row[cDesc] || '').trim() : '';
+      if (!date || amt == null || amt === 0) { malformed++; continue; }
+      if (skipDebits && amt < 0) { debits++; continue; }
+      items.push({ date, amountCents: Math.round(amt * 100), description: desc });
+    }
+  }
+  return { items, summary: { total: items.length, malformed, debits } };
+}
+
+function _bankImportRebuildPreview() {
+  const wrap = document.getElementById('bankImportPreviewRow');
+  const tbody = document.getElementById('bankImportPreviewBody');
+  const stat = document.getElementById('bankImportPreviewStat');
+  const btn = document.getElementById('bankImportSubmitBtn');
+  const { items, summary } = _bankImportNormalize();
+  wrap.style.display = '';
+  if (summary.missingMap) {
+    tbody.innerHTML = `<tr><td colspan="3" style="padding:14px; text-align:center; color:var(--muted);">Pick a Date column and an Amount (or Credit/Debit) column to preview.</td></tr>`;
+    stat.textContent = '';
+    btn.disabled = true;
+    btn.textContent = 'Import 0 rows';
+    return;
+  }
+  if (!items.length) {
+    tbody.innerHTML = `<tr><td colspan="3" style="padding:14px; text-align:center; color:var(--muted);">No usable rows. Check column mapping or date format.</td></tr>`;
+    stat.textContent = `${summary.malformed} malformed, ${summary.debits} debits skipped`;
+    btn.disabled = true;
+    btn.textContent = 'Import 0 rows';
+    return;
+  }
+  // Sort newest first for the preview.
+  const sorted = items.slice().sort((a, b) => b.date.localeCompare(a.date));
+  const top = sorted.slice(0, 50);
+  tbody.innerHTML = top.map(r => {
+    const amt = (r.amountCents / 100);
+    const isCredit = amt > 0;
+    const amtStr = `${isCredit ? '+' : '-'}$${Math.abs(amt).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+    const color = isCredit ? 'var(--success)' : 'var(--muted)';
+    return `<tr>
+      <td style="padding:5px 8px; border-bottom:1px solid var(--border);">${esc(r.date)}</td>
+      <td style="padding:5px 8px; text-align:right; border-bottom:1px solid var(--border); color:${color}; font-variant-numeric:tabular-nums;">${amtStr}</td>
+      <td style="padding:5px 8px; border-bottom:1px solid var(--border);">${esc(r.description || '—')}</td>
+    </tr>`;
+  }).join('');
+  const moreNote = items.length > top.length ? ` (showing ${top.length} of ${items.length})` : '';
+  const skipNote = summary.malformed || summary.debits
+    ? ` · ${summary.malformed} malformed${summary.debits ? `, ${summary.debits} debits skipped` : ''}`
+    : '';
+  stat.textContent = `${items.length} row${items.length === 1 ? '' : 's'} ready${moreNote}${skipNote}`;
+  btn.disabled = items.length === 0 || items.length > _BANK_IMPORT_MAX_ROWS;
+  btn.textContent = items.length > _BANK_IMPORT_MAX_ROWS
+    ? `Too many (${items.length}, max ${_BANK_IMPORT_MAX_ROWS})`
+    : `Import ${items.length} row${items.length === 1 ? '' : 's'}`;
+}
+
+async function _bankImportSubmit() {
+  if (typeof stripeCallable !== 'function') {
+    document.getElementById('bankImportSubmitStatus').innerHTML = `<span style="color:var(--danger)">Cloud Functions not available.</span>`;
+    return;
+  }
+  const { items } = _bankImportNormalize();
+  if (!items.length) return;
+  const status = document.getElementById('bankImportSubmitStatus');
+  const btn = document.getElementById('bankImportSubmitBtn');
+  btn.disabled = true;
+  status.innerHTML = `⏳ Uploading ${items.length} row${items.length===1?'':'s'}…`;
+  const sourceLabel = `${_bankImportState?.format || 'file'} · ${_bankImportState?.fileName || 'statement'} · ${new Date().toISOString().slice(0,16).replace('T',' ')}`;
+  const accountTag = (document.getElementById('bankImportAcctTag').value || '').trim();
+  const runMatcher = !!document.getElementById('bankImportRunMatcher').checked;
+  try {
+    const fn = stripeCallable('importBankTransactions');
+    const { data } = await fn({ items, sourceLabel, accountTag, runMatcher });
+    const w = data?.written || 0;
+    const sk = data?.skipped || 0;
+    const sg = data?.suggested || 0;
+    const mf = data?.malformed || 0;
+    status.innerHTML = `<span style="color:var(--success)">✓</span> Imported <b>${w}</b> · ${sk} duplicate${sk===1?'':'s'} · ${sg} matched · ${mf} malformed`;
+    _bankActivityCache = null;
+    setTimeout(() => {
+      closeBankImportModal();
+      renderBankActivityPanel({ force: true });
+    }, 1500);
+  } catch (err) {
+    status.innerHTML = `<span style="color:var(--danger)">⚠ ${esc(err?.message || String(err))}</span>`;
+    btn.disabled = false;
+  }
+}
+
+window.openBankImportModal = openBankImportModal;
+window.closeBankImportModal = closeBankImportModal;
+window._bankImportOnFile = _bankImportOnFile;
+window._bankImportRebuildPreview = _bankImportRebuildPreview;
+window._bankImportSubmit = _bankImportSubmit;
+
 async function confirmBankMatch(txnId, unitId, ym) {
   if (!txnId || !unitId || !ym) return;
   if (!confirm(`Confirm this transaction as rent payment for unit ${unitId} (${ym})? The payment will be recorded.`)) return;
@@ -81251,6 +81748,24 @@ function openManualPaymentModal(buildingId, floorId, unitId, ym) {
   _mpmCtx = { buildingId, floorId, unitId, ym };
   const existing = u.payments?.[ym] || {};
   const defaultRent = +u.contractRent || +u.rent || 0;
+
+  // Reconstruct linkedBankTxn from saved fields when reopening a modal
+  // for a payment that was previously bank-linked. Without this, the
+  // bank-feed card would show the suggestions list again as if no
+  // transaction had been picked, creating duplicate "Use this" buttons
+  // for an already-linked payment. Saved fields contain enough info to
+  // render the linked-view card without a CF round-trip.
+  if (existing.bankTxnId) {
+    _mpmCtx.linkedBankTxn = {
+      id: existing.bankTxnId,
+      amount: Math.round((+existing.amount || 0) * 100),
+      description: existing.paidReference || '',
+      transactedAt: existing.bankPaidAt
+        ? Math.floor(new Date(existing.bankPaidAt + 'T00:00:00Z').getTime() / 1000)
+        : null,
+      accountId: existing.bankAccountId || null,
+    };
+  }
 
   document.getElementById('mpmContext').innerHTML =
     `Suite <b>${esc(u.id)}</b> · ${esc(u.tenant || u.company || '(no name)')}`;
