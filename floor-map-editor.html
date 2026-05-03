@@ -44113,6 +44113,16 @@ async function _invoiceHistoryRefresh(buildingId, floorId, unitId) {
 // =============================================================
 function _renderUnitActiveServices(u) {
   if (!u || u.status !== 'occupied' || (!u.tenant && !u.company)) return '';
+  // Lease-head redirect — for any non-head member of a multi-suite group,
+  // route to the head so rent + monthly subscriptions read off the lease's
+  // single source of truth. Without this, members of a 9-suite group
+  // showed an empty "Monthly recurring" panel ("No rent or recurring
+  // subscriptions on this lease yet") while the head showed the real
+  // combined $13,318/mo. Click handlers below also retarget to head.id.
+  if (typeof _unitLeaseHead === 'function') {
+    const head = _unitLeaseHead(u);
+    if (head && head !== u) u = head;
+  }
   // Only recurring monthly subscriptions belong on the unit panel —
   // one-time / hourly / daily are usage-based add-ons that shouldn't
   // contribute to the recurring-revenue summary the operator scans
@@ -44538,6 +44548,15 @@ if (typeof window !== 'undefined' && !window.__ttPortalWired) {
 
 function _renderUnitInvoiceHistory(u) {
   if (!u || u.type !== 'office' || u.rentable === false) return '';
+  // Lease-head redirect — for any non-head member of a multi-suite group,
+  // route to the head so invoice history reads off the lease's single
+  // Stripe customer. Without this, members of a 9-suite group showed an
+  // empty Invoice History while the head (where invoices are sent) had
+  // the full record.
+  if (typeof _unitLeaseHead === 'function') {
+    const head = _unitLeaseHead(u);
+    if (head && head !== u) u = head;
+  }
   // When the unit is vacant (no active tenant), historical invoices
   // from prior occupants are real financial records but do NOT belong
   // in the unit's live panel — they create the impression that the
@@ -46437,8 +46456,28 @@ function _renderUnitTenantHistoryBlock(u) {
 //   - Previous tenants summary (click one → lease + payment history)
 // ============================================================
 function _renderUnitPaymentHealth(u) {
-  const b = currentBuilding();
-  const f = currentFloor();
+  // Lease-head redirect: for any non-head member of a multi-suite group,
+  // route to the head so payment-history pills, "X months unpaid" alert,
+  // and "Last payment:" line all reflect the SHARED lease state. Without
+  // this, clicking a member like Suite 118 in a 9-suite National
+  // University group showed empty pills + phantom overdue while the head
+  // (Suite 101) showed the actual payment history.
+  if (typeof _unitLeaseHead === 'function') {
+    const head = _unitLeaseHead(u);
+    if (head && head !== u) u = head;
+  }
+  // Look up the head's actual building/floor — defensive against the
+  // (unusual) case of a cross-floor group where currentFloor() would
+  // produce wrong ids in the click handlers.
+  let b = currentBuilding();
+  let f = currentFloor();
+  if (u && u.id) {
+    for (const bb of (state.buildings || [])) {
+      for (const ff of (bb.floors || [])) {
+        if ((ff.units || []).some(x => x.id === u.id)) { b = bb; f = ff; break; }
+      }
+    }
+  }
   if (!b || !f || !u) return '';
 
   // Data integrity guard: an "occupied" unit without a tenant name /
