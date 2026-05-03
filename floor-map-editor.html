@@ -19686,6 +19686,43 @@ function loadState() {
         localStorage.setItem(LEASING_MODEL_KEY, '1');
       } catch (e) { console.warn('[leasing-model seed] failed:', e); }
     }
+    // v2 миграция: убираем strategy/customOrder, конвертируем priority-overrides
+    // в floorOrder. Идемпотентна (флаг sfa_leasing_model_v2). Безопасна: priority
+    // floors просто выходят в начало floorOrder (то же поведение, что было раньше
+    // для priority в _buildFillQueue v1).
+    const LEASING_MODEL_V2_KEY = 'sfa_leasing_model_v2';
+    if (!localStorage.getItem(LEASING_MODEL_V2_KEY)) {
+      try {
+        const root = (state.settings && state.settings.leasingModel) || {};
+        let migrated = 0;
+        for (const [bId, m] of Object.entries(root)) {
+          if (!m || typeof m !== 'object') continue;
+          // Собираем priority-этажи из старых overrides и добавляем в начало floorOrder.
+          const priorityIds = [];
+          if (m.floorOverrides && typeof m.floorOverrides === 'object') {
+            for (const [fid, val] of Object.entries(m.floorOverrides)) {
+              if (val && val.state === 'priority') priorityIds.push(fid);
+              if (val && val.state === 'priority') delete m.floorOverrides[fid];
+            }
+          }
+          if (priorityIds.length) {
+            const existing = Array.isArray(m.floorOrder) ? m.floorOrder.filter(id => !priorityIds.includes(id)) : [];
+            m.floorOrder = [...priorityIds, ...existing];
+          } else if (!Array.isArray(m.floorOrder)) {
+            m.floorOrder = [];
+          }
+          // Чистим устаревшие поля.
+          if ('strategy' in m) delete m.strategy;
+          if ('customOrder' in m) delete m.customOrder;
+          migrated++;
+        }
+        if (migrated > 0) {
+          console.log(`[leasing-model v2] Migrated ${migrated} building model(s): dropped strategy/customOrder, converted priority → floorOrder`);
+          setTimeout(() => { try { if (typeof saveState === 'function') saveState(); } catch {} }, 0);
+        }
+        localStorage.setItem(LEASING_MODEL_V2_KEY, '1');
+      } catch (e) { console.warn('[leasing-model v2] migration failed:', e); }
+    }
     // Lease-head consolidation: for every multi-suite group, move ALL
     // financial state (combined rent, payments, deposit, late-fee config,
     // Stripe invoices) onto the head member (groupRole='primary'). Non-head
@@ -25099,19 +25136,18 @@ function _renderForecastFloorSummary() {
 const LEASE_TYPE_MULTI_SUITE = 'multi-suite';
 const LEASE_TYPE_FULL_FLOOR  = 'full-floor';
 const LEASE_TYPES            = [LEASE_TYPE_MULTI_SUITE, LEASE_TYPE_FULL_FLOOR];
-const FILL_STRATEGIES = [
-  'sequential-bottom-up',
-  'sequential-top-down',
-  'distributed',
-];
 const VELOCITY_MODES = ['auto', 'target-months', 'manual'];
 
 // Фабрика дефолтов. buildingId сохраняется снаружи (как ключ карты),
 // внутри объекта не дублируем — иначе рискуем рассинхроном при
 // переименованиях здания.
+//
+// v3 (2026-05-03): Strategy / customOrder / Active-Priority dropdown
+// убраны. Очерёдность заполнения теперь явная — массив floorOrder
+// (порядок ↑/↓ кнопок в UI). Hold по-прежнему через floorOverrides.
 function _makeDefaultLeasingModel() {
   return {
-    strategy: 'sequential-bottom-up',
+    floorOrder: [],             // массив floorId. Пустой = по floor.number возрастающе.
     velocity: {
       mode: 'auto',             // 'auto' | 'target-months' | 'manual'
       targetMonths: 18,         // используется при mode='target-months'
@@ -25123,24 +25159,32 @@ function _makeDefaultLeasingModel() {
       annualEscalationPct: 3,
       downtimeMonths: 1,        // только для leaseType='multi-suite'
     },
-    floorOverrides: {},         // { [floorId]: { state: 'hold' | 'priority' } }
+    floorOverrides: {},         // { [floorId]: { state: 'hold' } }
   };
 }
 
 // Достаёт модель для здания + защитный merge с дефолтами, чтобы
 // call-site'у не приходилось null-чекать каждое вложенное поле.
-// Для legacy-данных (strategy='sequential-custom' из v1 UI) FILL_STRATEGIES
-// теперь не включает 'sequential-custom' → fall through к default
-// 'sequential-bottom-up', и legacy customOrder просто игнорируется
-// (пере-saveState'ом удаляется из JSON, потому что мы его не читаем
-// и не сохраняем в новой схеме).
+//
+// Backwards-compat для v1/v2 данных:
+//   - stored.strategy / stored.customOrder — игнорируются, не записываем обратно
+//   - stored.floorOverrides[id].state === 'priority' — мигрируется в
+//     floorOrder (см. миграцию sfa_leasing_model_v2 в loadState); если
+//     не успели — здесь молча превращается в 'active' (нет priority в новой схеме)
 function _getLeasingModel(buildingId) {
   const root = (state && state.settings && state.settings.leasingModel) || {};
   const stored = root[buildingId];
   const def = _makeDefaultLeasingModel();
   if (!stored || typeof stored !== 'object') return def;
+  // floorOverrides: оставляем только записи с state === 'hold' — все остальные
+  // (включая legacy 'priority') фильтруются (read-side cleanup).
+  const cleanOverrides = {};
+  const rawOv = (stored.floorOverrides && typeof stored.floorOverrides === 'object') ? stored.floorOverrides : {};
+  for (const [fid, val] of Object.entries(rawOv)) {
+    if (val && val.state === 'hold') cleanOverrides[fid] = { state: 'hold' };
+  }
   return {
-    strategy: FILL_STRATEGIES.includes(stored.strategy) ? stored.strategy : def.strategy,
+    floorOrder: Array.isArray(stored.floorOrder) ? stored.floorOrder.slice() : [],
     velocity: {
       mode: VELOCITY_MODES.includes(stored.velocity && stored.velocity.mode)
         ? stored.velocity.mode : def.velocity.mode,
@@ -25153,8 +25197,7 @@ function _getLeasingModel(buildingId) {
       annualEscalationPct: +(stored.defaults && stored.defaults.annualEscalationPct) || def.defaults.annualEscalationPct,
       downtimeMonths: +(stored.defaults && stored.defaults.downtimeMonths) || 0,
     },
-    floorOverrides: (stored.floorOverrides && typeof stored.floorOverrides === 'object')
-      ? stored.floorOverrides : {},
+    floorOverrides: cleanOverrides,
   };
 }
 
@@ -25189,29 +25232,29 @@ function _resolveVelocity(model, scope, history) {
   };
 }
 
-// Строит упорядоченный список этажей, в порядке которого velocity
-// должна заполнять. floors = [{id, number, name, leaseType, ...}].
-// 'hold' этажи исключаются полностью; 'priority' выходят в начало,
-// сохраняя bottom-up порядок внутри priority-bakета.
+// Строит упорядоченный список этажей в порядке заполнения.
+// floors = [{id, number, name, leaseType, ...}].
+//
+// Логика:
+//   1. Hold-этажи (overrides[id].state === 'hold') исключаются полностью.
+//   2. Если model.floorOrder задан — используем его. «Новые» этажи (которых
+//      нет в floorOrder) добавляются в конец по floor.number возрастанию.
+//   3. Если floorOrder пуст — всё по floor.number возрастающе (Bottom-up по умолчанию).
 function _buildFillQueue(model, floors) {
   const overrides = (model && model.floorOverrides) || {};
-  const _state = (id) => (overrides[id] && overrides[id].state) || 'active';
-  const eligible = (floors || []).filter(f => _state(f.id) !== 'hold');
-  const priority = eligible.filter(f => _state(f.id) === 'priority');
-  const rest     = eligible.filter(f => _state(f.id) !== 'priority');
-  const strategy = (model && model.strategy) || 'sequential-bottom-up';
-  if (strategy === 'sequential-top-down') {
-    rest.sort((a, b) => (b.number || 0) - (a.number || 0));
-  } else {
-    // 'sequential-bottom-up' (default) и 'distributed' оба сортируем
-    // по номеру; 'distributed' просто потом обработает очередь как
-    // один пул в Шаге 4 forecast'а (sortировка всё равно даёт
-    // детерминированный порядок для UI).
-    rest.sort((a, b) => (a.number || 0) - (b.number || 0));
+  const isHold = (id) => !!(overrides[id] && overrides[id].state === 'hold');
+  const eligible = (floors || []).filter(f => !isHold(f.id));
+  const order = (model && Array.isArray(model.floorOrder)) ? model.floorOrder : [];
+  if (!order.length) {
+    return eligible.slice().sort((a, b) => (a.number || 0) - (b.number || 0));
   }
-  // priority всегда bottom-up между собой
-  priority.sort((a, b) => (a.number || 0) - (b.number || 0));
-  return [...priority, ...rest];
+  const idx = new Map(order.map((id, i) => [id, i]));
+  return eligible.slice().sort((a, b) => {
+    const ia = idx.has(a.id) ? idx.get(a.id) : 1e9;
+    const ib = idx.has(b.id) ? idx.get(b.id) : 1e9;
+    if (ia !== ib) return ia - ib;
+    return (a.number || 0) - (b.number || 0);
+  });
 }
 
 // Console-debugging хук. Шаги 4-7 будут вызывать helpers напрямую;
@@ -25226,7 +25269,6 @@ window._leasingModel = {
   default: _makeDefaultLeasingModel,
   TYPE_MULTI_SUITE: LEASE_TYPE_MULTI_SUITE,
   TYPE_FULL_FLOOR:  LEASE_TYPE_FULL_FLOOR,
-  STRATEGIES: FILL_STRATEGIES,
   VELOCITY_MODES,
 };
 
@@ -41334,6 +41376,27 @@ function renderDetail() {
         <div class="toggle-row"><label>Rentable</label><div class="toggle ${u.rentable !== false ? 'on' : ''}" style="${editOn ? '' : 'pointer-events:none; opacity:0.85;'}" ${editOn ? `onclick="toggleField('rentable')"` : ''}></div></div>
         <div class="toggle-row"><label>🌞 Window</label><div class="toggle ${u.window ? 'on' : ''}" style="${editOn ? '' : 'pointer-events:none; opacity:0.85;'}" ${editOn ? `onclick="toggleField('window')"` : ''}></div></div>
         <div class="toggle-row"><label>🚰 Sink / plumbing</label><div class="toggle ${u.sink ? 'on' : ''}" style="${editOn ? '' : 'pointer-events:none; opacity:0.85;'}" ${editOn ? `onclick="toggleField('sink')"` : ''}></div></div>
+        ${(() => {
+          // Floor lease-type селектор. Меняет f.leaseType (общее для всего этажа,
+          // не только этого юнита). Показываем только для rentable office юнитов
+          // — для уборных/коридоров/лифтов это бессмысленно. Read-only вне editOn,
+          // как у соседних toggle-rows.
+          if (u.type !== 'office' || u.rentable === false) return '';
+          const _f = (typeof currentFloor === 'function') ? currentFloor() : null;
+          if (!_f) return '';
+          const lt = _f.leaseType || 'multi-suite';
+          const _name = esc(_f.name || `Floor ${_f.number || '?'}`);
+          return `
+            <div class="field" title="Тип лизинга всего этажа: multi-suite — индивидуальные офисы; full-floor — один большой arendатор на (почти) весь этаж. Влияет на Revenue Forecast (full-floor получает annual escalation, multi-suite — downtime между лизами).">
+              <label>Floor lease type <span style="color:var(--muted); font-weight:400;">(${_name})</span></label>
+              <select id="fFloorLeaseType" ${ro}
+                      onchange="${editOn ? `_saveFloorLeaseType('${esc(_f.id)}', this.value)` : ''}">
+                <option value="multi-suite" ${lt === 'multi-suite' ? 'selected' : ''}>Multi-suite (individual offices)</option>
+                <option value="full-floor"  ${lt === 'full-floor'  ? 'selected' : ''}>Full-floor (one anchor tenant)</option>
+              </select>
+            </div>
+          `;
+        })()}
       </div>
     </details>`;
 
@@ -67459,12 +67522,27 @@ function _saveLeasingModel(buildingId, mutator) {
   if (typeof renderLeasingModelPanel === 'function') renderLeasingModelPanel();
 }
 
-// Сохранение strategy. select-handler из UI.
-function _saveLmStrategy(value) {
+// Перемещение этажа в очереди заполнения. dir = -1 (вверх) или +1 (вниз).
+// Если floorOrder ещё пуст — материализуем его из текущего эффективного порядка
+// (_buildFillQueue), чтобы первое движение было относительно того, что оператор видит.
+function _moveFloorInOrder(floorId, dir) {
   const b = currentBuilding(); if (!b) return;
-  const allowed = (window._leasingModel && window._leasingModel.STRATEGIES) || [];
-  if (!allowed.includes(value)) return;
-  _saveLeasingModel(b.id, m => { m.strategy = value; });
+  if (dir !== -1 && dir !== 1) return;
+  _saveLeasingModel(b.id, m => {
+    let order = Array.isArray(m.floorOrder) ? m.floorOrder.slice() : [];
+    // Материализация: если floorOrder пуст ИЛИ floorId не в нём — берём
+    // текущий effective queue и пишем его как baseline.
+    if (!order.length || !order.includes(floorId)) {
+      const sortedFloors = (b.floors || []).slice().sort((a, b2) => (a.number || 0) - (b2.number || 0));
+      order = sortedFloors.map(f => f.id);
+    }
+    const i = order.indexOf(floorId);
+    if (i < 0) return;
+    const j = i + dir;
+    if (j < 0 || j >= order.length) return;
+    [order[i], order[j]] = [order[j], order[i]];
+    m.floorOrder = order;
+  });
 }
 
 // Сохранение velocity-поля (mode | targetMonths | manualSqftPerMo | manualAvgLeaseSize).
@@ -67495,8 +67573,9 @@ function _saveLmDefault(field, value) {
 
 // Тип этажа живёт прямо на f.leaseType (а не внутри model), потому что
 // это структурное свойство этажа, а не настройка стратегии заполнения.
-// Пере-рендеривает и панель, и stFloorList (на случай, если там тоже
-// будет показываться значок типа в будущих шагах).
+// Вызывается из right-side юнит-панели (см. specsBlock в renderDetail);
+// также безопасно вызывается извне (renderDetail() обновит юнит-панель,
+// renderLeasingModelPanel() — если открыты Settings).
 function _saveFloorLeaseType(floorId, value) {
   if (!['multi-suite', 'full-floor'].includes(value)) return;
   const b = currentBuilding(); if (!b) return;
@@ -67506,21 +67585,19 @@ function _saveFloorLeaseType(floorId, value) {
   f.leaseType = value;
   saveState();
   if (typeof renderLeasingModelPanel === 'function') renderLeasingModelPanel();
+  if (typeof renderDetail === 'function') renderDetail();
 }
 
-// Override-state этажа в очереди заполнения: 'active' (default) | 'hold' | 'priority'.
-// Хранится в model.floorOverrides[floorId].state — пустой/'active' эквивалентны
-// и их не записываем (чтобы JSON оставался чистым).
-function _saveFloorOverrideState(floorId, value) {
-  if (!['active', 'hold', 'priority'].includes(value)) return;
+// Hold toggle для этажа. v3: единственное состояние, отличное от active.
+// Hold = исключён из очереди заполнения forecast'а полностью.
+function _toggleFloorHold(floorId) {
   const b = currentBuilding(); if (!b) return;
   _saveLeasingModel(b.id, m => {
     m.floorOverrides = m.floorOverrides || {};
-    if (value === 'active') {
+    if (m.floorOverrides[floorId] && m.floorOverrides[floorId].state === 'hold') {
       delete m.floorOverrides[floorId];
     } else {
-      m.floorOverrides[floorId] = m.floorOverrides[floorId] || {};
-      m.floorOverrides[floorId].state = value;
+      m.floorOverrides[floorId] = { state: 'hold' };
     }
   });
 }
@@ -67536,38 +67613,6 @@ function renderLeasingModelPanel() {
   if (!b) { panel.innerHTML = ''; return; }
   if (typeof _getLeasingModel !== 'function') { panel.innerHTML = ''; return; }
   const m = _getLeasingModel(b.id);
-
-  // Этажи в порядке номера. Custom-order стратегия удалена в v2 —
-  // вместо неё точечные исключения через Priority/Hold per-floor
-  // (та же модель экспрессивности на 4-10 этажах, без drag-drop UI).
-  const floors = (b.floors || []).slice().sort((a, b2) => (a.number || 0) - (b2.number || 0));
-
-  // === Strategy radio ===
-  const strategies = [
-    { id: 'sequential-bottom-up', label: 'Bottom-up (1 → N)',
-      hint: 'Заполняем по очереди снизу вверх — типичный leasing pattern.' },
-    { id: 'sequential-top-down',  label: 'Top-down (N → 1)',
-      hint: 'Сверху вниз — для зданий с premium-этажами на верху.' },
-    { id: 'distributed',          label: 'Distributed',
-      hint: 'Все этажи заполняются параллельно (single pool). Для коворкингов и multi-floor одновременных кампаний.' },
-  ];
-  const stratHTML = `
-    <div style="margin-bottom: 14px;">
-      <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); font-weight: 600; margin-bottom: 6px;">Fill strategy</div>
-      <div style="display: flex; flex-direction: column; gap: 6px;">
-        ${strategies.map(s => `
-          <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer; padding:6px 8px; border:1px solid var(--border); border-radius:6px; background:${m.strategy === s.id ? 'var(--accent-light)' : 'var(--surface-2)'};">
-            <input type="radio" name="lmStrategy" value="${s.id}" ${m.strategy === s.id ? 'checked' : ''}
-                   onchange="_saveLmStrategy('${s.id}')" style="margin-top:2px;">
-            <div style="flex:1;">
-              <div style="font-size: 12.5px; font-weight: 600;">${esc(s.label)}</div>
-              <div style="font-size: 11px; color: var(--muted); margin-top: 2px;">${esc(s.hint)}</div>
-            </div>
-          </label>
-        `).join('')}
-      </div>
-    </div>
-  `;
 
   // === Velocity radio + conditional inputs ===
   const v = m.velocity || {};
@@ -67662,44 +67707,64 @@ function renderLeasingModelPanel() {
     </div>
   `;
 
-  // === Per-floor types + override states ===
+  // === Fill order — список этажей с ↑↓ кнопками + Hold toggle ===
+  // Показываем эффективный порядок (как _buildFillQueue его построит) +
+  // Hold-этажи отдельным dimmed-блоком в конце. Hold-этажи нельзя двигать
+  // ↑↓ (они вне очереди), но toggle обратно в Active возможен.
   const overrides = m.floorOverrides || {};
-  const floorRowsHTML = floors.map(f => {
-    const ov = (overrides[f.id] && overrides[f.id].state) || 'active';
-    const lt = f.leaseType || 'multi-suite';
+  const isHold = (id) => !!(overrides[id] && overrides[id].state === 'hold');
+  const queue = (typeof _buildFillQueue === 'function')
+    ? _buildFillQueue(m, floors) : floors.slice().sort((a, b2) => (a.number || 0) - (b2.number || 0));
+  const heldFloors = floors.filter(f => isHold(f.id));
+
+  const _floorRow = (f, opts) => {
+    const i = opts.index;
+    const total = opts.total;
+    const held = !!opts.held;
+    const upDisabled = held || i === 0;
+    const downDisabled = held || i === total - 1;
     return `
-      <div style="display:grid; grid-template-columns: 1fr 140px 110px; gap:6px; align-items:center; padding:8px 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 4px;">
+      <div style="display:grid; grid-template-columns: 24px 1fr auto auto; gap:6px; align-items:center; padding:8px 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 4px; ${held ? 'opacity: 0.55;' : ''}">
+        <div style="color: var(--muted); font-size: 12px; text-align: right;">${held ? '—' : (i + 1)}.</div>
         <div>
           <div style="font-weight: 600; font-size: 12.5px;">
             <span style="color: var(--muted); font-weight: 400; font-size: 11.5px;">#${f.number || '?'}</span>
             ${esc(f.name)}
+            ${held ? '<span style="margin-left: 6px; font-size: 10px; padding: 1px 6px; border-radius: 8px; background: var(--warning); color: #000; font-weight: 700;">HOLD</span>' : ''}
           </div>
         </div>
-        <select class="rr-select" onchange="_saveFloorLeaseType('${esc(f.id)}', this.value)"
-                style="padding: 5px 8px; font-size: 12px;"
-                title="multi-suite — индивидуальные офисы с разными арендаторами; full-floor — одна большая аренда на (почти) весь этаж">
-          <option value="multi-suite" ${lt === 'multi-suite' ? 'selected' : ''}>Multi-suite</option>
-          <option value="full-floor"  ${lt === 'full-floor'  ? 'selected' : ''}>Full-floor</option>
-        </select>
-        <select class="rr-select" onchange="_saveFloorOverrideState('${esc(f.id)}', this.value)"
-                style="padding: 5px 8px; font-size: 12px;"
-                title="active = в очереди заполнения; hold = пропустить (стройка/реновация); priority = в начало очереди">
-          <option value="active"   ${ov === 'active'   ? 'selected' : ''}>Active</option>
-          <option value="priority" ${ov === 'priority' ? 'selected' : ''}>Priority</option>
-          <option value="hold"     ${ov === 'hold'     ? 'selected' : ''}>Hold</option>
-        </select>
+        <div style="display: flex; gap: 2px;">
+          <button class="rr-btn" ${upDisabled ? 'disabled' : ''}
+                  onclick="_moveFloorInOrder('${esc(f.id)}', -1)"
+                  title="Move up in fill order"
+                  style="padding: 4px 8px; font-size: 11px; ${upDisabled ? 'opacity: 0.35; cursor: not-allowed;' : ''}">↑</button>
+          <button class="rr-btn" ${downDisabled ? 'disabled' : ''}
+                  onclick="_moveFloorInOrder('${esc(f.id)}', 1)"
+                  title="Move down in fill order"
+                  style="padding: 4px 8px; font-size: 11px; ${downDisabled ? 'opacity: 0.35; cursor: not-allowed;' : ''}">↓</button>
+        </div>
+        <button class="rr-btn ${held ? 'primary' : ''}"
+                onclick="_toggleFloorHold('${esc(f.id)}')"
+                title="${held ? 'Click to put floor back into the fill queue' : 'Hold = exclude from forecast (renovation, construction, etc.)'}"
+                style="padding: 4px 10px; font-size: 11.5px;">${held ? '↩ Resume' : 'Hold'}</button>
       </div>
     `;
-  }).join('');
+  };
+
+  const queueRowsHTML = queue.map((f, i) => _floorRow(f, { index: i, total: queue.length, held: false })).join('');
+  const heldRowsHTML  = heldFloors.map(f => _floorRow(f, { index: 0, total: 1, held: true })).join('');
+
   const perFloorHTML = `
     <div>
-      <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); font-weight: 600; margin-bottom: 6px;">Per-floor leasing</div>
-      <div style="display:grid; grid-template-columns: 1fr 140px 110px; gap:6px; padding:0 10px 4px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); font-weight: 700;">
-        <div>Floor</div>
-        <div>Type</div>
-        <div>Queue state</div>
+      <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); font-weight: 600; margin-bottom: 6px;">Fill order</div>
+      <div style="font-size: 11px; color: var(--muted); margin-bottom: 8px; line-height: 1.5;">
+        Порядок, в котором forecast будет заполнять vacant-площади. Самый верхний — первым. Кнопка Hold выводит этаж из очереди (стройка / реновация). Тип этажа (Multi-suite / Full-floor) теперь настраивается на самом юните в right-panel.
       </div>
-      ${floorRowsHTML}
+      ${queueRowsHTML}
+      ${heldRowsHTML ? `
+        <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); font-weight: 600; margin: 10px 0 6px;">On hold</div>
+        ${heldRowsHTML}
+      ` : ''}
     </div>
   `;
 
@@ -67707,9 +67772,8 @@ function renderLeasingModelPanel() {
     <div class="panel-title">Leasing Model</div>
     <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
       <div style="font-size: 11.5px; color: var(--muted); margin-bottom: 12px; line-height: 1.5;">
-        Эти настройки управляют тем, как Revenue Forecast предсказывает заполнение vacant-площадей. Меняй их, если у здания специфический leasing pattern (например, 18 месяцев на full lease-up или приоритет верхних этажей).
+        Эти настройки управляют тем, как Revenue Forecast предсказывает заполнение vacant-площадей. Меняй их, если у здания специфический leasing pattern (например, 18 месяцев на full lease-up или особый порядок этажей).
       </div>
-      ${stratHTML}
       ${velHTML}
       ${defHTML}
       ${perFloorHTML}
