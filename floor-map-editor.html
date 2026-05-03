@@ -18136,10 +18136,24 @@
         <option value="0">All available</option>
       </select>
       <button type="button" class="rr-btn" onclick="_refreshTxnBrowser()"
-              title="Re-fetch from server">↻ Refresh</button>
+              title="Re-fetch bank + Stripe transactions from server">↻ Refresh</button>
     </div>
 
-    <div id="txnBrowserCount" style="font-size: 11.5px; color: var(--muted); margin-top: 6px;"></div>
+    <!-- Quick filter strip — одной кнопкой ужать список до строк с EXACT
+         amount match. Обновляется визуально через .active class в _renderTxnBrowserList. -->
+    <div style="display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap;">
+      <button type="button" id="txnBrowserExactChip"
+              onclick="_txnBrowserToggleExact()"
+              aria-pressed="false"
+              title="Show only transactions matching the expected rent exactly"
+              style="padding: 4px 10px; border: 1px solid var(--border); border-radius: 12px;
+                     background: var(--surface); color: var(--muted); font-size: 11.5px;
+                     cursor: pointer; font-weight: 600; line-height: 1.4;">
+        ★ Exact amount only
+      </button>
+      <div id="txnBrowserCount" style="font-size: 11.5px; color: var(--muted); flex: 1;"></div>
+      <div id="txnBrowserRefreshedAt" style="font-size: 11px; color: var(--muted);"></div>
+    </div>
 
     <div id="txnBrowserBody" style="flex: 1 1 auto; overflow-y: auto; margin-top: 8px;
          border: 1px solid var(--border); border-radius: 6px;">
@@ -83418,6 +83432,8 @@ let _txnBrowserCtx = null;
 let _txnBrowserBankItems = [];   // pre-merged bank items (raw из CF)
 let _txnBrowserStripeItems = []; // snapshot _invoicesCache для тенанта
 let _txnBrowserLoading = false;
+let _txnBrowserLastRefreshAt = 0; // ts последнего успешного _refreshTxnBrowser
+let _txnBrowserExactOnly = false; // toggle: показывать только EXACT amount
 
 // Привести bank-row к единому формату «row».
 function _txnBrowserNormBank(t) {
@@ -83524,6 +83540,13 @@ function _openTxnBrowser(buildingId, floorId, unitId, ym) {
   // «paid early/late» сценарий. Оператор может расширить через footer-link.
   const rangeEl = document.getElementById('txnBrowserRange');
   if (rangeEl) rangeEl.value = '2';
+  // Reset «Exact match only» — оператор каждый раз начинает с широкого вью.
+  _txnBrowserExactOnly = false;
+  const exactChip = document.getElementById('txnBrowserExactChip');
+  if (exactChip) {
+    exactChip.classList.remove('active');
+    exactChip.setAttribute('aria-pressed', 'false');
+  }
   if (typeof _txnBrowserSearchToggleClear === 'function') _txnBrowserSearchToggleClear();
   document.getElementById('txnBrowserModal').classList.add('active');
   // Сразу подтягиваем bank — Stripe уже в _invoicesCache, пере-фетчить
@@ -83537,6 +83560,28 @@ function _closeTxnBrowser() {
   _txnBrowserCtx = null;
   _txnBrowserBankItems = [];
   _txnBrowserStripeItems = [];
+}
+
+// Toggle для chip «★ Exact amount only» — переключает _txnBrowserExactOnly
+// и пере-рендерит. Визуальный state красится в _renderTxnBrowserList.
+function _txnBrowserToggleExact() {
+  _txnBrowserExactOnly = !_txnBrowserExactOnly;
+  _renderTxnBrowserList();
+}
+
+// Esc → закрыть browser. Слушаем глобально, но реагируем только когда
+// модалка открыта. MPM остаётся открытым (он отдельная overlay).
+function _txnBrowserKeydown(e) {
+  if (e.key !== 'Escape') return;
+  const modal = document.getElementById('txnBrowserModal');
+  if (!modal || !modal.classList.contains('active')) return;
+  e.preventDefault();
+  e.stopPropagation();
+  _closeTxnBrowser();
+}
+if (typeof document !== 'undefined' && !window._txnBrowserKeyBound) {
+  document.addEventListener('keydown', _txnBrowserKeydown, true);
+  window._txnBrowserKeyBound = true;
 }
 
 // Footer-link: «Don't see it? → Expand date range».
@@ -83603,9 +83648,9 @@ async function _refreshTxnBrowser() {
   const { buildingId, floorId, unitId, ym } = _txnBrowserCtx;
   const { u } = _resolveDrawerCtx(buildingId, floorId, unitId);
   if (!u) return;
-  // Пере-собираем Stripe из кэша — может пополниться, пока модалка открыта.
-  _txnBrowserStripeItems = _txnBrowserCollectStripe(u);
   if (typeof stripeCallable !== 'function') {
+    // Без backend — показываем то что в кэше уже есть.
+    _txnBrowserStripeItems = _txnBrowserCollectStripe(u);
     _renderTxnBrowserList();
     return;
   }
@@ -83621,33 +83666,83 @@ async function _refreshTxnBrowser() {
   const btn = document.querySelector('#txnBrowserModal .rr-btn[onclick="_refreshTxnBrowser()"]');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Loading…'; }
   const counter = document.getElementById('txnBrowserCount');
-  if (counter) counter.textContent = `Loading bank transactions…`;
+  if (counter) counter.textContent = `⏳ Loading bank + Stripe transactions for this tenant…`;
   _txnBrowserLoading = true;
+
+  // Параллельно: bank txns (через CF) + Stripe invoices (customer-scoped,
+  // напрямую через stripeListInvoices с пагинацией). Раньше брали только
+  // снимок _invoicesCache, который наполняется workspace-wide лимитом 100 —
+  // старые инвойсы конкретного customer'а в этот срез могли не попасть и
+  // вообще не показывались здесь. Сейчас тянем всё, что есть в Stripe для
+  // данного customer'а (до 500 invoices = 5 страниц по 100), пишем в общий
+  // кэш через _mergeIntoInvoicesCache (сохраняет workspace-row'ы).
+  const targetCents = Math.round(((+u.contractRent) || (+u.rent) || 0) * 100);
+  const customerId = (u.stripe?.customerId || '').trim();
+
+  const bankP = (async () => {
+    try {
+      const fn = stripeCallable('listBankTransactionsForUnit');
+      const { data } = await fn({
+        ym,
+        amountCents: targetCents,
+        amountTolerancePct: 100, // не фильтруем по сумме — оператор сам выберет
+        dateRangeDays: days,
+        accountIds: [],
+        limit: 500,
+        includeAllStates: true,
+      });
+      return Array.isArray(data?.items) ? data.items : [];
+    } catch (err) {
+      console.error('[txn-browser refresh bank]', err);
+      try { toast?.(`Bank refresh failed: ${err?.message || err}`, 'error'); } catch {}
+      return [];
+    }
+  })();
+
+  // Stripe: пагинация по customer'у. Для tenant с >100 historical invoices
+  // одна страница недостаточна. 5 страниц × 100 = 500 invoices ≈ 40+ лет
+  // помесячных rent invoices, более чем достаточно. Прерываем раньше, если
+  // Stripe говорит !hasMore.
+  const stripeP = (async () => {
+    if (!customerId || typeof stripeListInvoices !== 'function') return 0;
+    if (!/^cus_[A-Za-z0-9]+$/.test(customerId)) return 0;
+    let cursor = null, pages = 0, fetched = 0;
+    const MAX_PAGES = 5;
+    while (pages < MAX_PAGES) {
+      try {
+        const res = await stripeListInvoices({
+          customer: customerId,
+          limit: 100,
+          startingAfter: cursor || undefined,
+        });
+        const rows = Array.isArray(res?.rows) ? res.rows : [];
+        if (typeof _mergeIntoInvoicesCache === 'function') {
+          _mergeIntoInvoicesCache(rows);
+        }
+        fetched += rows.length;
+        if (!res?.hasMore || !res?.nextCursor) break;
+        cursor = res.nextCursor;
+        pages++;
+      } catch (e) {
+        console.warn('[txn-browser stripe paginate page=' + pages + ']', e);
+        break;
+      }
+    }
+    return fetched;
+  })();
+
   try {
-    const targetCents = Math.round(((+u.contractRent) || (+u.rent) || 0) * 100);
-    const fn = stripeCallable('listBankTransactionsForUnit');
-    const { data } = await fn({
-      ym,
-      amountCents: targetCents,
-      amountTolerancePct: 100, // не фильтруем по сумме — оператор сам выберет
-      dateRangeDays: days,
-      accountIds: [],
-      limit: 500,
-      // Browse-mode: бэкенд снимает matchState/debit/amount фильтры,
-      // поднимает cap'ы (rangeDays до 800, limit до 500). Без этого
-      // оператор видит только unmatched/suggested credits за 120d → 25 строк.
-      includeAllStates: true,
-    });
-    _txnBrowserBankItems = (data?.items || []).slice();
-    // Прокидываем в _mpmBankCache, чтобы _mpmUseBankTxn нашёл строку.
+    const [bankItems, stripeFetched] = await Promise.all([bankP, stripeP]);
+    _txnBrowserBankItems = bankItems.slice();
+    // После пополнения _invoicesCache пере-собираем для этого тенанта.
+    _txnBrowserStripeItems = _txnBrowserCollectStripe(u);
+    // Прокидываем bank в _mpmBankCache, чтобы _mpmUseBankTxn нашёл строку.
     if (_mpmCtx) {
       const cacheKey = _mpmBankCacheKey(_mpmCtx.unitId, _mpmCtx.ym, []);
       _mpmBankCache.set(cacheKey, { at: Date.now(), items: _txnBrowserBankItems });
     }
-  } catch (err) {
-    console.error('[txn-browser refresh bank]', err);
-    try { toast?.(`Bank refresh failed: ${err?.message || err}`, 'error'); } catch {}
-    _txnBrowserBankItems = [];
+    _txnBrowserLastRefreshAt = Date.now();
+    console.info(`[txn-browser refresh] bank=${_txnBrowserBankItems.length} stripe-cust-fetched=${stripeFetched} stripe-shown=${_txnBrowserStripeItems.length}`);
   } finally {
     _txnBrowserLoading = false;
     if (btn) { btn.disabled = false; btn.textContent = '↻ Refresh'; }
@@ -83849,10 +83944,19 @@ function _renderTxnBrowserList() {
   const search       = searchRaw.toLowerCase();
   const searchDigits = searchRaw.replace(/[$,\s]/g, '');
 
+  // Exact-only filter: показываем строки с amount === target (cents).
+  // Применяется ДО сценирования / сортировки — чтобы Best matches не
+  // забивались близкими, но не точными значениями, когда чип активен.
+  const exactOnly = !!_txnBrowserExactOnly && targetCents > 0;
+
   const filtered = all.filter(r => {
     if (r.kind === 'bank'   && !showBank)   return false;
     if (r.kind === 'stripe' && !showStripe) return false;
     if (monthFilter && r.ym !== monthFilter) return false;
+    if (exactOnly) {
+      const cents = Math.round((r.amount || 0) * 100);
+      if (cents !== targetCents) return false;
+    }
     if (!search) return true;
     const amtPlain     = String(Math.round((r.amount || 0) * 100) / 100);
     const amtRounded   = String(Math.round(r.amount || 0));
@@ -83895,6 +83999,37 @@ function _renderTxnBrowserList() {
       : `Showing ${showCount} of ${totalCount} (filtered)${bestList.length ? ` · ${bestList.length} best match${bestList.length === 1 ? '' : 'es'}` : ''}`;
   }
 
+  // Paint the «Exact amount only» chip — visual state must match _txnBrowserExactOnly.
+  const exactChip = document.getElementById('txnBrowserExactChip');
+  if (exactChip) {
+    if (_txnBrowserExactOnly) {
+      exactChip.style.background = 'rgba(16,185,129,0.15)';
+      exactChip.style.color = 'var(--success)';
+      exactChip.style.borderColor = 'rgba(16,185,129,0.5)';
+      exactChip.setAttribute('aria-pressed', 'true');
+    } else {
+      exactChip.style.background = 'var(--surface)';
+      exactChip.style.color = 'var(--muted)';
+      exactChip.style.borderColor = 'var(--border)';
+      exactChip.setAttribute('aria-pressed', 'false');
+    }
+  }
+
+  // Last-refreshed indicator — оператор видит «когда я последний раз тянул
+  // данные» без того чтобы смотреть в network tab.
+  const refreshedAt = document.getElementById('txnBrowserRefreshedAt');
+  if (refreshedAt) {
+    if (_txnBrowserLoading) {
+      refreshedAt.textContent = '⏳ Loading…';
+    } else if (_txnBrowserLastRefreshAt) {
+      const ageSec = Math.floor((Date.now() - _txnBrowserLastRefreshAt) / 1000);
+      const ageStr = ageSec < 60 ? `${ageSec}s` : `${Math.floor(ageSec / 60)}m`;
+      refreshedAt.textContent = `↻ Refreshed ${ageStr} ago`;
+    } else {
+      refreshedAt.textContent = '';
+    }
+  }
+
   if (!bestList.length && !otherList.length) {
     body.innerHTML = `
       <div style="padding: 28px 16px; text-align: center; color: var(--muted); font-size: 13px;">
@@ -83907,6 +84042,9 @@ function _renderTxnBrowserList() {
 
   // Header row — общий для Best и All. Колонки: Date, Type, Description+hint,
   // Amount, Match (delta vs expected), Status (matchState/bucket), Action.
+  // position:sticky фиксирует header при скролле длинного списка — оператор
+  // не теряет какие колонки что значат, когда строки уезжают за viewport.
+  // Контейнер #txnBrowserBody является scroll-parent'ом, top:0 относительно него.
   const header = `
     <div style="display: grid;
                 grid-template-columns: 92px 78px 1fr 110px 100px 96px 100px;
@@ -83914,6 +84052,7 @@ function _renderTxnBrowserList() {
                 padding: 10px 14px;
                 background: var(--surface-2);
                 border-bottom: 1px solid var(--border);
+                position: sticky; top: 0; z-index: 2;
                 font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted);">
       <div>Date</div>
       <div>Type</div>
@@ -83995,6 +84134,7 @@ window._txnBrowserSearchToggleClear = _txnBrowserSearchToggleClear;
 window._txnBrowserExpandRange = _txnBrowserExpandRange;
 window._txnBrowserOpenImport = _txnBrowserOpenImport;
 window._txnBrowserCloseAndKeepForm = _txnBrowserCloseAndKeepForm;
+window._txnBrowserToggleExact = _txnBrowserToggleExact;
 
 // ===== Stripe-invoice suggestions card (зеркало bank-feed) ===============
 // Источник данных — локальный _invoicesCache (наполняется через
