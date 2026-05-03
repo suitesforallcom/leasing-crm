@@ -10352,6 +10352,11 @@
      Without an explicit bump it'd render behind the drawer overlay,
      making the picker invisible. Lift it above. */
   #invoiceBrowserModal.modal-overlay { z-index: 10500; }
+  /* Bank Browser opens поверх Manual Payment modal-а (.stripe-modal
+     z-index 10100). Без override-а ушёл бы под MPM и оператор бы
+     его не увидел (фидбэк 2026-05-03). Та же высота, что у
+     #invoiceBrowserModal — оба зеркальны и оба зовутся из MPM. */
+  #bankBrowserModal.modal-overlay { z-index: 10500; }
   /* "Link to which month?" picker is opened FROM the Invoice Browser
      and the tenant drawer. Must sit above both. */
   #linkRentMonthModal.modal-overlay { z-index: 10600; }
@@ -83050,7 +83055,7 @@ async function _mpmRenderBankSuggestions(u, ym) {
         </div>
         <div class="mpm-bf-empty-sub">
           Searched <b>${accountLabel}</b> for credits near <b>$${(targetCents / 100).toLocaleString()}</b>.
-          ${tenantName ? `<a href="javascript:void(0)" onclick="_openBankBrowser('${esc(_mpmCtx.buildingId)}','${esc(_mpmCtx.floorId)}','${esc(_mpmCtx.unitId)}','${esc(ym)}')">→ Browse all bank transactions for ${esc(tenantName)}</a>` : ''}
+          ${tenantName ? `<button type="button" class="rr-btn ar-btn-sm" onclick="_openBankBrowser('${esc(_mpmCtx.buildingId)}','${esc(_mpmCtx.floorId)}','${esc(_mpmCtx.unitId)}','${esc(ym)}')" style="margin-top:8px;">🔍 Browse all bank transactions for ${esc(tenantName)}</button>` : ''}
         </div>
       </div>`;
     return;
@@ -83094,7 +83099,7 @@ async function _mpmRenderBankSuggestions(u, ym) {
       <button type="button" class="mpm-bf-toggle" id="mpmBankFeedToggle" onclick="_mpmToggleBankFeedExpand()">
         <span class="mpm-bf-toggle-text">Show ${otherCount} other match${otherCount === 1 ? '' : 'es'} ▾</span>
       </button>
-      ${tenantName ? `<div class="mpm-bf-foot"><a href="javascript:void(0)" onclick="_openBankBrowser('${esc(_mpmCtx.buildingId)}','${esc(_mpmCtx.floorId)}','${esc(_mpmCtx.unitId)}','${esc(ym)}')">→ Browse all bank transactions for ${esc(tenantName)}</a></div>` : ''}
+      ${tenantName ? `<div class="mpm-bf-foot" style="text-align:center;"><button type="button" class="rr-btn ar-btn-sm" onclick="_openBankBrowser('${esc(_mpmCtx.buildingId)}','${esc(_mpmCtx.floorId)}','${esc(_mpmCtx.unitId)}','${esc(ym)}')">🔍 Browse all bank transactions for ${esc(tenantName)}</button></div>` : ''}
     </div>`;
 
   // Stash items so _mpmUseBankTxn can find the picked row without a refetch.
@@ -83593,7 +83598,12 @@ function _mpmRenderStripeSuggestions(u, ym) {
   // в окне ничего нет (оператор может захотеть открыть полный список
   // транзакций / инвойсов через старый Stripe-modal). Считаем по
   // ВСЕМ инвойсам (paid + open), чтобы цифра была честной.
-  const browseLink = `<a href="javascript:void(0)" onclick="_openInvoiceBrowser('${esc(_mpmCtx.buildingId)}','${esc(_mpmCtx.floorId)}','${esc(_mpmCtx.unitId)}','${esc(ym)}')">→ Browse all ${all.length} invoice${all.length === 1 ? '' : 's'} for this tenant</a>`;
+  // Кнопка вместо ссылки — оператору сложно заметить мелкий «→» link.
+  // Открывает _openInvoiceBrowser (z-index 10500 > MPM 10100), даёт
+  // оператору руками выбрать ЛЮБОЙ инвойс, если auto-match не нашёл
+  // нужный (фидбэк 2026-05-03: «он все транзакции мне показал чтобы я
+  // мог найти мне нужную не просто одну или две»).
+  const browseLink = `<button type="button" class="rr-btn ar-btn-sm" onclick="_openInvoiceBrowser('${esc(_mpmCtx.buildingId)}','${esc(_mpmCtx.floorId)}','${esc(_mpmCtx.unitId)}','${esc(ym)}')">🔍 Browse all ${all.length} Stripe invoice${all.length === 1 ? '' : 's'} for this tenant</button>`;
 
   // Если в окне пусто — пустое состояние со ссылкой на полный список.
   if (!inWindow.length) {
@@ -83603,7 +83613,7 @@ function _mpmRenderStripeSuggestions(u, ym) {
           <span>💳 No Stripe invoice for ${esc(_fmtMonthName(ym))} (±${WINDOW}mo)</span>
           <span class="mpm-st-acct">${customerLabel}</span>
         </div>
-        <div class="mpm-st-foot" style="border-top:0; padding-top:6px; margin-top:6px;">${browseLink}</div>
+        <div class="mpm-st-foot" style="border-top:0; padding-top:6px; margin-top:6px; text-align:center;">${browseLink}</div>
       </div>`;
     return;
   }
@@ -83646,7 +83656,7 @@ function _mpmRenderStripeSuggestions(u, ym) {
         <span class="mpm-st-acct">${customerLabel}</span>
       </div>
       <div class="mpm-st-rows">${rows}</div>
-      <div class="mpm-st-foot">${browseLink}</div>
+      <div class="mpm-st-foot" style="text-align:center;">${browseLink}</div>
     </div>`;
 }
 
