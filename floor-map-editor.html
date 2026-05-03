@@ -9042,6 +9042,58 @@
     font-size: 11px; color: var(--muted);
     font-variant-numeric: tabular-nums;
   }
+  /* Inline floors picker — replaces the old dropdown. Always visible
+     so the operator sees at a glance which floors are in scope. */
+  .hv-fcst-floors-inline {
+    margin-top: 4px;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px;
+  }
+  .hv-fcst-floors-inline .hv-fcst-inline-label {
+    font: 700 11px system-ui;
+    color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.04em;
+    margin-right: 2px;
+  }
+  .hv-fcst-floors-inline label.hv-fcst-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 9px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 12px; color: var(--text);
+    cursor: pointer;
+    transition: background .12s, border-color .12s, color .12s;
+    user-select: none;
+  }
+  .hv-fcst-floors-inline label.hv-fcst-chip:hover {
+    border-color: rgba(2,132,199,0.45);
+    background: var(--surface-2);
+  }
+  .hv-fcst-floors-inline label.hv-fcst-chip.is-on {
+    background: rgba(2,132,199,0.10);
+    border-color: rgba(2,132,199,0.55);
+    color: #0369a1;
+    font-weight: 600;
+  }
+  .hv-fcst-floors-inline label.hv-fcst-chip input[type="checkbox"] {
+    accent-color: #0284c7; cursor: pointer;
+    margin: 0;
+  }
+  .hv-fcst-floors-inline .hv-fcst-mini-meta {
+    font-size: 10.5px; color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .hv-fcst-floors-inline .hv-fcst-mini-actions {
+    margin-left: auto;
+    display: inline-flex; gap: 6px;
+    font-size: 11px;
+  }
+  .hv-fcst-floors-inline .hv-fcst-mini-actions button {
+    background: transparent; border: none;
+    color: var(--accent); font-weight: 600;
+    cursor: pointer; padding: 2px 4px;
+  }
+  .hv-fcst-floors-inline .hv-fcst-mini-actions button:hover { text-decoration: underline; }
   .mpm-bf-error {
     font-size: 11.5px; color: #b91c1c; line-height: 1.5;
     margin-top: 4px;
@@ -12311,18 +12363,11 @@
                 <div style="font-size: 10.5px; color: var(--muted); line-height: 1.3;">
                   Tenants assumed NOT to renew on lease end. Default 30% — industry baseline for office space.
                 </div>
-                <!-- Floor scope picker — narrows the forecast to selected
-                     floors of the CURRENT building only. Selection lives
-                     in module-level _forecastFloorFilter and resets on
-                     every page load and building switch. -->
-                <div class="hv-fcst-floors" style="margin-top: 4px;">
-                  <button type="button" class="hv-fcst-floors-btn" id="hvFcstFloorsBtn" onclick="_toggleForecastFloorPicker(event)" title="Limit forecast to selected floors">
-                    <span style="font-size: 11px; color:var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700;">Floors</span>
-                    <span id="hvFcstFloorsSummary" style="margin-left: 6px; font-size: 12px; color: var(--text); font-weight: 600;">All</span>
-                    <span style="margin-left: auto; font-size: 10px; color: var(--muted);">▾</span>
-                  </button>
-                  <div class="hv-fcst-floors-pop" id="hvFcstFloorsPop" style="display:none;"></div>
-                </div>
+                <!-- Floor scope picker — inline checkboxes (one per floor
+                     of the CURRENT building). Selection lives in module-
+                     level _forecastFloorFilter and resets on every page
+                     load and building switch. -->
+                <div class="hv-fcst-floors-inline" id="hvFcstFloorsInline"></div>
               </div>
             </div>
             <div id="hvFcstChart" style="margin-top: 14px;"></div>
@@ -24815,39 +24860,17 @@ function _maybeResetForecastFilterOnBuildingChange() {
   }
 }
 
-function _toggleForecastFloorPicker(ev) {
-  if (ev) ev.stopPropagation();
-  const pop = document.getElementById('hvFcstFloorsPop');
-  if (!pop) return;
-  if (pop.style.display === 'none' || !pop.style.display) {
-    _buildForecastFloorPicker();
-    pop.style.display = 'block';
-    // Outside-click closer — registered once, removes itself on first hit.
-    setTimeout(() => {
-      const off = (e) => {
-        if (!pop.contains(e.target) && e.target.id !== 'hvFcstFloorsBtn'
-            && !document.getElementById('hvFcstFloorsBtn')?.contains(e.target)) {
-          pop.style.display = 'none';
-          document.removeEventListener('mousedown', off, true);
-        }
-      };
-      document.addEventListener('mousedown', off, true);
-    }, 0);
-  } else {
-    pop.style.display = 'none';
-  }
-}
-
 function _buildForecastFloorPicker() {
-  const pop = document.getElementById('hvFcstFloorsPop');
-  if (!pop) return;
+  // Inline checkboxes — always visible. Renders into #hvFcstFloorsInline
+  // (the old dropdown button + popover were removed in favor of always-on
+  // chips so the operator never has to open a menu to see scope).
+  const host = document.getElementById('hvFcstFloorsInline');
+  if (!host) return;
   _maybeResetForecastFilterOnBuildingChange();
   const b = _currentForecastBuilding();
-  if (!b) { pop.innerHTML = '<div style="color:var(--muted); font-size:11.5px;">No building selected.</div>'; return; }
-  const allKeys = _currentForecastFloorKeys();
+  if (!b) { host.innerHTML = '<span style="color:var(--muted); font-size:11.5px;">No building selected.</span>'; return; }
   const sel = _forecastFloorFilter;  // Set or null
-  // Tally occupied office units per floor so the operator sees scale
-  // ("L2 — 12 leases") next to each row before checking it.
+  // Tally occupied office units per floor so each chip can show scale.
   const tally = {};
   for (const f of (b.floors || [])) {
     let n = 0;
@@ -24858,27 +24881,27 @@ function _buildForecastFloorPicker() {
     }
     tally[`${b.id}/${f.id}`] = n;
   }
-  const parts = [
-    `<div class="hv-fcst-actions">
-       <button type="button" onclick="_setForecastFloorFilter('all')">Select all</button>
-       <button type="button" onclick="_setForecastFloorFilter('none')">Clear</button>
-     </div>`,
-    `<div class="hv-fcst-bldg">${esc(b.name || b.id)}</div>`
-  ];
+  const parts = [`<span class="hv-fcst-inline-label">Floors</span>`];
   for (const f of (b.floors || [])) {
     const k = `${b.id}/${f.id}`;
     const checked = !sel || sel.has(k);
     const n = tally[k] || 0;
     parts.push(
-      `<label>
+      `<label class="hv-fcst-chip ${checked ? 'is-on' : ''}">
          <input type="checkbox" data-fcst-floor="${esc(k)}" ${checked ? 'checked' : ''}
                 onchange="_onForecastFloorToggle(this)">
          <span>${esc(f.name || f.id)}</span>
-         <span class="hv-fcst-floor-meta">${n} lease${n === 1 ? '' : 's'}</span>
+         <span class="hv-fcst-mini-meta">${n}</span>
        </label>`
     );
   }
-  pop.innerHTML = parts.join('');
+  parts.push(
+    `<span class="hv-fcst-mini-actions">
+       <button type="button" onclick="_setForecastFloorFilter('all')" title="Include every floor">All</button>
+       <button type="button" onclick="_setForecastFloorFilter('none')" title="Clear all floors">None</button>
+     </span>`
+  );
+  host.innerHTML = parts.join('');
 }
 
 function _setForecastFloorFilter(mode) {
@@ -24911,19 +24934,11 @@ function _onForecastFloorToggle(cb) {
 }
 
 function _renderForecastFloorSummary() {
-  const el = document.getElementById('hvFcstFloorsSummary');
-  if (!el) return;
-  _maybeResetForecastFilterOnBuildingChange();
-  const total = _currentForecastFloorKeys().length;
-  if (!_forecastFloorFilter) {
-    el.textContent = `All (${total})`;
-    el.style.color = '';
-  } else if (_forecastFloorFilter.size === 0) {
-    el.textContent = 'None';
-    el.style.color = '#dc2626';
-  } else {
-    el.textContent = `${_forecastFloorFilter.size} of ${total}`;
-    el.style.color = '#0284c7';
+  // The old "Floors: 3 of 4 ▾" dropdown summary element is gone — the
+  // inline chips speak for themselves. Just re-render the chips so any
+  // checked-state drift (after building switch, etc.) is reflected.
+  if (typeof _buildForecastFloorPicker === 'function') {
+    try { _buildForecastFloorPicker(); } catch {}
   }
 }
 
@@ -25352,6 +25367,18 @@ function renderHomeForecast() {
   // per calendar day so we can later show forecast-vs-actual drift.
   // Idempotent: re-running on the same day overwrites the day's row
   // rather than spamming a new entry per render.
+  // Scope key — encodes buildingId + sorted in-scope floor IDs so that
+  // a same-day or next-day comparison only fires against a snapshot
+  // covering the SAME footprint. Without this, narrowing the picker
+  // from "all 4 floors" to "3 floors" between yesterday and today
+  // produced a six-figure phantom drop in the headline ("▼ $228k vs
+  // 2026-05-02") that didn't reflect any real business movement.
+  const _scopeKey = (() => {
+    const b = (typeof _currentForecastBuilding === 'function') ? _currentForecastBuilding() : null;
+    if (!b) return 'no-bldg';
+    const keys = (floorFilter instanceof Set) ? Array.from(floorFilter).sort() : [];
+    return `${b.id}|${keys.join(',')}`;
+  })();
   try {
     state.forecastSnapshots = Array.isArray(state.forecastSnapshots) ? state.forecastSnapshots : [];
     const todayIso = new Date().toISOString().slice(0, 10);
@@ -25373,8 +25400,14 @@ function renderHomeForecast() {
       collectionsRate:    f.collectionsMonthlyRate || 0,
       collectionsCount6mo: f.collectionsCount6mo || 0,
       lostToCollectionsTotal,
+      // Scope of this snapshot — drift comparison MUST match.
+      scopeKey: _scopeKey,
     };
-    const existingIdx = state.forecastSnapshots.findIndex(s => s.day === todayIso);
+    // Same-day snapshots are scoped: if scope changed mid-day, append a
+    // separate row instead of overwriting yesterday's same-scope snapshot.
+    // This way we keep one row per (day, scope) and a same-scope yesterday
+    // comparison can still be found tomorrow.
+    const existingIdx = state.forecastSnapshots.findIndex(s => s.day === todayIso && s.scopeKey === _scopeKey);
     if (existingIdx >= 0) state.forecastSnapshots[existingIdx] = snap;
     else state.forecastSnapshots.push(snap);
     // Cap history at 365 days to keep the state doc lean.
@@ -25402,7 +25435,14 @@ function renderHomeForecast() {
   const todayLabel = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   let driftStr = '';
   try {
-    const snaps = (state.forecastSnapshots || []).filter(s => s.day !== todayIso2);
+    // Only compare against snapshots taken with the SAME scope (building +
+    // floors). Cross-scope deltas were generating phantom six-figure
+    // drops whenever the operator narrowed the floor picker between
+    // sessions ("yesterday 4 floors → today 3 floors" reads as a $228k
+    // loss in the headline, but no business movement happened).
+    const snaps = (state.forecastSnapshots || []).filter(s =>
+      s.day !== todayIso2 && s.scopeKey === _scopeKey
+    );
     const last = snaps[snaps.length - 1];
     if (last && Number.isFinite(+last.total12mo)) {
       const delta = total12mo - last.total12mo;
