@@ -83585,7 +83585,14 @@ function _renderTxnBrowserList() {
   const targetCents = Math.round(((+u.contractRent) || (+u.rent) || 0) * 100);
 
   // Объединяем источники в общий список «row».
-  const bankRows   = (_txnBrowserBankItems   || []).map(_txnBrowserNormBank);
+  // Bank: показываем ТОЛЬКО депозиты (credits, amount>0). Дебиты
+  // (списания, payroll, fees) к рент-матчингу не относятся — оператор
+  // явно сказал «здесь нужно выводить только депозиты». Дебиты залетают
+  // в выборку из-за includeAllStates:true в _refreshTxnBrowser, который
+  // снимает все CF-фильтры включая credits-only.
+  const bankRows   = (_txnBrowserBankItems   || [])
+    .filter(t => +t.amount > 0)
+    .map(_txnBrowserNormBank);
   const stripeRows = (_txnBrowserStripeItems || []).map(_txnBrowserNormStripe);
   const all = bankRows.concat(stripeRows);
 
