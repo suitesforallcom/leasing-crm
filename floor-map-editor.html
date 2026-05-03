@@ -83190,9 +83190,13 @@ function _mpmOpenBankActivityForTenant(tenantName) {
 // Источник данных — локальный _invoicesCache (наполняется через
 // stripeListInvoices, обычно при открытии Billing). Никаких сетевых
 // вызовов здесь не делаем — это «оффлайн» вариант bank-feed.
-// Показываем open / past_due / draft инвойсы этого тенанта,
-// сортируем по близости к выбранному ym (целевой месяц первым,
-// потом ±1, потом всё остальное по убыванию даты создания).
+// Показываем ТОЛЬКО open/past_due/draft инвойсы этого тенанта в окне
+// ±1 месяц от выбранного билинг-месяца. Жёсткое окно — иначе
+// единственный инвойс на май будет всплывать как «match» при записи
+// платежа за ноябрь (см. фидбэк оператора 2026-05-03).
+// «→ Browse all N invoices» в подвале всегда даёт доступ к полному
+// списку через _openInvoiceBrowser, если оператор хочет посмотреть
+// то, что не попало в окно.
 // =========================================================================
 
 // Флаг — чтобы _mpmOnMethodChange не открывал _openInvoiceBrowser, когда
@@ -83240,17 +83244,26 @@ function _mpmRenderStripeSuggestions(u, ym) {
     const b = (inv.bucket || inv.status || '').toLowerCase();
     return b !== 'paid' && b !== 'void' && b !== 'uncollectible';
   });
-  if (!open.length) { card.innerHTML = ''; return; }
 
-  // Сортировка: целевой месяц → ±1 → ±2 → остальное по дате создания.
-  open.sort((a, b) => {
-    const da = Math.abs(_mpmYmDelta(a.metadata?.ym || '', ym));
-    const db = Math.abs(_mpmYmDelta(b.metadata?.ym || '', ym));
-    if (da !== db) return da - db;
-    return (b.created || 0) - (a.created || 0);
+  // Жёсткое окно ±1 месяц от выбранного ym. Если у инвойса нет
+  // metadata.ym — fallback на месяц dueDate / created. Без окна
+  // одинокий инвойс на любой месяц всплывал как «match» для любого
+  // билинг-месяца, что путало оператора (фидбэк 2026-05-03: «никак
+  // не в мае, когда я записываю за ноябрь»).
+  const WINDOW = 1;
+  const _ymOfInv = (inv) => {
+    if (inv.metadata?.ym) return String(inv.metadata.ym);
+    const ts = inv.dueDate || inv.created;
+    if (!ts) return '';
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return '';
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  };
+  const inWindow = open.filter(inv => {
+    const invYm = _ymOfInv(inv);
+    if (!invYm) return false;
+    return Math.abs(_mpmYmDelta(invYm, ym)) <= WINDOW;
   });
-  // Top 4 — как у bank-feed, чтобы карточки были одинаковой высоты.
-  const items = open.slice(0, 4);
 
   const purposeLabels = { rent:'Rent', late_fee:'Late fee', deposit:'Deposit', damages:'Damages', keys:'Keys', cleaning:'Cleaning', custom:'Charge' };
   const fmtAmt = c => '$' + ((+c || 0)).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
@@ -83258,6 +83271,35 @@ function _mpmRenderStripeSuggestions(u, ym) {
   const customerLabel = u.stripe?.customerId
     ? `${esc(tenantName || 'tenant')} · ${esc(String(u.stripe.customerId).slice(-8))}`
     : esc(tenantName || u.email || 'tenant');
+
+  // «→ Browse all N invoices» — всегда в подвале карточки, даже если
+  // в окне ничего нет (оператор может захотеть открыть полный список
+  // транзакций / инвойсов через старый Stripe-modal). Считаем по
+  // ВСЕМ инвойсам (paid + open), чтобы цифра была честной.
+  const browseLink = `<a href="javascript:void(0)" onclick="_openInvoiceBrowser('${esc(_mpmCtx.buildingId)}','${esc(_mpmCtx.floorId)}','${esc(_mpmCtx.unitId)}','${esc(ym)}')">→ Browse all ${all.length} invoice${all.length === 1 ? '' : 's'} for this tenant</a>`;
+
+  // Если в окне пусто — пустое состояние со ссылкой на полный список.
+  if (!inWindow.length) {
+    card.innerHTML = `
+      <div class="mpm-st-card mpm-st-card-empty" id="mpmStripeFeedInner">
+        <div class="mpm-st-head">
+          <span>💳 No Stripe invoice for ${esc(_fmtMonthName(ym))} (±${WINDOW}mo)</span>
+          <span class="mpm-st-acct">${customerLabel}</span>
+        </div>
+        <div class="mpm-st-foot" style="border-top:0; padding-top:6px; margin-top:6px;">${browseLink}</div>
+      </div>`;
+    return;
+  }
+
+  // Сортировка внутри окна: ближайший месяц → дальше → по дате создания.
+  inWindow.sort((a, b) => {
+    const da = Math.abs(_mpmYmDelta(_ymOfInv(a), ym));
+    const db = Math.abs(_mpmYmDelta(_ymOfInv(b), ym));
+    if (da !== db) return da - db;
+    return (b.created || 0) - (a.created || 0);
+  });
+  // Top 4 — как у bank-feed, чтобы карточки были одинаковой высоты.
+  const items = inWindow.slice(0, 4);
 
   const rows = items.map(inv => {
     const bucket = (inv.bucket || inv.status || 'open').toLowerCase();
@@ -83283,11 +83325,11 @@ function _mpmRenderStripeSuggestions(u, ym) {
   card.innerHTML = `
     <div class="mpm-st-card" id="mpmStripeFeedInner">
       <div class="mpm-st-head">
-        <span>💳 Stripe invoice suggestions for ${esc(_fmtMonthName(ym))}</span>
+        <span>💳 Stripe invoice suggestions for ${esc(_fmtMonthName(ym))} (±${WINDOW}mo)</span>
         <span class="mpm-st-acct">${customerLabel}</span>
       </div>
       <div class="mpm-st-rows">${rows}</div>
-      ${all.length > items.length ? `<div class="mpm-st-foot"><a href="javascript:void(0)" onclick="_openInvoiceBrowser('${esc(_mpmCtx.buildingId)}','${esc(_mpmCtx.floorId)}','${esc(_mpmCtx.unitId)}','${esc(ym)}')">→ Browse all ${all.length} invoices</a></div>` : ''}
+      <div class="mpm-st-foot">${browseLink}</div>
     </div>`;
 }
 
