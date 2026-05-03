@@ -18082,13 +18082,30 @@
                        width: 24px; height: 24px; padding: 0; border: 0; background: transparent;
                        color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1; border-radius: 50%;">×</button>
       </div>
-      <select id="txnBrowserType" onchange="_renderTxnBrowserList()"
-              title="Source type"
-              style="padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font-size: 12.5px;">
-        <option value="all">All types</option>
-        <option value="bank">🏦 Bank only</option>
-        <option value="stripe">💳 Stripe only</option>
-      </select>
+      <!-- Source-type фильтр — два чекбокса (Bank ☑ + Stripe ☑) вместо дропдауна.
+           Оба включены по умолчанию (см. _openTxnBrowser). Снятие галки прячет
+           весь источник в _renderTxnBrowserList. -->
+      <div id="txnBrowserTypeChips"
+           title="Show transaction sources"
+           style="display:inline-flex; gap:6px; padding:3px 6px; border:1px solid var(--border);
+                  border-radius:8px; background:var(--surface);">
+        <label class="txn-type-chip" style="display:inline-flex; align-items:center; gap:6px;
+               padding:5px 10px; border-radius:6px; cursor:pointer; font-size:12.5px; font-weight:600;
+               background:rgba(14,165,233,0.10); color:#0ea5e9; user-select:none;">
+          <input type="checkbox" id="txnBrowserShowBank" checked
+                 onchange="_renderTxnBrowserList()"
+                 style="margin:0; cursor:pointer; accent-color:#0ea5e9;">
+          <span>🏦 Bank</span>
+        </label>
+        <label class="txn-type-chip" style="display:inline-flex; align-items:center; gap:6px;
+               padding:5px 10px; border-radius:6px; cursor:pointer; font-size:12.5px; font-weight:600;
+               background:rgba(99,91,255,0.10); color:#635bff; user-select:none;">
+          <input type="checkbox" id="txnBrowserShowStripe" checked
+                 onchange="_renderTxnBrowserList()"
+                 style="margin:0; cursor:pointer; accent-color:#635bff;">
+          <span>💳 Stripe</span>
+        </label>
+      </div>
       <select id="txnBrowserMonth" onchange="_renderTxnBrowserList()"
               title="Filter by transaction month"
               style="padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font-size: 12.5px;">
@@ -83451,8 +83468,11 @@ function _openTxnBrowser(buildingId, floorId, unitId, ym) {
   }
   const searchEl = document.getElementById('txnBrowserSearch');
   if (searchEl) searchEl.value = '';
-  const typeEl = document.getElementById('txnBrowserType');
-  if (typeEl) typeEl.value = 'all';
+  // Source-type чекбоксы — по умолчанию оба включены (показываем всё).
+  const bankChk = document.getElementById('txnBrowserShowBank');
+  if (bankChk) bankChk.checked = true;
+  const stripeChk = document.getElementById('txnBrowserShowStripe');
+  if (stripeChk) stripeChk.checked = true;
   const monthEl = document.getElementById('txnBrowserMonth');
   if (monthEl) monthEl.value = '';
   const rangeEl = document.getElementById('txnBrowserRange');
@@ -83568,14 +83588,18 @@ function _renderTxnBrowserList() {
   // Перестраиваем выпадашку месяцев каждый раз — данные могли поменяться.
   _txnBrowserPopulateMonths(all);
 
-  const typeFilter   = (document.getElementById('txnBrowserType')?.value   || 'all').toLowerCase();
+  // Чекбоксы источников — по умолчанию оба включены, см. _openTxnBrowser.
+  // Если оба сняты — показываем нулевой список (явный сигнал оператору).
+  const showBank   = document.getElementById('txnBrowserShowBank')?.checked   ?? true;
+  const showStripe = document.getElementById('txnBrowserShowStripe')?.checked ?? true;
   const monthFilter  = (document.getElementById('txnBrowserMonth')?.value  || '').trim();
   const searchRaw    = (document.getElementById('txnBrowserSearch')?.value || '').trim();
   const search       = searchRaw.toLowerCase();
   const searchDigits = searchRaw.replace(/[$,\s]/g, '');
 
   const filtered = all.filter(r => {
-    if (typeFilter !== 'all' && r.kind !== typeFilter) return false;
+    if (r.kind === 'bank'   && !showBank)   return false;
+    if (r.kind === 'stripe' && !showStripe) return false;
     if (monthFilter && r.ym !== monthFilter) return false;
     if (!search) return true;
     const amtPlain     = String(Math.round((r.amount || 0) * 100) / 100);
