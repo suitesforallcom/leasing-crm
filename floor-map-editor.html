@@ -57841,10 +57841,19 @@ function _dashNeedsToggleExpandAll(kind) {
 // full re-render. Falls back to a manual sequence if the helper isn't
 // available for any reason.
 function _dashOpenUnit(buildingId, floorId, unitId) {
+  // Открываем правый tenant-drawer с деталями юнита, не переключая
+  // вид (оператор остаётся на Dashboard / Billing). До этого код
+  // прыгал на Floor Plan через stackingJumpToUnit — оператор просил
+  // slide-out drawer вместо принудительного перехода.
+  if (typeof openTenantDrawer === 'function') {
+    try { openTenantDrawer(buildingId, floorId, unitId); return; } catch {}
+  }
+  // Фолбэк: drawer-helper не загружен — возвращаемся к старому jump-to-unit,
+  // чтобы оператор хотя бы попал на юнит на Floor Plan.
   if (typeof stackingJumpToUnit === 'function') {
     try { stackingJumpToUnit(buildingId, floorId, unitId); return; } catch {}
   }
-  // Manual fallback — minimal duplicate of the helper.
+  // Минимальный фолбэк — повторяет core helper'а.
   if (buildingId && state.ui) state.ui.currentBuildingId = buildingId;
   if (floorId && state.ui)    state.ui.currentFloorId = floorId;
   if (typeof selectedIds !== 'undefined') selectedIds = [unitId];
