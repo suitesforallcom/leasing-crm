@@ -58832,7 +58832,12 @@ async function renderBankActivityPanel(opts) {
           ? `<span style="background:#f59e0b; color:#fff; padding:1px 6px; border-radius:9px; font-size:10px; font-weight:700;">MED ${points}</span>`
           : `<span style="background:var(--muted); color:#fff; padding:1px 6px; border-radius:9px; font-size:10px; font-weight:700;">LOW ${points}</span>`;
       const breakdownTitle = Array.isArray(t.matchBreakdown) && t.matchBreakdown.length
-        ? t.matchBreakdown.map(b => `${b[0]}: ${b[1] >= 0 ? '+' : ''}${b[1]}`).join('\n')
+        ? t.matchBreakdown.map(b => {
+            // Tolerate both legacy [label,delta] tuples and new {label,delta} objects.
+            const label = Array.isArray(b) ? b[0] : b.label;
+            const delta = Array.isArray(b) ? b[1] : b.delta;
+            return `${label}: ${delta >= 0 ? '+' : ''}${delta}`;
+          }).join('\n')
         : 'No breakdown available';
       matchedCell = `<span style="color:#0ea5e9; font-weight:600;">→ ${esc(tenant)}</span> <span title="${esc(breakdownTitle)}" style="cursor:help;">${badge}</span><br><span style="color:var(--muted); font-size:11px;">Suite ${esc(t.matchedUnitId)} · ${esc(t.matchedYm || '')}</span>`;
       actions = `

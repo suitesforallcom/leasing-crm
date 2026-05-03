@@ -4807,7 +4807,9 @@ function _matchTransaction(state, txn) {
     matchScore: Math.min(1, Math.max(0, best.points / 100)),  // 0..1 back-compat
     matchPoints: best.points,
     matchConfidence: conf,                 // 'high' | 'medium'
-    matchBreakdown: best.breakdown,        // for audit / debug surfacing
+    // Firestore rejects nested arrays — flatten [[label,delta],...] into
+    // [{label,delta},...] so the doc writes cleanly.
+    matchBreakdown: (best.breakdown || []).map(([label, delta]) => ({ label, delta })),
     suggestedRent: best.cand.contractRent,
   };
 }
