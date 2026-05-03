@@ -19058,70 +19058,12 @@ function loadState() {
     //       sync replaces state with a pre-consolidation copy, the next
     //       load restores the lease-head invariant.
     try {
-      const groupIds = new Set();
-      for (const b of (state.buildings || [])) {
-        for (const f of (b.floors || [])) {
-          for (const u of (f.units || [])) {
-            if (u && u.groupId) groupIds.add(u.groupId);
-          }
+      if (typeof _consolidateLeaseHead === 'function') {
+        const r = _consolidateLeaseHead({ source: 'loadState' });
+        if (r && (r.phaseAconsolidated > 0 || r.phaseBchanged > 0)) {
+          setTimeout(() => { try { if (typeof saveState === 'function') saveState(); } catch {} }, 0);
         }
       }
-      const LEASE_HEAD_MIGRATION_KEY = 'sfa_lease_head_consolidation_v1';
-      const phaseADone = !!localStorage.getItem(LEASE_HEAD_MIGRATION_KEY);
-      if (!phaseADone && groupIds.size > 0) {
-        try {
-          if (typeof _localBackupCreate === 'function') {
-            _localBackupCreate('pre-mutation', 'Before lease-head consolidation');
-          }
-        } catch (e) { console.warn('[lease-head] snapshot failed', e); }
-      }
-      let phaseAconsolidated = 0;
-      let phaseBchanged = 0;
-      for (const gid of groupIds) {
-        const members = (typeof _unitsInGroup === 'function') ? _unitsInGroup(gid) : [];
-        if (members.length < 2) continue;
-        const head = (typeof _groupPrimary === 'function') ? _groupPrimary(gid) : null;
-        if (!head) continue;
-        // ----- Phase A: destructive merges (run once per browser) -----
-        if (!phaseADone) {
-          head.payments = head.payments || {};
-          for (const m of members) {
-            if (m === head) continue;
-            for (const k of Object.keys(m.payments || {})) {
-              if (!(k in head.payments)) head.payments[k] = m.payments[k];
-            }
-            m.payments = {};
-          }
-          for (const m of members) {
-            if (m === head) continue;
-            for (const k of ['stripe', 'extraCharges', 'lateFeeInvoices', 'lateFeeDismissed', 'lateFeeOverride']) {
-              if (m[k] != null && head[k] == null) head[k] = m[k];
-              delete m[k];
-            }
-            if ((+m.deposit) > 0 && !(+head.deposit)) head.deposit = m.deposit;
-            delete m.deposit;
-          }
-          phaseAconsolidated++;
-        }
-        // ----- Phase B: idempotent rent rollup (every load) -----
-        let combinedContract = 0, combinedRent = 0;
-        for (const m of members) {
-          combinedContract += (+m.contractRent) || 0;
-          combinedRent     += (+m.rent) || 0;
-        }
-        for (const m of members) {
-          if (m === head) continue;
-          if ((+m.contractRent) !== 0) { m.contractRent = 0; phaseBchanged++; }
-          if ((+m.rent) !== 0)         { m.rent = 0;         phaseBchanged++; }
-        }
-        if ((+head.contractRent) !== combinedContract) { head.contractRent = combinedContract; phaseBchanged++; }
-        if ((+head.rent) !== combinedRent)             { head.rent = combinedRent;             phaseBchanged++; }
-      }
-      if (phaseAconsolidated > 0 || phaseBchanged > 0) {
-        console.log('[lease-head] Phase A consolidated=' + phaseAconsolidated + ', Phase B fields changed=' + phaseBchanged);
-        setTimeout(() => { try { if (typeof saveState === 'function') saveState(); } catch {} }, 0);
-      }
-      if (!phaseADone) localStorage.setItem(LEASE_HEAD_MIGRATION_KEY, '1');
     } catch (e) { console.warn('[lease-head] migration failed', e); }
     // Self-healing leaseTerm derivation: every load, derive `u.leaseTerm`
     // from (leaseStart, until) using the end-of-month convention. The
@@ -22891,8 +22833,20 @@ function fbApplyRemote(doc) {
   // that only ever had u.rent populated.
   const contractMigrated = (typeof _autoBackfillContractRentOnce === 'function') && _autoBackfillContractRentOnce();
 
+  // Lease-head re-rollup: a remote snapshot may have landed members with
+  // their pre-consolidation per-suite rent. Re-apply Phase B on top of
+  // the freshly synced state so head.contractRent stays correct after
+  // every Firestore push from another device.
+  let leaseHeadChanged = false;
+  try {
+    if (typeof _consolidateLeaseHead === 'function') {
+      const r = _consolidateLeaseHead({ source: 'fbApplyRemote' });
+      if (r && (r.phaseAconsolidated > 0 || r.phaseBchanged > 0)) leaseHeadChanged = true;
+    }
+  } catch (e) { console.warn('[lease-head] re-rollup failed', e); }
+
   saveLocalOnly();       // write to localStorage without triggering fbPushNow
-  if ((healed || migrated || contractMigrated) && typeof saveState === 'function') {
+  if ((healed || migrated || contractMigrated || leaseHeadChanged) && typeof saveState === 'function') {
     // Propagate the cleanup / migration to Firestore. Debounced push —
     // safe even if multiple tabs apply the same remote in parallel.
     //
@@ -39263,6 +39217,92 @@ function _isFinanceShadow(u) {
   return false;
 }
 
+// Lease-head consolidation. Two-phase migration that runs from BOTH
+// loadState (initial localStorage hydrate) AND fbApplyRemote (every
+// Firestore snapshot replay) — the second call site is critical: without
+// it, a remote snapshot lands in memory pre-consolidated and clobbers
+// Phase B's mutations before they ever persist.
+//
+// Phase A — destructive merge (run once per browser, guarded by
+//   localStorage flag sfa_lease_head_consolidation_v1):
+//     payments, stripe, deposit, late-fee fields move from members onto
+//     the head. Members keep groupId/groupRole/geometry/sqft/tenant
+//     mirror but lose their financial-state fields.
+// Phase B — idempotent rent rollup (every call):
+//     head.contractRent / head.rent = sum across members. Members'
+//     contractRent / rent forced to 0. Self-healing.
+// Returns { phaseAconsolidated, phaseBchanged }. Caller is responsible
+// for triggering saveState if anything changed.
+function _consolidateLeaseHead(opts) {
+  const out = { phaseAconsolidated: 0, phaseBchanged: 0 };
+  if (!state || !Array.isArray(state.buildings)) return out;
+  const groupIds = new Set();
+  for (const b of state.buildings) {
+    for (const f of (b.floors || [])) {
+      for (const u of (f.units || [])) {
+        if (u && u.groupId) groupIds.add(u.groupId);
+      }
+    }
+  }
+  if (groupIds.size === 0) return out;
+  const FLAG = 'sfa_lease_head_consolidation_v1';
+  let phaseADone = true;
+  try { phaseADone = !!localStorage.getItem(FLAG); } catch {}
+  if (!phaseADone) {
+    try {
+      if (typeof _localBackupCreate === 'function') {
+        _localBackupCreate('pre-mutation', 'Before lease-head consolidation');
+      }
+    } catch (e) { console.warn('[lease-head] snapshot failed', e); }
+  }
+  for (const gid of groupIds) {
+    const members = _unitsInGroup(gid);
+    if (members.length < 2) continue;
+    const head = _groupPrimary(gid);
+    if (!head) continue;
+    if (!phaseADone) {
+      head.payments = head.payments || {};
+      for (const m of members) {
+        if (m === head) continue;
+        for (const k of Object.keys(m.payments || {})) {
+          if (!(k in head.payments)) head.payments[k] = m.payments[k];
+        }
+        m.payments = {};
+      }
+      for (const m of members) {
+        if (m === head) continue;
+        for (const k of ['stripe', 'extraCharges', 'lateFeeInvoices', 'lateFeeDismissed', 'lateFeeOverride']) {
+          if (m[k] != null && head[k] == null) head[k] = m[k];
+          delete m[k];
+        }
+        if ((+m.deposit) > 0 && !(+head.deposit)) head.deposit = m.deposit;
+        delete m.deposit;
+      }
+      out.phaseAconsolidated++;
+    }
+    let combinedContract = 0, combinedRent = 0;
+    for (const m of members) {
+      combinedContract += (+m.contractRent) || 0;
+      combinedRent     += (+m.rent) || 0;
+    }
+    for (const m of members) {
+      if (m === head) continue;
+      if ((+m.contractRent) !== 0) { m.contractRent = 0; out.phaseBchanged++; }
+      if ((+m.rent) !== 0)         { m.rent = 0;         out.phaseBchanged++; }
+    }
+    if ((+head.contractRent) !== combinedContract) { head.contractRent = combinedContract; out.phaseBchanged++; }
+    if ((+head.rent) !== combinedRent)             { head.rent = combinedRent;             out.phaseBchanged++; }
+  }
+  if (out.phaseAconsolidated > 0 || out.phaseBchanged > 0) {
+    const src = (opts && opts.source) ? opts.source : 'unknown';
+    console.log('[lease-head] from=' + src + ' Phase A consolidated=' + out.phaseAconsolidated + ' Phase B fields changed=' + out.phaseBchanged);
+  }
+  if (!phaseADone) {
+    try { localStorage.setItem(FLAG, '1'); } catch {}
+  }
+  return out;
+}
+
 // Console exposure for debugging / scripted ops.
 window._unitsInGroup = _unitsInGroup;
 window._groupPrimary = _groupPrimary;
@@ -39272,6 +39312,7 @@ window._groupSyncFromPrimary = _groupSyncFromPrimary;
 window._unitLeaseHead = _unitLeaseHead;
 window._unitIsLeaseHead = _unitIsLeaseHead;
 window._isFinanceShadow = _isFinanceShadow;
+window._consolidateLeaseHead = _consolidateLeaseHead;
 
 // ----- Group & Assign Tenant modal -----------------------------------
 // Stash: which units the operator is grouping. Captured on modal open so
