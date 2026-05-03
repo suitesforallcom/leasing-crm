@@ -9048,6 +9048,145 @@
     font-size: 11.5px; color: var(--muted); line-height: 1.5;
   }
 
+  /* Stripe-invoice suggestions card — пара к bank-feed карточке.
+     Тянет открытые / past-due инвойсы этого тенанта из локального
+     _invoicesCache (сетевого вызова не требует — кэш уже наполнен)
+     и показывает их строками "сумма · дата · номер инвойса · purpose"
+     с кнопкой ✓ Use this. Клик заполняет Method=Stripe,
+     Reference=номер инвойса, Amount=total, Date=сегодня. Spike в
+     Stripe-фиолет (#635bff), чтобы визуально отделять от голубой
+     bank-feed карточки. */
+  .mpm-st-card {
+    background: rgba(99,91,255,0.05);
+    border: 1px solid rgba(99,91,255,0.30);
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin: 4px 0 12px;
+  }
+  .mpm-st-card-empty {
+    background: var(--surface-2);
+    border: 1px dashed var(--border);
+  }
+  .mpm-st-head {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 10px;
+    font: 600 12.5px system-ui; color: var(--text);
+    padding-bottom: 8px;
+    border-bottom: 1px solid rgba(99,91,255,0.20);
+    margin-bottom: 8px;
+  }
+  .mpm-st-card-empty .mpm-st-head {
+    border-bottom: 0; padding-bottom: 0; margin-bottom: 0;
+  }
+  .mpm-st-acct { font: 500 11px system-ui; color: var(--muted); }
+  .mpm-st-rows {
+    display: flex; flex-direction: column; gap: 4px;
+    /* Tighter, чтобы вторая карточка-suggestions не выпихивала
+       поля формы за viewport. */
+    max-height: 108px; overflow-y: auto;
+    padding-right: 4px;
+  }
+  .mpm-st-row {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 10px;
+    padding: 4px 8px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .mpm-st-row-main { flex: 1; min-width: 0; }
+  .mpm-st-row-amt {
+    font: 700 13px system-ui; color: var(--text);
+    font-variant-numeric: tabular-nums;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .mpm-st-row-meta {
+    font-size: 11.5px; color: var(--muted);
+    margin-top: 2px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .mpm-st-bucket {
+    font: 700 9.5px system-ui; letter-spacing: 0.05em;
+    padding: 1px 5px; border-radius: 3px;
+    text-transform: uppercase;
+  }
+  .mpm-st-bucket-open      { background: rgba(99,91,255,0.18);  color: #4f47e8; }
+  .mpm-st-bucket-past_due  { background: rgba(220,38,38,0.18);  color: #b91c1c; }
+  .mpm-st-bucket-draft     { background: rgba(148,163,184,0.20); color: #475569; }
+  .mpm-st-bucket-paid      { background: rgba(16,185,129,0.18);  color: #047857; }
+  .mpm-st-use-btn {
+    flex: 0 0 auto;
+    background: #635bff; color: #fff; border-color: #635bff;
+  }
+  .mpm-st-row.mpm-st-row-selected {
+    background: rgba(99,91,255,0.10);
+    border-color: rgba(99,91,255,0.55);
+    box-shadow: 0 0 0 1px rgba(99,91,255,0.25) inset;
+  }
+  .mpm-st-use-btn.mpm-st-use-btn-selected {
+    background: transparent; color: #635bff; border-color: #635bff;
+  }
+  .mpm-st-foot {
+    margin-top: 8px; padding-top: 8px;
+    border-top: 1px solid rgba(99,91,255,0.20);
+    font-size: 11.5px;
+  }
+  .mpm-st-foot a {
+    color: #635bff; text-decoration: none; font-weight: 600;
+  }
+  .mpm-st-foot a:hover { text-decoration: underline; }
+
+  /* Manual-payment modal — компактный лейаут «всё в одном экране».
+     Парные поля (Method+Reference, Amount+Date) объединены в
+     2-колоночную сетку, padding строк уменьшен — иначе после
+     добавления Stripe-suggestions карточки модал упирается в
+     viewport и приходится скроллить. */
+  #manualPaymentModal .stripe-modal-card {
+    max-width: 600px;
+    padding: 18px 20px;
+  }
+  #manualPaymentModal .stripe-modal-row {
+    padding: 7px 0;
+  }
+  #manualPaymentModal .mpm-bf-rows {
+    max-height: 108px;
+  }
+  .mpm-row-pair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    align-items: start;
+  }
+  .mpm-row-pair > .mpm-row-cell {
+    display: flex; flex-direction: column; gap: 4px;
+    min-width: 0;
+  }
+  .mpm-row-pair .mpm-row-cell > b {
+    font-size: 12.5px;
+  }
+  .mpm-row-pair .mpm-row-cell .hint {
+    font-size: 11px; color: var(--muted);
+  }
+  .mpm-row-pair .mpm-row-cell input,
+  .mpm-row-pair .mpm-row-cell select {
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text);
+    width: 100%;
+    box-sizing: border-box;
+  }
+  /* Memo и Check-copy — компактные строки в две колонки, чтобы
+     не забирать ещё две полные строки внизу формы. */
+  #manualPaymentModal .mpm-check-drop {
+    padding: 6px 10px;
+  }
+  #manualPaymentModal .mpm-check-drop-icon { font-size: 16px; }
+  #manualPaymentModal #mpmMemo {
+    min-height: 38px;
+  }
+
   /* Forecast floor-scope picker — compact popover anchored to the
      "Floors: All" button next to the Non-renewal slider. Lets operator
      limit the 12-mo projection to a subset of buildings/floors. */
@@ -17781,17 +17920,37 @@
          (or no bank is connected). -->
     <div id="mpmBankFeedCard"></div>
 
-    <div class="stripe-modal-row">
-      <div class="label"><b>Method</b></div>
-      <select id="mpmMethod" onchange="_mpmOnMethodChange()" style="padding:6px 8px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); min-width:180px;">
-        <option value="stripe">💳 Stripe</option>
-        <option value="check">🧾 Check</option>
-        <option value="ach">🏦 Bank transfer / ACH</option>
-        <option value="wire">🏦 Wire</option>
-        <option value="cash">💵 Cash</option>
-        <option value="other">💰 Other</option>
-        <option value="waived">🎁 Waived (free month)</option>
-      </select>
+    <!-- Stripe-invoice suggestions — populated by _mpmRenderStripeSuggestions().
+         Зеркало bank-feed карточки, но источник данных — локальный
+         _invoicesCache. Показывает open / past_due / draft инвойсы этого
+         тенанта, отсортированные по близости к выбранному ym. Клик по
+         "✓ Use this" заполняет Method=stripe, Reference=номер инвойса,
+         Amount=total, Date=сегодня и стэшит invoice на _mpmCtx для
+         submitManualPayment. Скрыто, когда у юнита нет stripe customerId
+         или нет матчей. -->
+    <div id="mpmStripeFeedCard"></div>
+
+    <div class="stripe-modal-row" id="mpmMethodRefRow">
+      <div class="mpm-row-pair" style="flex: 1;">
+        <div class="mpm-row-cell">
+          <b>Method</b>
+          <select id="mpmMethod" onchange="_mpmOnMethodChange()">
+            <option value="stripe">💳 Stripe</option>
+            <option value="check">🧾 Check</option>
+            <option value="ach">🏦 Bank transfer / ACH</option>
+            <option value="wire">🏦 Wire</option>
+            <option value="cash">💵 Cash</option>
+            <option value="other">💰 Other</option>
+            <option value="waived">🎁 Waived (free month)</option>
+          </select>
+        </div>
+        <div class="mpm-row-cell" id="mpmReferenceCell">
+          <b>Reference #</b>
+          <input id="mpmReference" type="text" placeholder="Check #, ACH/wire conf">
+          <div id="mpmLinkedBankPill" style="display:none;"></div>
+          <div id="mpmLinkedStripePill" style="display:none;"></div>
+        </div>
+      </div>
     </div>
 
     <!-- Waiver-only fields — only visible when method=waived. Captures
@@ -17836,30 +17995,18 @@
          button when only a partial credit applies. -->
     <div id="mpmReferralInfo" style="display:none; margin: 8px 0 4px; padding: 12px 14px; background: rgba(99,91,255,0.06); border: 1px solid rgba(99,91,255,0.30); border-radius: 8px; font-size: 12.5px; line-height: 1.55;"></div>
 
-    <div class="stripe-modal-row" id="mpmReferenceRow">
-      <div class="label">
-        <b>Reference #</b>
-        <div class="hint">Check #, ACH/wire confirmation, receipt #</div>
-      </div>
-      <div style="display:flex; flex-direction:column; gap:4px;">
-        <input id="mpmReference" type="text" placeholder="e.g. 1425" style="padding:6px 8px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); width:200px;">
-        <!-- "Linked to bank txn" pill — shown when operator picked a
-             suggested transaction. Clicking × unlinks it (manual entry mode). -->
-        <div id="mpmLinkedBankPill" style="display:none;"></div>
-      </div>
-    </div>
-
     <div class="stripe-modal-row" id="mpmAmountRow" style="align-items: flex-start;">
-      <div class="label"><b>Amount $</b></div>
-      <div style="display: flex; flex-direction: column; gap: 4px;">
-        <input id="mpmAmount" type="number" min="0" step="0.01" style="padding:6px 8px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); width:140px;">
-        <div id="mpmAmountHint" style="font-size: 11px; color: var(--muted); display: none;"></div>
+      <div class="mpm-row-pair" style="flex: 1;">
+        <div class="mpm-row-cell">
+          <b>Amount $</b>
+          <input id="mpmAmount" type="number" min="0" step="0.01">
+          <div id="mpmAmountHint" style="font-size: 11px; color: var(--muted); display: none;"></div>
+        </div>
+        <div class="mpm-row-cell">
+          <b>Payment date</b>
+          <input id="mpmDate" type="date">
+        </div>
       </div>
-    </div>
-
-    <div class="stripe-modal-row">
-      <div class="label"><b>Payment date</b></div>
-      <input id="mpmDate" type="date" style="padding:6px 8px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text);">
     </div>
 
     <div class="stripe-modal-row" style="align-items: flex-start;">
@@ -83022,6 +83169,189 @@ function _mpmOpenBankActivityForTenant(tenantName) {
   }, 80);
 }
 
+// ===== Stripe-invoice suggestions card (зеркало bank-feed) ===============
+// Источник данных — локальный _invoicesCache (наполняется через
+// stripeListInvoices, обычно при открытии Billing). Никаких сетевых
+// вызовов здесь не делаем — это «оффлайн» вариант bank-feed.
+// Показываем open / past_due / draft инвойсы этого тенанта,
+// сортируем по близости к выбранному ym (целевой месяц первым,
+// потом ±1, потом всё остальное по убыванию даты создания).
+// =========================================================================
+
+// Флаг — чтобы _mpmOnMethodChange не открывал _openInvoiceBrowser, когда
+// мы программно переключаем Method=stripe из обработчика "Use this".
+let _mpmSuppressStripeBrowser = false;
+
+// Подобрать инвойсы этого юнита из локального кэша. Никакой сети.
+function _mpmCollectStripeInvoicesForUnit(u) {
+  if (!Array.isArray(_invoicesCache) || !u) return [];
+  const customerId = (u.stripe?.customerId || '').trim();
+  const emailLower = (u.email || '').trim().toLowerCase();
+  if (!customerId && !emailLower) return [];
+  return _invoicesCache.filter(inv => {
+    if (!inv) return false;
+    if (customerId && inv.customerId === customerId) return true;
+    if (!customerId && emailLower && (inv.customerEmail || '').toLowerCase() === emailLower) return true;
+    return false;
+  });
+}
+
+// Дельта в месяцах между двумя ym ("YYYY-MM"). Положительная — будущее.
+function _mpmYmDelta(ymA, ymB) {
+  const [ya, ma] = String(ymA || '').split('-').map(Number);
+  const [yb, mb] = String(ymB || '').split('-').map(Number);
+  if (!ya || !ma || !yb || !mb) return 9999;
+  return (ya * 12 + ma) - (yb * 12 + mb);
+}
+
+// Отрисовать карточку Stripe-предложений в #mpmStripeFeedCard.
+// Скрывается полностью, если у юнита нет stripe customerId / email
+// или если в кэше нет ни одного инвойса этого тенанта.
+function _mpmRenderStripeSuggestions(u, ym) {
+  const card = document.getElementById('mpmStripeFeedCard');
+  if (!card) return;
+  if (!u) { card.innerHTML = ''; return; }
+  // Не показываем на waived (нет смысла предлагать инвойс под $0).
+  if (document.getElementById('mpmMethod')?.value === 'waived') { card.innerHTML = ''; return; }
+
+  const all = _mpmCollectStripeInvoicesForUnit(u);
+  if (!all.length) { card.innerHTML = ''; return; }
+
+  // Скрываем полностью оплаченные / void — операторы хотят видеть, что
+  // ещё нужно закрыть, а не историю успешных платежей.
+  const open = all.filter(inv => {
+    const b = (inv.bucket || inv.status || '').toLowerCase();
+    return b !== 'paid' && b !== 'void' && b !== 'uncollectible';
+  });
+  if (!open.length) { card.innerHTML = ''; return; }
+
+  // Сортировка: целевой месяц → ±1 → ±2 → остальное по дате создания.
+  open.sort((a, b) => {
+    const da = Math.abs(_mpmYmDelta(a.metadata?.ym || '', ym));
+    const db = Math.abs(_mpmYmDelta(b.metadata?.ym || '', ym));
+    if (da !== db) return da - db;
+    return (b.created || 0) - (a.created || 0);
+  });
+  // Top 4 — как у bank-feed, чтобы карточки были одинаковой высоты.
+  const items = open.slice(0, 4);
+
+  const purposeLabels = { rent:'Rent', late_fee:'Late fee', deposit:'Deposit', damages:'Damages', keys:'Keys', cleaning:'Cleaning', custom:'Charge' };
+  const fmtAmt = c => '$' + ((+c || 0)).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  const tenantName = u.company || u.tenant || '';
+  const customerLabel = u.stripe?.customerId
+    ? `${esc(tenantName || 'tenant')} · ${esc(String(u.stripe.customerId).slice(-8))}`
+    : esc(tenantName || u.email || 'tenant');
+
+  const rows = items.map(inv => {
+    const bucket = (inv.bucket || inv.status || 'open').toLowerCase();
+    const bucketLabel = bucket === 'past_due' ? 'PAST DUE' : bucket.toUpperCase();
+    const created = inv.created ? new Date(inv.created).toLocaleDateString() : '—';
+    const dueAt = inv.dueDate ? new Date(inv.dueDate).toLocaleDateString() : null;
+    const amt = +inv.amountRemaining > 0 ? +inv.amountRemaining : +inv.total;
+    const amtStr = fmtAmt(amt);
+    const purpose = purposeLabels[inv.metadata?.purpose || 'rent'] || 'Charge';
+    const invYm = inv.metadata?.ym ? esc(_fmtMonthName(inv.metadata.ym)) : '';
+    const num = inv.number || (inv.id ? inv.id.slice(-8) : '');
+    const isSelected = !!(_mpmCtx?.linkedStripeInvoice && _mpmCtx.linkedStripeInvoice.id === inv.id);
+    return `
+      <div class="mpm-st-row ${isSelected ? 'mpm-st-row-selected' : ''}" data-st-row="${esc(inv.id)}">
+        <div class="mpm-st-row-main">
+          <div class="mpm-st-row-amt">${amtStr} <span class="mpm-st-bucket mpm-st-bucket-${esc(bucket)}">${esc(bucketLabel)}</span></div>
+          <div class="mpm-st-row-meta">${esc(num)} · ${esc(purpose)}${invYm ? ' · ' + invYm : ''} · ${dueAt ? 'due ' + esc(dueAt) : 'issued ' + esc(created)}</div>
+        </div>
+        <button type="button" class="rr-btn ar-btn-sm mpm-st-use-btn ${isSelected ? 'mpm-st-use-btn-selected' : ''}" data-st-btn="${esc(inv.id)}" onclick="_mpmUseStripeInv('${esc(inv.id)}')" title="Apply this invoice to the form">${isSelected ? '✓ Selected' : '✓ Use this'}</button>
+      </div>`;
+  }).join('');
+
+  card.innerHTML = `
+    <div class="mpm-st-card" id="mpmStripeFeedInner">
+      <div class="mpm-st-head">
+        <span>💳 Stripe invoice suggestions for ${esc(_fmtMonthName(ym))}</span>
+        <span class="mpm-st-acct">${customerLabel}</span>
+      </div>
+      <div class="mpm-st-rows">${rows}</div>
+      ${all.length > items.length ? `<div class="mpm-st-foot"><a href="javascript:void(0)" onclick="_openInvoiceBrowser('${esc(_mpmCtx.buildingId)}','${esc(_mpmCtx.floorId)}','${esc(_mpmCtx.unitId)}','${esc(ym)}')">→ Browse all ${all.length} invoices</a></div>` : ''}
+    </div>`;
+}
+
+// Оператор кликнул "✓ Use this" на инвойсе — заполняем форму.
+function _mpmUseStripeInv(invId) {
+  if (!_mpmCtx) return;
+  const inv = (Array.isArray(_invoicesCache) ? _invoicesCache : []).find(r => r && r.id === invId);
+  if (!inv) { toast('Invoice not in cache — reopen Billing to refresh', 'error'); return; }
+  const amt = +inv.amountRemaining > 0 ? +inv.amountRemaining : +inv.total;
+  const ref = inv.number || inv.id;
+  const today = new Date().toISOString().slice(0, 10);
+  // Программно переключаем Method=stripe, но без авто-открытия
+  // полноразмерного invoice browser-а — он бы перебил inline-выбор.
+  _mpmSuppressStripeBrowser = true;
+  try {
+    document.getElementById('mpmMethod').value = 'stripe';
+    _mpmOnMethodChange();
+  } finally {
+    _mpmSuppressStripeBrowser = false;
+  }
+  document.getElementById('mpmReference').value = ref;
+  document.getElementById('mpmAmount').value = amt.toFixed(2);
+  document.getElementById('mpmDate').value = today;
+  // Стэшим инвойс на _mpmCtx, чтобы submitManualPayment пометил
+  // u.payments[ym] полями stripeInvoiceId / stripeInvoiceNumber.
+  _mpmCtx.linkedStripeInvoice = {
+    id: inv.id,
+    number: inv.number || null,
+    total: +inv.total || 0,
+    amountRemaining: +inv.amountRemaining || 0,
+    hostedUrl: inv.hostedUrl || null,
+  };
+  // Если ранее был выбран bank-txn — сбрасываем (источники взаимоисключающие).
+  if (_mpmCtx.linkedBankTxn) {
+    delete _mpmCtx.linkedBankTxn;
+    if (typeof _mpmRenderLinkedPill === 'function') _mpmRenderLinkedPill();
+    if (typeof _mpmPaintBankRowSelection === 'function') _mpmPaintBankRowSelection(null);
+  }
+  _mpmRenderStripeLinkedPill();
+  _mpmPaintStripeRowSelection(invId);
+}
+
+// Снять линк со Stripe-инвойса без очистки полей формы.
+function _mpmUnlinkStripeInv() {
+  if (!_mpmCtx) return;
+  delete _mpmCtx.linkedStripeInvoice;
+  _mpmRenderStripeLinkedPill();
+  _mpmPaintStripeRowSelection(null);
+}
+
+// Подсветка выбранной строки в Stripe-карточке без полного re-render.
+function _mpmPaintStripeRowSelection(selectedInvId) {
+  const card = document.getElementById('mpmStripeFeedCard');
+  if (!card) return;
+  card.querySelectorAll('[data-st-row]').forEach(row => {
+    row.classList.toggle('mpm-st-row-selected', row.getAttribute('data-st-row') === selectedInvId);
+  });
+  card.querySelectorAll('[data-st-btn]').forEach(btn => {
+    const isSel = btn.getAttribute('data-st-btn') === selectedInvId;
+    btn.classList.toggle('mpm-st-use-btn-selected', isSel);
+    btn.textContent = isSel ? '✓ Selected' : '✓ Use this';
+  });
+}
+
+// Pill "🔗 Linked to Stripe invoice ..." — отрисовывается под полем
+// Reference, чтобы оператор видел источник данных.
+function _mpmRenderStripeLinkedPill() {
+  const pill = document.getElementById('mpmLinkedStripePill');
+  if (!pill) return;
+  const linked = _mpmCtx?.linkedStripeInvoice;
+  if (!linked) { pill.style.display = 'none'; pill.innerHTML = ''; return; }
+  const label = linked.number || (linked.id ? linked.id.slice(-8) : 'invoice');
+  const amt = linked.amountRemaining > 0 ? linked.amountRemaining : linked.total;
+  pill.style.display = '';
+  pill.innerHTML = `
+    <span style="display:inline-flex; align-items:center; gap:6px; padding:3px 8px; background:rgba(99,91,255,0.10); border:1px solid rgba(99,91,255,0.40); border-radius:14px; font-size:11.5px; color:#635bff;">
+      💳 Linked: ${esc(label)} · $${(+amt || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+      <button type="button" onclick="_mpmUnlinkStripeInv()" title="Unlink (still records the payment, but doesn't tie it to the Stripe invoice)" style="background:none; border:none; cursor:pointer; color:#635bff; font-size:14px; line-height:1; padding:0;">×</button>
+    </span>`;
+}
+
 // Method picker change — toggle waiver-only fields and adjust the
 // rest of the form based on whether this is a real payment or a
 // waiver. Waiver records skip Reference / Receipt / Amount (set to 0)
@@ -83068,6 +83398,11 @@ function _mpmOnYmChange() {
   if (_mpmCtx) delete _mpmCtx.linkedBankTxn;
   _mpmRenderLinkedPill();
   _mpmRenderBankSuggestions(u, ym);
+  // Stripe-предложения тоже месяц-специфичные — re-render с новой
+  // сортировкой по близости к ym. Сброс прежнего линка по той же причине.
+  if (_mpmCtx) delete _mpmCtx.linkedStripeInvoice;
+  if (typeof _mpmRenderStripeLinkedPill === 'function') _mpmRenderStripeLinkedPill();
+  if (typeof _mpmRenderStripeSuggestions === 'function') _mpmRenderStripeSuggestions(u, ym);
 }
 
 function _mpmOnMethodChange() {
@@ -83079,14 +83414,16 @@ function _mpmOnMethodChange() {
   // _mpmCtx.ym, both modals close, the unit's payments[ym] mirrors
   // paid status from the chosen invoice. Saves them from manually
   // typing the same numbers they could just pick.
-  if (method === 'stripe' && _mpmCtx && typeof _openInvoiceBrowser === 'function') {
+  if (method === 'stripe' && _mpmCtx && !_mpmSuppressStripeBrowser && typeof _openInvoiceBrowser === 'function') {
     _openInvoiceBrowser(_mpmCtx.buildingId, _mpmCtx.floorId, _mpmCtx.unitId, _mpmCtx.ym);
   }
   const waiverRow = document.getElementById('mpmWaiverRow');
-  const referenceRow = document.getElementById('mpmReferenceRow');
+  // Reference сидит парой с Method в одной строке (mpmMethodRefRow).
+  // При waived прячем только Reference-ячейку, Method остаётся видимым.
+  const referenceCell = document.getElementById('mpmReferenceCell');
   const amountRow = document.getElementById('mpmAmountRow');
   if (waiverRow) waiverRow.style.display = isWaived ? '' : 'none';
-  if (referenceRow) referenceRow.style.display = isWaived ? 'none' : '';
+  if (referenceCell) referenceCell.style.visibility = isWaived ? 'hidden' : '';
   if (amountRow) amountRow.style.display = isWaived ? 'none' : '';
   // Update submit button copy so the operator sees what's about to happen.
   const submitBtn = document.getElementById('mpmSubmitBtn');
@@ -83502,6 +83839,11 @@ function openManualPaymentModal(buildingId, floorId, unitId, ym) {
   // when ready. Hidden if no bank account is connected.
   _mpmRenderLinkedPill();
   _mpmRenderBankSuggestions(u, ym);
+  // Stripe-предложения — синхронный рендер из локального кэша
+  // (_invoicesCache наполняется в Billing). Скрыто, если у юнита
+  // нет stripe customerId / open-инвойсов.
+  if (typeof _mpmRenderStripeLinkedPill === 'function') _mpmRenderStripeLinkedPill();
+  if (typeof _mpmRenderStripeSuggestions === 'function') _mpmRenderStripeSuggestions(u, ym);
 
   document.getElementById('manualPaymentModal').classList.add('active');
 }
@@ -83739,6 +84081,10 @@ async function submitManualPayment() {
       // below (post-save) so it stops appearing in the Bank Activity
       // pending queue.
       const linkedBank = _mpmCtx.linkedBankTxn || null;
+      // Аналогично bank-link, если оператор кликнул "Use this" на
+      // предложенном Stripe-инвойсе — стэмпим id/number на запись,
+      // чтобы потом можно было найти инвойс из истории платежей.
+      const linkedStripe = _mpmCtx.linkedStripeInvoice || null;
       u.payments[ym] = {
         ...existing,
         status: 'paid',
@@ -83762,6 +84108,12 @@ async function submitManualPayment() {
           bankPaidAt: linkedBank.transactedAt
             ? new Date(linkedBank.transactedAt * 1000).toISOString().slice(0, 10)
             : null,
+        } : {}),
+        ...(linkedStripe ? {
+          source: 'stripe-suggested',
+          stripeInvoiceId: linkedStripe.id,
+          stripeInvoiceNumber: linkedStripe.number || null,
+          stripeInvoiceUrl: linkedStripe.hostedUrl || null,
         } : {}),
       };
       // Drop waiver-specific fields if this entry was previously a waiver.
