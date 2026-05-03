@@ -3530,7 +3530,13 @@ exports.listBackups = onCall(
     // Sorting server-side by __name__ DESC requires a custom Firestore
     // index; backup count is bounded by 90-day retention so it's
     // cheaper to fetch all and sort in JS than to maintain the index.
-    const snap = await col.get();
+    //
+    // CRITICAL: use .select() to project ONLY metadata fields — without it
+    // Firestore returns the full doc including `state` (the entire workspace
+    // JSON snapshot, can be MBs) and 90 docs blow past the 256 MiB limit.
+    const snap = await col
+      .select('capturedAt', 'capturedBy', 'reason', '_rev', 'sizeBytes')
+      .get();
     const items = snap.docs.map(d => {
       const x = d.data() || {};
       return {
