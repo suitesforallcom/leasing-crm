@@ -8885,6 +8885,14 @@
     flex: 0 0 auto;
     background: var(--success); color: #fff; border-color: var(--success);
   }
+  .mpm-bf-row.mpm-bf-row-selected {
+    background: rgba(16,185,129,0.10);
+    border-color: rgba(16,185,129,0.55);
+    box-shadow: 0 0 0 1px rgba(16,185,129,0.25) inset;
+  }
+  .mpm-bf-use-btn.mpm-bf-use-btn-selected {
+    background: transparent; color: var(--success); border-color: var(--success);
+  }
   .mpm-bf-foot {
     margin-top: 8px; padding-top: 8px;
     border-top: 1px solid rgba(14,165,233,0.20);
@@ -80718,13 +80726,14 @@ async function _mpmRenderBankSuggestions(u, ym) {
     const stateBadge = t.matchState === 'suggested'
       ? `<span class="mpm-bf-state mpm-bf-state-suggested" title="Matcher already flagged this">★ suggested</span>`
       : '';
+    const isSelected = !!(_mpmCtx?.linkedBankTxn && _mpmCtx.linkedBankTxn.id === t.id);
     return `
-      <div class="mpm-bf-row">
+      <div class="mpm-bf-row ${isSelected ? 'mpm-bf-row-selected' : ''}" data-bf-row="${esc(t.id)}">
         <div class="mpm-bf-row-main">
           <div class="mpm-bf-row-amt">${amtStr} ${closeNote}</div>
           <div class="mpm-bf-row-meta">${esc(dateStr)} · ${esc(t.description || '(no description)')} ${stateBadge}</div>
         </div>
-        <button class="rr-btn ar-btn-sm mpm-bf-use-btn" onclick="_mpmUseBankTxn('${esc(t.id)}')" title="Apply this transaction to the form">✓ Use this</button>
+        <button class="rr-btn ar-btn-sm mpm-bf-use-btn ${isSelected ? 'mpm-bf-use-btn-selected' : ''}" data-bf-btn="${esc(t.id)}" onclick="_mpmUseBankTxn('${esc(t.id)}')" title="Apply this transaction to the form">${isSelected ? '✓ Selected' : '✓ Use this'}</button>
       </div>`;
   }).join('');
 
@@ -80775,6 +80784,23 @@ function _mpmUseBankTxn(txnId) {
     accountId: txn.accountId || null,
   };
   _mpmRenderLinkedPill();
+  _mpmPaintBankRowSelection(txnId);
+}
+
+// Toggle visual selection on bank-feed rows without a full re-render.
+// Pass null/undefined to clear all selection state.
+function _mpmPaintBankRowSelection(selectedTxnId) {
+  const card = document.getElementById('mpmBankFeedCard');
+  if (!card) return;
+  card.querySelectorAll('[data-bf-row]').forEach(row => {
+    const isSel = row.getAttribute('data-bf-row') === selectedTxnId;
+    row.classList.toggle('mpm-bf-row-selected', isSel);
+  });
+  card.querySelectorAll('[data-bf-btn]').forEach(btn => {
+    const isSel = btn.getAttribute('data-bf-btn') === selectedTxnId;
+    btn.classList.toggle('mpm-bf-use-btn-selected', isSel);
+    btn.textContent = isSel ? '✓ Selected' : '✓ Use this';
+  });
 }
 
 // Remove the bank-txn link without clearing form fields — operator may
@@ -80783,6 +80809,7 @@ function _mpmUnlinkBankTxn() {
   if (!_mpmCtx) return;
   delete _mpmCtx.linkedBankTxn;
   _mpmRenderLinkedPill();
+  _mpmPaintBankRowSelection(null);
 }
 
 function _mpmRenderLinkedPill() {
