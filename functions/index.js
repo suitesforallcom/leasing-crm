@@ -3911,3 +3911,172 @@ exports.eraseTenantPii = onCall(
     };
   }
 );
+
+// =========================================================================
+// ===== Stripe Financial Connections — Bank Feed (Phase 1: Connect) =======
+// Operator connects their business bank (Capital One etc.) so the app can
+// later pull incoming wire/ACH/check deposits and match them against open
+// invoices automatically. Phase 1 is OAuth onboarding only — transaction
+// polling, matcher, and review board land in subsequent phases.
+//
+// Flow:
+//   1. Operator clicks "Connect bank" in Settings → Bank Connections.
+//   2. Client calls connectBankAccount → backend creates a Stripe FC
+//      Session bound to the per-workspace Operator Customer (separate
+//      from tenant customers in state.stripeCustomers).
+//   3. Client opens Stripe.js widget with the returned client_secret;
+//      operator picks bank (Capital One Spark Business), authenticates,
+//      grants permissions.
+//   4. Widget returns success → client calls finalizeBankConnection
+//      with the session id. Backend re-fetches the session, reads the
+//      confirmed account ids, and appends one record per new account
+//      to state.bankConnections[].
+//   5. Disconnect: stripe.financialConnections.accounts.disconnect →
+//      mark local record status='disconnected'.
+// =========================================================================
+
+// Get-or-create the per-workspace Stripe Customer that owns the FC
+// account-holder relationship. This Customer represents the operator's
+// business and is distinct from per-tenant Customers in
+// state.stripeCustomers. Reused across all Bank Feed sessions so all
+// connected accounts roll up to one Stripe-side owner.
+async function _ensureOperatorCustomer(state, operatorEmail) {
+  if (state.operatorStripeCustomerId) return state.operatorStripeCustomerId;
+  const stripe = getStripe();
+  const cust = await stripe.customers.create({
+    email: operatorEmail || undefined,
+    name: `SuitesForAll Operator (${WORKSPACE_ID})`,
+    description: 'Owner Customer for Financial Connections (bank feed)',
+    metadata: {
+      workspaceId: WORKSPACE_ID,
+      role: 'operator',
+      source: 'suitesforall-bank-feed',
+    },
+  });
+  await mutateWorkspaceState((s) => {
+    s.operatorStripeCustomerId = cust.id;
+  });
+  logger.info(`[bank-feed] created operator customer ${cust.id} for ${operatorEmail || '(no email)'}`);
+  return cust.id;
+}
+
+exports.connectBankAccount = onCall(
+  {secrets: [STRIPE_SECRET_KEY], timeoutSeconds: 30},
+  async (req) => {
+    await requireEditor(req.auth);
+    const stripe = getStripe();
+    const state = await readWorkspaceState();
+    const operatorEmail = (req.auth?.token?.email || '').toLowerCase();
+    const customerId = await _ensureOperatorCustomer(state, operatorEmail);
+    const session = await stripe.financialConnections.sessions.create({
+      account_holder: { type: 'customer', customer: customerId },
+      // Permissions:
+      //   transactions  — required (this is the whole point of Phase 2+)
+      //   balances      — useful to show operator the current balance
+      //   ownership     — verifies account holder name; helps with matching
+      //                   wires whose memo line drops the company name.
+      permissions: ['transactions', 'balances', 'ownership'],
+      filters: { countries: ['US'] },
+    });
+    logger.info(`[bank-feed] connectBankAccount: created FC session ${session.id} for operator ${operatorEmail}`);
+    return {
+      clientSecret: session.client_secret,
+      sessionId: session.id,
+    };
+  }
+);
+
+exports.finalizeBankConnection = onCall(
+  {secrets: [STRIPE_SECRET_KEY], timeoutSeconds: 30},
+  async (req) => {
+    await requireEditor(req.auth);
+    const sessionId = req.data?.sessionId;
+    if (!sessionId) {
+      throw new HttpsError('invalid-argument', 'sessionId is required');
+    }
+    const stripe = getStripe();
+    const session = await stripe.financialConnections.sessions.retrieve(sessionId, {
+      expand: ['accounts'],
+    });
+    const accounts = session.accounts?.data || [];
+    if (!accounts.length) {
+      logger.warn(`[bank-feed] finalizeBankConnection: session ${sessionId} returned 0 accounts (operator likely cancelled)`);
+      return { connected: 0, accounts: [] };
+    }
+    const operatorEmail = (req.auth?.token?.email || '').toLowerCase();
+    const newConnections = [];
+    await mutateWorkspaceState((s) => {
+      s.bankConnections = s.bankConnections || [];
+      for (const acc of accounts) {
+        // Dedup by Stripe FC account id — operator may re-run connect
+        // for the same bank, we don't want N copies of the same record.
+        // If a previously-disconnected record exists, reactivate it.
+        const existing = s.bankConnections.find(c => c.stripeFcAccountId === acc.id);
+        if (existing) {
+          existing.status = acc.status || 'active';
+          existing.permissions = acc.permissions || existing.permissions || [];
+          existing.reconnectedAt = new Date().toISOString();
+          delete existing.disconnectedAt;
+          continue;
+        }
+        const conn = {
+          id: 'bc_' + acc.id,
+          stripeFcAccountId: acc.id,
+          institutionName: acc.institution_name || 'Unknown bank',
+          accountLast4: acc.last4 || '',
+          accountCategory: acc.category || '',          // 'cash' | 'credit' | 'investment' | 'other'
+          accountSubcategory: acc.subcategory || '',    // 'checking' | 'savings' | etc.
+          displayName: acc.display_name
+            || `${acc.institution_name || 'Bank'} ····${acc.last4 || '????'}`,
+          permissions: acc.permissions || [],
+          status: acc.status || 'active',
+          connectedAt: new Date().toISOString(),
+          connectedBy: operatorEmail,
+          lastPolledAt: null,
+        };
+        s.bankConnections.push(conn);
+        newConnections.push(conn);
+      }
+    });
+    logger.info(`[bank-feed] finalizeBankConnection: linked ${newConnections.length} new account(s), reactivated ${accounts.length - newConnections.length} (session ${sessionId})`);
+    return {
+      connected: newConnections.length,
+      reactivated: accounts.length - newConnections.length,
+      accounts: newConnections,
+    };
+  }
+);
+
+exports.disconnectBankAccount = onCall(
+  {secrets: [STRIPE_SECRET_KEY], timeoutSeconds: 30},
+  async (req) => {
+    await requireEditor(req.auth);
+    const fcAccountId = req.data?.stripeFcAccountId;
+    if (!fcAccountId) {
+      throw new HttpsError('invalid-argument', 'stripeFcAccountId is required');
+    }
+    const stripe = getStripe();
+    let detached = false;
+    let detachError = null;
+    try {
+      await stripe.financialConnections.accounts.disconnect(fcAccountId);
+      detached = true;
+    } catch (e) {
+      // If Stripe says it's already detached / 404, that's fine — we
+      // still proceed to clean up our local state record. Surface the
+      // error so the client can show a softer "already disconnected"
+      // notice rather than failing hard.
+      detachError = e.message || String(e);
+      logger.warn(`[bank-feed] disconnectBankAccount: Stripe detach failed (${detachError}) — proceeding to local cleanup`);
+    }
+    await mutateWorkspaceState((s) => {
+      if (!Array.isArray(s.bankConnections)) return;
+      const c = s.bankConnections.find(x => x.stripeFcAccountId === fcAccountId);
+      if (c) {
+        c.status = 'disconnected';
+        c.disconnectedAt = new Date().toISOString();
+      }
+    });
+    return { detached, detachError };
+  }
+);

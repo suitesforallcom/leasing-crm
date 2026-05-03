@@ -14761,6 +14761,37 @@
       </div>
     </div>
 
+    <!-- Bank Connections (Stripe Financial Connections) — pulls incoming
+         deposits from operator's business bank to auto-match against open
+         invoices. Phase 1 ships connect-only; transaction polling, matcher,
+         and review board land in subsequent phases. -->
+    <div class="int-section">
+      <div class="int-header">
+        <div class="int-icon" style="background: #0ea5e920; color: #0284c7;">🏦</div>
+        <div class="int-info">
+          <div class="int-name">Bank Connections (Bank Feed)</div>
+          <div class="int-desc">Pull deposits from your business bank · Capital One / Chase / BofA / etc.</div>
+        </div>
+        <span class="int-badge" id="bankFeedBadge">Not connected</span>
+      </div>
+      <div class="int-help">
+        Powered by <b>Stripe Financial Connections</b>. Connect your business bank account once via OAuth — read-only access to incoming transactions. Used to auto-match wire / ACH / check deposits to open rent invoices. <b>Cost:</b> $1.50 per connect + $0.10/mo per active account. Requires the publishable key in the Stripe section above.
+      </div>
+      <div id="bankFeedConnectionsList" style="display:flex; flex-direction:column; gap:8px; margin-bottom:10px;">
+        <!-- populated by _renderBankConnections() -->
+      </div>
+      <div class="int-actions">
+        <button class="int-btn" id="bankFeedConnectBtn" onclick="connectBankAccount()">
+          <svg viewBox="0 0 24 24"><path d="M3 21h18M3 10h18M5 6l7-3 7 3M4 10v11M20 10v11M8 14v3M12 14v3M16 14v3"/></svg>
+          Connect bank account
+        </button>
+      </div>
+      <div class="int-status-msg" id="bankFeedStatusMsg"></div>
+      <div class="int-help" style="margin-top:10px; font-size:11px;">
+        Phase 1 (current): connect &amp; list accounts. Phase 2: scheduled transaction poll. Phase 3: auto-match to invoices. Phase 4: operator review board.
+      </div>
+    </div>
+
     <!-- DocuSign — PKCE, browser-direct (no backend) -->
     <div class="int-section">
       <div class="int-header">
@@ -58222,6 +58253,156 @@ function connectStripe() {
   setIntStatus('stripe', 'success', `✓ <b>Saved (${mode} mode).</b> Cloud Functions backend is already live — invoice / reminder / webhook flows work now.${warn}`);
 }
 
+// =====================================================================
+// Bank Feed (Stripe Financial Connections) — operator-side bank account
+// onboarding. Phase 1 of 4: OAuth connect + list + disconnect.
+// Backend callables live in functions/index.js (connectBankAccount,
+// finalizeBankConnection, disconnectBankAccount). State sits at
+// state.bankConnections[]. UI lives in Settings → Integrations.
+// =====================================================================
+
+let _stripeJsPromise = null;
+function _loadStripeJsLazy() {
+  if (_stripeJsPromise) return _stripeJsPromise;
+  if (typeof window !== 'undefined' && window.Stripe) {
+    _stripeJsPromise = Promise.resolve(window.Stripe);
+    return _stripeJsPromise;
+  }
+  _stripeJsPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://js.stripe.com/v3/';
+    s.async = true;
+    s.onload = () => {
+      if (window.Stripe) resolve(window.Stripe);
+      else reject(new Error('Stripe.js loaded but window.Stripe is missing'));
+    };
+    s.onerror = () => reject(new Error('Failed to load Stripe.js (network/CSP block?)'));
+    document.head.appendChild(s);
+  });
+  return _stripeJsPromise;
+}
+
+async function connectBankAccount() {
+  const pubKey = (localStorage.getItem('sfa_stripe_pub') || '').trim();
+  if (!pubKey) {
+    setIntStatus('bankFeed', 'error',
+      '⚠ Paste your Stripe Publishable Key in the Stripe section above first (pk_live_… or pk_test_…), then click Save Credentials. The Bank Feed widget needs it to load.');
+    return;
+  }
+  if (!/^pk_(test|live)_[a-zA-Z0-9]{24,}$/.test(pubKey)) {
+    setIntStatus('bankFeed', 'error',
+      '⚠ Saved publishable key looks malformed. Re-paste it in the Stripe section above.');
+    return;
+  }
+  const btn = document.getElementById('bankFeedConnectBtn');
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; }
+  setIntStatus('bankFeed', 'info', '⏳ Loading Stripe…');
+  try {
+    const StripeCtor = await _loadStripeJsLazy();
+    const stripe = StripeCtor(pubKey);
+    setIntStatus('bankFeed', 'info', '⏳ Creating session…');
+    const fn = stripeCallable('connectBankAccount');
+    const { data } = await fn({});
+    if (!data?.clientSecret) throw new Error('Backend did not return a client_secret');
+    setIntStatus('bankFeed', 'info', '⏳ Opening bank picker — pick Capital One in the popup.');
+    const result = await stripe.collectFinancialConnectionsAccounts({
+      clientSecret: data.clientSecret,
+    });
+    if (result.error) throw new Error(result.error.message || 'Bank linking cancelled');
+    const linked = result.financialConnectionsSession?.accounts?.length || 0;
+    if (!linked) {
+      setIntStatus('bankFeed', 'warn', 'No accounts were linked (cancelled before grant).');
+      return;
+    }
+    setIntStatus('bankFeed', 'info', `⏳ Saving ${linked} linked account(s)…`);
+    const finalize = stripeCallable('finalizeBankConnection');
+    const finRes = await finalize({ sessionId: data.sessionId });
+    const newCount = finRes.data?.connected || 0;
+    const reCount = finRes.data?.reactivated || 0;
+    let msg = `✓ <b>Connected ${newCount} new account(s).</b>`;
+    if (reCount) msg += ` Reactivated ${reCount} previously-disconnected account(s).`;
+    msg += ' Phase 2 (scheduled poll + matcher) ships next.';
+    setIntStatus('bankFeed', 'success', msg);
+    _renderBankConnections();
+  } catch (err) {
+    const m = err?.message || String(err);
+    setIntStatus('bankFeed', 'error', `⚠ ${esc(m)}`);
+    console.warn('[bank-feed] connect failed:', err);
+  } finally {
+    if (btn) { btn.disabled = false; btn.style.opacity = ''; }
+  }
+}
+
+async function disconnectBankAccount(fcAccountId) {
+  if (!fcAccountId) return;
+  if (!confirm('Disconnect this bank account? Stripe will stop pulling new transactions. Existing matched payments stay on record.')) return;
+  setIntStatus('bankFeed', 'info', '⏳ Disconnecting…');
+  try {
+    const fn = stripeCallable('disconnectBankAccount');
+    await fn({ stripeFcAccountId: fcAccountId });
+    setIntStatus('bankFeed', 'success', '✓ Disconnected.');
+    _renderBankConnections();
+  } catch (err) {
+    setIntStatus('bankFeed', 'error', `⚠ ${esc(err?.message || String(err))}`);
+  }
+}
+
+function _renderBankConnections() {
+  const host = document.getElementById('bankFeedConnectionsList');
+  if (!host) return;
+  const conns = (state && Array.isArray(state.bankConnections)) ? state.bankConnections : [];
+  const active = conns.filter(c => c.status !== 'disconnected');
+  // Badge mirrors active-count
+  const badge = document.getElementById('bankFeedBadge');
+  if (badge) {
+    badge.classList.remove('active', 'phase2', 'phase3');
+    if (active.length) {
+      badge.classList.add('active');
+      badge.textContent = `✓ ${active.length} connected`;
+    } else {
+      badge.textContent = 'Not connected';
+    }
+  }
+  if (!conns.length) {
+    host.innerHTML = `<div style="font-size:11.5px; color:var(--muted); padding:6px 0;">No bank accounts connected yet.</div>`;
+    return;
+  }
+  host.innerHTML = conns.map(c => {
+    const isActive = c.status !== 'disconnected';
+    const statusColor = isActive ? 'var(--success)' : 'var(--muted)';
+    const statusLabel = isActive ? c.status : 'Disconnected';
+    const last4 = c.accountLast4 ? `····${esc(c.accountLast4)}` : '';
+    const sub = c.accountSubcategory ? ` · ${esc(c.accountSubcategory)}` : '';
+    const polled = c.lastPolledAt
+      ? `Last poll: ${esc(new Date(c.lastPolledAt).toLocaleString())}`
+      : 'Not yet polled (Phase 2)';
+    const disconnectBtn = isActive
+      ? `<button class="int-btn outline" style="flex:0 0 auto; padding:4px 10px; font-size:11px;" onclick="disconnectBankAccount('${esc(c.stripeFcAccountId)}')">Disconnect</button>`
+      : '';
+    return `
+      <div style="display:flex; align-items:center; gap:10px; padding:10px 12px; background:var(--surface); border:1px solid var(--border); border-radius:8px;">
+        <div style="font-size:18px;">🏦</div>
+        <div style="flex:1; min-width:0;">
+          <div style="font-size:12.5px; font-weight:600;">${esc(c.institutionName || 'Bank')} ${last4}${sub}</div>
+          <div style="font-size:10.5px; color:var(--muted); margin-top:2px;">
+            <span style="color:${statusColor}; font-weight:600; text-transform:uppercase; letter-spacing:0.3px;">${esc(statusLabel)}</span>
+            · ${polled}
+          </div>
+        </div>
+        ${disconnectBtn}
+      </div>
+    `;
+  }).join('');
+}
+
+// Wire re-render to the panel: when Settings opens or the integrations
+// tab activates, refresh the list. Cheaper than reactive — operator
+// rarely opens this panel during normal work.
+window.addEventListener('DOMContentLoaded', () => {
+  // Defer one tick so state has loaded.
+  setTimeout(() => { try { _renderBankConnections(); } catch {} }, 500);
+});
+
 // Stripe "connected" = Cloud Functions backend is reachable AND the user
 // has saved at least one credential locally (so we know they've set up
 // the server-side secrets too).
@@ -75268,6 +75449,11 @@ function setSettingsTab(tabId) {
   // connect/disconnect.
   if (tabId === 'integrations' && typeof _renderGmailIntegrationCard === 'function') {
     setTimeout(() => { try { _renderGmailIntegrationCard(); } catch (e) { console.warn(e); } }, 0);
+  }
+  // Bank Connections — same idea: re-render on open so newly-connected
+  // accounts (or status changes from another tab) reflect immediately.
+  if (tabId === 'integrations' && typeof _renderBankConnections === 'function') {
+    setTimeout(() => { try { _renderBankConnections(); } catch (e) { console.warn(e); } }, 0);
   }
   // Templates panel also renders the Common charges list — defined
   // alongside document templates because both are workspace-level
