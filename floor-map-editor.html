@@ -8824,7 +8824,30 @@
   .mpm-bf-acct, .mpm-bf-spinner {
     font: 500 11px system-ui; color: var(--muted);
   }
-  .mpm-bf-rows { display: flex; flex-direction: column; gap: 6px; }
+  .mpm-bf-rows {
+    display: flex; flex-direction: column; gap: 6px;
+    /* Bound the suggestions list so a long match window doesn't push
+       the modal action buttons off-screen. Server caps at 8 rows; CSS
+       scroll keeps any overflow in-place. */
+    max-height: 220px; overflow-y: auto;
+    padding-right: 4px;
+  }
+
+  /* Manual-payment modal — once the bank-feed card is in play the
+     overall modal can exceed viewport height. Constrain to 90vh and
+     keep the action footer (Pay later / Record payment) pinned at the
+     bottom while the body scrolls. */
+  #manualPaymentModal .stripe-modal-card {
+    max-height: 90vh;
+    overflow-y: auto;
+  }
+  #manualPaymentModal .stripe-modal-actions {
+    position: sticky; bottom: 0; z-index: 1;
+    background: var(--surface);
+    margin: 16px -22px -22px;
+    padding: 12px 22px 22px;
+    border-top: 1px solid var(--border);
+  }
   .mpm-bf-row {
     display: flex; justify-content: space-between; align-items: center;
     gap: 10px;
