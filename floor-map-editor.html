@@ -22774,7 +22774,7 @@ function fbApplyRemote(doc) {
   // remote update silently switched THIS operator's selectedUnitId,
   // currentBuildingId, currentFloorId — yanking the right detail panel
   // mid-edit. Local UI state is per-tab and never belongs in cloud sync.)
-  for (const k of ['buildings', 'tenants', 'leases', 'contracts', 'settings']) {
+  for (const k of ['buildings', 'tenants', 'leases', 'contracts', 'settings', 'bankConnections']) {
     if (remote[k] !== undefined) {
       // Defensive coerce — Firestore may degrade arrays into
       // object-with-numeric-keys after dot-path field updates.
@@ -23004,6 +23004,7 @@ function fbSanitizeState(s) {
     leases:    _coerceFirestoreArray(s.leases),
     contracts: _coerceFirestoreArray(s.contracts),
     settings: s.settings || {},
+    bankConnections: _coerceFirestoreArray(s.bankConnections),
     _seeded: s._seeded || false,
   }));
   // Polygon points serialization — Firestore rejects nested arrays
