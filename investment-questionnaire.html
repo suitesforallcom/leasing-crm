@@ -1,0 +1,876 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Investment Analysis — Questionnaire</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #f8fafc; --card: #ffffff; --text: #0f172a; --muted: #64748b;
+    --border: #e2e8f0; --accent: #0284c7; --accent-light: #e0f2fe;
+    --success: #16a34a; --warning: #f59e0b; --danger: #dc2626; --purple: #7c3aed;
+  }
+  body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.5; min-height: 100vh;
+  }
+  .app { max-width: 1200px; margin: 0 auto; padding: 16px; }
+  header {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px 20px; margin-bottom: 16px; position: sticky; top: 8px; z-index: 10;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  header h1 { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+  header .sub { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+  .progress-row { display: flex; align-items: center; gap: 12px; }
+  .progress-track { flex: 1; height: 6px; background: var(--border); border-radius: 4px; overflow: hidden; }
+  .progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--success)); transition: width 0.3s ease; }
+  .progress-text { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .layout { display: grid; grid-template-columns: 240px 1fr; gap: 16px; align-items: start; }
+  @media (max-width: 768px) { .layout { grid-template-columns: 1fr; } }
+  .sidebar {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 8px; position: sticky; top: 110px; max-height: calc(100vh - 130px); overflow-y: auto;
+  }
+  .sidebar h3 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--muted); font-weight: 700; padding: 8px 12px 6px;
+  }
+  .sidebar a {
+    display: flex; align-items: center; gap: 8px; padding: 7px 10px;
+    border-radius: 6px; text-decoration: none; color: var(--text);
+    font-size: 13px; cursor: pointer; transition: background 0.15s;
+  }
+  .sidebar a:hover { background: #f1f5f9; }
+  .sidebar a.active { background: var(--accent-light); color: var(--accent); font-weight: 600; }
+  .sidebar a .check {
+    width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--border);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 700; flex-shrink: 0;
+  }
+  .sidebar a.done .check { background: var(--success); color: white; border-color: var(--success); }
+  .sidebar a .num { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .content {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 28px 32px; min-height: 500px;
+  }
+  .content h2 {
+    font-size: 22px; font-weight: 700; margin-bottom: 6px;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  .content h2 .badge {
+    font-size: 11px; background: var(--accent-light); color: var(--accent);
+    padding: 4px 10px; border-radius: 20px; font-weight: 600;
+  }
+  .content .desc {
+    color: var(--muted); font-size: 14px; margin-bottom: 24px;
+    padding-bottom: 16px; border-bottom: 1px solid var(--border);
+  }
+  .question { margin-bottom: 28px; }
+  .question .q-label {
+    font-size: 15px; font-weight: 600; margin-bottom: 10px;
+    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  }
+  .question .q-id {
+    font-size: 11px; color: var(--muted); background: #f1f5f9;
+    padding: 2px 8px; border-radius: 4px; font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+  .options { display: flex; flex-direction: column; gap: 6px; }
+  .option {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 10px 14px; border: 1.5px solid var(--border); border-radius: 8px;
+    cursor: pointer; transition: all 0.12s; background: white;
+  }
+  .option:hover { border-color: var(--accent); background: #f8fafc; }
+  .option.selected { border-color: var(--accent); background: var(--accent-light); }
+  .option input[type="radio"] { margin-top: 3px; accent-color: var(--accent); cursor: pointer; }
+  .option .opt-text { flex: 1; font-size: 14px; }
+  .option .opt-key { font-weight: 700; color: var(--accent); margin-right: 8px; }
+  .option .star { color: var(--warning); font-weight: 700; margin-left: 6px; }
+  .option .followup-hint {
+    display: block; margin-top: 4px; font-size: 12px; color: var(--muted); font-style: italic;
+  }
+  .matrix {
+    display: flex; flex-direction: column; gap: 0;
+    border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+  }
+  .matrix-header, .matrix-row {
+    display: grid; grid-template-columns: 1fr 60px 60px 60px 60px;
+    align-items: center; gap: 8px; padding: 10px 14px;
+  }
+  .matrix-header {
+    background: #f8fafc; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--muted); font-weight: 700;
+  }
+  .matrix-row { border-top: 1px solid var(--border); background: white; }
+  .matrix-row:hover { background: #f8fafc; }
+  .matrix-cell { text-align: center; }
+  .matrix-cell label {
+    display: inline-block; padding: 4px 10px; cursor: pointer; border-radius: 4px;
+    font-size: 12px; font-weight: 600; color: var(--muted);
+    border: 1.5px solid var(--border); background: white; min-width: 40px;
+  }
+  .matrix-cell label:hover { border-color: var(--accent); color: var(--accent); }
+  .matrix-cell input { display: none; }
+  .matrix-cell.p0 input:checked + span { background: var(--success); color: white; border-color: var(--success); }
+  .matrix-cell.p1 input:checked + span { background: var(--accent); color: white; border-color: var(--accent); }
+  .matrix-cell.p2 input:checked + span { background: var(--warning); color: white; border-color: var(--warning); }
+  .matrix-cell.skip input:checked + span { background: var(--muted); color: white; border-color: var(--muted); }
+  .matrix-cell input:checked + span { padding: 4px 10px; border-radius: 4px; border: 1.5px solid; display: inline-block; min-width: 40px; }
+  .matrix-row .item-text {
+    font-size: 14px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  }
+  .matrix-row .item-id { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .matrix-row .item-rec { color: var(--warning); font-weight: 700; font-size: 12px; }
+  .notes { margin-top: 24px; padding-top: 20px; border-top: 1px dashed var(--border); }
+  .notes label {
+    font-size: 13px; color: var(--muted); margin-bottom: 6px;
+    display: block; font-weight: 500;
+  }
+  .notes textarea {
+    width: 100%; min-height: 70px; padding: 10px 12px;
+    border: 1.5px solid var(--border); border-radius: 6px;
+    font-family: inherit; font-size: 14px; color: var(--text); resize: vertical;
+  }
+  .notes textarea:focus { outline: none; border-color: var(--accent); }
+  .actions {
+    display: flex; align-items: center; gap: 10px; margin-top: 28px;
+    padding-top: 20px; border-top: 1px solid var(--border); flex-wrap: wrap;
+  }
+  .btn {
+    padding: 9px 18px; border-radius: 8px; border: 1.5px solid var(--border);
+    background: white; color: var(--text); font-size: 14px; font-weight: 600;
+    cursor: pointer; transition: all 0.15s; font-family: inherit;
+  }
+  .btn:hover { background: #f8fafc; border-color: var(--accent); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: white; }
+  .btn.primary:hover { background: #0369a1; border-color: #0369a1; }
+  .btn.warning { color: var(--warning); border-color: var(--warning); }
+  .btn.warning:hover { background: #fffbeb; }
+  .spacer { flex: 1; }
+  .summary-card {
+    background: var(--accent-light); border: 1.5px solid var(--accent);
+    padding: 16px 20px; border-radius: 8px; margin-bottom: 16px;
+  }
+  .summary-card h3 { font-size: 16px; margin-bottom: 6px; color: var(--accent); }
+  pre.export {
+    background: #0f172a; color: #e2e8f0; padding: 16px;
+    border-radius: 8px; overflow-x: auto;
+    font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+    font-size: 12px; line-height: 1.6; max-height: 400px; overflow-y: auto;
+  }
+  .copy-btn {
+    margin-top: 8px; background: var(--accent); color: white; border: none;
+    padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; font-weight: 600;
+  }
+  .copy-btn:hover { background: #0369a1; }
+  .copy-btn.copied { background: var(--success); }
+  .footer-info {
+    margin-top: 20px; text-align: center; color: var(--muted); font-size: 12px;
+  }
+  .footer-info a { color: var(--accent); cursor: pointer; text-decoration: none; }
+  .footer-info a:hover { text-decoration: underline; }
+  .review-section {
+    margin-bottom: 14px; padding: 12px 16px;
+    border: 1px solid var(--border); border-radius: 8px;
+  }
+  .review-section .title { font-weight: 600; margin-bottom: 6px; }
+  .review-section .row { font-size: 13px; color: var(--muted); margin-top: 3px; }
+  .review-section .row b { color: var(--text); }
+  .review-section .row .ans { color: var(--accent); font-weight: 600; }
+  .review-section .row .miss { color: var(--danger); font-weight: 600; }
+  .review-section .note-block {
+    margin-top: 8px; padding: 8px 10px; background: #fffbeb;
+    border-left: 3px solid var(--warning); font-size: 13px; border-radius: 0 4px 4px 0;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>Investment Analysis Block — Questionnaire</h1>
+    <div class="sub">Answer the questions, I'll build the block to match. Progress autosaves in your browser.</div>
+    <div class="progress-row">
+      <div class="progress-track"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+      <span class="progress-text" id="progressText">0 / 0 answered</span>
+    </div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <h3>Sections</h3>
+      <div id="sectionNav"></div>
+    </aside>
+    <main class="content" id="content"></main>
+  </div>
+  <div class="footer-info">
+    Saved locally in browser ·
+    <a onclick="resetAll()">Reset all</a> ·
+    <a onclick="useAllDefaults()">Fill all with ★ defaults</a>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// SECTIONS DATA — 14 sections, 52 questions total
+// ============================================================
+const SECTIONS = [
+  {
+    id: 1, title: "Капитальная структура",
+    description: "Откуда деньги для покупки, как структурирован cash-out.",
+    questions: [
+      { id: "1.1", text: "Покупка $2.15M была:", options: [
+        { value: "A", label: "All-cash из своего кармана" },
+        { value: "B", label: "С банком — введу остаток + ставку текущего loan'а", followup: "В заметках секции укажи: остаток loan'а ($), ставку (%), оставшийся срок." },
+        { value: "C", label: "С партнёрами (equity split)", followup: "В заметках: кто партнёры, какая доля у каждого." },
+        { value: "D", label: "Mix: часть cash, часть loan", followup: "В заметках: какая часть cash, какая loan + условия loan'а." }
+      ]},
+      { id: "1.2", text: "Ремонт $1M:", options: [
+        { value: "A", label: "Уже завершён — здание стабилизировано" },
+        { value: "B", label: "В процессе — введу % завершения", followup: "В заметках: % завершения и ожидаемая дата окончания." },
+        { value: "C", label: "Запланирован — старт в дату X", followup: "В заметках: дата старта + длительность ремонта (месяцы)." }
+      ]},
+      { id: "1.3", text: "Cash-out $6M это:", options: [
+        { value: "A", label: "Фиксированная сумма, которую хочу вытянуть", recommended: true },
+        { value: "B", label: "Target LTV — например 70% от новой оценки, размер loan'а считается автоматически" },
+        { value: "C", label: "Maximum возможный (что банк даст по 75% LTV ceiling)" }
+      ]},
+      { id: "1.4", text: "Куда идут $6M:", options: [
+        { value: "A", label: "Полностью на оплату нового loan'а (как в задаче)", recommended: true },
+        { value: "B", label: "Реинвестирую в следующее здание (true BRRRR)" },
+        { value: "C", label: "Распределение акционерам (cash-out на счёт)" },
+        { value: "D", label: "Mix — будет slider «% на debt service»" }
+      ]}
+    ]
+  },
+  {
+    id: 2, title: "Условия loan'а",
+    description: "Срок, амортизация, ставка, штрафы.",
+    questions: [
+      { id: "2.1", text: "Срок (term):", options: [
+        { value: "A", label: "5 лет с balloon" },
+        { value: "B", label: "7 лет с balloon" },
+        { value: "C", label: "10 лет с balloon" },
+        { value: "D", label: "25 лет fully amortizing", recommended: true },
+        { value: "E", label: "30 лет fully amortizing" },
+        { value: "F", label: "Хочу slider 5-30 лет" }
+      ]},
+      { id: "2.2", text: "Амортизация:", options: [
+        { value: "A", label: "Fully amortizing (regular monthly P+I, в конце loan = 0)", recommended: true },
+        { value: "B", label: "Partial amort с balloon в конце term'а" },
+        { value: "C", label: "Interest-only весь срок (только %, principal в конце одной суммой)" },
+        { value: "D", label: "Slider toggle между всеми тремя" }
+      ]},
+      { id: "2.3", text: "6% — это:", options: [
+        { value: "A", label: "Fixed на весь срок", recommended: true },
+        { value: "B", label: "Adjustable (SOFR + spread, reset каждые 5 лет)" },
+        { value: "C", label: "Slider 3-12% — для what-if" }
+      ]},
+      { id: "2.4", text: "Closing costs (1-3% от loan):", options: [
+        { value: "A", label: "Включить как 2% по умолчанию", recommended: true },
+        { value: "B", label: "Slider 0-5%" },
+        { value: "C", label: "Игнорировать (упрощаем)" }
+      ]},
+      { id: "2.5", text: "Prepayment penalty:", options: [
+        { value: "A", label: "Нет penalty — гасить досрочно бесплатно", recommended: true },
+        { value: "B", label: "Yield maintenance (платишь всю недополученную банком прибыль)" },
+        { value: "C", label: "Step-down (3-2-1: 3% штраф год 1, 2% год 2, 1% год 3, потом 0)" }
+      ]}
+    ]
+  },
+  {
+    id: 3, title: "NOI / Cash flow",
+    description: "Откуда брать Net Operating Income, как считать opex.",
+    questions: [
+      { id: "3.1", text: "Источник NOI:", options: [
+        { value: "A", label: "Auto-pull из forecast блока (current MRR × 12 − opex)" },
+        { value: "B", label: "Manual input — отдельные поля «Stabilized NOI»" },
+        { value: "C", label: "Гибрид: auto по умолчанию + manual override через toggle", recommended: true }
+      ]},
+      { id: "3.2", text: "Operating expenses:", options: [
+        { value: "A", label: "Один % от revenue, default 35%", recommended: true },
+        { value: "B", label: "Раздельные строки: tax / insurance / mgmt / utilities / maintenance / vacancy" },
+        { value: "C", label: "Hybrid: один slider «opex %» + раскрывашка «Detailed breakdown»" }
+      ]},
+      { id: "3.3", text: "Какой NOI использовать:", options: [
+        { value: "A", label: "Stabilized NOI (после ремонта + lease-up до target occupancy)", recommended: true },
+        { value: "B", label: "Current NOI (как есть сегодня)" },
+        { value: "C", label: "Toggle между current / stabilized в UI" }
+      ]}
+    ]
+  },
+  {
+    id: 4, title: "Оценка здания",
+    description: "Метод valuation для refi sizing, LTV ceiling, cap rate.",
+    questions: [
+      { id: "4.1", text: "Метод valuation:", options: [
+        { value: "A", label: "Cap rate: NOI ÷ cap rate (industry default)", recommended: true },
+        { value: "B", label: "Manual: ты вводишь target $ valuation" },
+        { value: "C", label: "Cost: purchase + reno × markup" },
+        { value: "D", label: "Toggle между методами" }
+      ]},
+      { id: "4.2", text: "Refi LTV ceiling:", options: [
+        { value: "A", label: "65% (conservative)" },
+        { value: "B", label: "70% (default)", recommended: true },
+        { value: "C", label: "75% (aggressive max)" },
+        { value: "D", label: "Slider 50-80%" }
+      ]},
+      { id: "4.3", text: "Cap rate для оценки:", options: [
+        { value: "A", label: "6% (compressed market, premium asset)" },
+        { value: "B", label: "7% (typical office сейчас)", recommended: true },
+        { value: "C", label: "8% (conservative)" },
+        { value: "D", label: "Slider 5-10%" }
+      ]}
+    ]
+  },
+  {
+    id: 5, title: "Метрики (P0/P1/P2)",
+    description: "P0 = в первой версии, P1 = вторая итерация, P2 = nice-to-have, Skip = не нужно.",
+    type: "priority-matrix",
+    items: [
+      { id: "5.1",  label: "Months to payoff",                    recommended: "P0" },
+      { id: "5.2",  label: "DSCR (Debt Service Coverage Ratio)",  recommended: "P0" },
+      { id: "5.3",  label: "Cash-on-Cash yield (annual %)",       recommended: "P0" },
+      { id: "5.4",  label: "Yield-on-Cost (NOI ÷ total cost)",    recommended: "P0" },
+      { id: "5.5",  label: "Levered IRR",                         recommended: "P0" },
+      { id: "5.6",  label: "Equity Multiple (cash returned ÷ cash invested)", recommended: "P1" },
+      { id: "5.7",  label: "LTV over time",                       recommended: "P1" },
+      { id: "5.8",  label: "Break-even occupancy %",              recommended: "P1" },
+      { id: "5.9",  label: "Debt Yield (NOI ÷ loan balance)",     recommended: "P2" },
+      { id: "5.10", label: "Unlevered IRR (для сравнения с/без leverage)", recommended: "P2" }
+    ]
+  },
+  {
+    id: 6, title: "Графики (P0/P1/P2)",
+    description: "Какие визуализации Blackstone-style отчётов нужны.",
+    type: "priority-matrix",
+    items: [
+      { id: "6.A", label: "Sources & Uses waterfall (откуда деньги, куда идут)", recommended: "P0" },
+      { id: "6.B", label: "Pro Forma Cash Flow — 10-yr stacked bar (NOI vs Debt vs FCF)", recommended: "P0" },
+      { id: "6.C", label: "Payoff Sensitivity Heatmap (rate × cash-out)", recommended: "P0" },
+      { id: "6.D", label: "Tornado chart (что больше всего двигает payoff)", recommended: "P1" },
+      { id: "6.E", label: "DSCR Timeline (с covenant-line на 1.20x)", recommended: "P0" },
+      { id: "6.F", label: "LTV Decay Curve (loan balance vs valuation over time)", recommended: "P1" },
+      { id: "6.G", label: "Returns Card (IRR / Multiple / CoC одним блоком)", recommended: "P0" },
+      { id: "6.H", label: "Stress Test bars (Base / Downside / Upside)", recommended: "P1" },
+      { id: "6.I", label: "Refinance Schedule table (помесячно)", recommended: "P2" }
+    ]
+  },
+  {
+    id: 7, title: "Sliders (live recalc)",
+    description: "Какие переменные двигаются slider'ами vs settings (вводятся один раз).",
+    questions: [
+      { id: "7", text: "Какие переменные должны быть бегунками:", options: [
+        { value: "A", label: "Минимум: Cash-out $ + Interest rate + Loan term" },
+        { value: "B", label: "Стандарт: Минимум + Cap rate + Vacancy % + Opex %", recommended: true },
+        { value: "C", label: "Максимум: всё что можно (8+ slider'ов)" },
+        { value: "D", label: "Я скажу precisely (опиши в заметках)", followup: "В заметках секции напиши список переменных." }
+      ]}
+    ]
+  },
+  {
+    id: 8, title: "Settings location",
+    description: "Где редактируются purchase date, reno cost, и т.д.",
+    questions: [
+      { id: "8.1", text: "Где редактируются input'ы:", options: [
+        { value: "A", label: "Новая секция «Investment» в существующих Building Settings" },
+        { value: "B", label: "Отдельная новая вкладка в навигации «Investment Analysis»" },
+        { value: "C", label: "Inline в новом блоке на Home view, кнопка «Edit assumptions» открывает modal", recommended: true },
+        { value: "D", label: "Прямо рядом с sliders в самом блоке (всё в одном месте)" }
+      ]},
+      { id: "8.2", text: "Renovation cost — slider или number input?", options: [
+        { value: "A", label: "Number input в settings (ввёл один раз)" },
+        { value: "B", label: "Slider в самом блоке (для what-if)", recommended: true },
+        { value: "C", label: "Оба — number в settings + slider override в блоке" }
+      ]}
+    ]
+  },
+  {
+    id: 9, title: "Per-building vs Portfolio",
+    description: "Scope анализа.",
+    questions: [
+      { id: "9.1", text: "Scope анализа:", options: [
+        { value: "A", label: "Per-building only (один building = один investment)", recommended: true },
+        { value: "B", label: "Portfolio only (агрегируем все)" },
+        { value: "C", label: "Toggle Per-building / Portfolio в UI" }
+      ]},
+      { id: "9.2", text: "Если будешь добавлять здания:", options: [
+        { value: "A", label: "Каждое = свой independent payoff timer", recommended: true },
+        { value: "B", label: "Cross-collateralized (общий loan на portfolio)" },
+        { value: "C", label: "Не знаю, давай позже" }
+      ]}
+    ]
+  },
+  {
+    id: 10, title: "AI вывод",
+    description: "Как генерируется AI-комментарий и что он говорит.",
+    questions: [
+      { id: "10.1", text: "AI engine:", options: [
+        { value: "A", label: "Real LLM call (Claude/GPT) — нужен API key, server-side proxy" },
+        { value: "B", label: "Heuristic narrative (программные правила)", recommended: true },
+        { value: "C", label: "Сейчас heuristic, в будущем заменим на real LLM" }
+      ]},
+      { id: "10.2", text: "Tone / format:", options: [
+        { value: "A", label: "Factual — narrate the math («Payoff in 11.2 yrs at current pace»)" },
+        { value: "B", label: "Advisory — flag risks + suggest actions", recommended: true },
+        { value: "C", label: "Investment Memo (структурированный 1-page IC memo Blackstone-style)" },
+        { value: "D", label: "Все три, переключатель" }
+      ]},
+      { id: "10.3", text: "Auto-trigger:", options: [
+        { value: "A", label: "Update on every slider move (live)" },
+        { value: "B", label: "Кнопка «Generate insight» — пользователь сам запускает", recommended: true },
+        { value: "C", label: "Auto при открытии страницы, потом freeze" }
+      ]}
+    ]
+  },
+  {
+    id: 11, title: "Hold period / Exit",
+    description: "Срок удержания для IRR, exit cap rate, disposition costs.",
+    questions: [
+      { id: "11.1", text: "Hold period для IRR:", options: [
+        { value: "A", label: "5 лет" },
+        { value: "B", label: "7 лет" },
+        { value: "C", label: "10 лет", recommended: true },
+        { value: "D", label: "15 лет" },
+        { value: "E", label: "Slider 3-30 лет" }
+      ]},
+      { id: "11.2", text: "Включать ли exit (продажа в конце hold):", options: [
+        { value: "A", label: "Да, exit cap = entry cap + 50bps", recommended: true },
+        { value: "B", label: "Да, ты вводишь exit cap руками" },
+        { value: "C", label: "Нет — анализируем только operating cash flows" }
+      ]},
+      { id: "11.3", text: "Disposition costs (broker + legal на продаже):", options: [
+        { value: "A", label: "5% от продажной цены", recommended: true },
+        { value: "B", label: "Slider 0-10%" },
+        { value: "C", label: "Игнорировать" }
+      ]}
+    ]
+  },
+  {
+    id: 12, title: "Tax / Depreciation",
+    description: "Налоги и амортизация — вкл./откл. в v1.",
+    questions: [
+      { id: "12.1", text: "Включать ли в v1:", options: [
+        { value: "A", label: "Out of scope, после v1 (упрощаем)", recommended: true },
+        { value: "B", label: "Базово: depreciation 39yr commercial straight-line" },
+        { value: "C", label: "Полный пакет: depreciation + cost seg + cap gains + 1031" }
+      ]},
+      { id: "12.2", text: "Если (A) — после-tax IRR не считаем:", options: [
+        { value: "A", label: "ОК, показываем только pre-tax", recommended: true },
+        { value: "B", label: "Хочу хотя бы упрощённый «assume 25% effective tax rate» toggle" }
+      ]}
+    ]
+  },
+  {
+    id: 13, title: "Layout",
+    description: "Где живёт блок, как организован, какая высота.",
+    questions: [
+      { id: "13.1", text: "Где живёт блок:", options: [
+        { value: "A", label: "Ниже Forecast'а на Home view (как ты сказал)", recommended: true },
+        { value: "B", label: "Отдельная вкладка в навигации" },
+        { value: "C", label: "Modal по кнопке «Investment Analysis»" }
+      ]},
+      { id: "13.2", text: "Структура внутри блока:", options: [
+        { value: "A", label: "Один длинный scrollable блок (KPI-strip → Sliders → 5 charts → AI)" },
+        { value: "B", label: "Tabs внутри блока: «Overview» / «Cash Flow» / «Sensitivity» / «AI»", recommended: true },
+        { value: "C", label: "Accordion (collapsed sections)" }
+      ]},
+      { id: "13.3", text: "Высота блока:", options: [
+        { value: "A", label: "Compact — fit в один screen" },
+        { value: "B", label: "Большой — full-page, scroll OK", recommended: true },
+        { value: "C", label: "Mini-version + кнопка «Expand to full»" }
+      ]}
+    ]
+  },
+  {
+    id: 14, title: "Сохранение данных",
+    description: "Где сохраняются input'ы, версионирование сценариев.",
+    questions: [
+      { id: "14.1", text: "Где persist:", options: [
+        { value: "A", label: "localStorage (как остальной Phase 1)", recommended: true },
+        { value: "B", label: "Firestore — даже если Phase 2 ещё не готов" },
+        { value: "C", label: "И то, и то — fallback chain" }
+      ]},
+      { id: "14.2", text: "Версионирование сценариев:", options: [
+        { value: "A", label: "Один сценарий per-building (live edit)", recommended: true },
+        { value: "B", label: "Multiple named scenarios (Base / Optimistic / Stressed)" },
+        { value: "C", label: "История изменений + revert" }
+      ]}
+    ]
+  }
+];
+
+// ============================================================
+// STATE
+// ============================================================
+const STORAGE_KEY = 'sfa_invest_questionnaire_v1';
+let state = loadState();
+let currentIdx = state.currentIdx || 0;
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return { answers: {}, notes: {}, currentIdx: 0 };
+    const parsed = JSON.parse(raw);
+    return {
+      answers: parsed.answers || {},
+      notes: parsed.notes || {},
+      currentIdx: parsed.currentIdx || 0
+    };
+  } catch {
+    return { answers: {}, notes: {}, currentIdx: 0 };
+  }
+}
+function saveState() {
+  state.currentIdx = currentIdx;
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch {}
+}
+
+// ============================================================
+// RENDER
+// ============================================================
+function render() {
+  renderNav();
+  renderContent();
+  renderProgress();
+  saveState();
+}
+
+function renderNav() {
+  const nav = document.getElementById('sectionNav');
+  const items = SECTIONS.map((s, i) => {
+    const done = isSectionComplete(s);
+    const active = i === currentIdx;
+    return `<a class="${active ? 'active' : ''} ${done ? 'done' : ''}" onclick="goTo(${i})">
+      <span class="check">${done ? '✓' : ''}</span>
+      <span class="num">${i+1}.</span>
+      <span>${escapeHtml(s.title)}</span>
+    </a>`;
+  }).join('');
+  const reviewActive = currentIdx === SECTIONS.length;
+  const reviewLink = `<a class="${reviewActive ? 'active' : ''}" onclick="goTo(${SECTIONS.length})" style="border-top:1px solid var(--border); margin-top:8px; padding-top:12px;">
+    <span class="check">📋</span>
+    <span>Review &amp; export</span>
+  </a>`;
+  nav.innerHTML = items + reviewLink;
+}
+
+function renderContent() {
+  const el = document.getElementById('content');
+  if (currentIdx >= SECTIONS.length) {
+    el.innerHTML = renderSummary();
+    return;
+  }
+  const s = SECTIONS[currentIdx];
+  let html = `<h2>${escapeHtml(s.title)} <span class="badge">Section ${currentIdx+1} of ${SECTIONS.length}</span></h2>
+    <div class="desc">${escapeHtml(s.description)}</div>`;
+
+  if (s.type === 'priority-matrix') {
+    html += renderMatrix(s);
+  } else {
+    s.questions.forEach(q => { html += renderQuestion(q); });
+  }
+
+  // Notes
+  const notes = state.notes[s.id] || '';
+  html += `<div class="notes">
+    <label>Доп. заметки по этой секции (опционально)</label>
+    <textarea placeholder="Например: «текущий loan $1.2M под 5%, амортизация 20 лет»" oninput="setNote('${s.id}', this.value)">${escapeHtml(notes)}</textarea>
+  </div>`;
+
+  // Actions
+  const isLast = currentIdx === SECTIONS.length - 1;
+  html += `<div class="actions">
+    <button class="btn" onclick="prev()" ${currentIdx === 0 ? 'disabled' : ''}>← Back</button>
+    <button class="btn warning" onclick="useDefaultsForSection()">★ Defaults for section</button>
+    <div class="spacer"></div>
+    <button class="btn primary" onclick="next()">${isLast ? 'Review &amp; export →' : 'Next →'}</button>
+  </div>`;
+
+  el.innerHTML = html;
+}
+
+function renderQuestion(q) {
+  const sel = state.answers[q.id];
+  const opts = q.options.map(o => {
+    const isSel = sel === o.value;
+    return `<label class="option ${isSel ? 'selected' : ''}" onclick="setAnswer('${q.id}', '${o.value}')">
+      <input type="radio" name="${q.id}" value="${o.value}" ${isSel ? 'checked' : ''}>
+      <div class="opt-text">
+        <span class="opt-key">${o.value}.</span>${escapeHtml(o.label)}
+        ${o.recommended ? '<span class="star">★</span>' : ''}
+        ${isSel && o.followup ? `<span class="followup-hint">→ ${escapeHtml(o.followup)}</span>` : ''}
+      </div>
+    </label>`;
+  }).join('');
+  return `<div class="question">
+    <div class="q-label"><span class="q-id">${q.id}</span>${escapeHtml(q.text)}</div>
+    <div class="options">${opts}</div>
+  </div>`;
+}
+
+function renderMatrix(s) {
+  let html = `<div class="matrix">
+    <div class="matrix-header">
+      <div>Item</div>
+      <div class="matrix-cell">P0</div>
+      <div class="matrix-cell">P1</div>
+      <div class="matrix-cell">P2</div>
+      <div class="matrix-cell">Skip</div>
+    </div>`;
+  s.items.forEach(item => {
+    const sel = state.answers[item.id] || '';
+    html += `<div class="matrix-row">
+      <div class="item-text">
+        <span class="item-id">${item.id}</span>
+        <span>${escapeHtml(item.label)}</span>
+        ${item.recommended ? `<span class="item-rec" title="Recommended">★ ${item.recommended}</span>` : ''}
+      </div>`;
+    ['P0','P1','P2','Skip'].forEach(p => {
+      const cls = p === 'P0' ? 'p0' : p === 'P1' ? 'p1' : p === 'P2' ? 'p2' : 'skip';
+      const checked = sel === p ? 'checked' : '';
+      html += `<div class="matrix-cell ${cls}">
+        <label>
+          <input type="radio" name="${item.id}" value="${p}" ${checked} onchange="setAnswer('${item.id}', '${p}')">
+          <span>${p}</span>
+        </label>
+      </div>`;
+    });
+    html += `</div>`;
+  });
+  html += `</div>`;
+  return html;
+}
+
+function renderProgress() {
+  const total = countTotal();
+  const answered = countAnswered();
+  const pct = total > 0 ? Math.round((answered / total) * 100) : 0;
+  document.getElementById('progressFill').style.width = pct + '%';
+  document.getElementById('progressText').textContent = `${answered} / ${total} answered (${pct}%)`;
+}
+
+function countTotal() {
+  let n = 0;
+  SECTIONS.forEach(s => { n += (s.type === 'priority-matrix' ? s.items.length : s.questions.length); });
+  return n;
+}
+function countAnswered() {
+  return Object.keys(state.answers).filter(k => state.answers[k]).length;
+}
+function isSectionComplete(s) {
+  return s.type === 'priority-matrix'
+    ? s.items.every(i => state.answers[i.id])
+    : s.questions.every(q => state.answers[q.id]);
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ============================================================
+// ACTIONS
+// ============================================================
+function setAnswer(qid, val) {
+  state.answers[qid] = val;
+  saveState();
+  renderNav();
+  renderProgress();
+  // Update selected state without full re-render to avoid jarring scroll
+  const s = SECTIONS[currentIdx];
+  if (s && s.type !== 'priority-matrix') {
+    document.querySelectorAll('.option').forEach(opt => {
+      const input = opt.querySelector('input');
+      if (input && input.name === qid) {
+        const isSel = input.value === val;
+        opt.classList.toggle('selected', isSel);
+        input.checked = isSel;
+        // Re-render followup hint
+        const optText = opt.querySelector('.opt-text');
+        const existingHint = optText.querySelector('.followup-hint');
+        if (existingHint) existingHint.remove();
+        const q = s.questions.find(qq => qq.id === qid);
+        const o = q && q.options.find(oo => oo.value === input.value);
+        if (isSel && o && o.followup) {
+          const hint = document.createElement('span');
+          hint.className = 'followup-hint';
+          hint.textContent = '→ ' + o.followup;
+          optText.appendChild(hint);
+        }
+      }
+    });
+  }
+}
+
+function setNote(sid, val) {
+  state.notes[sid] = val;
+  saveState();
+}
+
+function next() {
+  if (currentIdx <= SECTIONS.length) {
+    currentIdx = Math.min(currentIdx + 1, SECTIONS.length);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    render();
+  }
+}
+function prev() {
+  if (currentIdx > 0) {
+    currentIdx--;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    render();
+  }
+}
+function goTo(idx) {
+  currentIdx = Math.max(0, Math.min(idx, SECTIONS.length));
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  render();
+}
+
+function useDefaultsForSection() {
+  const s = SECTIONS[currentIdx];
+  if (!s) return;
+  if (s.type === 'priority-matrix') {
+    s.items.forEach(i => { if (i.recommended) state.answers[i.id] = i.recommended; });
+  } else {
+    s.questions.forEach(q => {
+      const rec = q.options.find(o => o.recommended);
+      if (rec) state.answers[q.id] = rec.value;
+    });
+  }
+  saveState();
+  render();
+}
+
+function useAllDefaults() {
+  if (!confirm('Заполнить все вопросы рекомендованными ★ значениями? Существующие ответы перезапишутся только там, где есть recommend.')) return;
+  SECTIONS.forEach(s => {
+    if (s.type === 'priority-matrix') {
+      s.items.forEach(i => { if (i.recommended) state.answers[i.id] = i.recommended; });
+    } else {
+      s.questions.forEach(q => {
+        const rec = q.options.find(o => o.recommended);
+        if (rec) state.answers[q.id] = rec.value;
+      });
+    }
+  });
+  saveState();
+  render();
+}
+
+function resetAll() {
+  if (!confirm('Сбросить ВСЕ ответы и заметки?')) return;
+  state = { answers: {}, notes: {}, currentIdx: 0 };
+  currentIdx = 0;
+  saveState();
+  render();
+}
+
+// ============================================================
+// SUMMARY / EXPORT
+// ============================================================
+function renderSummary() {
+  const total = countTotal();
+  const answered = countAnswered();
+  const exportText = buildExportText();
+
+  let html = `<h2>📋 Review &amp; Export <span class="badge">Final</span></h2>
+    <div class="desc">Проверь ответы, скопируй блок ниже и пришли мне в чат.</div>
+    <div class="summary-card">
+      <h3>Прогресс: ${answered} of ${total} answered</h3>
+      <div style="font-size:13px; color:var(--text);">
+        ${answered === total
+          ? '✓ Все вопросы заполнены — можно отправлять.'
+          : `⚠ Осталось ${total - answered} незаполненных. Можешь дозаполнить или нажать «Fill remaining with defaults».`}
+      </div>
+      ${answered < total ? `<button class="btn warning" style="margin-top:12px;" onclick="useAllDefaults()">★ Fill remaining with defaults</button>` : ''}
+    </div>
+
+    <h3 style="font-size:16px; margin: 24px 0 8px;">Compact answers (copy this)</h3>
+    <pre class="export" id="exportText">${escapeHtml(exportText)}</pre>
+    <button class="copy-btn" id="copyMain" onclick="copyExport(this)">📋 Copy to clipboard</button>
+
+    <h3 style="font-size:16px; margin: 32px 0 8px;">Per-section breakdown</h3>`;
+
+  SECTIONS.forEach((s, i) => {
+    html += `<div class="review-section">
+      <div class="title">${i+1}. ${escapeHtml(s.title)}</div>`;
+    if (s.type === 'priority-matrix') {
+      s.items.forEach(item => {
+        const ans = state.answers[item.id];
+        html += `<div class="row"><b>${item.id}</b>: ${escapeHtml(item.label)} → ${ans ? `<span class="ans">${ans}</span>` : '<span class="miss">— not answered —</span>'}</div>`;
+      });
+    } else {
+      s.questions.forEach(q => {
+        const ans = state.answers[q.id];
+        const opt = ans ? q.options.find(o => o.value === ans) : null;
+        const optLabel = opt ? ` <span style="opacity:0.7;">(${escapeHtml(opt.label.length > 60 ? opt.label.slice(0,60)+'…' : opt.label)})</span>` : '';
+        html += `<div class="row"><b>${q.id}</b>: ${escapeHtml(q.text)} → ${ans ? `<span class="ans">${ans}</span>` : '<span class="miss">— not answered —</span>'}${optLabel}</div>`;
+      });
+    }
+    const note = state.notes[s.id];
+    if (note && note.trim()) {
+      html += `<div class="note-block"><b>Note:</b> ${escapeHtml(note)}</div>`;
+    }
+    html += `</div>`;
+  });
+
+  html += `<div class="actions">
+    <button class="btn" onclick="prev()">← Back</button>
+    <div class="spacer"></div>
+    <button class="btn primary" onclick="copyExport(document.getElementById('copyMain'))">📋 Copy &amp; ready to send</button>
+  </div>`;
+
+  return html;
+}
+
+function buildExportText() {
+  const lines = [];
+  lines.push('# Investment Analysis Questionnaire — Answers');
+  lines.push('# Generated: ' + new Date().toLocaleString('en-US'));
+  lines.push('');
+  SECTIONS.forEach((s, i) => {
+    lines.push(`## ${i+1}. ${s.title}`);
+    if (s.type === 'priority-matrix') {
+      s.items.forEach(item => {
+        const ans = state.answers[item.id] || '?';
+        lines.push(`${item.id} = ${ans}  (${item.label})`);
+      });
+    } else {
+      s.questions.forEach(q => {
+        const ans = state.answers[q.id];
+        const opt = ans ? q.options.find(o => o.value === ans) : null;
+        lines.push(`${q.id} = ${ans || '?'}${opt ? '  — ' + opt.label : ''}`);
+      });
+    }
+    const note = state.notes[s.id];
+    if (note && note.trim()) {
+      lines.push(`Note: ${note.trim()}`);
+    }
+    lines.push('');
+  });
+  return lines.join('\n');
+}
+
+function copyExport(btn) {
+  const text = buildExportText();
+  navigator.clipboard.writeText(text).then(() => {
+    if (!btn) return;
+    const orig = btn.textContent;
+    btn.textContent = '✓ Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = orig; btn.classList.remove('copied'); }, 2000);
+  }).catch(err => {
+    alert('Не удалось скопировать. Выдели текст вручную и Cmd+C.');
+  });
+}
+
+// ============================================================
+// BOOT
+// ============================================================
+render();
+</script>
+</body>
+</html>
