@@ -558,12 +558,21 @@ exports.createStripeInvoice = onCall(
     if (!found) throw new HttpsError('not-found', 'Unit not found in workspace state');
     const {unit, building, floor} = found;
 
-    // Prefer Firestore state; fall back to client-supplied override when
-    // the tenant was just added and hasn't been pushed yet (avoids the
-    // 1-2s UI freeze of awaiting fbPushNow before every send).
-    const email = (unit.email && /@/.test(unit.email))
-      ? unit.email
-      : (emailOverride && /@/.test(emailOverride) ? String(emailOverride).trim() : null);
+    // Email routing — emailOverride (when explicitly provided as a valid
+    // address) WINS over unit.email. This lets the client route a
+    // specific invoice to the unit's CC / second contact instead of the
+    // primary, without permanently rewriting unit.email. Falls back to
+    // unit.email otherwise. The original "fallback when missing" behavior
+    // for just-added tenants is preserved (override still wins).
+    //
+    // Side effect: if emailOverride differs from unit.email, the
+    // customer lookup below may create a SEPARATE Stripe customer for
+    // that address (Stripe identifies customers by email). Acceptable
+    // for the per-invoice routing use case; operator can consolidate
+    // manually in Stripe Dashboard if needed.
+    const email = (emailOverride && /@/.test(emailOverride))
+      ? String(emailOverride).trim()
+      : (unit.email && /@/.test(unit.email) ? unit.email : null);
     const tenantName = unit.tenant || unit.company
       || (tenantNameOverride ? String(tenantNameOverride).trim() : null)
       || 'Tenant';
