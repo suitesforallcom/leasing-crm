@@ -8,6 +8,8 @@
       "**/.*",
       "**/node_modules/**",
       "functions/**",
+      "tests/**",
+      "scripts/**",
       "*.md",
       "*.rules",
       "index.html",
