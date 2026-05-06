@@ -6,6 +6,12 @@
 # --- Dependency directories ---
 node_modules/
 functions/node_modules/
+tests/node_modules/
+
+# --- Playwright artefacts (regenerated on every run) ---
+tests/test-results/
+tests/playwright-report/
+tests/playwright/.cache/
 
 # --- Firebase tooling cache ---
 # Local emulator state, deploy hashes, cached function artifacts.

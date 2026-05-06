@@ -121,6 +121,16 @@ After changes, run the appropriate checks:
 - `npm run test` (if available)
 - For the SuitesForAll single-file architecture: `node --check`-equivalent
   parse-validation of every `<script>` block in `floor-map-editor.html`
+- **Playwright smoke (set 2026-05-06).** `cd tests && npx playwright test`
+  runs three smoke specs against `https://suitesforall.web.app`:
+  app-loads (page renders, Sentry initializes, no console errors,
+  release tag is non-DEV in prod), static landing pages return 200,
+  auth-gate shows login screen for unauthenticated visitors. Same
+  suite runs on every push in `.github/workflows/playwright.yml`.
+  Override `PW_BASE_URL=http://localhost:5577` to point at a local
+  devserver. When adding a feature, add a spec only if it covers a
+  high-value flow (lease draft, payment, multi-user race) — small
+  visual tweaks don't need their own test.
 - Manually inspect affected pages.
 - Check responsive behavior.
 - Check browser console for errors / warnings.
