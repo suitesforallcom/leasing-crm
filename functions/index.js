@@ -504,8 +504,17 @@ exports.createStripeInvoice = onCall(
     // Clamp and sanitize remaining inputs that flow into Stripe.
     // Stripe rejects out-of-range values with cryptic errors; better
     // to clamp early and surface the choice in logs.
-    const safeDaysUntilDue = Math.max(1, Math.min(365,
-      Number.isFinite(+daysUntilDue) ? Math.floor(+daysUntilDue) : 30));
+    //
+    // Late fees — это уже penalty за просроченную аренду, поэтому
+    // дополнительный grace на сам fee-инвойс не нужен. Минимум и
+    // дефолт обнуляются → счёт due IMMEDIATELY (Stripe принимает
+    // days_until_due:0 как "due_date = now"). Для остальных purpose
+    // поведение прежнее: минимум 1 день, дефолт 30 дней.
+    const _isLateFee = invPurpose === 'late_fee';
+    const _minDays   = _isLateFee ? 0 : 1;
+    const _defDays   = _isLateFee ? 0 : 30;
+    const safeDaysUntilDue = Math.max(_minDays, Math.min(365,
+      Number.isFinite(+daysUntilDue) ? Math.floor(+daysUntilDue) : _defDays));
     // Stripe invoice description has a 1500-char limit; we cap at 500
     // so the line item, custom_fields, and footer all stay readable.
     const safeCustomDesc = (typeof customDesc === 'string')
@@ -3387,7 +3396,7 @@ async function _runAutoLateFeesHandler(opts) {
             }
 
             const description = `Late fee — ${o.monthLabel} unpaid · Suite ${u.id}`;
-            const dueDays = 7;  // late fees due faster than rent
+            const dueDays = 0;  // late fees due IMMEDIATELY — penalty за rent, без дополнительного grace
             const idempotencyKey = `auto-lf-${u.id}-${o.ym}`;
 
             // Invoice item line
