@@ -221,6 +221,95 @@ operator can grab the whole multi-step pipeline in one click. Continue
 also writing to clipboard via computer-use, but the visible code block
 is mandatory.
 
+## 14. Tables UX standard (set 2026-05-07, non-negotiable for all data tables)
+
+Every **data table** in SuitesForAll (i.e. any table that lists rows of
+records the operator can act on — A/R Aging, Invoices, Rent Roll, P&L,
+Vacancy, Calendar, Recovery, Lease list, Contract list, Commissions,
+Payments, etc.) MUST satisfy these four requirements. New data tables
+that don't satisfy them should not ship.
+
+### 14.1 Sort by column
+- Every column the operator might reasonably want to rank by must be
+  sortable by clicking the header.
+- Click cycles `asc → desc → reset to default`.
+- Visual indicator on the header: `↕` (idle) / `▲` (asc) / `▼` (desc).
+- Sort state persists per-user in `localStorage` under
+  `sfa_<table>_col_sort` and auto-syncs to Firestore via the existing
+  `fbPushUiPrefs` whitelist.
+- Use the generic helper `attachTableSort(tableEl, keyBase, columnsByKey,
+  onRerender)` and `applyTableSort(rows, sortState, columnsByKey)`
+  defined alongside `mountTablePrefs`. Don't roll your own.
+
+### 14.2 Drag-to-reorder columns
+- Drag a column header sideways to change its position.
+- Order persists per-user in `localStorage` under
+  `sfa_<table>_col_order` (auto-syncs to Firestore).
+- Already provided for free by `mountTablePrefs(tableEl, keyBase, ...)`
+  — just call it.
+- Pin columns that must NOT move with `data-col-fixed="true"` on the TH
+  (e.g. row checkbox at the start, Actions buttons at the end).
+- Aging-style buckets (Current → 30d → 60d → 90d → 90+) have semantic
+  order — DO allow drag (operator's call), don't preemptively block.
+
+### 14.3 Header tooltip (column description)
+- **Every** `<th>` MUST carry a `title="…"` attribute that explains
+  what the column shows in plain English. No exceptions, even if the
+  label looks self-explanatory ("DSO" wasn't to a property manager).
+- Keep the tooltip a single sentence — what the column means, units if
+  any, and how it's computed if non-obvious.
+- Bad: `<th>DSO</th>`
+- Good: `<th title="Days Sales Outstanding — weighted average age of unpaid balance">DSO</th>`
+- For columns that say nothing without context (currency code, %
+  precision, source filter), include that detail in the tooltip.
+
+### 14.4 Column visibility (gear menu)
+- Already provided by `mountTablePrefs` + `ensureColumnsButton`.
+- The Columns gear must appear in the table's toolbar. Use
+  `ensureColumnsButton(tableEl, keyBase, hostEl)`.
+- Hidden state persists per-user (`sfa_<table>_col_hidden`).
+
+### 14.5 Implementation contract for new tables
+When adding a new data table, the render function MUST:
+1. Emit `<th data-col-key="...">` on every column.
+2. Emit `<th data-col-fixed="true">` on pinned cols (sel, actions).
+3. Emit `<th data-col-sortable="true">` on every column the user can
+   sort by (omit it on cols where sort makes no sense — e.g. "Actions").
+4. Emit `<th title="...">` describing the column.
+5. After painting `tbody`, call:
+   - `mountTablePrefs(tableEl, 'sfa_<key>', { onRerender })`
+   - `ensureColumnsButton(tableEl, 'sfa_<key>', toolbarHost)`
+   - `attachTableSort(tableEl, 'sfa_<key>', columnsByKey, onRerender)`
+6. Before `tbody.innerHTML = …`, sort rows via:
+   - `const sortState = readTableSort('sfa_<key>') || defaultSortState;`
+   - `rows = applyTableSort(rows, sortState, columnsByKey);`
+
+### 14.6 Data-integrity guarantee
+Sort and reorder operations MUST be **pure UI**. They cannot drop,
+duplicate, or modify rows. Acceptance test for any new table or
+sort-related change:
+- Same total at the bottom (TOTALS row) before and after every sort.
+- Same row count (selectable + visible).
+- Same set of unique tenant/record IDs.
+- Same KPI strip values above the table.
+
+If a sort or drag noticeably changes the totals or count, that's a
+regression — fix before shipping.
+
+### 14.7 CSV export must follow current view
+When the table has a "⬇ CSV" / "Export" action, the export MUST honor
+the current sort + filter + visibility state. Use the same pre-sort
+helper the renderer uses; don't re-fetch unsorted rows from
+`buildXxxRows()`. Otherwise the operator's screen and exported file
+disagree.
+
+### 14.8 Retrofit policy
+Existing data tables that don't yet satisfy 14.1-14.4 are tracked as
+tech debt. They get retrofitted opportunistically — any time you touch
+a table for another reason, also enforce 14.1-14.4 in the same commit
+unless the diff would balloon past Section 9's 3-5 file limit. In that
+case, propose the retrofit as a follow-up task.
+
 ## Core principles
 
 1. Always optimize for correctness, clarity, maintainability, security, and delivery speed together.
