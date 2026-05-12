@@ -22,6 +22,25 @@ Cross-reference DECISIONS.md sections in `(see DECISIONS.md § N)` notation.
 
 ## Decisions
 
+### D-2026-05-12-FM1 · Canonical Kiwi financial model loaded as gate
+- **Decision**: Tony's Kiwi Rentals financial-rules bundle (14 markdown + 9 schema files, 13.5k+ lines) loaded into `financial-model/` as canonical reference. New `FINANCIAL_MODEL_REFERENCE.md` at repo root maps each Kiwi rule to SuitesForAll status (applies / partial / N/A by architecture). New «Financial-model gate» added to CLAUDE.md «Approval STILL required» — all financial code changes must check against the model before commit.
+- **Context**: Tony 2026-05-11 evening: «перед тем как ты придёшь настройкам сайта я хочу тебе загрузить финансовую модель чтобы ты перед тем как выгружать анализировала все финансовые модели как они согласуются». Then sent the kiwi-financial-rules.zip.
+- **Alternatives**:
+  - Migrate SuitesForAll to Kiwi's full GL architecture immediately (rejected — multi-week schema overhaul; not in scope; Tony hasn't requested);
+  - Treat Kiwi rules as "nice to have" reference only (rejected — Tony explicitly wants gate enforcement);
+  - Apply selectively per-rule (chosen — § 2 mapping table marks each rule as applies/partial/N/A).
+- **Consequences**:
+  - Every financial code change in SuitesForAll now requires passing FINANCIAL_MODEL_REFERENCE.md § 6 pre-commit checklist.
+  - QA_CHECKLIST.md «Editing financial logic» updated to call this gate.
+  - 4 discrepancies logged in FINANCIAL_MODEL_REFERENCE.md § 7 (raw JS number for money math, overpayments not tracked as unapplied cash, pro-rate not wired, valuation defaults differ between hero/Investment Analysis).
+  - Architectural gap documented in FINANCIAL_MODEL_REFERENCE.md § 4: SuitesForAll has no GL / period close / bank rec / 5-deposit-categories. Migration is Tony-decision not Claude-decision.
+  - The 14 source markdown files + 9 TypeScript schema files in `financial-model/` are READ-ONLY references. Don't edit; refresh by re-importing a new bundle.
+- **Tony decisions still pending** (now flagged):
+  - DP-FM-1: Enforce 5-deposit-category model (Kiwi §SD5)? Schema change.
+  - DP-FM-2: Track overpayments as unapplied cash (Kiwi §OP1)?
+  - DP-FM-3: Migrate to GL architecture eventually? Multi-week work.
+  - DP-FM-4: Switch all auto-billing flags default-OFF (Kiwi §FF1)?
+
 ### D-2026-05-11-PM2 · Project mode → BACK to auto-deploy + auto-push
 - **Decision**: Re-enable auto-deploy + auto-push after every commit. Local-only maintenance mode (set earlier today as D-2026-05-11) is suspended.
 - **Context**: Tony 2026-05-11 evening: «мне нужно чтобы все правки выгружались сразу онлайн чтобы выгрузка происходило автоматически». Local-only mode lasted only a few hours — was good for the docs-creation task itself but doesn't match Tony's iteration speed needs.

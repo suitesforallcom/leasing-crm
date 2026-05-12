@@ -24,7 +24,8 @@ Format:
 
 ### Mode switch (evening)
 - 🔧 `93b3a26` Created 20-file local-only PM operating package (CLAUDE.md mode switched → local-only).
-- 🔧 _(this commit)_ Re-enabled auto-deploy + auto-push mode per operator request («все правки выгружались сразу онлайн»). Local-only suspended; section preserved in CLAUDE.md as «Alternative Mode (currently inactive)». See DECISION_LOG.md D-2026-05-11-PM2.
+- 🔧 `6552bcf` Re-enabled auto-deploy + auto-push mode per operator request («все правки выгружались сразу онлайн»). Local-only suspended; section preserved in CLAUDE.md as «Alternative Mode (currently inactive)». See DECISION_LOG.md D-2026-05-11-PM2.
+- 🔧 _(this commit)_ Loaded canonical Kiwi Rentals financial model (14 markdown + 9 schema files) into `financial-model/`. Created FINANCIAL_MODEL_REFERENCE.md with applicability map (Kiwi rules vs SuitesForAll status). New «Financial-model gate» in CLAUDE.md — all financial code changes now require passing the gate. See DECISION_LOG.md D-2026-05-12-FM1. Logged 4 known discrepancies + 4 pending decisions (DP-FM-1..4).
 
 ### Critical incident — units stopped clicking
 - ⚠️ `035de45` **`_labelFontFor` Infinity → tspan dy SVG parser crash.** Latent bug surfaced when `svg.getBoundingClientRect().width` returned 0 during initial render — `font = 17/0 = Infinity` → `setAttribute('dy', Infinity)` → silent SVG DOMException → `renderUnits()` aborted mid-loop → units after the failure had no event listeners → operator saw «не нажимаются юниты» across the floor. Found via Playwright `console.errors` (Sentry doesn't catch DOM exceptions). Fix: zoom-denom guard + `Number.isFinite` check + clamp to `[0.5, 1000]`.

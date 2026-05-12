@@ -74,6 +74,25 @@ Even in auto-deploy mode, STOP and ask Tony before:
 - Member invite / role-change / workspace ownership transfer
 - Changing `STRIPE_MODE` (live ↔ test toggle)
 
+**Financial-model gate (set 2026-05-11 evening):**
+
+Tony will provide a canonical financial model. Until that model is loaded into `FINANCIAL_MODEL_REFERENCE.md`, **HOLD all changes to financial computation paths**:
+
+- effective-rent formula (`u.contractRent || u.rent`)
+- late-fee math (pct × rent / minUsd / graceDays)
+- waiver pro-rate (`_unitProrationCredit` and any wiring of it)
+- building valuation defaults (cap rate %, opex %, vacancy %)
+- Investment Analysis BRRRR formulas (NOI, EGI, IRR, DSCR, refi terms)
+- Forecast «Potential Value» card defaults (currently 9% / 35% / 0% vacancy)
+- Auto-billing cron logic (functions/index.js — already requires Tony approval per Cloud Functions rule)
+
+After the model is loaded:
+1. Every proposed financial change is FIRST validated against `FINANCIAL_MODEL_REFERENCE.md` formulas + defaults.
+2. Discrepancies are reported to Tony BEFORE committing.
+3. Only after explicit alignment is the change shipped.
+
+UI-only changes, doc updates, non-financial features, and bug fixes that don't touch any of the above continue to auto-deploy normally.
+
 If unsure, ASK. Better one extra question than one accidental finance bug.
 
 ## Tony Approval Required

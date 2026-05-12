@@ -45,6 +45,10 @@ CSS hides per role: `body:not(.role-admin) #railFin { display: none !important; 
 
 ## 3. Key formulas
 
+> **2026-05-12 update:** canonical financial model from Kiwi Rentals loaded into `financial-model/`. The formulas below are the SuitesForAll-active forms; cross-reference `FINANCIAL_MODEL_REFERENCE.md` § 2 + § 9 for the Kiwi-vs-SuitesForAll mapping. Any change to these formulas now requires passing the Financial-Model Gate (CLAUDE.md «Approval STILL required» → «Financial-model gate»).
+
+
+
 ### Effective rent (per unit, per month)
 ```
 effectiveMonthly = (u.status === 'occupied')

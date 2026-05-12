@@ -147,14 +147,17 @@ Before `git commit`:
 
 ### Editing financial logic (`u.payments`, `u.contractRent`, `u.rent`, late-fee triggers)
 
-⚠️ **REQUIRES TONY'S EXPLICIT APPROVAL** before touching.
+⚠️ **REQUIRES TONY'S EXPLICIT APPROVAL** before touching. AND must pass the **Financial-Model Gate** (set 2026-05-11) — see `FINANCIAL_MODEL_REFERENCE.md`.
 
 If approved:
-- [ ] Read PAYMENTS_AND_FINANCE_RULES.md first
+- [ ] Read **`FINANCIAL_MODEL_REFERENCE.md` § 6 pre-commit checklist** FIRST — this is the canonical Kiwi-vs-SuitesForAll gate
+- [ ] Read PAYMENTS_AND_FINANCE_RULES.md (SuitesForAll specifics)
 - [ ] Identify all callsites of the changed function (`grep -n "fnName("`)
 - [ ] Check that `_isFinanceShadow` skip is honored (multi-suite shadow units must not double-count)
 - [ ] Verify the change doesn't break the optimistic-locking `_rev` flow
 - [ ] Test with a manual payment record (use a fake suite with $1 rent)
+- [ ] Cross-check formula against `financial-model/FINANCIAL_LOGIC_RULES.md` — find the relevant § 1-§ 19 rule
+- [ ] If divergence from Kiwi rules: log it under FINANCIAL_MODEL_REFERENCE.md § 7 «Discrepancies log» BEFORE commit
 
 ### Editing auth / permissions (`canEdit`, `canSeeFinance`, `currentRole`, etc.)
 
