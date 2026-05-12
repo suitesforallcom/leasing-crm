@@ -17,6 +17,21 @@ Format:
 - 📌 **Wire `_unitProrationCredit` into invoice generation paths.** Helper exists (commit `68b7687`) and computes the per-month credit fraction from waiver records. Downstream codepaths (runAutoInvoices, manual invoice creation, Stripe sync, A/R Aging calc) still bill full rent — operator's «June 12 spillover should pro-rate June invoice» NOT yet automatic. Pending audit-pass to find all rent-calc callsites and apply `× (1 - credit)` consistently.
 - 📌 **Investment Analysis sub-tabs not visually verified.** Hold / Sensitivity / Compare / AI sub-tab markup exists (`_investBuild*HTML`) but operator only saw Overview during today's testing. AI tab uses rule-based heuristics (no LLM) — should work but unconfirmed by operator.
 - 📌 **Stripe duplicate void.** Wilbur Brown Jr's $104 duplicate invoice (`in_1TUVW22nq2bZh3q6XdFAu7Wp`) — operator never confirmed void from earlier session. Carried over from 2026-05-09 work.
+- 📌 **Firebase auth re-needed for deploy.** Tony's Firebase CLI credentials expired during the 2026-05-12 autonomous run. Five commits (`63f4727`..`a1240fc`) were committed locally + pushed to GitHub but not deployed to `https://suitesforall.web.app`. To recover: `firebase login --reauth`, then `bash scripts/stamp-release.sh && firebase deploy --only hosting`. After deploy, resolve Sentry `SUITESFORALL-6/7/8/A` (fixed by `a1240fc`).
+
+---
+
+## 2026-05-12
+
+### Autonomous 12h run (Tony away)
+
+5-commit batch executed without operator-in-the-loop per «делай все по плану я ушел на следуюзие 12 часов». All commits parse-checked (`new Function()` per inline `<script>` block — 3 blocks, 0 errors each), committed, pushed to `origin/fix/autobilling-respect-archive-filters`. Deploys blocked by expired Firebase auth — see Open items above.
+
+- 🔧 `63f4727` Defensive `_rev` telemetry in `fbApplyRemote` (warns + Sentry breadcrumb when `_rev > 1e12`, indicating a poisoned microsecond-timestamp value); Hold Period IRR/EM ∞ sub-labels rewritten («Full cash-out refi · no equity to measure» / «Refi returned all equity · no denominator»); KNOWN_ISSUES.md #4 closed (root cause not in current code; recovery via «↑ Force push» banner is adequate).
+- 🆕 `b03a177` Fit-to-Screen icon-btn in `#bottomToolbar` between Delete and Snap settings — fires `sfaFitToContent()`. Closes KNOWN_ISSUES.md #8. Standard 4-corner-bracket icon, no keyboard shortcut wired (consistent with other tool-button title-attr hints being aspirational).
+- ⚠️ `b22b985` Activity pill 1st-of-month edge case fixed — `_compute30DayActivity` now detects `_today.getDate() === 1` and falls back to a rolling 7-day window. New `windowKind: 'mtd' | '7d-fallback'` field; pill title + popover eyebrow flip text accordingly. Closes KNOWN_ISSUES.md #7.
+- 🔧 `561f52f` Doc sweep — added prominent «MODE NOTICE» banner to 5 PM-package docs (PM_OPERATING_MODE / QA_CHECKLIST / DEVELOPMENT_WORKFLOW / AUTOMATION_BOUNDARIES / RISK_MATRIX) explaining that body language about «local-only mode» is historical context (active mode flipped back to auto-deploy 2026-05-11 evening per `6552bcf`).
+- ⚠️ `a1240fc` **Hardened polygon-points iteration vs degraded Firestore data — closes Sentry SUITESFORALL-6, -7, -8, -A** («.for is not iterable» / «object is not iterable» in `sfaFitToContent`, `_polyApplyEdgeSnap`, `_polyApplyAlignSnap`, `renderUnits` polygon path, selection halo). Root cause: Firestore degraded legacy `u.points` from `[[x,y]]` to `{0:{0:x,1:y}, 1:{...}}`; existing `pointsFlat` reverse step in `fbApplyRemote` didn't rescue degraded `points` directly. New `_normPoint` + `_normalizePointsField` helpers near `_coerceFirestoreArray`. Defense-in-depth at all 5 read sites + root-cause fix-up in `fbApplyRemote`. Discoverability of these crashes was about to spike because Commit 2 added the Fit-to-Screen button (one click → `sfaFitToContent`).
 
 ---
 
