@@ -1,22 +1,25 @@
 # DEVELOPMENT_WORKFLOW.md
 
-> ~~Local-only dev cycle. No GitHub PRs, no auto-deploy, no auto-push.~~ (stale — see banner below)
+> Active auto-deploy + auto-push dev cycle for `floor-map-editor.html` and docs. Source of truth: CLAUDE.md § "Project Mode (active)".
 
-> **⚠️ MODE NOTICE (added 2026-05-12):** Active project mode is **auto-deploy + auto-push** (set 2026-05-11 evening — see SESSION_LOG.md `6552bcf` and CLAUDE.md § "Auto-deploy mode"). This doc was written during the brief 2026-05-11 local-only experiment. Where references below say «local-only», «don't deploy», «don't push», «in current mode», treat them as **historical context**, not current rules. Current rules: parse-check → commit → `firebase deploy --only hosting` → `git push origin <branch>` immediately, no per-action approval needed (CLAUDE.md § 1).
+## The auto-deploy loop
 
-## The conservative loop
-
-For any change Tony approves:
+For any change inside the "Allowed Work" boundary of CLAUDE.md:
 
 ```
-1. Inspect    →  read relevant code, propose plan
-2. Approve    →  Tony confirms with "ok" / "go ahead"
-3. Edit       →  small, focused diff (≤ 3-5 files per pass — legacy CLAUDE.md § 9)
-4. Parse      →  run parse-check (mandatory after every edit to floor-map-editor.html)
-5. Smoke      →  run Playwright if behavioral change touches public path
-6. Commit     →  local commit only; do NOT push, do NOT deploy
-7. Report     →  Files Changed + Tests Run + Risks + Rollback (per CLAUDE.md Final Response Format)
+1. Inspect       →  read relevant code, propose plan
+2. Edit          →  small, focused diff (≤ 3-5 files per pass — legacy CLAUDE.md § 9)
+3. Parse         →  parse-check (mandatory after every edit to floor-map-editor.html)
+4. Smoke         →  run Playwright if behavior touches boot / auth / render path
+5. Commit        →  one topic per commit; specific files (no `git add .`)
+6. Stamp release →  bash scripts/stamp-release.sh         ← writes commit hash into <meta sfa-release>
+7. Deploy        →  firebase deploy --only hosting        ← ships to https://suitesforall.web.app
+8. Push          →  git push origin <branch>              ← mirrors to GitHub
+9. Sentry resolve → if commit fixes a tracked SUITESFORALL-NN, mark it resolved
+10. Report       →  Files Changed + Tests + Hosting URL + Rollback (CLAUDE.md Final Response Format)
 ```
+
+Steps 6-9 fire automatically after step 5 — no per-commit approval phrase needed. The boundary that DOES require Tony approval is in CLAUDE.md § "Approval STILL required" + § "Financial-model gate".
 
 ## Before every change
 
@@ -61,20 +64,37 @@ process.exit(errs ? 1 : 0);
 
 Expected: `Parsed 3 blocks, 0 errors.` Anything else → fix the syntax error before committing.
 
-## Commit (local only — DO NOT PUSH in current mode)
+## Commit + auto-deploy pipeline
 
 ```bash
-git add floor-map-editor.html  # add specific file(s), NOT `git add .`
+# 1. Stage only the specific files you intended to change.
+git add floor-map-editor.html  # NEVER `git add .` (may sweep in .env, screenshots, etc.)
+
+# 2. Commit with a heredoc body explaining WHY.
 git -c commit.gpgsign=false commit -m "$(cat <<'EOF'
 type(scope): one-line summary (≤ 70 chars)
 
 Body explaining WHY (not just WHAT). Reference operator quote in Russian
-where applicable. List concrete tradeoffs. Include rollback hint if
-non-trivial.
+where applicable. List concrete tradeoffs. Include rollback hint.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
+
+# 3. Stamp the release into <meta name="sfa-release"> so Sentry can tag events.
+bash scripts/stamp-release.sh
+
+# 4. Deploy hosting. Cloud Functions are NOT in this pipeline — they require
+#    Tony's explicit approval per CLAUDE.md § "Approval STILL required".
+firebase deploy --only hosting
+
+# 5. Mirror to GitHub.
+git push origin fix/autobilling-respect-archive-filters
+
+# 6. (Optional) commit the stamp diff as `chore(release): stamp <hash>` and push.
+git add floor-map-editor.html
+git -c commit.gpgsign=false commit -m "chore(release): stamp <short-hash>"
+git push origin fix/autobilling-respect-archive-filters
 ```
 
 **Commit hygiene:**
@@ -82,18 +102,26 @@ EOF
 - Commit message types: `feat / fix / refactor / docs / chore / test / style / perf`
 - Always pass message via heredoc (preserves formatting, multiline body).
 - **Don't** use `--no-verify` (no hooks to skip in this project, but the rule prevents accidental CI bypass).
-- **Don't** use `--amend` after a previous commit landed — create a new commit instead (legacy rule from CLAUDE.md Section 1).
+- **Don't** use `--amend` after a previous commit landed — create a new commit instead (CLAUDE.md "CRITICAL: Always create NEW commits").
 
-## Skip in current mode
+## Always required in current mode
 
-These were part of the legacy auto-deploy loop. **Skip them**:
+- ✅ `scripts/stamp-release.sh` — writes commit hash into `<meta name="sfa-release">` so Sentry tags events with the live release
+- ✅ `firebase deploy --only hosting` — fires after every commit on the active branch
+- ✅ `git push origin <branch>` — mirrors to GitHub immediately
+- ✅ Sentry resolve via `mcp__sentry__update_issue` when commit explicitly fixes a tracked `SUITESFORALL-NN`
 
-- ❌ `scripts/stamp-release.sh` (releases tagged the live `<meta name="sfa-release">` for Sentry)
-- ❌ `firebase deploy --only hosting`
-- ❌ `git push origin <branch>`
-- ❌ Sentry resolve via `mcp__sentry__update_issue`
+## Always blocked (require explicit Tony approval even in auto-deploy mode)
 
-If Tony explicitly says "deploy this", first switch back to legacy mode (update CLAUDE.md), then follow the legacy pipeline. Document that mode-switch in SESSION_LOG.md.
+- ❌ `firebase deploy --only functions` (Cloud Functions changes)
+- ❌ Edits to `firebase.json` / `firestore.rules` / `firestore.indexes.json` / `cors.json`
+- ❌ `firebase functions:secrets:set` and any secret writes
+- ❌ `git push --force` / branch deletion / `git reset --hard` on tracked content
+- ❌ `npm install <pkg>` (new dependencies)
+- ❌ Bulk financial mutations — voiding Stripe invoices, refunds, mass payment edits
+- ❌ Anything in CLAUDE.md § "Financial-model gate" until validated against FINANCIAL_MODEL_REFERENCE.md
+
+If a change touches anything above, **stop and ask** — even though hosting deploy itself is automatic.
 
 ## Rollback
 
@@ -123,7 +151,7 @@ git -c commit.gpgsign=false commit -m "revert: emergency rollback to <hash>"
 
 Current branch: `fix/autobilling-respect-archive-filters` (verify with `git branch --show-current`).
 
-In local-only mode, **don't create new branches** unless Tony asks. Stay on the current branch and commit incrementally.
+**Don't create new branches** unless Tony asks. Stay on the current branch and commit incrementally — auto-deploy ships every commit on this branch directly.
 
 If Tony asks for a feature branch:
 
@@ -195,7 +223,7 @@ From `MEMORY.md` (operator-level prefs that apply across all sessions):
 - **Proactive UX analysis** before patching one symptom — propose top-3 highest-impact improvements where applicable.
 - **Grouped suites = one lease** (multi-suite leases never split per-suite for invoices/overdue/payments).
 
-These apply continuously. If a Tony preference conflicts with current local-only mode (e.g. "auto-deploy" preference), **local-only wins** — but mention the conflict and ask Tony to confirm which to follow.
+These apply continuously. If a Tony preference conflicts with the active auto-deploy mode (e.g. a request to "hold off on deploys"), **the in-session instruction wins** — temporarily switch behavior and log the deviation in SESSION_LOG.md.
 
 ## When to STOP and ask Tony
 

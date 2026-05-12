@@ -1,8 +1,6 @@
 # QA_CHECKLIST.md
 
-> Pre-change and post-change checks. Use this as a literal checklist — do not skip steps.
-
-> **⚠️ MODE NOTICE (added 2026-05-12):** Active project mode is **auto-deploy + auto-push** (set 2026-05-11 evening — see SESSION_LOG.md `6552bcf` and CLAUDE.md § "Auto-deploy mode"). This doc was written during the brief 2026-05-11 local-only experiment. Where references below say «local-only», «don't deploy», «don't push», «in current mode», treat them as **historical context**, not current rules. Current rules: parse-check → commit → `firebase deploy --only hosting` → `git push origin <branch>` immediately, no per-action approval needed (CLAUDE.md § 1).
+> Pre-change and post-change checks. Use this as a literal checklist — do not skip steps. Active mode: **auto-deploy + auto-push** (CLAUDE.md § "Project Mode (active)").
 
 ## Before any change
 
@@ -131,11 +129,16 @@ Before `git commit`:
 - [ ] **No `--amend`** if previous commit landed
 - [ ] **No `--no-verify`**
 
-## Non-negotiable: do NOT in current mode
+## Auto-fires after a clean commit (no per-action approval)
 
-- ❌ `firebase deploy --only hosting`
-- ❌ `firebase deploy --only functions`
-- ❌ `git push origin <branch>`
+- ✅ `bash scripts/stamp-release.sh` (stamps commit hash into `<meta name="sfa-release">`)
+- ✅ `firebase deploy --only hosting`
+- ✅ `git push origin fix/autobilling-respect-archive-filters`
+- ✅ `mcp__sentry__update_issue ... status='resolved'` when commit explicitly fixes a tracked `SUITESFORALL-NN`
+
+## Non-negotiable: do NOT auto-fire (require explicit Tony approval)
+
+- ❌ `firebase deploy --only functions` (Cloud Functions changes)
 - ❌ `git push --force` / `git push --force-with-lease`
 - ❌ `git reset --hard` (destructive)
 - ❌ `git clean -fd` (destructive)
@@ -144,6 +147,7 @@ Before `git commit`:
 - ❌ Editing `firebase.json` / `firestore.rules` / `firestore.indexes.json` / `cors.json` without approval
 - ❌ Editing `functions/.env`
 - ❌ Touching `tests/playwright.config.ts` to disable specs
+- ❌ Anything in CLAUDE.md § "Financial-model gate" until FINANCIAL_MODEL_REFERENCE.md validation
 
 ## Special cases by area
 
@@ -207,11 +211,16 @@ After running the checks above, classify the change:
 
 ## Recovery from "I broke prod"
 
-In current local-only mode you can't deploy bad code. But if Tony asks for a deploy and it lands a bug:
+In auto-deploy mode every commit ships immediately. If a deploy lands a bug:
 
 1. Find the last known-good commit hash (`git log --oneline | head -20`)
 2. Roll back the file: `git checkout <good-hash> -- floor-map-editor.html`
 3. Commit the rollback: `git -c commit.gpgsign=false commit -m "revert: rollback to <hash>"`
+4. Stamp + deploy + push the rollback IMMEDIATELY (same auto-pipeline):
+   ```bash
+   bash scripts/stamp-release.sh && firebase deploy --only hosting && git push origin <branch>
+   ```
+5. If the bug is finance-touching (KI #1 / Stripe / DocuSign), ALSO ping Tony — silent rollback of money-flow code is not safe.
 4. ASK Tony before deploying the rollback (do not auto-deploy)
 
 See SESSION_LOG.md 2026-05-11 «Critical incident — units stopped clicking» for a real example of this flow.

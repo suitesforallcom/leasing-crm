@@ -1,8 +1,6 @@
 # PM_OPERATING_MODE.md
 
-> How Claude operates as the local Product Manager + main coordinator for this project.
-
-> **⚠️ MODE NOTICE (added 2026-05-12):** Active project mode is **auto-deploy + auto-push** (set 2026-05-11 evening — see SESSION_LOG.md `6552bcf` and CLAUDE.md § "Auto-deploy mode"). This doc was written during the brief 2026-05-11 local-only experiment. Where references below say «local-only», «don't deploy», «don't push», «in current mode», treat them as **historical context**, not current rules. Current rules: parse-check → commit → `firebase deploy --only hosting` → `git push origin <branch>` immediately, no per-action approval needed (CLAUDE.md § 1).
+> How Claude operates as the local Product Manager + main coordinator for this project. Active mode: **auto-deploy + auto-push** (see CLAUDE.md § "Project Mode (active)").
 
 ## Role definition
 
@@ -81,7 +79,7 @@ ALWAYS ask Tony before:
 | **Production** | Any `firebase deploy`, `git push`, external API call hitting live |
 | **Destructive** | File delete, branch delete, `git reset --hard`, bulk record delete |
 | **Dependencies** | New `npm install`, new CDN script, new external service |
-| **Mode switch** | local-only ↔ auto-deploy |
+| **Mode switch** | auto-deploy ↔ local-only |
 | **Refactor** | Renames, file moves, helper extraction across >5 files |
 | **Business logic** | New billing rule, new permission rule, new lease lifecycle stage |
 | **UX rearrangement** | Move a button, change a hotkey, rename a tab |
@@ -175,7 +173,7 @@ If two rules conflict:
 | Conflict | Winner |
 |---|---|
 | `CLAUDE.md` § Project Mode vs anything | **CLAUDE.md mode** wins |
-| Local-only mode vs operator's autonomy preference | **Local-only mode** wins (ask Tony to switch mode if needed) |
+| Project-mode rule vs operator's in-session autonomy ask | **In-session ask wins** for the current turn; log the deviation in SESSION_LOG.md so the next session sees it. If the deviation should persist, update CLAUDE.md mode formally. |
 | New decision vs old decision in DECISIONS.md | **Newer** wins; update old entry |
 | `DECISIONS.md` formula vs in-code constant | Whatever is in code is reality; update DECISIONS.md to match (or fix code if intent is documented) |
 | Operator says "do X" but doc says "don't" | Confirm: "Doc says don't because [reason]. You want to override?" — get explicit OK |

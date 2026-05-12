@@ -1,8 +1,6 @@
 # RISK_MATRIX.md
 
-> Top risks ranked by impact × likelihood. Read this BEFORE planning any non-trivial change.
-
-> **⚠️ MODE NOTICE (added 2026-05-12):** Active project mode is **auto-deploy + auto-push** (set 2026-05-11 evening — see SESSION_LOG.md `6552bcf` and CLAUDE.md § "Auto-deploy mode"). This doc was written during the brief 2026-05-11 local-only experiment. The R-10 «Build / deploy without authorization» risk no longer applies — Claude is now expected to deploy after every commit on the active feature branch (parse-check → commit → `firebase deploy --only hosting` → `git push`). The mitigation is now: pre-commit parse-check + Sentry release tagging, not «mode disallows deploy».
+> Top risks ranked by impact × likelihood. Read this BEFORE planning any non-trivial change. Active mode: **auto-deploy + auto-push** (CLAUDE.md § "Project Mode (active)").
 
 ## Risk scoring
 
@@ -109,13 +107,16 @@
   - Auto-rebase for same-user same-doc bursts
 - **Claude action**: Don't auto-resolve. Surface the banner.
 
-### R-10. Build / deploy without authorization 🔴 Score: 5 × L = MEDIUM
-- **Trigger**: Claude runs `firebase deploy` without explicit per-action approval (currently SUSPENDED in local-only mode).
-- **Worst case**: Untested code goes live; affects real users.
+### R-10. Untested code lands on prod via auto-deploy 🟡 Score: 4 × M = MEDIUM
+- **Trigger**: A commit on the active feature branch with a regression that parse-check doesn't catch (e.g. semantic logic bug, render edge case). Auto-pipeline ships it to `https://suitesforall.web.app` within seconds.
+- **Worst case**: Operator-visible bug or silent finance error in production.
 - **Mitigation**:
-  - Local-only mode disallows deploy entirely
-  - Even when re-enabled, Claude requires explicit "deploy this" instruction (see CLAUDE.md "Tony Approval Required")
-- **Claude action**: NEVER deploy without Tony's per-action OK.
+  - Mandatory parse-check on `floor-map-editor.html` BEFORE commit (catches syntax / typos)
+  - Sentry release tag stamped per deploy — every event is traceable to a specific commit hash
+  - Playwright smoke after deploys that touch boot / auth / render path
+  - Rollback is one command: `git checkout <good-hash> -- floor-map-editor.html && commit && stamp + deploy + push`
+  - Financial-model gate (CLAUDE.md § "Financial-model gate") REQUIRES Tony approval for finance-touching changes — those don't auto-fire
+- **Claude action**: Run Playwright smoke after deploys that change boot / render. Resolve Sentry issues only AFTER the deploy lands (premature resolve re-opens on the next stale-cache event).
 
 ### R-11. Secret committed to git 🔴 Score: 5 × L = MEDIUM
 - **Trigger**: Tony pastes API key in chat; Claude saves to `.env` or commits inline.

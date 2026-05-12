@@ -1,17 +1,15 @@
 # AUTOMATION_BOUNDARIES.md
 
-> What Claude may auto-execute vs ask first. Read alongside CLAUDE.md "Allowed Work" / "Forbidden Work".
-
-> **⚠️ MODE NOTICE (added 2026-05-12):** Active project mode is **auto-deploy + auto-push** (set 2026-05-11 evening — see SESSION_LOG.md `6552bcf` and CLAUDE.md § "Auto-deploy mode"). This doc was written during the brief 2026-05-11 local-only experiment. The biggest behavior flip: `firebase deploy --only hosting` and `git push origin <branch>` are now **GREEN** (auto-execute after parse-check + commit), not «SUSPENDED». Where references below mark deploy/push as forbidden «in current mode», that's historical — current mode allows both without per-action approval (CLAUDE.md § 1).
+> What Claude may auto-execute vs ask first. Read alongside CLAUDE.md § "Allowed Work" / § "Approval STILL required". Active mode is **auto-deploy + auto-push**.
 
 ## The 4-tier model
 
 | Tier | Description | Examples | Approval needed? |
 |---|---|---|---|
-| **GREEN** | Safe local automation | Read files, run parse-check, list git status, format output | No — just do it |
-| **YELLOW** | Local writes / commits | Edit files, `git commit` (local), update docs | Per-task — describe before |
-| **ORANGE** | External / network | `firebase deploy`, `git push`, `npm install`, browser MCP | Per-action explicit Tony OK |
-| **RED** | Forbidden in current mode | Modify Stripe / production / firestore.rules / auth | Refuse + explain |
+| **GREEN** | Safe local automation | Read files, parse-check, `git status`, format output | No — just do it |
+| **YELLOW** | Local writes / commits / hosting deploys | Edit files, `git commit`, `firebase deploy --only hosting`, `git push origin <branch>`, Sentry resolve | No per-action approval — fires automatically after a clean commit on the active branch |
+| **ORANGE** | Network calls outside the auto-deploy pipeline | `npm install`, browser MCP, Playwright against prod, Stripe / DocuSign / UniFi read-only API calls | Per-action explicit Tony OK |
+| **RED** | Always forbidden — refuse or escalate | Modify Stripe / `firestore.rules` / Cloud Functions / auth, bulk-delete records, force-push to main, edit `functions/.env` | Refuse + explain + suggest safer path |
 
 ---
 
@@ -35,70 +33,76 @@ Boundary: any action that doesn't write to disk, doesn't call external services,
 
 ---
 
-## YELLOW — Local writes after announcing intent
+## YELLOW — Local writes + the auto-deploy pipeline
 
-Modify-then-commit actions, scoped to local files only:
+Modify → commit → ship — fires automatically after every clean commit on the active feature branch (no per-action approval phrase required):
 
 - Edit `floor-map-editor.html` (small focused diff per CLAUDE.md § 9 — ≤ 3-5 files)
 - Create / update doc files (`*.md`)
 - `git add <specific-file>` (NOT `git add .`)
 - `git commit` with heredoc message + `Co-Authored-By: Claude` footer
-- Run `node -e "..."` for parse-check
-- Run `cd tests && npx playwright test` (if Playwright already installed)
+- Parse-check via inline `node -e "..."`
+- `bash scripts/stamp-release.sh` (writes commit hash into `<meta sfa-release>` for Sentry tagging)
+- `firebase deploy --only hosting`
+- `git push origin fix/autobilling-respect-archive-filters`
+- `mcp__sentry__update_issue ... status='resolved'` when commit explicitly fixes a tracked `SUITESFORALL-NN`
+- Sentry list / inspect queries (read-only) — `mcp__sentry__list_issues`, `mcp__sentry__get_sentry_resource`
+- `cd tests && npx playwright test` against production OR localhost
+- Browser MCP visual smoke against `https://suitesforall.web.app` after a deploy
 
 Protocol:
-1. State intent ("Going to edit X to do Y")
-2. Show plan if non-trivial (multi-file or critical file)
-3. Wait for "ok" / "go ahead" / substantive approval if change is risky (per CLAUDE.md "Tony Approval Required" list)
-4. Execute
-5. Report Files Changed + Tests Run + Risks + Rollback (per CLAUDE.md Final Response Format)
+1. Make the change
+2. Parse-check
+3. Commit (one topic per commit)
+4. Stamp + deploy + push automatically
+5. (If applicable) resolve corresponding Sentry issue
+6. Report Files Changed + Tests Run + Hosting URL + Rollback (per CLAUDE.md Final Response Format)
 
-Boundary: nothing leaves the local file system. No `git push`, no deploy, no external API call, no `npm install`.
+Boundary: stays inside the auto-deploy pipeline. Doesn't install new packages, doesn't run mutating external API calls (Stripe / DocuSign / UniFi), doesn't touch Cloud Functions or production config.
 
 ---
 
-## ORANGE — External / network: explicit per-action approval
+## ORANGE — Outside the auto-deploy pipeline: explicit per-action approval
 
-Each invocation requires Tony's explicit "yes":
+Each invocation requires Tony's explicit "yes" because it goes outside the standard ship loop:
 
-- `firebase deploy --only hosting` (currently SUSPENDED in local-only mode)
-- `firebase deploy --only functions` (currently SUSPENDED)
-- `git push origin <branch>` (currently SUSPENDED)
-- `npm install <pkg>` in `functions/` or `tests/`
+- `npm install <pkg>` in `functions/` or `tests/` (new dependencies)
 - `npx playwright install` (downloads browser binaries — first-time only)
-- Chrome MCP browser automation against production
-- Playwright tests against production (`npx playwright test` without `PW_BASE_URL=localhost`)
-- Sentry queries / updates (`mcp__sentry__*`)
-- Any tool that hits a non-localhost URL
+- Chrome MCP browser actions that mutate state (form submits, button clicks that aren't pure-navigation)
+- Stripe / DocuSign / UniFi / Plaid API calls (passive reads beyond `whoami`-level metadata)
+- Running `cd tests && npx playwright test --headed` (UI takeover — visible to user)
+- Long-running background processes (Bash `run_in_background`)
+- Any tool that hits a non-localhost URL outside the hosting / GitHub / Sentry MCP setup
 
 Protocol:
 1. Tell Tony: "I want to do X. This will [external effect]. OK to proceed?"
 2. Wait for "yes" / explicit confirmation
 3. Execute
 4. Report what happened
-5. If `firebase deploy` fires → also report the live URL + release tag
 
-Boundary: any action that touches the network or modifies Tony's filesystem outside the project worktree.
+Boundary: any action that requires a new external integration or makes a mutating call to a service outside Firebase hosting / GitHub / Sentry resolve.
 
 ---
 
-## RED — Forbidden in current mode (refuse with explanation)
+## RED — Always forbidden (refuse with explanation)
 
-Even with Tony asking, these require switching mode FIRST:
+These remain forbidden regardless of mode. Cross-reference CLAUDE.md § "Approval STILL required" — these are the items where the auto-deploy pipeline does NOT apply.
 
-| Action | Why forbidden in local-only mode | What to ask Tony |
+| Action | Why forbidden | What to tell Tony |
 |---|---|---|
-| Modify `firebase.json` / `firestore.rules` / `firestore.indexes.json` / `cors.json` | Production config; Tony's call | "Do you want to switch back to legacy auto-deploy mode first? OR confirm you want to edit prod config in maintenance mode?" |
+| `firebase deploy --only functions` | Cloud Functions touch real money / external APIs | "Functions deploys require your explicit OK per CLAUDE.md. Confirm + I'll fire it; otherwise I stop at hosting." |
+| Modify `firebase.json` / `firestore.rules` / `firestore.indexes.json` / `cors.json` | Production config / schema; Tony's call | "I won't edit this without your explicit OK. Want me to draft the diff for your review?" |
 | Touch `functions/.env` | Real secrets; never read or modify | "I won't touch `functions/.env`. If you need a value changed, set it via `firebase functions:secrets:set` yourself." |
-| Run `firebase functions:secrets:set` / `:get` / `:remove` | Tony does these manually | "Run the command yourself in your terminal — this is a Tony-only action." |
+| Run `firebase functions:secrets:set` / `:get` / `:remove` | Tony does these manually | "Run the command yourself — this is a Tony-only action." |
 | Run `firebase login` / `--reauth` | Auth flow; Tony interactive | "Run `firebase login --reauth` yourself — opens browser for OAuth." |
 | Modify `~/.zshrc` / `~/.bashrc` | Shell config; risky for global env | "I won't write to your shell config. If a `PATH` change is needed, edit it yourself." |
 | `git reset --hard <hash>` | Destructive | "This rewrites history. Confirm explicitly OR use `git revert <hash>` for a safer non-destructive undo." |
 | `git clean -fd` / `git clean -fdx` | Destructive (deletes untracked files) | "This deletes untracked files. Confirm explicitly OR list what would be deleted first via `--dry-run`." |
 | `git push --force` / `--force-with-lease` to main / master | Destructive on shared branch | "Force-push to a shared branch is risky. Confirm explicitly + take a backup branch first." |
 | Bulk-delete tenant data / units / payments | Catastrophic | "This deletes business records. Tony, please confirm exactly what to delete with row-level approval." |
-| Send Stripe invoice from Claude tool (e.g. via curl) | Real money | "Stripe sends only happen via the app's UI or Tony's manual API call. Refusing to do this directly." |
+| Send Stripe invoice from Claude tool (e.g. via curl) | Real money | "Stripe sends only happen via the app's UI or your manual API call. I won't fire it directly." |
 | Email / SMS / DocuSign send | Real outbound communication | "External communications are operator-initiated only." |
+| Anything in CLAUDE.md § "Financial-model gate" before validation | Banking-grade rules from Kiwi bundle | "This change must pass `FINANCIAL_MODEL_REFERENCE.md` § 6 checklist first — see § 7 Discrepancies log." |
 
 Protocol:
 1. Refuse the action
@@ -195,13 +199,13 @@ If Tony says "just do it" / "stop asking" / "auto-approve all":
 
 ## Mode switching
 
-Switching from local-only mode to legacy auto-deploy (or vice versa) is itself a YELLOW action:
+If Tony asks to temporarily pause auto-deploy (e.g. "no deploys today, just stage commits"):
 
-1. Tony says: "switch to auto-deploy mode" / "switch to local-only mode"
-2. Claude updates CLAUDE.md § Project Mode
-3. Adds entry in DECISION_LOG.md
-4. Reports in SESSION_LOG.md (`## YYYY-MM-DD ## 🔧 Mode switch`)
-5. From next instruction onwards, operate in the new mode
+1. Tony explicit ask required (in-session)
+2. Claude reads as a YELLOW override — stay on the current branch, commit only
+3. Add a one-line note in SESSION_LOG.md under today's date so the next session sees the deviation
+4. When Tony says "resume" / makes a new request, return to the default auto-deploy pipeline
+5. A FULL mode switch (back to local-only) requires updating CLAUDE.md § "Project Mode (active)" + DECISION_LOG.md entry — same flow as 2026-05-11 `6552bcf`
 
 ---
 
@@ -213,11 +217,11 @@ Switching from local-only mode to legacy auto-deploy (or vice versa) is itself a
 
 ### Example 2: Tony asks "fix the typo on line 14242"
 
-→ YELLOW: announce intent ("editing line 14242 to fix [typo]"), make edit, parse-check, commit locally. NO push, NO deploy.
+→ YELLOW: edit, parse-check, commit, stamp-release, `firebase deploy --only hosting`, `git push`. Report hosting URL + release tag.
 
 ### Example 3: Tony asks "deploy this fix"
 
-In local-only mode → REFUSE: "Local-only mode disallows deploy. To deploy, please confirm switch to auto-deploy mode first OR I can stage the commit and you run `firebase deploy --only hosting` yourself."
+→ Redundant in auto-deploy mode (deploy already fired with the commit). Answer: "Already live on `https://suitesforall.web.app` at release `<short-hash>` — see Final Report." If the deploy was somehow blocked (auth expired, fs full), report the error and ask for direction.
 
 ### Example 4: Tony asks "what's in functions/.env?"
 
@@ -237,15 +241,19 @@ In local-only mode → REFUSE: "Local-only mode disallows deploy. To deploy, ple
 
 ### Example 8: Tony asks "add a new sub-tab to Investment Analysis"
 
-→ YELLOW: small edit; affects single file. Announce plan, edit, parse-check, commit locally. NO deploy / push.
+→ YELLOW: small edit, single file. Announce plan if non-trivial, edit, parse-check, commit, auto-deploy + push. Report hosting URL.
 
 ### Example 9: Tony asks "delete all archived buildings"
 
 → RED-adjacent: clarifying confirm needed. "Bulk delete affects business records. Confirm: delete buildings flagged `archivedAt != null` from `state.buildings`? Total count would be N. Restoring requires backup. Confirm with row-level YES."
 
-### Example 10: Tony asks "run Playwright tests"
+### Example 10: Tony asks "run Playwright tests against prod"
 
-→ ORANGE (default target = production): "Default config tests against `https://suitesforall.web.app`. OK to run against prod, OR want me to spin up local server (`python3 -m http.server 5577`) and target localhost first?"
+→ YELLOW (read-only smoke against the freshly deployed release): just run it and report. If the smoke would require fill-form / submit (mutating actions), step up to ORANGE.
+
+### Example 11: Tony asks "change the pro-rate formula"
+
+→ RED until financial-model gate validated: "This is on the Financial-Model Gate — per `FINANCIAL_MODEL_REFERENCE.md` § 6, I need to map the proposed change against Kiwi rules and surface any discrepancy under § 7 before commit. Want me to do that pass?"
 
 ---
 
