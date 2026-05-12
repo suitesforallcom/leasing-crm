@@ -77,11 +77,10 @@
 
 ## 🔵 LOW
 
-### #7. Activity pill window shows last calendar month if today is the 1st 🔵
-**Severity**: 🔵 — edge case.
-**Issue**: cutoff = `new Date(today.getFullYear(), today.getMonth(), 1).getTime()`. If today is the 1st, the window is from today to today (~0 hours). Operator sees 0 leases even though they may have signed yesterday.
-**Workaround**: wait a day, or manually check Rent Roll filtered to recent leases.
-**Fix path**: if today is the 1st, fall back to last 7 days. Probably not worth fixing — operator can compute prior-month stats from the Calendar view.
+### #7. Activity pill window shows last calendar month if today is the 1st ✅ FIXED 2026-05-12
+**Severity**: 🔵 → resolved.
+**Issue (historical)**: cutoff = `new Date(today.getFullYear(), today.getMonth(), 1).getTime()`. If today was the 1st, the window was from today to today (~0 hours). Operator saw 0 leases even though they may have signed yesterday.
+**Fix**: `_compute30DayActivity` now detects `_today.getDate() === 1` and falls back to a rolling 7-day window. Pill title + popover eyebrow show «Last 7 days · rolling (1st of month — month-to-date is empty by definition)» on that day so the operator understands why the label changed. New return field: `windowKind: 'mtd' | '7d-fallback'`.
 
 ### #8. No "Fit to Screen" button in bottom toolbar ✅ FIXED 2026-05-12
 **Severity**: 🔵 — discoverability.
