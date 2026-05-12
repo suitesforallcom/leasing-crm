@@ -83,11 +83,10 @@
 **Workaround**: wait a day, or manually check Rent Roll filtered to recent leases.
 **Fix path**: if today is the 1st, fall back to last 7 days. Probably not worth fixing — operator can compute prior-month stats from the Calendar view.
 
-### #8. No "Fit to Screen" button in bottom toolbar 🔵
+### #8. No "Fit to Screen" button in bottom toolbar ✅ FIXED 2026-05-12
 **Severity**: 🔵 — discoverability.
-**Issue**: operator sometimes can't see all units (zoomed in too far). No dedicated button to reset view.
-**Workaround**: scroll-wheel zoom out, or use keyboard shortcuts if any.
-**Fix path**: add «⊞ Fit» button in bottom toolbar that calls `sfaFitToContent()`. Estimated 5 min.
+**Issue**: operator sometimes couldn't see all units (zoomed in too far). No dedicated button to reset view.
+**Fix**: added Fit-to-Screen icon-btn between Delete and Snap settings in `bottomToolbar`, calling `sfaFitToContent()`. Standard 4-corner-bracket icon ([fit-to-content convention]). No keyboard shortcut wired (consistent with other tool-buttons whose title-attr shortcuts are aspirational).
 
 ### #9. Common-area label rotated drag (vertical text in elevator shafts) untested 🔵
 **Severity**: 🔵 — edge case.
