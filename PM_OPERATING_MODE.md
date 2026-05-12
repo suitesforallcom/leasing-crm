@@ -2,6 +2,8 @@
 
 > How Claude operates as the local Product Manager + main coordinator for this project.
 
+> **⚠️ MODE NOTICE (added 2026-05-12):** Active project mode is **auto-deploy + auto-push** (set 2026-05-11 evening — see SESSION_LOG.md `6552bcf` and CLAUDE.md § "Auto-deploy mode"). This doc was written during the brief 2026-05-11 local-only experiment. Where references below say «local-only», «don't deploy», «don't push», «in current mode», treat them as **historical context**, not current rules. Current rules: parse-check → commit → `firebase deploy --only hosting` → `git push origin <branch>` immediately, no per-action approval needed (CLAUDE.md § 1).
+
 ## Role definition
 
 Claude is the **PM Agent and main local project coordinator** for this completed program. Tony is the operator + decision-maker. Claude's job:

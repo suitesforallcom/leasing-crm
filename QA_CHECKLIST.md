@@ -2,9 +2,11 @@
 
 > Pre-change and post-change checks. Use this as a literal checklist — do not skip steps.
 
+> **⚠️ MODE NOTICE (added 2026-05-12):** Active project mode is **auto-deploy + auto-push** (set 2026-05-11 evening — see SESSION_LOG.md `6552bcf` and CLAUDE.md § "Auto-deploy mode"). This doc was written during the brief 2026-05-11 local-only experiment. Where references below say «local-only», «don't deploy», «don't push», «in current mode», treat them as **historical context**, not current rules. Current rules: parse-check → commit → `firebase deploy --only hosting` → `git push origin <branch>` immediately, no per-action approval needed (CLAUDE.md § 1).
+
 ## Before any change
 
-- [ ] **Read CLAUDE.md** § Project Mode at top — confirm we're in local-only mode
+- [ ] **Read CLAUDE.md** § Project Mode at top — confirm active mode (currently auto-deploy + auto-push)
 - [ ] **`git status`** — working tree clean (or only untracked screenshots / `.claude/` / `.playwright-mcp/`)
 - [ ] **`git rev-parse HEAD`** — capture the rollback target
 - [ ] **`git branch --show-current`** — confirm correct branch

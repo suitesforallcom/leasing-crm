@@ -2,6 +2,8 @@
 
 > Top risks ranked by impact × likelihood. Read this BEFORE planning any non-trivial change.
 
+> **⚠️ MODE NOTICE (added 2026-05-12):** Active project mode is **auto-deploy + auto-push** (set 2026-05-11 evening — see SESSION_LOG.md `6552bcf` and CLAUDE.md § "Auto-deploy mode"). This doc was written during the brief 2026-05-11 local-only experiment. The R-10 «Build / deploy without authorization» risk no longer applies — Claude is now expected to deploy after every commit on the active feature branch (parse-check → commit → `firebase deploy --only hosting` → `git push`). The mitigation is now: pre-commit parse-check + Sentry release tagging, not «mode disallows deploy».
+
 ## Risk scoring
 
 | Score | Impact | Examples |

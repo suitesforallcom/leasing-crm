@@ -2,6 +2,8 @@
 
 > What Claude may auto-execute vs ask first. Read alongside CLAUDE.md "Allowed Work" / "Forbidden Work".
 
+> **⚠️ MODE NOTICE (added 2026-05-12):** Active project mode is **auto-deploy + auto-push** (set 2026-05-11 evening — see SESSION_LOG.md `6552bcf` and CLAUDE.md § "Auto-deploy mode"). This doc was written during the brief 2026-05-11 local-only experiment. The biggest behavior flip: `firebase deploy --only hosting` and `git push origin <branch>` are now **GREEN** (auto-execute after parse-check + commit), not «SUSPENDED». Where references below mark deploy/push as forbidden «in current mode», that's historical — current mode allows both without per-action approval (CLAUDE.md § 1).
+
 ## The 4-tier model
 
 | Tier | Description | Examples | Approval needed? |
