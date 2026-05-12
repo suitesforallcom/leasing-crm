@@ -22,7 +22,16 @@ Cross-reference DECISIONS.md sections in `(see DECISIONS.md § N)` notation.
 
 ## Decisions
 
-### D-2026-05-11 · Project mode → local-only maintenance
+### D-2026-05-11-PM2 · Project mode → BACK to auto-deploy + auto-push
+- **Decision**: Re-enable auto-deploy + auto-push after every commit. Local-only maintenance mode (set earlier today as D-2026-05-11) is suspended.
+- **Context**: Tony 2026-05-11 evening: «мне нужно чтобы все правки выгружались сразу онлайн чтобы выгрузка происходило автоматически». Local-only mode lasted only a few hours — was good for the docs-creation task itself but doesn't match Tony's iteration speed needs.
+- **Alternatives**: Stay in local-only (rejected — operator wants speed); per-commit ask (rejected — already declined as «option A» on 2026-05-03 — «не запрашивай каждый раз»).
+- **Consequences**:
+  - Every commit → parse-check → release stamp → `firebase deploy --only hosting` → `git push origin <branch>` automatically.
+  - The «Approval STILL required» list in CLAUDE.md still applies (schema / auth / payments / Functions / new deps / etc.).
+  - Other docs (DEVELOPMENT_WORKFLOW, AUTOMATION_BOUNDARIES, LOCAL_SETUP, QA_CHECKLIST, etc.) still describe local-only mode as a CONDITIONAL state — those rules apply only when local-only is active. Active mode source of truth = CLAUDE.md § Project Mode (active).
+
+### D-2026-05-11 · Project mode → local-only maintenance (SUPERSEDED by D-2026-05-11-PM2 same day)
 - **Decision**: Suspend auto-deploy + auto-push. Document local-only operating mode via 17-file PM package.
 - **Context**: Tony explicitly asked for a conservative maintenance setup; the project is "completed" and shouldn't be touching production unsupervised.
 - **Alternatives**: Stay in legacy auto-deploy mode; add a per-deploy approval gate but keep auto-push; do nothing.

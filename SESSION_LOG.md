@@ -22,6 +22,10 @@ Format:
 
 ## 2026-05-11
 
+### Mode switch (evening)
+- 🔧 `93b3a26` Created 20-file local-only PM operating package (CLAUDE.md mode switched → local-only).
+- 🔧 _(this commit)_ Re-enabled auto-deploy + auto-push mode per operator request («все правки выгружались сразу онлайн»). Local-only suspended; section preserved in CLAUDE.md as «Alternative Mode (currently inactive)». See DECISION_LOG.md D-2026-05-11-PM2.
+
 ### Critical incident — units stopped clicking
 - ⚠️ `035de45` **`_labelFontFor` Infinity → tspan dy SVG parser crash.** Latent bug surfaced when `svg.getBoundingClientRect().width` returned 0 during initial render — `font = 17/0 = Infinity` → `setAttribute('dy', Infinity)` → silent SVG DOMException → `renderUnits()` aborted mid-loop → units after the failure had no event listeners → operator saw «не нажимаются юниты» across the floor. Found via Playwright `console.errors` (Sentry doesn't catch DOM exceptions). Fix: zoom-denom guard + `Number.isFinite` check + clamp to `[0.5, 1000]`.
 - ⚠️ `1dc9533` Emergency rollback to `c633834` while diagnosing (later un-needed; the cherry-picks below restored everything).

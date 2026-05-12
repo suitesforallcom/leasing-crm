@@ -1,74 +1,80 @@
 # CLAUDE.md
 
-> **MODE SWITCH 2026-05-11.** This file replaces the previous auto-deploy / Firebase-push CLAUDE.md. The project is now in **local-only maintenance mode**. The previous engineering principles + non-negotiables are preserved as a reference at the bottom of this file (§ Legacy Project Rules) — they describe business logic Claude must NOT break, but the operational rules (auto-deploy after every commit, auto-push to GitHub, etc.) are SUSPENDED until Tony explicitly re-enables them.
+> **MODE SWITCH 2026-05-11 (PM session, evening).** Tony explicitly re-enabled **auto-deploy + auto-push** mode («мне нужно чтобы все правки выгружались сразу онлайн чтобы выгрузка происходило автоматически»). The local-only maintenance mode introduced earlier today is now **suspended** — preserved as «§ Alternative Mode (currently inactive)» at the bottom of this file in case Tony wants to switch back.
+>
+> All other docs in this repo (DEVELOPMENT_WORKFLOW.md, AUTOMATION_BOUNDARIES.md, LOCAL_SETUP.md, etc.) reference «local-only mode» conditionally — those rules apply when local-only is active. **Current active mode = AUTO-DEPLOY.**
 
 ---
 
-## Project Mode
+## Project Mode (active)
 
-This is a completed existing program in **local-only maintenance mode**.
+This is a business-critical program in **auto-deploy + auto-push mode**.
 
-This project does not currently use:
-- GitHub workflow
-- Pull requests
-- auto-merge
-- multi-agent parallel development
-- external service connections
-- production deployment automation
+Active rules:
+- Every commit on the active feature branch → parse-check → commit → release-stamp → `firebase deploy --only hosting` → `git push origin <branch>` — automatic, no per-deploy approval phrase needed.
+- The `<meta name="sfa-release">` tag is bumped to the committed hash before every deploy so Sentry can tag events with the live release.
+- GitHub mirror at `https://github.com/suitesforallcom/leasing-crm` (remote `origin`).
+- Hosting URL: `https://suitesforall.web.app`.
 
-Future Claude sessions must treat this project as a **conservative maintenance project**.
+Approval STILL required (these never auto-fire) for:
+- destructive ops (file delete, rename, force-push)
+- schema migrations (Firestore rules / indexes)
+- new dependencies
+- auth / payment / CRM / form / SEO logic changes
+- CI/CD config edits (`firebase.json`, GitHub workflows)
+- bulk record deletions
+
+If a change touches anything in the «Approval STILL required» list, **stop and ask** — even though deploy itself is automatic.
 
 ## Main Rule
 
-Do not redesign, refactor, reconnect, redeploy, or restructure the project unless Tony explicitly asks.
+Ship safely. Each commit ships immediately to production. Therefore:
+- Parse-check is **mandatory** before commit.
+- Commits are **small + focused** (legacy rule § 9 — ≤ 3-5 files per pass).
+- Final report after every shipped change must include rollback instruction.
 
 ## Primary Goal
 
-Help Tony maintain and improve the completed program safely, with maximum local automation and minimum manual analysis, **without connecting external services or touching production**.
+Maintain and improve the program quickly + safely with auto-deploy, while preserving every business-critical contract documented in the rest of the repo.
 
-## Allowed Work
+## Allowed Work (auto-fires after commit)
 
-Claude may:
-- inspect the project,
-- document the architecture,
-- explain how the program works,
-- identify bugs,
-- recommend safe improvements,
-- create local documentation,
-- create QA checklists,
-- create maintenance task lists,
-- make small code changes only when Tony explicitly asks,
-- run existing local checks if available.
+Claude may, automatically after each commit:
 
-## Forbidden Work Without Tony's Explicit Approval
+- Run parse-check on `floor-map-editor.html`
+- Stamp release via `scripts/stamp-release.sh` (or inline `sed` of `<meta name="sfa-release">`)
+- `firebase deploy --only hosting`
+- `git push origin <branch-name>`
+- Resolve corresponding Sentry issue if the commit explicitly fixes a known bug ID
 
-Claude must not:
-- connect external services,
-- deploy (`firebase deploy`, `vercel deploy`, etc.),
-- push code (`git push`),
-- configure GitHub,
-- create PRs,
-- auto-merge,
-- configure CI/CD,
-- configure Stripe or payments,
-- configure bank connections,
-- configure email/SMS sending,
-- configure DocuSign,
-- configure Dropbox,
-- configure Cloudflare,
-- configure Vercel,
-- configure Supabase / Firebase / database hosting,
-- configure MCP,
-- configure browser automation against production,
-- install new dependencies (`npm install <pkg>`, `pip install`, etc.),
-- create real `.env` files,
-- store secrets,
-- change financial logic,
-- change database schema (Firestore rules, indexes),
-- change auth or permissions,
-- delete important files,
-- rename important files,
-- perform large refactors.
+Claude may also (without per-action ask):
+
+- Inspect any file in the repo
+- Run `git status / log / diff` and other read-only git ops
+- Edit `floor-map-editor.html` for small focused fixes (announce intent first if non-trivial)
+- Create / update doc files
+- Run Playwright smoke tests after a deploy
+- Query Sentry for new errors after a deploy
+
+## Approval STILL required
+
+Even in auto-deploy mode, STOP and ask Tony before:
+
+- Editing `firestore.rules` / `firestore.indexes.json` / `cors.json` / `firebase.json`
+- Editing `functions/index.js` (Cloud Functions code)
+- Touching `functions/.env` or any secret-bearing file
+- Running `firebase functions:secrets:set` / `:get` / `:remove`
+- Adding a new dependency (`npm install <pkg>`)
+- Force-push (`git push --force` / `--force-with-lease`)
+- File / branch deletion (`git branch -D`, `rm tracked-file`)
+- Schema changes to `state.*` (rename / remove / type-change a field)
+- Auth gate / role helper changes
+- Stripe / DocuSign / UniFi / Sentry external API calls beyond passive reads
+- Bulk-modifying `u.payments[*]` records, voiding invoices, issuing refunds
+- Member invite / role-change / workspace ownership transfer
+- Changing `STRIPE_MODE` (live ↔ test toggle)
+
+If unsure, ASK. Better one extra question than one accidental finance bug.
 
 ## Tony Approval Required
 
@@ -144,41 +150,40 @@ If a command is unavailable, write: **"Not available in this project."**
 
 Git **does** exist. Current branch: `fix/autobilling-respect-archive-filters` (verify with `git branch --show-current`).
 
-Rules:
+Rules in active **auto-deploy mode**:
 - Check `git status` before changes.
 - Do not use `--no-verify`.
-- **Do not push** (`git push origin <branch>`) without Tony's explicit approval.
-- Do not create PRs.
+- **Push automatically after every commit** (`git push origin <branch>`) — part of the auto-pipeline.
+- Do not create PRs (this project doesn't use PR workflow).
 - Do not auto-merge.
 - Do not create branches unless Tony asks.
-- Commits MAY be created locally to checkpoint work; just don't push.
+- Do not force-push without Tony's explicit approval.
+- Do not push to `main` / `master` without Tony's explicit approval.
 
-If git becomes unavailable, work in local file mode and report files created/updated.
+If git push fails (auth expired, network), report once + ask Tony to fix; do not silently retry forever.
 
 ## Automation Philosophy
 
-Maximum automation is allowed only **inside local-only maintenance mode**.
+Active mode = **maximum automation up to but not crossing the «Approval STILL required» boundaries above**.
 
-**Allowed automation:**
-- project documentation,
-- task planning,
-- QA checklist creation,
-- local command detection,
-- local test instructions,
-- safe maintenance recommendations,
-- error diagnosis,
-- repeatable local workflows.
+**Allowed automation (auto-fires after commit):**
+- Parse-check
+- Release stamp (`<meta name="sfa-release">`)
+- `firebase deploy --only hosting`
+- `git push origin <branch>`
+- Sentry resolve when commit fixes a tracked bug ID
+- Project documentation updates
+- Playwright smoke test runs
 
-**Forbidden automation:**
-- external connections,
-- deployment,
-- GitHub workflows,
-- PR automation,
-- auto-merge,
-- real payment flows,
-- real email/SMS sending,
-- real bank connections,
-- production database changes.
+**Forbidden automation (always require explicit per-action approval):**
+- `firebase deploy --only functions` (Cloud Functions changes)
+- Editing `firestore.rules` / `firestore.indexes.json` / `cors.json`
+- `firebase functions:secrets:set` / any secret writes
+- `npm install <pkg>` / new dependencies
+- Force-push / branch deletion / `git reset --hard`
+- Direct Stripe / DocuSign / UniFi / Plaid API calls
+- Sending real emails / SMS / DocuSign envelopes from Claude tools
+- Production database row mutations beyond what the app's own code paths do
 
 ## Final Response Format
 
@@ -234,9 +239,23 @@ Give Tony the exact next command or instruction.
 
 ---
 
-## § Legacy Project Rules (preserved for business-logic reference)
+## § Alternative Mode (currently inactive) — local-only maintenance
 
-The rules below were the operational mode prior to 2026-05-11. **Operational items (auto-deploy, auto-push, mandatory deploy after every commit) are SUSPENDED in current mode.** Business-logic rules (Sections 4 / 5 / 6 / 7 / 9 / 10 / 14, plus Engineering Principles) are still authoritative — those describe what Claude MUST NOT break in the application itself.
+If Tony ever switches back to local-only maintenance mode (was active briefly 2026-05-11 between docs-creation and re-enable), use these rules instead of the auto-deploy ones above:
+
+- No `firebase deploy` (suspended).
+- No `git push` (suspended).
+- All commits stay local; report to Tony but don't ship.
+- No external service calls beyond passive read-only inspection.
+- Tony manually deploys / pushes when he wants something live.
+
+Switch back to local-only via: Tony says «switch to local-only mode» → Claude updates this file's «Project Mode (active)» section accordingly + logs the switch in DECISION_LOG.md + SESSION_LOG.md.
+
+---
+
+## § Legacy Project Rules (preserved for business-logic reference — STILL AUTHORITATIVE)
+
+The rules below describe business logic Claude must NOT break — independent of operational mode. Sections 4 / 5 / 6 / 7 / 9 / 10 / 14, plus Engineering Principles, apply ALWAYS.
 
 ### Highest Priority Rules (legacy)
 
