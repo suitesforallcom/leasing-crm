@@ -204,6 +204,37 @@ operator can grab the whole multi-step pipeline in one click. Continue
 also writing to clipboard via computer-use, but the visible code block
 is mandatory.
 
+## 14. Error Memory Protocol (set 2026-05-12)
+Past bugs in this codebase recur because the same formula is duplicated
+in 3–4 places, or because a "last error" stamp has no self-heal predicate.
+A persistent error memory lives in the repo to break that loop:
+
+- **`docs/ERROR_RULES.md`** — short list of active prevention rules,
+  auto-loaded at every Claude Code session start via the SessionStart
+  hook in `.claude/settings.json`. Keep it under one screen.
+- **`docs/ERROR_MEMORY.md`** — full incident history with the template
+  for new entries. Not auto-loaded — read it manually when a bug feels
+  recurring.
+- **`.github/pull_request_template.md`** — every PR carries an Error
+  Memory declaration (checkboxes confirming the author searched memory,
+  re-read rules, fixed duplicated formulas, mirrored truth sources, etc.).
+
+The protocol in practice:
+1. **Before fixing a recurring-feeling bug**, grep `docs/ERROR_MEMORY.md`
+   for similar symptoms. If you find a match, the underlying class of
+   bug probably needs a structural fix, not another patch.
+2. **When a fix lands on a class of bug worth remembering** (non-obvious
+   root cause, multi-path drift, fooled the operator into thinking it
+   was already fixed), add an entry to `docs/ERROR_MEMORY.md` using the
+   template at the bottom of that file. If the lesson generalises, add
+   a one-liner to `docs/ERROR_RULES.md`.
+3. **Documentation alone is not the memory.** The PR template's
+   checkboxes act as a manual gate; the duplicated-formula consolidation
+   work (see `ERROR_RULES.md` §1) is the long-term real fix. When you
+   land a fix that exposes a new class of recurrence, ask whether a
+   helper / test / lint rule could make the next recurrence impossible
+   rather than just visible.
+
 ## Core principles
 
 1. Always optimize for correctness, clarity, maintainability, security, and delivery speed together.

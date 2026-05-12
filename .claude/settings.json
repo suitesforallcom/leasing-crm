@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f docs/ERROR_RULES.md && { echo '--- ERROR_RULES (loaded from docs/ERROR_RULES.md) ---'; cat docs/ERROR_RULES.md; echo '--- end ERROR_RULES ---'; } || echo '(docs/ERROR_RULES.md not found — see CLAUDE.md §14 Error Memory Protocol)'"
+          }
+        ]
+      }
+    ]
+  }
+}
