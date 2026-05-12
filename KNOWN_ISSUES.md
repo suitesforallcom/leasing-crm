@@ -51,12 +51,15 @@
 **Workaround**: open Financial Analytics → click each tab → report what's broken.
 **Fix path**: operator does a manual smoke test of each sub-tab; bugs filed as separate issues.
 
-### #4. Cloud sync `_rev` gap caused mass conflict 2026-05-11 📌 OPEN (root cause unknown)
-**Severity**: 🟡 — recovery worked, but root cause not diagnosed.
-**Issue**: at one point during 2026-05-11 session, local `_rev` = `1778437195567912`, cloud `_rev` = `1778437263991457` — gap of 68M revs. Auto-retry couldn't bridge. Operator used new "↑ Force push" recovery button (added that day in `97b0dbf`).
-**Hypothesis**: stale tab from prior session, OR a cron / webhook bumped doc many times, OR Firestore reset rev counter.
-**Workaround**: Force push button in red sync banner. UX-recoverable.
-**Fix path**: investigate Cloud Function cron + webhook triggers — log when they bump `_rev`. Add Sentry breadcrumb on each. Cross-check with Firestore audit log if available.
+### #4. Cloud sync `_rev` gap caused mass conflict 2026-05-11 ✅ INVESTIGATED 2026-05-12
+**Severity**: 🟡 → 🔵 (downgraded — recovery UX adequate; defensive telemetry added).
+**Issue (historical)**: at one point during 2026-05-11 session, local `_rev` = `1778437195567912`, cloud `_rev` = `1778437263991457` — gap of 68M revs. Auto-retry couldn't bridge. Operator used new "↑ Force push" recovery button (added that day in `97b0dbf`).
+**Investigation (2026-05-12)**:
+  - Decoded gap: `1778437195567912` ÷ 1000 ≈ `2026-05-10 18:19:55 UTC` (microsecond timestamp). Both values are timestamps, not counters. Gap = 68 seconds × 1000 = 68M units.
+  - Audited current code: `mutateWorkspaceState` in `functions/index.js` and `fbPushPatch` in `floor-map-editor.html` both bump `_rev` by exactly `+1`. NO `Date.now() * 1000` injection found in current codebase.
+  - Conclusion: poisoned `_rev` was set by an earlier code revision (now removed) OR by an external process (manual Firestore edit / one-off migration script). Source is no longer reachable from current code paths.
+**Mitigation (2026-05-12)**: added defensive telemetry in `fbApplyRemote` — if cloud `_rev > 1e12` we now log a console warning + send Sentry breadcrumb (`cloud_sync._rev_poisoned`). Recovery via «↑ Force push» banner button is unchanged and known to work.
+**Status**: closed pending fresh recurrence. If telemetry fires in production, treat as a new issue with the breadcrumb metadata as evidence.
 
 ### #5. `mode='label'` doesn't persist across page reload 🔵 (intentional?) but could surprise
 **Severity**: 🔵 — but could be 🟡 depending on operator preference.
