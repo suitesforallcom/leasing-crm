@@ -96,6 +96,17 @@ fi
 
 echo
 
+# ─── Entry 3: _healStaleStripeStamps must not wipe manual bindings ─
+# Heal-pass удаляет u.stripe.depositInvoice / moveInRent если sentAt
+# старше lease-start. Это убивает ручные привязки оператора (через
+# "Link as deposit") — у них sentAt легитимно может быть до lease-start
+# (старый Stripe-счёт). Фикс: di?.sentAt && di.manualLink !== true
+# (heal трогает штамп ТОЛЬКО если manualLink не выставлен).
+echo "Entry 3 — _healStaleStripeStamps respects manualLink flag:"
+check_gate 3 _healStaleStripeStamps 'di\?\.sentAt && di\.manualLink !== true'
+
+echo
+
 # ─── Entry 7: Deposit display in fmtBillingMonth ───────────────────
 # fmtBillingMonth должен короткозамыкать deposit-инвойсы в «Deposit»,
 # иначе deposit-инвойс показывает месяц создания (например «May») и

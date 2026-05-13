@@ -167,7 +167,8 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ### 3. Stripe stale-cache self-heal must not wipe manual bindings (2026-05-12)
 
-- **Status:** needs-porting
+- **Status:** active (ported to main 2026-05-13 in commits d1f6cb2 +
+  103a230 — both paired commits cherry-picked cleanly, no conflicts)
 - **Branch / commit:** `feature/consolidate-overdue-formula` @ `1025ee2` +
   `6496f71`
 - **Area:** Stripe integration / payment binding / persistence
