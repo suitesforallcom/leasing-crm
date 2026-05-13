@@ -2,12 +2,17 @@
   "hosting": {
     "site": "suitesforall",
     "public": ".",
+    "predeploy": [
+      "bash scripts/check-invariants.sh"
+    ],
     "ignore": [
       "firebase.json",
       ".firebaserc",
       "**/.*",
       "**/node_modules/**",
       "functions/**",
+      "scripts/**",
+      "tests/**",
       "*.md",
       "*.rules",
       "index.html",
