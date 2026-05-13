@@ -15,7 +15,10 @@
 // Cache name MUST be bumped whenever sw.js itself changes — that
 // triggers the clear in `activate`. Use a date-based name so each
 // deploy gets a fresh cache.
-const CACHE_NAME = 'sfa-shell-v1';
+// v2 (2026-05-12): фиксим протекание старого кэша HTML, который раздавал
+// устаревшую логику heal депозит-штампов. Стратегия HTML переключена с
+// stale-while-revalidate на network-first ниже.
+const CACHE_NAME = 'sfa-shell-v2';
 const APP_SHELL = ['/', '/manifest.webmanifest'];
 
 self.addEventListener('install', (event) => {
@@ -62,22 +65,28 @@ self.addEventListener('fetch', (event) => {
     'docusign.net',
   ];
   if (NEVER_CACHE.some(host => url.hostname.includes(host))) return;
-  // HTML: stale-while-revalidate. Serve from cache if available, but
-  // fetch in background so the next visit sees fresh code.
+  // HTML: network-first. Свежий код деплоя должен попадать к пользователю
+  // СРАЗУ — раньше стояло stale-while-revalidate, и кэш раздавал старый
+  // JS, который успевал испортить облачный state до прихода свежего HTML.
+  // Теперь сначала сеть, и только при реальном офлайне — fallback в кэш.
   const isHtml = req.mode === 'navigate'
     || req.headers.get('accept')?.includes('text/html');
   if (isHtml) {
     event.respondWith((async () => {
       const cache = await caches.open(CACHE_NAME);
-      const cached = await cache.match(req);
-      const fetchPromise = fetch(req).then(res => {
-        if (res.ok) cache.put(req, res.clone()).catch(() => {});
+      try {
+        const res = await fetch(req);
+        if (res && res.ok) {
+          cache.put(req, res.clone()).catch(() => {});
+        }
         return res;
-      }).catch(() => null);
-      return cached || (await fetchPromise) || new Response(
-        '<h1>Offline</h1><p>SuitesForAll is offline. Reconnect to continue.</p>',
-        { status: 503, headers: { 'Content-Type': 'text/html' } }
-      );
+      } catch (e) {
+        const cached = await cache.match(req);
+        return cached || new Response(
+          '<h1>Offline</h1><p>SuitesForAll is offline. Reconnect to continue.</p>',
+          { status: 503, headers: { 'Content-Type': 'text/html' } }
+        );
+      }
     })());
     return;
   }
