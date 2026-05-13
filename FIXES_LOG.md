@@ -46,8 +46,8 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ## Active invariants (sorted newest-first)
 
-> _Entries 1 + 2: **active** (ported to `main` 2026-05-13 in merge `d781daf`).
-> Entries 3-7: still **needs-porting** — see "Recommended porting order"._
+> _Entries 1, 2, 6, 7: **active** (ported to `main` 2026-05-13).
+> Entries 3-5: still **needs-porting** — see "Recommended porting order"._
 >
 > **Pre-deploy invariant check is live as of 2026-05-13.**
 > `scripts/check-invariants.sh` runs as the `hosting.predeploy` hook in
@@ -298,8 +298,9 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ### 6. "Open report" button visible in all Invoice History states (2026-05-13)
 
-- **Status:** needs-porting
-- **Branch / commit:** `fix/autobilling-respect-archive-filters` @ `d73dc7c`
+- **Status:** active
+- **Branch / commit:** ported 2026-05-13 (cherry-pick `9fbf895` on `main`,
+  originally `fix/autobilling-respect-archive-filters` @ `d73dc7c`)
 - **Area:** Invoice History UI / report entry point
 - **Files:**
   - `floor-map-editor.html`
@@ -323,15 +324,16 @@ to the replacement entry) if a fix is intentionally rewritten.
   button visible.
 - **Regression test:** none — manual UI only.
 - **Related PR / issue:** none
-- **Porting note:** Same merge as Entries 1, 2, 7 —
-  `fix/autobilling-respect-archive-filters` @ `d73dc7c`.
+- **Pre-deploy guard:** [scripts/check-invariants.sh](scripts/check-invariants.sh) Entry 6 block — counts `onclick="openUnitInvoiceReport()"` in floor-map-editor.html, fails if < 3.
+- **Porting note:** Ported 2026-05-13 (cherry-pick `9fbf895` on `main`).
 
 ---
 
 ### 7. Deposit display in `fmtBillingMonth` (2026-05-13)
 
-- **Status:** needs-porting
-- **Branch / commit:** `fix/autobilling-respect-archive-filters` @ `89eb152`
+- **Status:** active
+- **Branch / commit:** ported 2026-05-13 (cherry-pick `2cffc32` on `main`,
+  originally `fix/autobilling-respect-archive-filters` @ `89eb152`)
 - **Area:** Invoice History UI / FOR column labeling
 - **Files:**
   - `floor-map-editor.html`
@@ -363,8 +365,8 @@ to the replacement entry) if a fix is intentionally rewritten.
   invoice. FOR column shows "Deposit" — not a month name.
 - **Regression test:** none — manual UI only.
 - **Related PR / issue:** none
-- **Porting note:** Same merge as Entries 1, 2, 6 —
-  `fix/autobilling-respect-archive-filters` @ `89eb152`.
+- **Pre-deploy guard:** [scripts/check-invariants.sh](scripts/check-invariants.sh) Entry 7 block — greps `fmtBillingMonth` body for `purpose === 'deposit') return 'Deposit'`.
+- **Porting note:** Ported 2026-05-13 (cherry-pick `2cffc32` on `main`).
 
 ---
 
@@ -373,16 +375,12 @@ to the replacement entry) if a fix is intentionally rewritten.
 The two source branches do not currently conflict, but they touch the same
 file (`floor-map-editor.html`). Suggested merge sequence:
 
-1. ~~**First:** `fix/autobilling-respect-archive-filters` → `main`~~ — **partially
-   done 2026-05-13** (Entries 1 + 2 cherry-picked via merge `d781daf`). Entries
-   6 + 7 from the same branch still need porting.
-2. **Then:** Port the remaining UX fixes from
-   `fix/autobilling-respect-archive-filters`:
-   - Entry 6 — `d73dc7c` (Open report button)
-   - Entry 7 — `89eb152` (Deposit display)
-3. **Then:** `feature/consolidate-overdue-formula` → `main`
+1. ~~**First:** `fix/autobilling-respect-archive-filters` → `main`~~ — **done
+   2026-05-13.** Entries 1, 2, 6, 7 all cherry-picked. Source branch can be
+   archived (or kept for reference; no further commits needed).
+2. **Next:** `feature/consolidate-overdue-formula` → `main`
    (Entries 3, 4, 5 — adds `tests/` and `package.json`; will rebase cleanly
-   on top of the first merge)
+   on top of the current `main`)
 
 After each port, flip Status `needs-porting` → `active` for the affected
 entry and add a corresponding `check_gate` line to

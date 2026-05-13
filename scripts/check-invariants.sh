@@ -79,6 +79,38 @@ else
 fi
 
 echo
+
+# ─── Entry 6: «Open report» button in all 3 Invoice History states ──
+# Кнопка `class="upv2-inv-report-btn"` должна рендериться в трёх местах:
+# Loading state, Empty state, List state. Если меньше — оператор не может
+# открыть отчёт на свежедобавленном/пустом юните.
+echo "Entry 6 — Open report button in all Invoice History states:"
+btn_count=$(grep -c 'onclick="openUnitInvoiceReport()"' "$HTML" || true)
+if [ "$btn_count" -lt 3 ]; then
+  echo "  ✗ Open-report button found in only $btn_count places (need 3: loading / empty / list)"
+  echo "      See FIXES_LOG Entry 6"
+  FAIL=1
+else
+  echo "  ✓ Open-report button rendered in $btn_count places (≥3 required)"
+fi
+
+echo
+
+# ─── Entry 7: Deposit display in fmtBillingMonth ───────────────────
+# fmtBillingMonth должен возвращать 'Deposit' для purpose='deposit',
+# иначе deposit-инвойс показывает месяц создания (например «May») и
+# оператор путает депозит с rent-обязательством.
+echo "Entry 7 — Deposit display in fmtBillingMonth:"
+if grep -qE "purpose === 'deposit'\) return 'Deposit'" "$HTML"; then
+  echo "  ✓ fmtBillingMonth returns 'Deposit' for deposit invoices"
+else
+  echo "  ✗ fmtBillingMonth missing the deposit short-circuit"
+  echo '      Expected: purpose === '"'"'deposit'"'"' ) return '"'"'Deposit'"'"
+  echo "      See FIXES_LOG Entry 7"
+  FAIL=1
+fi
+
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."
