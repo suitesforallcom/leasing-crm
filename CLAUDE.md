@@ -17,6 +17,20 @@ You are working on a business-critical website. The website generates leads and 
 > phone numbers, page URLs, email notifications, CRM integrations (when
 > configured). All other rules below apply now without exception.
 
+## 0. Regression Memory (set 2026-05-12, mandatory)
+
+Before editing any payment, finance, lease, invoice, balance, late-fee,
+deposit, Stripe, report, or floor-map logic, read [`FIXES_LOG.md`](FIXES_LOG.md)
+and preserve all listed invariants. If touching a listed file or function,
+mention the relevant `FIXES_LOG` entry number in the PR handoff so the
+reviewer can confirm the invariant is intact.
+
+`FIXES_LOG.md` is the single source of truth for prior fixes and regression
+risks. Each entry names the files, functions, and invariants a future change
+must not break, plus how to verify the invariant still holds. Entries are
+append-only — do not delete them; mark superseded entries with a pointer to
+the replacement.
+
 ## 1. Safety
 - Always check `git status` before editing.
 - If the working tree has uncommitted changes, stop and ask the user.
