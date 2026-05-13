@@ -21,6 +21,45 @@ if [ ! -f "$HTML" ]; then
   exit 1
 fi
 
+# ─── Behind-main check (set 2026-05-13) ────────────────────────────
+# Защита от отката прода во времени. Worktree-ветки иногда отстают
+# от main на несколько коммитов (например, ветка уже была смержена
+# в main, потом в main прилетели ещё фичи). Если в этой ситуации
+# запустить `firebase deploy --only hosting`, прод получит файл из
+# ветки — БЕЗ свежих коммитов с main → потеря фич, которые оператор
+# выкатил вчера. Так и случилось 2026-05-13: ветка
+# `fix/port-lease-start-gate` была на 10 коммитов позади main,
+# деплой стёр кнопку «Link to month», «Open report», Stripe manual-
+# link фиксы и пр. Этот гейт делает такой откат невозможным.
+# Skip-условие: только если `git` доступен И мы внутри git-репо И
+# main-ветка известна. В CI/edge-кейсах без origin/main — пропускаем
+# проверку (но печатаем warning).
+echo "── Branch sync check ─────────────────────────────────────"
+if command -v git >/dev/null 2>&1 && git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  # Тихий fetch — не валим деплой если оффлайн, просто warning
+  if git -C "$ROOT" fetch origin main --quiet 2>/dev/null; then
+    BEHIND=$(git -C "$ROOT" rev-list --count HEAD..origin/main 2>/dev/null || echo 0)
+    if [ "${BEHIND:-0}" -gt 0 ]; then
+      echo "  ✗ DEPLOY BLOCKED — branch is $BEHIND commit(s) behind origin/main"
+      echo
+      echo "  Missing from this branch (would be wiped by deploy):"
+      git -C "$ROOT" log --oneline HEAD..origin/main | sed 's/^/    /'
+      echo
+      echo "  Run:  git merge origin/main"
+      echo "        bash scripts/check-invariants.sh"
+      echo "        firebase deploy --only hosting"
+      exit 1
+    else
+      echo "  ✓ branch is up-to-date with origin/main"
+    fi
+  else
+    echo "  ⚠ could not fetch origin/main (offline?) — skipping sync check"
+  fi
+else
+  echo "  ⚠ not a git repo or git unavailable — skipping sync check"
+fi
+echo
+
 # check_gate <entry-number> <function-name> <egrep-pattern> [window-lines]
 # Берёт N строк после `function NAME(` и проверяет, что внутри есть
 # линия, матчащая pattern. Если нет — пишет ошибку и взводит FAIL=1.
