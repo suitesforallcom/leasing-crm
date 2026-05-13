@@ -97,15 +97,19 @@ fi
 echo
 
 # ─── Entry 7: Deposit display in fmtBillingMonth ───────────────────
-# fmtBillingMonth должен возвращать 'Deposit' для purpose='deposit',
+# fmtBillingMonth должен короткозамыкать deposit-инвойсы в «Deposit»,
 # иначе deposit-инвойс показывает месяц создания (например «May») и
-# оператор путает депозит с rent-обязательством.
+# оператор путает депозит с rent-обязательством. После Entry 5 функция
+# возвращает объект-дескриптор { kind, text, ym }, поэтому ищем оба
+# исторических варианта: строку 'Deposit' и descriptor с kind:'deposit'.
 echo "Entry 7 — Deposit display in fmtBillingMonth:"
-if grep -qE "purpose === 'deposit'\) return 'Deposit'" "$HTML"; then
-  echo "  ✓ fmtBillingMonth returns 'Deposit' for deposit invoices"
+if grep -qE "purpose === 'deposit'\) return (\{ kind: 'deposit', text: 'Deposit' \}|'Deposit')" "$HTML"; then
+  echo "  ✓ fmtBillingMonth short-circuits deposit invoices to 'Deposit'"
 else
   echo "  ✗ fmtBillingMonth missing the deposit short-circuit"
-  echo '      Expected: purpose === '"'"'deposit'"'"' ) return '"'"'Deposit'"'"
+  echo "      Expected one of:"
+  echo "        purpose === 'deposit') return 'Deposit'             (pre-Entry-5)"
+  echo "        purpose === 'deposit') return { kind: 'deposit', text: 'Deposit' }   (post-Entry-5)"
   echo "      See FIXES_LOG Entry 7"
   FAIL=1
 fi
