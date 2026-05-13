@@ -79,6 +79,53 @@ else
 fi
 
 echo
+
+# ─── Entry 6: «Open report» button in all 3 Invoice History states ──
+# Кнопка `class="upv2-inv-report-btn"` должна рендериться в трёх местах:
+# Loading state, Empty state, List state. Если меньше — оператор не может
+# открыть отчёт на свежедобавленном/пустом юните.
+echo "Entry 6 — Open report button in all Invoice History states:"
+btn_count=$(grep -c 'onclick="openUnitInvoiceReport()"' "$HTML" || true)
+if [ "$btn_count" -lt 3 ]; then
+  echo "  ✗ Open-report button found in only $btn_count places (need 3: loading / empty / list)"
+  echo "      See FIXES_LOG Entry 6"
+  FAIL=1
+else
+  echo "  ✓ Open-report button rendered in $btn_count places (≥3 required)"
+fi
+
+echo
+
+# ─── Entry 3: _healStaleStripeStamps must not wipe manual bindings ─
+# Heal-pass удаляет u.stripe.depositInvoice / moveInRent если sentAt
+# старше lease-start. Это убивает ручные привязки оператора (через
+# "Link as deposit") — у них sentAt легитимно может быть до lease-start
+# (старый Stripe-счёт). Фикс: di?.sentAt && di.manualLink !== true
+# (heal трогает штамп ТОЛЬКО если manualLink не выставлен).
+echo "Entry 3 — _healStaleStripeStamps respects manualLink flag:"
+check_gate 3 _healStaleStripeStamps 'di\?\.sentAt && di\.manualLink !== true'
+
+echo
+
+# ─── Entry 7: Deposit display in fmtBillingMonth ───────────────────
+# fmtBillingMonth должен короткозамыкать deposit-инвойсы в «Deposit»,
+# иначе deposit-инвойс показывает месяц создания (например «May») и
+# оператор путает депозит с rent-обязательством. После Entry 5 функция
+# возвращает объект-дескриптор { kind, text, ym }, поэтому ищем оба
+# исторических варианта: строку 'Deposit' и descriptor с kind:'deposit'.
+echo "Entry 7 — Deposit display in fmtBillingMonth:"
+if grep -qE "purpose === 'deposit'\) return (\{ kind: 'deposit', text: 'Deposit' \}|'Deposit')" "$HTML"; then
+  echo "  ✓ fmtBillingMonth short-circuits deposit invoices to 'Deposit'"
+else
+  echo "  ✗ fmtBillingMonth missing the deposit short-circuit"
+  echo "      Expected one of:"
+  echo "        purpose === 'deposit') return 'Deposit'             (pre-Entry-5)"
+  echo "        purpose === 'deposit') return { kind: 'deposit', text: 'Deposit' }   (post-Entry-5)"
+  echo "      See FIXES_LOG Entry 7"
+  FAIL=1
+fi
+
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."
