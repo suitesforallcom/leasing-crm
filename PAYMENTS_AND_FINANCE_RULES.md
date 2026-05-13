@@ -72,6 +72,7 @@ const effectiveMonthly = (u.status === 'occupied')
 - `_computeUnitMoney` ✓ guarded — drives the unit-panel "$X owed" + red overdue overlay
 - `_renderUnitLateFeeOwed` ✓ guarded — drives the "Unbilled late fees $X" card
 - `_renderUnitPaymentHealth` ✓ guarded — drives the 13-month Payment History grid (red squares per month). Without the gate, the grid rendered 7 red "Late (>5d)" squares for a brand-new tenant because the rangeStart fell back to `curM - 6` and every past month with no payment record got `cls='overdue'`. The gate replaces the grid with a friendly "Lease start not set" amber banner.
+- `_moBuildBalanceBreakdown` ✓ guarded — Move-Out modal "Outstanding balance" list. Without the gate, the 24-month walk produced 24 × ($rent + $lateFee) phantom items (≈$16,848 for $650/mo with 8% late-fee policy) for a tenant with no lease-start. The `break` condition was `startMs && d.getTime() < startMs` — `null && ...` is falsy, so `break` never fired. Fixed by changing to `!startMs || d.getTime() < startMs` so the loop exits on first iteration when startMs is missing.
 - `_bvComputeTenantBalance` ✓ guarded, `_bvCountOutstandingMonths` ✓ guarded — Building View summaries
 - `dsoForTenant` ✓ guarded, `trendForTenant` ✓ guarded — A/R Aging metrics
 - `buildAgingRows` ✓ guarded (`continue;` skips the whole tenant when startDate is missing — they don't appear in the aging report at all) — A/R Aging report rows
