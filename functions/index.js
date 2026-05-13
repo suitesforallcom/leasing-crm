@@ -504,8 +504,17 @@ exports.createStripeInvoice = onCall(
     // Clamp and sanitize remaining inputs that flow into Stripe.
     // Stripe rejects out-of-range values with cryptic errors; better
     // to clamp early and surface the choice in logs.
-    const safeDaysUntilDue = Math.max(1, Math.min(365,
-      Number.isFinite(+daysUntilDue) ? Math.floor(+daysUntilDue) : 30));
+    //
+    // Late fees — это уже penalty за просроченную аренду, поэтому
+    // дополнительный grace на сам fee-инвойс не нужен. Минимум и
+    // дефолт обнуляются → счёт due IMMEDIATELY (Stripe принимает
+    // days_until_due:0 как "due_date = now"). Для остальных purpose
+    // поведение прежнее: минимум 1 день, дефолт 30 дней.
+    const _isLateFee = invPurpose === 'late_fee';
+    const _minDays   = _isLateFee ? 0 : 1;
+    const _defDays   = _isLateFee ? 0 : 30;
+    const safeDaysUntilDue = Math.max(_minDays, Math.min(365,
+      Number.isFinite(+daysUntilDue) ? Math.floor(+daysUntilDue) : _defDays));
     // Stripe invoice description has a 1500-char limit; we cap at 500
     // so the line item, custom_fields, and footer all stay readable.
     const safeCustomDesc = (typeof customDesc === 'string')
@@ -558,12 +567,21 @@ exports.createStripeInvoice = onCall(
     if (!found) throw new HttpsError('not-found', 'Unit not found in workspace state');
     const {unit, building, floor} = found;
 
-    // Prefer Firestore state; fall back to client-supplied override when
-    // the tenant was just added and hasn't been pushed yet (avoids the
-    // 1-2s UI freeze of awaiting fbPushNow before every send).
-    const email = (unit.email && /@/.test(unit.email))
-      ? unit.email
-      : (emailOverride && /@/.test(emailOverride) ? String(emailOverride).trim() : null);
+    // Email routing — emailOverride (when explicitly provided as a valid
+    // address) WINS over unit.email. This lets the client route a
+    // specific invoice to the unit's CC / second contact instead of the
+    // primary, without permanently rewriting unit.email. Falls back to
+    // unit.email otherwise. The original "fallback when missing" behavior
+    // for just-added tenants is preserved (override still wins).
+    //
+    // Side effect: if emailOverride differs from unit.email, the
+    // customer lookup below may create a SEPARATE Stripe customer for
+    // that address (Stripe identifies customers by email). Acceptable
+    // for the per-invoice routing use case; operator can consolidate
+    // manually in Stripe Dashboard if needed.
+    const email = (emailOverride && /@/.test(emailOverride))
+      ? String(emailOverride).trim()
+      : (unit.email && /@/.test(unit.email) ? unit.email : null);
     const tenantName = unit.tenant || unit.company
       || (tenantNameOverride ? String(tenantNameOverride).trim() : null)
       || 'Tenant';
@@ -3078,6 +3096,486 @@ exports.runAutoInvoices = onSchedule(
       // Nothing more to do — checkpoint persisted above.
     }
     logger.info(`[auto-invoice] done · sent=${sent} skipped=${skipped} failed=${failed}`);
+  }
+);
+
+// ===========================================================================
+// ===== Late-fee auto-send cron (Phase 2) ==================================
+// Daily 09:00 UTC. Walks 12-mo window per unit, identifies overdue months,
+// и для каждого месяца, который ещё не был выставлен, создаёт Stripe invoice
+// с purpose='late_fee'. Three safety gates protect tenants from accidental
+// charges:
+//   1. Per-unit u.lateFeeOverride.autoSend (cascade workspace→building→
+//      floor→unit). Operator opt-in per tenant — flipped via the LF auto-send
+//      pill in Auto-billing Coverage table or unit drawer.
+//   2. Workspace state.settings.lateFee.autoSendLive (default false). When
+//      false, cron logs every action it WOULD take but never calls Stripe.
+//      Operator monitors logs 2-3 days, then flips live in Settings → Billing.
+//   3. Triple idempotency layer: Stripe idempotency-key auto-lf-{uid}-{ym},
+//      Stripe Search dedupe vs prior late-fee invoices for same unit/ym, and
+//      u.stripe.lateFeeSent[ym] = invoiceId stamp prevents re-billing.
+// ===========================================================================
+
+// Server-side mirror of getLateFeeConfig() (floor-map-editor.html L115330).
+// Cascade workspace → building → floor → unit, with fromLease delegation
+// + building-paused hard-disable. Returns the merged effective config.
+function _resolveLateFeeConfigServer(state, b, f, u) {
+  const def = {
+    enabled: true, graceDays: 5, type: 'percent', amount: 8,
+    frequency: 'monthly', applyTo: 'total',
+    requireGuaranteedPayment: true, suspendAccessAfterLate: false,
+    autoSend: false,
+  };
+  let cfg = Object.assign({}, def, (state && state.settings && state.settings.lateFee) || {});
+  // Building override
+  const bOvr = b && b.billingRulesOverride && b.billingRulesOverride.lateFee;
+  if (bOvr && typeof bOvr === 'object') {
+    if (bOvr.source === 'fromLease') {
+      // fromLease: применяем только enabled, цифры оставляем на per-unit override
+      if (bOvr.enabled !== undefined) cfg = Object.assign({}, cfg, { enabled: bOvr.enabled === true });
+    } else {
+      cfg = Object.assign({}, cfg, bOvr);
+    }
+  }
+  // Floor override
+  const fOvr = f && f.billingRulesOverride && f.billingRulesOverride.lateFee;
+  if (fOvr && typeof fOvr === 'object') {
+    if (fOvr.source === 'fromLease') {
+      if (fOvr.enabled !== undefined) cfg = Object.assign({}, cfg, { enabled: fOvr.enabled === true });
+    } else {
+      cfg = Object.assign({}, cfg, fOvr);
+    }
+  }
+  // Unit override
+  if (u && u.lateFeeOverride && typeof u.lateFeeOverride === 'object') {
+    cfg = Object.assign({}, cfg, u.lateFeeOverride);
+  }
+  // Building-level pause hard-disables late-fee автоматику для всех юнитов в здании.
+  if (b && b.billingRulesOverride && b.billingRulesOverride.paused === true) {
+    cfg = Object.assign({}, cfg, { enabled: false });
+  }
+  return cfg;
+}
+
+// Server-side mirror of _firstTenancyYm (floor-map-editor.html L71096).
+// Returns YYYY-MM of the earliest tenancy stamp on the unit, or null
+// if neither _tenantAddedAt nor leaseStart is set.
+function _firstTenancyYmServer(u) {
+  if (!u) return null;
+  let earliestMs = Infinity;
+  for (const ref of [u._tenantAddedAt, u.leaseStart]) {
+    if (!ref) continue;
+    const d = new Date(String(ref).length <= 10 ? ref + 'T00:00:00Z' : ref);
+    if (!isNaN(d.getTime()) && d.getTime() < earliestMs) earliestMs = d.getTime();
+  }
+  if (!isFinite(earliestMs)) return null;
+  const d = new Date(earliestMs);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+// Server-side mirror of lateFeePreviewFor (floor-map-editor.html L115423),
+// but returns ONE entry per overdue month (cron creates per-month invoices,
+// not a single aggregated one). Each entry: { ym, base, fee, monthLabel }.
+// Honors cfg.frequency === 'once' cap.
+function _computeOverdueMonths(u, cfg, todayInZoneParts) {
+  if (!cfg || !cfg.enabled) return [];
+  // Today как UTC-полночь, выведенная из workspace-zone parts. Нам нужна
+  // только день-точность для подсчёта days-since-due.
+  const todayUtc = new Date(Date.UTC(
+    todayInZoneParts.year,
+    todayInZoneParts.month - 1,
+    todayInZoneParts.day
+  ));
+  const curY = todayInZoneParts.year, curM = todayInZoneParts.month;  // 1-indexed
+  const firstYm = _firstTenancyYmServer(u);
+  const overdueList = [];
+  let monthsOwed = 0;
+  // Walk oldest → newest in 12-mo window.
+  for (let i = 11; i >= 0; i--) {
+    let mYear = curY, mMonth = curM - i;
+    while (mMonth < 1) { mMonth += 12; mYear -= 1; }
+    const ym = `${mYear}-${String(mMonth).padStart(2, '0')}`;
+    if (firstYm && ym < firstYm) continue;     // before tenancy began
+    const p = u && u.payments && u.payments[ym];
+    if (p && (p.status === 'paid' || p.status === 'free' || p.status === 'waived')) continue;
+    // Days since 1st of this month, in UTC.
+    const dueDate = new Date(Date.UTC(mYear, mMonth - 1, 1));
+    const days = Math.floor((todayUtc - dueDate) / 86400000);
+    if (days < (cfg.graceDays || 0)) continue;
+    monthsOwed++;
+    if (cfg.frequency === 'once' && monthsOwed > 1) continue;
+    // Compute base
+    let base = +u.contractRent || +u.rent || 0;
+    if (cfg.applyTo === 'total') {
+      const ex = u && u.extraCharges && u.extraCharges[ym];
+      if (ex && typeof ex === 'object') {
+        base += (+ex.taxes || 0) + (+ex.services || 0) + (+ex.other || 0);
+      }
+    }
+    const fee = cfg.type === 'percent'
+      ? base * (+cfg.amount / 100)
+      : +cfg.amount;
+    if (!(fee > 0)) continue;
+    overdueList.push({
+      ym,
+      base: Math.round(base * 100) / 100,
+      fee: Math.round(fee * 100) / 100,
+      monthLabel: new Date(Date.UTC(mYear, mMonth - 1, 1))
+        .toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' }),
+    });
+  }
+  return overdueList;
+}
+
+// Inner handler shared by onSchedule (daily cron) + onCall (Run-now button).
+// opts:
+//   forceDryRun: bool — override workspace autoSendLive=true to dry-run anyway
+//   manualTrigger: bool — log marker so logs distinguish cron vs operator-clicked
+async function _runAutoLateFeesHandler(opts) {
+  const forceDryRun = !!(opts && opts.forceDryRun);
+  const manualTrigger = !!(opts && opts.manualTrigger);
+
+  const stateRef = db.doc(`workspaces/${WORKSPACE_ID}/data/state`);
+  const snap = await stateRef.get();
+  if (!snap.exists) {
+    logger.info('[auto-late-fee] no state doc, skipping');
+    return { sent: 0, skipped: 0, failed: 0, dryRun: 0, mode: 'no-state' };
+  }
+  const state = snap.data().state || {};
+  const wsLfCfg = (state.settings && state.settings.lateFee) || {};
+
+  // Workspace-wide live gate. Default false → cron логирует но не вызывает
+  // Stripe. После 2-3 дней наблюдения за логами оператор флипает switch в
+  // Settings → Billing. forceDryRun (от Run-now button) принудительно
+  // оставляет dry-run даже если workspace уже live — чтобы оператор мог
+  // «посмотреть что бы крон сделал сегодня» без реальных charge.
+  const liveMode = (wsLfCfg.autoSendLive === true) && !forceDryRun;
+  const mode = liveMode ? 'LIVE' : 'DRY-RUN';
+  logger.info(`[auto-late-fee] starting · mode=${mode}${manualTrigger ? ' · manual trigger' : ''}`);
+
+  // Checkpoint — track per-unit processing within the last 24h, so a
+  // mid-run timeout doesn't double-process the same units on re-trigger.
+  const checkpointRef = db.doc(`workspaces/${WORKSPACE_ID}/cronProgress/auto-late-fee`);
+  let checkpoint;
+  try {
+    const ckSnap = await checkpointRef.get();
+    checkpoint = ckSnap.exists ? (ckSnap.data() || {}) : {};
+  } catch (e) {
+    checkpoint = {};
+  }
+  const stampedRecently = new Set(
+    Object.entries(checkpoint.processed || {})
+      .filter(([, ms]) => Number(ms) > Date.now() - 24 * 60 * 60 * 1000)
+      .map(([id]) => id)
+  );
+  const startTimeMs = Date.now();
+  const TIME_BUDGET_MS = 480 * 1000;   // leave 60s headroom in 540s timeout
+  const newCheckpoint = Object.assign({}, checkpoint.processed || {});
+  let abortedEarly = false;
+
+  // Workspace timezone for "today". Without this, operator on PT sees
+  // graceDays calculation drift across month boundaries near midnight UTC.
+  const wsTimeZone = (state.settings && state.settings.timeZone) || 'UTC';
+  let todayInZoneParts;
+  try {
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: wsTimeZone, year: 'numeric', month: '2-digit', day: '2-digit',
+    });
+    todayInZoneParts = fmt.formatToParts(new Date()).reduce((a, p) => {
+      if (p.type !== 'literal') a[p.type] = +p.value;
+      return a;
+    }, {});
+    logger.info(`[auto-late-fee] timezone=${wsTimeZone} today=${todayInZoneParts.year}-${String(todayInZoneParts.month).padStart(2,'0')}-${String(todayInZoneParts.day).padStart(2,'0')}`);
+  } catch (e) {
+    logger.warn(`[auto-late-fee] invalid timezone "${wsTimeZone}" (${e.message}), falling back to UTC`);
+    const t = new Date();
+    todayInZoneParts = { year: t.getUTCFullYear(), month: t.getUTCMonth() + 1, day: t.getUTCDate() };
+  }
+
+  let sent = 0, skipped = 0, failed = 0, dryRunCount = 0;
+  const stripe = liveMode ? getStripe() : null;
+  const dryRunActions = []; // [{unitId, ym, fee, base, customerId}]
+
+  outer: for (const b of state.buildings || []) {
+    for (const f of b.floors || []) {
+      for (const u of f.units || []) {
+        const unitKey = `${b.id}|${f.id}|${u.id}`;
+        if (stampedRecently.has(unitKey)) { skipped++; continue; }
+        if (Date.now() - startTimeMs > TIME_BUDGET_MS) {
+          abortedEarly = true;
+          logger.warn(`[auto-late-fee] time budget exceeded, aborting at unit ${unitKey}`);
+          break outer;
+        }
+
+        // Standard gates
+        if (u.deletedAt) { skipped++; continue; }
+        if (u.status !== 'occupied') { skipped++; continue; }
+        if (!u.tenant && !u.company) { skipped++; continue; }
+        if (!u.email || !/@/.test(u.email || '')) { skipped++; continue; }
+        // Group consolidation: для multi-suite leases считаем только head
+        // (groupRole='primary'). Non-primary members в финансовой консолидации
+        // — «shadow» юниты, у них нет своих payments/extraCharges (Phase A
+        // миграция переносит всё на head). Биллинг late fee только с head'а
+        // — иначе мы создадим 3 invoice'а на одну группу из 3 юнитов.
+        if (u.groupId && u.groupRole !== 'primary') { skipped++; continue; }
+
+        // Resolve cascade config
+        const cfg = _resolveLateFeeConfigServer(state, b, f, u);
+        if (!cfg.enabled)  { skipped++; continue; }   // calc disabled → no fees
+        if (!cfg.autoSend) { skipped++; continue; }   // send disabled → operator hasn't opted in
+
+        // Lease must still be active(ish) to bill late fees. Ended >30 days
+        // ago → skip; collections logic handles old debt elsewhere.
+        if (u.until) {
+          const until = new Date(u.until + 'T00:00:00Z');
+          const todayUtc = new Date(Date.UTC(
+            todayInZoneParts.year, todayInZoneParts.month - 1, todayInZoneParts.day
+          ));
+          if (!isNaN(until.getTime()) && until.getTime() < todayUtc.getTime() - 30 * 86400000) {
+            skipped++;
+            continue;
+          }
+        }
+
+        // Compute overdue months
+        const overdues = _computeOverdueMonths(u, cfg, todayInZoneParts);
+        if (overdues.length === 0) { skipped++; continue; }
+
+        // Filter out months we've already invoiced (per stamp).
+        const lateFeeSent = (u.stripe && u.stripe.lateFeeSent) || {};
+        const todoMonths = overdues.filter(o => !lateFeeSent[o.ym]);
+        if (todoMonths.length === 0) { skipped++; continue; }
+
+        const customerId = u.stripe && u.stripe.customerId;
+
+        // DRY-RUN — log + bail without touching Stripe
+        if (!liveMode) {
+          for (const o of todoMonths) {
+            dryRunActions.push({
+              unitId: u.id, buildingId: b.id, floorId: f.id,
+              ym: o.ym, fee: o.fee, base: o.base,
+              customerId: customerId || '(no-customer)',
+              monthLabel: o.monthLabel,
+            });
+            dryRunCount++;
+          }
+          newCheckpoint[unitKey] = Date.now();
+          continue;
+        }
+
+        // LIVE MODE — issue per-month Stripe invoices
+        if (!customerId) {
+          logger.warn(`[auto-late-fee] ${u.id}: no stripe customerId, skipping in LIVE mode`);
+          skipped++;
+          continue;
+        }
+
+        for (const o of todoMonths) {
+          try {
+            // Cross-flow dedupe vs MANUAL sends. createStripeInvoice can
+            // also emit purpose='late_fee' invoices (operator clicks
+            // "Send late fee" in the unit drawer); without this guard
+            // cron would double-bill. Stripe Search is eventually-
+            // consistent (~10s lag), fine for a daily cron.
+            try {
+              const dupQ = `customer:"${customerId}" AND metadata["unitId"]:"${u.id}" `
+                         + `AND metadata["purpose"]:"late_fee" AND metadata["ym"]:"${o.ym}"`;
+              const dupRes = await stripe.invoices.search({ query: dupQ, limit: 5 });
+              const liveDup = (dupRes.data || []).find(inv =>
+                !['void', 'uncollectible', 'deleted'].includes(inv.status));
+              if (liveDup) {
+                logger.info(`[auto-late-fee] ${u.id}: late-fee for ${o.ym} already exists (${liveDup.id}, ${liveDup.status}); stamping + skipping`);
+                u.stripe = u.stripe || {};
+                u.stripe.lateFeeSent = u.stripe.lateFeeSent || {};
+                u.stripe.lateFeeSent[o.ym] = liveDup.id;
+                skipped++;
+                continue;
+              }
+            } catch (searchErr) {
+              logger.warn(`[auto-late-fee] ${u.id}/${o.ym}: dup-search failed (${searchErr.message}); proceeding with idempotency-key`);
+            }
+
+            const description = `Late fee — ${o.monthLabel} unpaid · Suite ${u.id}`;
+            const dueDays = 0;  // late fees due IMMEDIATELY — penalty за rent, без дополнительного grace
+            const idempotencyKey = `auto-lf-${u.id}-${o.ym}`;
+
+            // Invoice item line
+            await stripe.invoiceItems.create({
+              customer: customerId,
+              amount: Math.round(o.fee * 100),
+              currency: 'usd',
+              description,
+              metadata: {
+                unitId: u.id, buildingId: b.id, floorId: f.id,
+                ym: o.ym, purpose: 'late_fee', source: 'auto',
+                baseAmount: String(o.base),
+                feeType: cfg.type, feeAmount: String(cfg.amount),
+              },
+            }, { idempotencyKey: idempotencyKey + '-item' });
+
+            // Auto-charge routing — same logic as runAutoInvoices. If
+            // workspace+unit auto-charge is on AND tenant has a saved
+            // default_payment_method, charge_automatically; else
+            // send_invoice with save_default_payment_method.
+            const wsAutoCharge = (state.settings && state.settings.autoInvoice && state.settings.autoInvoice.autoCharge) === true;
+            const unitAc = u.autoCharge;
+            const acOn = unitAc === 'on' || (unitAc !== 'off' && wsAutoCharge);
+            let acMethod = 'send_invoice';
+            let acPaymentSettings = null;
+            if (acOn) {
+              try {
+                const cust = await stripe.customers.retrieve(customerId);
+                const dpm = cust && cust.invoice_settings && cust.invoice_settings.default_payment_method;
+                if (dpm) {
+                  acMethod = 'charge_automatically';
+                } else {
+                  acPaymentSettings = { save_default_payment_method: 'on_confirmation' };
+                }
+              } catch (e) {
+                logger.warn(`[auto-late-fee] ${u.id}/${o.ym}: customer retrieve failed, using send_invoice — ${e.message}`);
+              }
+            }
+
+            // Footer parity с manual createStripeInvoice path —
+            // тот же property/suite/landlord block чтобы tenant видел
+            // одинаковый PDF независимо от того кто послал.
+            const _autoLandlordEmail = String((state.settings && state.settings.invoiceLandlordEmail) || 'finance@kiwi-rentals.com').trim();
+            const _autoLandlordName  = String((state.settings && state.settings.invoiceLandlordName)  || 'SuitesForAll').trim();
+            const _calcLabel = cfg.type === 'percent'
+              ? `${cfg.amount}% × $${o.base.toFixed(2)} = $${o.fee.toFixed(2)}`
+              : `$${cfg.amount} flat`;
+            const _autoFooter = [
+              `Property: ${b.address || b.name || ''}${f.name ? ' · ' + f.name : ''}`,
+              `Suite: ${u.id}`,
+              `Late fee for: ${o.monthLabel}`,
+              `Calculated: ${_calcLabel}`,
+              `Grace period: ${cfg.graceDays || 0} days`,
+              `Payment due: within ${dueDays} days`,
+              `Landlord: ${_autoLandlordName}${_autoLandlordEmail ? ' · ' + _autoLandlordEmail : ''}`,
+            ].join(' · ');
+
+            const inv = await stripe.invoices.create({
+              customer: customerId,
+              auto_advance: true,
+              collection_method: acMethod,
+              ...(acMethod === 'send_invoice' ? { days_until_due: dueDays } : {}),
+              ...(acPaymentSettings ? { payment_settings: acPaymentSettings } : {}),
+              metadata: {
+                unitId: u.id, buildingId: b.id, floorId: f.id,
+                ym: o.ym, purpose: 'late_fee', source: 'auto',
+              },
+              description,
+              footer: _autoFooter,
+            }, { idempotencyKey });
+
+            // Custom invoice number — "L-" prefix per PURPOSE_CODE.late_fee
+            const lfNumber = buildCustomInvoiceNumber({
+              purpose: 'late_fee', unitId: u.id, ym: o.ym, auto: false,
+            });
+            try {
+              await stripe.invoices.update(inv.id, { number: lfNumber });
+            } catch (e) {
+              logger.warn(`[auto-late-fee] ${u.id}/${o.ym}: couldn't set number ${lfNumber} — ${e.message}`);
+            }
+
+            if (acMethod === 'send_invoice') {
+              await stripe.invoices.sendInvoice(inv.id);
+            } else {
+              logger.info(`[auto-late-fee] ${u.id}/${o.ym}: auto-charging saved card (charge_automatically)`);
+            }
+
+            // Stamp — preventing re-billing on next cron tick.
+            u.stripe = u.stripe || {};
+            u.stripe.lateFeeSent = u.stripe.lateFeeSent || {};
+            u.stripe.lateFeeSent[o.ym] = inv.id;
+            sent++;
+            logger.info(`[auto-late-fee] sent to ${u.email} (${u.id}/${o.ym}) · $${o.fee.toFixed(2)} · ${inv.id}`);
+          } catch (err) {
+            failed++;
+            logger.error(`[auto-late-fee] ${u.id}/${o.ym} failed:`, err.message || err);
+          }
+        }
+        newCheckpoint[unitKey] = Date.now();
+      }
+    }
+  }
+
+  // Persist updated state if anything was actually invoiced.
+  if (sent > 0) {
+    state._rev = (state._rev || 0) + 1;
+    await stateRef.set(
+      {
+        state, _rev: state._rev,
+        _updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        _updatedBy: 'auto-late-fee',
+      },
+      { merge: true }
+    );
+  }
+
+  // Persist checkpoint + dry-run summary (capped at 50 actions so the
+  // doc doesn't grow unbounded over weeks of dry-runs).
+  try {
+    await checkpointRef.set({
+      processed: newCheckpoint,
+      lastRunAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastRunAbortedEarly: abortedEarly,
+      lastRunMode: mode,
+      lastRunSent: sent,
+      lastRunSkipped: skipped,
+      lastRunFailed: failed,
+      lastRunDryRunCount: dryRunCount,
+      lastDryRunActions: dryRunActions.slice(0, 50),
+    });
+  } catch (e) {
+    logger.warn(`[auto-late-fee] checkpoint write failed: ${e.message}`);
+  }
+
+  // Loud summary
+  if (!liveMode && dryRunCount > 0) {
+    logger.info(`[auto-late-fee] DRY-RUN — would have sent ${dryRunCount} late-fee invoice(s). First 10:`);
+    for (const a of dryRunActions.slice(0, 10)) {
+      logger.info(`  · ${a.unitId} · ${a.ym} · $${a.fee.toFixed(2)} (base $${a.base.toFixed(2)}) · cust=${a.customerId}`);
+    }
+    if (dryRunCount > 10) logger.info(`  ... and ${dryRunCount - 10} more`);
+    logger.info('[auto-late-fee] To go LIVE: flip state.settings.lateFee.autoSendLive = true in Settings → Billing.');
+  }
+  logger.info(`[auto-late-fee] done · mode=${mode} · sent=${sent} · skipped=${skipped} · failed=${failed} · dryRunCount=${dryRunCount}`);
+
+  return {
+    sent, skipped, failed, dryRun: dryRunCount, mode, abortedEarly,
+    sampleActions: dryRunActions.slice(0, 20),
+  };
+}
+
+exports.runAutoLateFees = onSchedule(
+  {
+    schedule: '0 9 * * *',         // 09:00 UTC daily — same as runAutoInvoices
+    timeZone: 'UTC',
+    secrets: [STRIPE_SECRET_KEY],
+    memory: '512MiB',
+    timeoutSeconds: 540,
+  },
+  async () => {
+    try {
+      await _runAutoLateFeesHandler({});
+    } catch (e) {
+      logger.error('[auto-late-fee] cron handler crashed:', e.message || e);
+      throw e;
+    }
+  }
+);
+
+// Manual run-now from Settings → Billing. Lets the operator trigger the
+// cron on demand — useful for verifying dry-run output без ожидания 24h.
+// Always enforces requireEditor. If req.data.forceDryRun=true, dry-run
+// even if workspace is live (preview without billing).
+exports.triggerAutoLateFeesNow = onCall(
+  {secrets: [STRIPE_SECRET_KEY], timeoutSeconds: 540, memory: '512MiB'},
+  async (req) => {
+    await requireEditor(req.auth);
+    const forceDryRun = req.data && req.data.forceDryRun === true;
+    return await _runAutoLateFeesHandler({ forceDryRun, manualTrigger: true });
   }
 );
 

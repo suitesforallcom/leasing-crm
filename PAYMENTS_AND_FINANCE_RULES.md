@@ -99,6 +99,7 @@ if (!startDate || isNaN(startDate.getTime())) {
 
 ---
 
+
 ## Multi-suite lease (`groupId`) handling
 
 **Rule**: One tenant + one contract + one set of invoices/overdue/payments.

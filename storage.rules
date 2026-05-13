@@ -81,6 +81,19 @@ service firebase.storage {
     // for receipts is matched MORE specifically above and takes
     // precedence. Other paths (building photos, gallery, lease PDFs)
     // fall through here — those are intentionally workspace-shared.
+    // Lease templates — HTML body of uploaded lawyer-drafted templates.
+    // Stored separately (not as inline state) because rendered .docx HTML
+    // routinely exceeds the 5 MB localStorage cap. Allowed types are
+    // restricted to plain HTML/text and capped at 5 MB per template
+    // (legal text without embedded images is well under this).
+    match /workspaces/{wid}/templates/{allPaths=**} {
+      allow read:  if isMember(wid);
+      allow write: if isEditor(wid)
+                     && request.resource.contentType.matches('^text/(html|plain)$')
+                     && request.resource.size < 5 * 1024 * 1024;
+      allow delete: if isEditor(wid);
+    }
+
     match /workspaces/{wid}/{allPaths=**} {
       allow read:  if isMember(wid);
       allow write: if isEditor(wid)
