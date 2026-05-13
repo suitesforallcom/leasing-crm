@@ -71,10 +71,10 @@ const effectiveMonthly = (u.status === 'occupied')
 **Where this MUST be enforced** (every function that loops months back):
 - `_computeUnitMoney` ✓ guarded — drives the unit-panel "$X owed" + red overdue overlay
 - `_renderUnitLateFeeOwed` ✓ guarded — drives the "Unbilled late fees $X" card
+- `_renderUnitPaymentHealth` ✓ guarded — drives the 13-month Payment History grid (red squares per month). Without the gate, the grid rendered 7 red "Late (>5d)" squares for a brand-new tenant because the rangeStart fell back to `curM - 6` and every past month with no payment record got `cls='overdue'`. The gate replaces the grid with a friendly "Lease start not set" amber banner.
 - `_bvComputeTenantBalance` ✓ guarded, `_bvCountOutstandingMonths` ✓ guarded — Building View summaries
 - `dsoForTenant` ✓ guarded, `trendForTenant` ✓ guarded — A/R Aging metrics
 - `buildAgingRows` ✓ guarded (`continue;` skips the whole tenant when startDate is missing — they don't appear in the aging report at all) — A/R Aging report rows
-- Rent-grid heatmap (`_renderUnitRentGrid` / sibling) — verify when next touched
 - Any future helper that iterates `for (let i = 0; i < N; i++)` over months
 
 **Implementation pattern** (apply at the TOP of every such function, before any loop):
