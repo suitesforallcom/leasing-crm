@@ -250,7 +250,10 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ### 5. Invoice month overrides — `state.ui.invoiceMonthOverrides` (2026-05-12)
 
-- **Status:** needs-porting
+- **Status:** active (ported to main 2026-05-13 in commit c930613,
+  conflict with Entry 7 resolved — `fmtBillingMonth` now returns a
+  descriptor `{ kind, text, ym }` where `kind: 'deposit'` short-circuits
+  for deposit invoices, `kind: 'override'` carries the ◆ marker)
 - **Branch / commit:** `feature/consolidate-overdue-formula` @ `d5738e6`
 - **Area:** Invoice History / operator labeling
 - **Files:**
@@ -378,9 +381,13 @@ file (`floor-map-editor.html`). Suggested merge sequence:
 1. ~~**First:** `fix/autobilling-respect-archive-filters` → `main`~~ — **done
    2026-05-13.** Entries 1, 2, 6, 7 all cherry-picked. Source branch can be
    archived (or kept for reference; no further commits needed).
-2. **Next:** `feature/consolidate-overdue-formula` → `main`
-   (Entries 3, 4, 5 — adds `tests/` and `package.json`; will rebase cleanly
-   on top of the current `main`)
+2. ~~**Next:** Entry 5 (commit `d5738e6`) standalone cherry-pick~~ — **done
+   2026-05-13** in commit `c930613` (conflict with Entry 7 resolved).
+3. **Pending:** `feature/consolidate-overdue-formula` → `main`
+   - Entry 3 (Stripe self-heal — paired commits `1025ee2` + `6496f71`)
+   - Entry 4 (proration via `_monthBilling` + adds `package.json` +
+     `tests/overdue.test.js`; bigger — needs explicit approval per
+     CLAUDE.md §9)
 
 After each port, flip Status `needs-porting` → `active` for the affected
 entry and add a corresponding `check_gate` line to
