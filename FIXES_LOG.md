@@ -46,17 +46,25 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ## Active invariants (sorted newest-first)
 
-> _All seven seeded entries below are currently `needs-porting`. See
-> "Recommended porting order" at the bottom._
+> _Entries 1 + 2: **active** (ported to `main` 2026-05-13 in merge `d781daf`).
+> Entries 3-7: still **needs-porting** — see "Recommended porting order"._
+>
+> **Pre-deploy invariant check is live as of 2026-05-13.**
+> `scripts/check-invariants.sh` runs as the `hosting.predeploy` hook in
+> `firebase.json`. It greps `floor-map-editor.html` for every greppable
+> invariant in this file. If any check fails, `firebase deploy --only
+> hosting` aborts before upload. When you port a new entry below, add a
+> corresponding `check_gate` line to the script.
 
 ---
 
 ### 1. Lease-start gate — anti phantom $7,800 (2026-05-13)
 
-- **Status:** needs-porting
-- **Branch / commit:** `fix/autobilling-respect-archive-filters` @ `bf3ef99` +
-  `36534d9` + `24e68e8` + `f7d9f6c` (worktree dir
-  `.claude/worktrees/angry-tu-472a94/`)
+- **Status:** active
+- **Branch / commit:** ported to `main` via merge `d781daf` (cherry-picks
+  `e743a00` + `8719638` + `22879cb` + `8b847ec`, originally from
+  `fix/autobilling-respect-archive-filters` @ `bf3ef99` + `36534d9` +
+  `24e68e8` + `f7d9f6c`)
 - **Area:** Finance / billing / unit panel / Move-Out modal / aging
 - **Files:**
   - `floor-map-editor.html`
@@ -106,18 +114,18 @@ to the replacement entry) if a fix is intentionally rewritten.
 - **Regression test:** none — manual UI only. Future: Node-side test that
   imports `_computeUnitMoney` and asserts `{ owed: 0, unpaidMonths: 0 }`
   for `{ contractRent: 650, leaseStart: '' }`.
-- **Related PR / issue:** none
-- **Porting note:** Exists on branch `fix/autobilling-respect-archive-filters`
-  (worktree dir `angry-tu-472a94/`). Commits `bf3ef99` `36534d9` `24e68e8`
-  `f7d9f6c` (oldest-first). Cherry-pick or merge to `main`. Same merge
-  resolves Entry 2 (anti-pattern fix lives in `f7d9f6c`).
+- **Related PR / issue:** [#3](https://github.com/suitesforallcom/leasing-crm/pull/3) (docs)
+- **Pre-deploy guard:** [scripts/check-invariants.sh](scripts/check-invariants.sh) Entry 1 block — 9 `check_gate` calls.
+- **Porting note:** Ported 2026-05-13 (merge `d781daf` on `main`). Cherry-pick
+  commits on `main`: `e743a00` `8719638` `22879cb` `8b847ec`.
 
 ---
 
 ### 2. `if (X && cond) break` anti-pattern (2026-05-13)
 
-- **Status:** needs-porting
-- **Branch / commit:** `fix/autobilling-respect-archive-filters` @ `f7d9f6c`
+- **Status:** active
+- **Branch / commit:** ported via merge `d781daf` (cherry-pick `8b847ec`,
+  originally `fix/autobilling-respect-archive-filters` @ `f7d9f6c`)
 - **Area:** General JavaScript pattern; concrete instance in Move-Out modal
 - **Files:**
   - `floor-map-editor.html`
@@ -151,8 +159,9 @@ to the replacement entry) if a fix is intentionally rewritten.
   $650 × N).
 - **Regression test:** none — manual UI only. Static-analysis idea: a grep
   rule that flags `if (\w+\s*&&\s*[^)]*)\s*break;` for human review.
-- **Related PR / issue:** none
-- **Porting note:** Same merge as Entry 1 — `fix/autobilling-respect-archive-filters` @ `f7d9f6c`.
+- **Related PR / issue:** [#3](https://github.com/suitesforallcom/leasing-crm/pull/3) (docs)
+- **Pre-deploy guard:** [scripts/check-invariants.sh](scripts/check-invariants.sh) Entry 2 block — checks `_outstandingForUnit` body for absence of the broken `if (startMs && ...) break` form.
+- **Porting note:** Ported 2026-05-13 (merge `d781daf` on `main`). Same merge as Entry 1.
 
 ---
 
@@ -364,15 +373,21 @@ to the replacement entry) if a fix is intentionally rewritten.
 The two source branches do not currently conflict, but they touch the same
 file (`floor-map-editor.html`). Suggested merge sequence:
 
-1. **First:** `fix/autobilling-respect-archive-filters` → `main`
-   (Entries 1, 2, 6, 7 — six commits, none with new file dependencies)
-2. **Then:** `feature/consolidate-overdue-formula` → `main`
+1. ~~**First:** `fix/autobilling-respect-archive-filters` → `main`~~ — **partially
+   done 2026-05-13** (Entries 1 + 2 cherry-picked via merge `d781daf`). Entries
+   6 + 7 from the same branch still need porting.
+2. **Then:** Port the remaining UX fixes from
+   `fix/autobilling-respect-archive-filters`:
+   - Entry 6 — `d73dc7c` (Open report button)
+   - Entry 7 — `89eb152` (Deposit display)
+3. **Then:** `feature/consolidate-overdue-formula` → `main`
    (Entries 3, 4, 5 — adds `tests/` and `package.json`; will rebase cleanly
    on top of the first merge)
 
-After both merges, every entry above flips from `needs-porting` → `active`
-in this file. Update the Status field and the "Recommended porting order"
-section in the same commit as the merge.
+After each port, flip Status `needs-porting` → `active` for the affected
+entry and add a corresponding `check_gate` line to
+[scripts/check-invariants.sh](scripts/check-invariants.sh) if the invariant
+is greppable.
 
 ## How to add a new entry
 
