@@ -69,12 +69,12 @@ const effectiveMonthly = (u.status === 'occupied')
 **Why**: a 12-month-back loop without this gate accrues 12 × $rent + 12 × $lateFee for a tenant added today with no lease info. Operator sees "12 months unpaid · $7,800 owed" + "$624 late fees" on a brand-new tenant — fictional debt that traumatizes the operator and pollutes A/R aging reports.
 
 **Where this MUST be enforced** (every function that loops months back):
-- `_computeUnitMoney` — drives the unit-panel "$X owed" + red overdue overlay
-- `_renderUnitLateFeeOwed` — drives the "Unbilled late fees $X" card
-- `_bvComputeTenantBalance`, `_bvCountOutstandingMonths` — Building View summaries
-- `dsoForTenant`, `trendForTenant` — A/R Aging metrics
-- `buildAgingRows` — A/R Aging report rows
-- Rent-grid heatmap (`_renderUnitRentGrid` / sibling)
+- `_computeUnitMoney` ✓ guarded — drives the unit-panel "$X owed" + red overdue overlay
+- `_renderUnitLateFeeOwed` ✓ guarded — drives the "Unbilled late fees $X" card
+- `_bvComputeTenantBalance` ✓ guarded, `_bvCountOutstandingMonths` ✓ guarded — Building View summaries
+- `dsoForTenant` ✓ guarded, `trendForTenant` ✓ guarded — A/R Aging metrics
+- `buildAgingRows` ✓ guarded (`continue;` skips the whole tenant when startDate is missing — they don't appear in the aging report at all) — A/R Aging report rows
+- Rent-grid heatmap (`_renderUnitRentGrid` / sibling) — verify when next touched
 - Any future helper that iterates `for (let i = 0; i < N; i++)` over months
 
 **Implementation pattern** (apply at the TOP of every such function, before any loop):
