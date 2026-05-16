@@ -1,0 +1,9 @@
+{
+  "name": "suitesforall",
+  "private": true,
+  "description": "SuitesForAll — single-file admin tool for multi-building office floor plans. This package.json exists ONLY to wire up the test gates; the app itself is the inline-script HTML at floor-map-editor.html and has no npm dependencies. The functions/ folder has its own package.json for the Firebase Cloud Functions runtime — keep them separate.",
+  "scripts": {
+    "test": "node tests/overdue.test.js && npm run parse-check",
+    "parse-check": "node -e \"const fs=require('fs');const html=fs.readFileSync('floor-map-editor.html','utf8');const re=/<script\\b([^>]*)>([\\s\\S]*?)<\\/script>/gi;let m,idx=0,fail=0;while((m=re.exec(html))!==null){idx++;const attrs=m[1]||'';if(/\\bsrc=/.test(attrs))continue;if(/\\btype=\\\"(?!text\\/javascript|module|application\\/javascript)/.test(attrs))continue;try{new Function(m[2]);}catch(e){fail++;console.error('Block #'+idx+' FAILED: '+e.message);}}console.log('Inline scripts checked: '+idx+', failures: '+fail);process.exit(fail?1:0);\""
+  }
+}
