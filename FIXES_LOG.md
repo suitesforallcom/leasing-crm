@@ -488,6 +488,59 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 10. Manager auto-attribution: `stripe.*.sentBy` (2026-05-16)
+
+- **Status:** active
+- **Branch / commit:** `claude/cool-faraday-3b7318` @ (this commit)
+- **Area:** Stripe send paths + activity pill manager resolver
+- **Files:**
+  - `floor-map-editor.html`
+- **Functions / sites:**
+  - Write sites (6 fresh sends + 2 manual-link fallbacks + 2 backfill
+    helpers): `_sendMoveInDirect.sendRent`, `_sendMoveInDirect.sendDeposit`,
+    split-rent two-invoice path (success + partial-failure branches),
+    `_ntoSendRent`, `_ntoSendDeposit`, manual-link fallbacks in
+    `_attachInvoiceAsDeposit` / `_attachInvoiceAsMoveInRent`,
+    `_backfillDepositStamp`, `_backfillRentStamp`
+  - Read site: `_apUnitMgrUid`
+  - Render: recent-rows + Top-deal blocks in `_renderActivityPopover`
+    (manager chip with initials avatar + name)
+- **Bug it fixed:** Operator's rule: "whoever sent the invoice to the
+  client through the system is the client's manager." Previously only
+  `u.filledByUid` (manual ✎ assignment) and `building.assignedManagerUid`
+  (building fallback) drove attribution — Stripe send events were not
+  stamped with the operator uid, so the activity pill's Recent list
+  showed "Unassigned" for everything until someone manually assigned.
+- **Invariant — DO NOT BREAK:**
+  1. **Every fresh Stripe send** to `u.stripe.depositInvoice` or
+     `u.stripe.moveInRent` MUST include `sentBy: fbSync?.uid || null`.
+     If you add a NEW send path, add the stamp — otherwise auto-
+     attribution silently degrades over time.
+  2. **Backfill helpers** (`_backfillDepositStamp`, `_backfillRentStamp`)
+     MUST preserve `existing.sentBy` when re-writing the stamp. For
+     `manualLink: true` (operator linking an external Stripe invoice),
+     also set `sentBy = fbSync.uid` — that's still a deal-closing
+     operator action.
+  3. **Manager resolver priority** in `_apUnitMgrUid`:
+     `u.filledByUid` → `u.stripe?.depositInvoice?.sentBy` →
+     `u.stripe?.moveInRent?.sentBy` → `b.assignedManagerUid` → null.
+     The explicit `filledByUid` override MUST win over auto-attribution
+     so the operator can correct misattributed deals via the ✎ pencil.
+  4. **Historical stamps** (written before 2026-05-16) won't have
+     `sentBy`. Resolver falls through to building-level / unassigned
+     correctly — do not block on missing `sentBy`.
+- **Verification:** Send a fresh move-in invoice (rent or deposit) as
+  any logged-in user. Open the topbar activity pill → Recent → the new
+  row must show a colored circular avatar with the sender's initials
+  and their full name. ✎ pencil still works to override.
+- **Regression test:** none — manual UI only.
+- **Related PR / issue:** none
+- **Porting note:** Lives on `claude/cool-faraday-3b7318`. Standalone.
+  Schema change is additive (`sentBy` field on existing stamp objects);
+  no migration needed.
+
+---
+
 ## Recommended porting order
 
 The two source branches do not currently conflict, but they touch the same
