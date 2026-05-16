@@ -374,6 +374,54 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 8. Move-in cache lookup: drop tenancy window (2026-05-16)
+
+- **Status:** active
+- **Branch / commit:** `claude/cool-faraday-3b7318` @ (this commit)
+- **Area:** Stripe integration / Move-in card status detection
+- **Files:**
+  - `floor-map-editor.html`
+- **Functions:**
+  - `_findDepositInvoiceInCache`
+  - `_findRentInvoiceInCache`
+- **Bug it fixed:** Move-in invoices card showed `NOT SENT` for a deposit
+  that was already sent (visible as `OPEN` in Invoice History below).
+  Reported example: Suite 403, Daniel Maycon, lease starts 2026-06-01,
+  deposit invoice $800 created 2026-05-15 (17 days before lease start).
+  Root cause: both `_findDepositInvoiceInCache` and `_findRentInvoiceInCache`
+  applied a `tenancyStartMs = _tenantTenureStartMs(u)` filter
+  (`leaseStart − 7 days`). Deposits routinely go out weeks before move-in
+  (the whole point of the "Awaiting Deposit" status), so the 7-day grace
+  produced false negatives: the cache row was rejected, no auto-backfill
+  fired, and the card kept showing NOT SENT.
+- **Invariant — DO NOT BREAK:** `_findDepositInvoiceInCache` and
+  `_findRentInvoiceInCache` MUST NOT filter cache rows by
+  `tenancyStartMs` / `_tenantTenureStartMs(u)`. The tenant-identity guard
+  is the email-match (`emailLC !== email → continue`), combined with the
+  suite-match (`metadata.unitId` or `"suite <id>"` in description) and
+  the purpose-match (deposit/rent signals). That triple already separates
+  current-tenant invoices from prior-tenant invoices without needing a
+  time window. If you reintroduce a creation-date filter you will
+  reproduce the original bug for any deposit issued in the pre-move-in
+  "Awaiting Deposit" window.
+
+  Note: `_tenantTenureStartMs` itself is NOT removed — 7 other call
+  sites (heal-logic, void-guards, identity-match-on-write) still rely
+  on it correctly. Only the two cache-lookup functions drop the
+  filter.
+- **Verification:** Create a unit with lease start ≥ 2 weeks in the
+  future. Send a deposit invoice via Stripe (or manually link an
+  existing one). Move-in card must show the deposit pill as `OPEN`
+  (or `PAID`) — NOT `NOT SENT`. Confirm Invoice History on the same
+  unit shows the same invoice.
+- **Regression test:** none — manual UI only.
+- **Related PR / issue:** none
+- **Porting note:** Lives on `claude/cool-faraday-3b7318`. Needs
+  merging to `main`. Standalone — no dependencies on Entries 3-5
+  pending ports.
+
+---
+
 ## Recommended porting order
 
 The two source branches do not currently conflict, but they touch the same
