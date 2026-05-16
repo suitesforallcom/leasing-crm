@@ -422,6 +422,60 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 9. Activity pill: trigger = signed OR deposit-paid in window (2026-05-16)
+
+- **Status:** active
+- **Branch / commit:** `claude/cool-faraday-3b7318` @ (this commit)
+- **Area:** Topbar activity pill / `_apComputeStats`
+- **Files:**
+  - `floor-map-editor.html`
+- **Functions:**
+  - `_apComputeStats` (~line 48157)
+- **Bug it fixed:** Suite 425 (Trisha Redd) — deposit $500 paid 2026-05-14,
+  lease starts 2026-06-05. Operator reported: "deposit paid this month
+  but it's not in the Recent list." Root cause: filter required
+  `leaseStart within MTD window` — a future-dated lease (June 5) was
+  rejected even though the deal was closed in May.
+- **History (full pendulum):**
+  1. Originally: `depositPaidAt within window` → false POSITIVES when
+     operator entered legacy data today (Suite 101, 2026-05-11).
+  2. Fix `88eff0c` swapped criterion to `leaseStart within window` +
+     deposit-paid sanity gate. Killed false positives but introduced
+     false negatives (this bug — Suite 425).
+  3. Fix Entry 9 (this entry): trigger = `u.signed in window` OR
+     `depositPaidAt in window` (OR semantics, no AND). Both signals
+     are real-event timestamps, not "when operator entered the data."
+     Fallback `_tenantAddedAt` is DROPPED for `signedMs` resolution —
+     that was the data-entry-timestamp leak that caused the original
+     2026-05-11 false positive.
+- **Invariant — DO NOT BREAK:**
+  1. Inclusion in the activity pill / `newLeases[]` is decided by
+     `signedInWindow || depositInWindow`. NEVER reintroduce a
+     `leaseStart`-based filter — operator's rule is "how many deals
+     closed THIS month, regardless of when tenant moves in."
+  2. `signedMs` MUST come from `u.signed` only — no fallback to
+     `u._tenantAddedAt` or any other data-entry timestamp. Those leak
+     bulk-import dates into the live activity feed and cause false
+     positives for ancient leases.
+  3. `depositPaidAt` MUST come from `u.payments.deposit.date` (preferred)
+     or `u.stripe.depositInvoice.paidAt` — both are real payment
+     timestamps, not stamp-write timestamps.
+  4. `signedAt` field on each `newLeases[]` entry now means "the
+     in-window trigger timestamp" (`max(signedMs, depositPaidAt)` of
+     those that fell in window), NOT lease-start. The popover row
+     renderer (~line 48681) keeps using `depositPaidAt || signedAt`
+     as the displayed "Activated [date]" — works correctly because
+     both are real-event timestamps.
+- **Verification:** Today's date is N. Create a unit, set `u.signed = N`
+  (today) and `u.leaseStart = N + 90` (3 months out). Pay deposit.
+  Open activity pill. Recent list MUST include this unit. Tooltip on
+  the date line shows "Lease starts [N + 90 date]".
+- **Regression test:** none — manual UI only.
+- **Related PR / issue:** none
+- **Porting note:** Lives on `claude/cool-faraday-3b7318`. Standalone.
+
+---
+
 ## Recommended porting order
 
 The two source branches do not currently conflict, but they touch the same
