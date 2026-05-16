@@ -466,6 +466,18 @@ to the replacement entry) if a fix is intentionally rewritten.
      renderer (~line 48681) keeps using `depositPaidAt || signedAt`
      as the displayed "Activated [date]" — works correctly because
      both are real-event timestamps.
+  5. **Sanity-gate (added 2026-05-16 after Suite 101 NUHS regression):**
+     after computing `triggerYm`, reject any unit that has paid/free/
+     waived rent payments in `u.payments[ym]` with `ym < triggerYm`.
+     Rationale: if the tenant has been paying rent in months BEFORE
+     the contract event, the contract event is a back-fill (legacy
+     import or repeat deposit on existing tenant), not a new contract.
+     This is a **post-trigger exclusion**, not a leaseStart-based
+     inclusion check — does not contradict invariant #1. `ym ===
+     'deposit'` is skipped (deposit is itself one of the triggers,
+     not "history"). Do NOT relax this gate without a documented
+     reason — Suite 101 NUHS appeared with $13,318/mo before it was
+     added (operator screenshot 2026-05-16).
 - **Verification:** Today's date is N. Create a unit, set `u.signed = N`
   (today) and `u.leaseStart = N + 90` (3 months out). Pay deposit.
   Open activity pill. Recent list MUST include this unit. Tooltip on
