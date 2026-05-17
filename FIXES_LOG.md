@@ -541,6 +541,60 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 11. Floor BG cache → IndexedDB (2026-05-17)
+
+- **Status:** active
+- **Branch / commit:** `claude/cool-faraday-3b7318` @ (this commit)
+- **Area:** Storage layer / floor-plan background cache
+- **Files:**
+  - `floor-map-editor.html`
+- **Functions:**
+  - `_bgIdbOpen`, `_bgIdbExec` (new — IDB wrapper)
+  - `_bgCachedDataUrl`, `_bgCacheDataUrl`, `_bgClearCache` (converted to async)
+  - `_bgMigrateLocalStorageToIdb` (new — one-shot migration on boot)
+  - Caller: `_unitFitToWalls` (line ~61720, added `await`)
+  - Boot init block (line ~131665) runs migration + orphan-backup cleanup
+- **Bug it fixed:** Operator console logs (2026-05-17): «localStorage usage
+  5022KB / 4883KB (103%)» firing every saveState, plus «[lbk] gave up
+  QuotaExceededError» on every backup attempt. Audit:
+  - `sfa_bg_cache_*` (3 floor backgrounds, base64-encoded) — **2,784KB
+    (55% of quota)**
+  - `sfa_lbk_*` (orphan backups) — 1,437KB
+  - `sfa_v5_state` (actual state) — 727KB (normal size, NOT the problem)
+  Local backups (data-safety net) could not write. Eventually saveState
+  itself would start failing too.
+- **Invariant — DO NOT BREAK:**
+  1. Floor BG cache MUST live in IndexedDB, NOT localStorage.
+     `sfa_bg_cache_*` localStorage keys are migration-source only —
+     read once on boot via `_bgMigrateLocalStorageToIdb`, then removed.
+     If you bring back localStorage writes you re-introduce the 5MB
+     hard-cap problem (3 floors × ~1MB base64 = 60% of total quota
+     before any state or backups can fit).
+  2. `_bgCachedDataUrl`, `_bgCacheDataUrl`, `_bgClearCache` are **async**.
+     Any future caller must `await` reads (else `if (cached)` checks
+     `if (Promise)` which is always truthy). Writes are fire-and-forget
+     safe.
+  3. localStorage fallback in `_bgCacheDataUrl` is intentional — covers
+     Safari private-mode where IndexedDB is unavailable. Do NOT remove
+     the fallback; it degrades gracefully without crashing the upload
+     flow.
+  4. Boot-time orphan-backup cleanup only removes `sfa_lbk_*` keys NOT
+     listed in `sfa_lbk_index`. Indexed backups (real backup snapshots)
+     stay intact. Do not relax this filter — operator-created manual
+     backups would be deleted.
+- **Verification:** Open DevTools → Application → Storage tab:
+  - localStorage: `sfa_bg_cache_*` should be gone after one full reload
+  - IndexedDB → `sfa_bg_cache` → `bg` object store should contain the
+    cached floor BG data URLs (keys = floor IDs)
+  - Console: `[bg-cache:migrate] moved N floor BG cache(s) to IndexedDB`
+  - No more `[quota] localStorage usage > 80%` warnings
+  - Fit-to-walls still works (uses cached BG via async path)
+- **Regression test:** none — manual UI only.
+- **Related PR / issue:** none
+- **Porting note:** Lives on `claude/cool-faraday-3b7318`. Standalone.
+
+---
+
 ## Recommended porting order
 
 The two source branches do not currently conflict, but they touch the same
