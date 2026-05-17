@@ -666,6 +666,61 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 18. Prospect `stage:'signed'` does NOT imply envelope exists (2026-05-17)
+
+- **Status:** active (invariant documentation — no code change)
+- **Branch / commit:** documented on `main` at this commit
+- **Area:** Prospects pipeline / lease document timeline / unit panel state
+- **Files:**
+  - `floor-map-editor.html`
+- **Functions:**
+  - `_convertProspectToTenant` (~95398) — explicit offline-signed shortcut
+  - `_advanceProspect` (~95380) — manual stage advancement
+  - `_promoteProspectToTenant` (~95477) — copies prospect → unit fields
+  - DocuSign polling auto-promote (~109504) — separate path that DOES bind envelope
+- **Bug it documented (not a bug, but a state worth knowing):** A prospect
+  CAN reach `stage: 'signed'` via three independent paths, only one of which
+  attaches a DocuSign envelope to `u.leaseEnvelopes`:
+  1. DocuSign polling `completed` (~109504) — envelope-driven, sets
+     `prospect.envelopeId`. **State is consistent.**
+  2. `_advanceProspect` — operator clicks "Advance stage" through stages
+     `lead → loi-sent → lease-sent → signed`. **No envelope binding;**
+     operator may have signed paper offline.
+  3. `_convertProspectToTenant` — explicit shortcut via prospect-row menu.
+     Confirm dialog warns this is offline-signed. **No envelope binding.**
+
+  Symptom observed 2026-05-17 on Suite 20512: prospect Tony reached
+  `stage: 'signed'` via path (2) or (3) → `_promoteProspectToTenant`
+  populated unit (tenant=Tony, leaseStart, contractRent, deposit) → unit
+  panel shows "Awaiting Deposit" pill + "Lease not sent yet" Send-Lease CTA
+  + Lease tab shows "No lease documents yet". This is **expected behavior**
+  for an offline-signed flow, but operator was confused because a separate
+  real DocuSign email arrived (likely from an LOI flow via `loiDocId`).
+- **Invariant — DO NOT BREAK:** Any future code that *requires* an envelope
+  to exist for a "signed" prospect MUST guard against the offline-signed
+  state. Cannot use `prospect.stage === 'signed'` as a proxy for "envelope
+  exists" — that breaks path (2)/(3). Check
+  `u.leaseEnvelopes?.length > 0` OR `u.leaseDocuments?.some(d => d.type === 'lease')`
+  separately.
+
+  Inverse invariant: do NOT auto-create stub `leaseDocuments` entries in
+  the promotion paths (2) and (3) — that would mis-represent a paper-signed
+  lease as a tracked DocuSign envelope and break the migration loop in
+  `_ensureLeaseDocuments`.
+- **Verification:** Create vacant unit → "+ Add prospect" → advance through
+  stages to "Signed" (or use "Convert to tenant" shortcut). Then check
+  Overview: "Lease not sent yet" CTA should be visible (because no envelope).
+  This is correct behavior — operator should explicitly send DocuSign lease
+  OR upload signed PDF to complete the lease record.
+- **Regression test:** none — invariant only.
+- **Related PR / issue:** none
+- **Suggested UX follow-up (out of scope here):** Overview CTA could detect
+  "prospect signed but no lease doc" state and offer "📎 Upload signed PDF"
+  as a peer button next to "Send via DocuSign" — clearer choice for
+  offline-signed flow than the implicit "Send lease →" only path.
+
+---
+
 ## Recommended porting order
 
 The two source branches do not currently conflict, but they touch the same
