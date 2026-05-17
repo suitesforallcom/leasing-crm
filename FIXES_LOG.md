@@ -595,6 +595,73 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 17. Lease envelope id consistency + dual move-in pill (2026-05-17)
+
+- **Status:** active
+- **Branch / commit:** `fix/lease-envelope-id-mismatch` @ (this commit) — branched off `claude/cool-faraday-3b7318` @ `9e8dedb`
+- **Area:** DocuSign envelopes / lease documents migration / unit panel header pills
+- **Files:**
+  - `floor-map-editor.html`
+- **Functions:**
+  - `_hasAnyLeaseDoc` (внутри `_renderUnitOverviewPane`) — Send-lease CTA gate
+  - `_ensureLeaseDocuments` — envelope→doc migration
+  - `_leaseDocLiveStatus`
+  - `_leaseDocPdfUrl`
+  - `_renderLeaseDocCard` — sourceLine
+  - `_renderUnitV2Header` — pill compute + render блоки
+- **Bug it fixed:** Оператор отправил DocuSign-договор Suite 20512 → email
+  пришёл → но UI остался в исходном состоянии: (1) yellow «Lease not sent
+  yet» CTA на Overview осталась с кнопкой «Send lease →», (2) сверху
+  единственный pill «Awaiting Deposit» — без «Awaiting Signature», (3) на
+  Lease tab "LEASE DOCUMENTS" показывал «No lease documents yet».
+  Root cause: writer envelope'а (`openSendLeaseModal` + bulk-send) пишет
+  объект с ключом `envelopeId`, а пять мест в коде (`_hasAnyLeaseDoc` gate,
+  `_ensureLeaseDocuments` migration loop, `_leaseDocLiveStatus`,
+  `_leaseDocPdfUrl`, sourceLine в `_renderLeaseDocCard`) искали по `e.id`,
+  которого в объекте нет. Find()/some() возвращали undefined → CTA не
+  пряталась, миграция не срабатывала, doc-card не рендерилась.
+  Бонус: pill «Awaiting Signature» и «Awaiting Deposit» были mutually
+  exclusive (else-if), хотя в реальности обе ноги move-in pipeline могут
+  быть открыты одновременно.
+- **Invariant — DO NOT BREAK:**
+  1. Любой код, ищущий envelope в `u.leaseEnvelopes`, MUST принимать оба
+     ключа: `e.envelopeId || e.id`. Никогда не сравнивать только по
+     `e.id` — writer его не ставит.
+
+     ```js
+     // ❌ BAD — writer пишет envelopeId, не id
+     const env = u.leaseEnvelopes.find(e => e && e.id === doc.envelopeId);
+     // ✅ GOOD — оба ключа
+     const env = u.leaseEnvelopes.find(e => e && (e.envelopeId || e.id) === doc.envelopeId);
+     ```
+
+  2. `_renderUnitV2Header` MUST поддерживать одновременный показ
+     «Awaiting Signature» (primary) + «Awaiting Deposit» (secondary) когда
+     обе ноги move-in pipeline активны. Не возвращать к else-if цепочке,
+     которая теряла одну из двух нот.
+  3. Secondary pill MUST использовать ту же clickable-логику что и
+     primary deposit pill — кнопка `markUnitDepositPaid` для роли с
+     `canEdit()`, иначе `<span>`.
+- **Verification:**
+  1. Создать tenant в Vacant unit с email, депозитом, lease-start в
+     будущем. Открыть unit panel → клик «Send lease →» в Overview
+     CTA → ввести данные → отправить. После redirect'а:
+     - Yellow CTA исчезает.
+     - Title bar показывает ДВА pill'а: «Awaiting Signature» (синий) +
+       «Awaiting Deposit →» (фиолетовый, clickable).
+     - Lease tab → «LEASE DOCUMENTS» (1) — карточка lease с
+       «Awaiting signature» status pill.
+  2. Кликнуть «Awaiting Deposit →» → подтверждает что pill всё ещё
+     clickable как primary был.
+- **Regression test:** none — manual UI only.
+- **Related PR / issue:** none
+- **Porting note:** Lives on `fix/lease-envelope-id-mismatch`. Standalone —
+  не зависит от Entry 4 / 3. Конфликтов с main не будет (правки точечные
+  внутри функций, которые на main отсутствуют — ветка должна сначала
+  смерджиться через `claude/cool-faraday-3b7318`).
+
+---
+
 ## Recommended porting order
 
 The two source branches do not currently conflict, but they touch the same
