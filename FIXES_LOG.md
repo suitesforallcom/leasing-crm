@@ -374,6 +374,294 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 8. Move-in cache lookup: drop tenancy window (2026-05-16)
+
+- **Status:** active
+- **Branch / commit:** `claude/cool-faraday-3b7318` @ (this commit)
+- **Area:** Stripe integration / Move-in card status detection
+- **Files:**
+  - `floor-map-editor.html`
+- **Functions:**
+  - `_findDepositInvoiceInCache`
+  - `_findRentInvoiceInCache`
+- **Bug it fixed:** Move-in invoices card showed `NOT SENT` for a deposit
+  that was already sent (visible as `OPEN` in Invoice History below).
+  Reported example: Suite 403, Daniel Maycon, lease starts 2026-06-01,
+  deposit invoice $800 created 2026-05-15 (17 days before lease start).
+  Root cause: both `_findDepositInvoiceInCache` and `_findRentInvoiceInCache`
+  applied a `tenancyStartMs = _tenantTenureStartMs(u)` filter
+  (`leaseStart − 7 days`). Deposits routinely go out weeks before move-in
+  (the whole point of the "Awaiting Deposit" status), so the 7-day grace
+  produced false negatives: the cache row was rejected, no auto-backfill
+  fired, and the card kept showing NOT SENT.
+- **Invariant — DO NOT BREAK:** `_findDepositInvoiceInCache` and
+  `_findRentInvoiceInCache` MUST NOT filter cache rows by
+  `tenancyStartMs` / `_tenantTenureStartMs(u)`. The tenant-identity guard
+  is the email-match (`emailLC !== email → continue`), combined with the
+  suite-match (`metadata.unitId` or `"suite <id>"` in description) and
+  the purpose-match (deposit/rent signals). That triple already separates
+  current-tenant invoices from prior-tenant invoices without needing a
+  time window. If you reintroduce a creation-date filter you will
+  reproduce the original bug for any deposit issued in the pre-move-in
+  "Awaiting Deposit" window.
+
+  Note: `_tenantTenureStartMs` itself is NOT removed — 7 other call
+  sites (heal-logic, void-guards, identity-match-on-write) still rely
+  on it correctly. Only the two cache-lookup functions drop the
+  filter.
+- **Verification:** Create a unit with lease start ≥ 2 weeks in the
+  future. Send a deposit invoice via Stripe (or manually link an
+  existing one). Move-in card must show the deposit pill as `OPEN`
+  (or `PAID`) — NOT `NOT SENT`. Confirm Invoice History on the same
+  unit shows the same invoice.
+- **Regression test:** none — manual UI only.
+- **Related PR / issue:** none
+- **Porting note:** Lives on `claude/cool-faraday-3b7318`. Needs
+  merging to `main`. Standalone — no dependencies on Entries 3-5
+  pending ports.
+
+---
+
+### 9. Activity pill: trigger = signed OR deposit-paid in window (2026-05-16)
+
+- **Status:** active
+- **Branch / commit:** `claude/cool-faraday-3b7318` @ (this commit)
+- **Area:** Topbar activity pill / `_apComputeStats`
+- **Files:**
+  - `floor-map-editor.html`
+- **Functions:**
+  - `_apComputeStats` (~line 48157)
+- **Bug it fixed:** Suite 425 (Trisha Redd) — deposit $500 paid 2026-05-14,
+  lease starts 2026-06-05. Operator reported: "deposit paid this month
+  but it's not in the Recent list." Root cause: filter required
+  `leaseStart within MTD window` — a future-dated lease (June 5) was
+  rejected even though the deal was closed in May.
+- **History (full pendulum):**
+  1. Originally: `depositPaidAt within window` → false POSITIVES when
+     operator entered legacy data today (Suite 101, 2026-05-11).
+  2. Fix `88eff0c` swapped criterion to `leaseStart within window` +
+     deposit-paid sanity gate. Killed false positives but introduced
+     false negatives (this bug — Suite 425).
+  3. Fix Entry 9 (this entry): trigger = `u.signed in window` OR
+     `depositPaidAt in window` (OR semantics, no AND). Both signals
+     are real-event timestamps, not "when operator entered the data."
+     Fallback `_tenantAddedAt` is DROPPED for `signedMs` resolution —
+     that was the data-entry-timestamp leak that caused the original
+     2026-05-11 false positive.
+- **Invariant — DO NOT BREAK:**
+  1. Inclusion in the activity pill / `newLeases[]` is decided by
+     `signedInWindow || depositInWindow`. NEVER reintroduce a
+     `leaseStart`-based filter — operator's rule is "how many deals
+     closed THIS month, regardless of when tenant moves in."
+  2. `signedMs` MUST come from `u.signed` only — no fallback to
+     `u._tenantAddedAt` or any other data-entry timestamp. Those leak
+     bulk-import dates into the live activity feed and cause false
+     positives for ancient leases.
+  3. `depositPaidAt` MUST come from `u.payments.deposit.date` (preferred)
+     or `u.stripe.depositInvoice.paidAt` — both are real payment
+     timestamps, not stamp-write timestamps.
+  4. `signedAt` field on each `newLeases[]` entry now means "the
+     in-window trigger timestamp" (`max(signedMs, depositPaidAt)` of
+     those that fell in window), NOT lease-start. The popover row
+     renderer (~line 48681) keeps using `depositPaidAt || signedAt`
+     as the displayed "Activated [date]" — works correctly because
+     both are real-event timestamps.
+  5. **Sanity-gate (added 2026-05-16 after Suite 101 NUHS regression):**
+     after computing `triggerYm`, reject any unit that has paid/free/
+     waived rent payments in `u.payments[ym]` with `ym < triggerYm`.
+     Rationale: if the tenant has been paying rent in months BEFORE
+     the contract event, the contract event is a back-fill (legacy
+     import or repeat deposit on existing tenant), not a new contract.
+     This is a **post-trigger exclusion**, not a leaseStart-based
+     inclusion check — does not contradict invariant #1. `ym ===
+     'deposit'` is skipped (deposit is itself one of the triggers,
+     not "history"). Do NOT relax this gate without a documented
+     reason — Suite 101 NUHS appeared with $13,318/mo before it was
+     added (operator screenshot 2026-05-16).
+- **Verification:** Today's date is N. Create a unit, set `u.signed = N`
+  (today) and `u.leaseStart = N + 90` (3 months out). Pay deposit.
+  Open activity pill. Recent list MUST include this unit. Tooltip on
+  the date line shows "Lease starts [N + 90 date]".
+- **Regression test:** none — manual UI only.
+- **Related PR / issue:** none
+- **Porting note:** Lives on `claude/cool-faraday-3b7318`. Standalone.
+
+---
+
+### 10. Manager auto-attribution: `stripe.*.sentBy` (2026-05-16)
+
+- **Status:** active
+- **Branch / commit:** `claude/cool-faraday-3b7318` @ (this commit)
+- **Area:** Stripe send paths + activity pill manager resolver
+- **Files:**
+  - `floor-map-editor.html`
+- **Functions / sites:**
+  - Write sites (6 fresh sends + 2 manual-link fallbacks + 2 backfill
+    helpers): `_sendMoveInDirect.sendRent`, `_sendMoveInDirect.sendDeposit`,
+    split-rent two-invoice path (success + partial-failure branches),
+    `_ntoSendRent`, `_ntoSendDeposit`, manual-link fallbacks in
+    `_attachInvoiceAsDeposit` / `_attachInvoiceAsMoveInRent`,
+    `_backfillDepositStamp`, `_backfillRentStamp`
+  - Read site: `_apUnitMgrUid`
+  - Render: recent-rows + Top-deal blocks in `_renderActivityPopover`
+    (manager chip with initials avatar + name)
+- **Bug it fixed:** Operator's rule: "whoever sent the invoice to the
+  client through the system is the client's manager." Previously only
+  `u.filledByUid` (manual ✎ assignment) and `building.assignedManagerUid`
+  (building fallback) drove attribution — Stripe send events were not
+  stamped with the operator uid, so the activity pill's Recent list
+  showed "Unassigned" for everything until someone manually assigned.
+- **Invariant — DO NOT BREAK:**
+  1. **Every fresh Stripe send** to `u.stripe.depositInvoice` or
+     `u.stripe.moveInRent` MUST include `sentBy: fbSync?.uid || null`.
+     If you add a NEW send path, add the stamp — otherwise auto-
+     attribution silently degrades over time.
+  2. **Backfill helpers** (`_backfillDepositStamp`, `_backfillRentStamp`)
+     MUST preserve `existing.sentBy` when re-writing the stamp. For
+     `manualLink: true` (operator linking an external Stripe invoice),
+     also set `sentBy = fbSync.uid` — that's still a deal-closing
+     operator action.
+  3. **Manager resolver priority** in `_apUnitMgrUid`:
+     `u.filledByUid` → `u.stripe?.depositInvoice?.sentBy` →
+     `u.stripe?.moveInRent?.sentBy` → `b.assignedManagerUid` → null.
+     The explicit `filledByUid` override MUST win over auto-attribution
+     so the operator can correct misattributed deals via the ✎ pencil.
+  4. **Historical stamps** (written before 2026-05-16) won't have
+     `sentBy`. Resolver falls through to building-level / unassigned
+     correctly — do not block on missing `sentBy`.
+- **Verification:** Send a fresh move-in invoice (rent or deposit) as
+  any logged-in user. Open the topbar activity pill → Recent → the new
+  row must show a colored circular avatar with the sender's initials
+  and their full name. ✎ pencil still works to override.
+- **Regression test:** none — manual UI only.
+- **Related PR / issue:** none
+- **Porting note:** Lives on `claude/cool-faraday-3b7318`. Standalone.
+  Schema change is additive (`sentBy` field on existing stamp objects);
+  no migration needed.
+
+---
+
+### 11. Floor BG cache → IndexedDB (2026-05-17)
+
+- **Status:** active
+- **Branch / commit:** `claude/cool-faraday-3b7318` @ (this commit)
+- **Area:** Storage layer / floor-plan background cache
+- **Files:**
+  - `floor-map-editor.html`
+- **Functions:**
+  - `_bgIdbOpen`, `_bgIdbExec` (new — IDB wrapper)
+  - `_bgCachedDataUrl`, `_bgCacheDataUrl`, `_bgClearCache` (converted to async)
+  - `_bgMigrateLocalStorageToIdb` (new — one-shot migration on boot)
+  - Caller: `_unitFitToWalls` (line ~61720, added `await`)
+  - Boot init block (line ~131665) runs migration + orphan-backup cleanup
+- **Bug it fixed:** Operator console logs (2026-05-17): «localStorage usage
+  5022KB / 4883KB (103%)» firing every saveState, plus «[lbk] gave up
+  QuotaExceededError» on every backup attempt. Audit:
+  - `sfa_bg_cache_*` (3 floor backgrounds, base64-encoded) — **2,784KB
+    (55% of quota)**
+  - `sfa_lbk_*` (orphan backups) — 1,437KB
+  - `sfa_v5_state` (actual state) — 727KB (normal size, NOT the problem)
+  Local backups (data-safety net) could not write. Eventually saveState
+  itself would start failing too.
+- **Invariant — DO NOT BREAK:**
+  1. Floor BG cache MUST live in IndexedDB, NOT localStorage.
+     `sfa_bg_cache_*` localStorage keys are migration-source only —
+     read once on boot via `_bgMigrateLocalStorageToIdb`, then removed.
+     If you bring back localStorage writes you re-introduce the 5MB
+     hard-cap problem (3 floors × ~1MB base64 = 60% of total quota
+     before any state or backups can fit).
+  2. `_bgCachedDataUrl`, `_bgCacheDataUrl`, `_bgClearCache` are **async**.
+     Any future caller must `await` reads (else `if (cached)` checks
+     `if (Promise)` which is always truthy). Writes are fire-and-forget
+     safe.
+  3. localStorage fallback in `_bgCacheDataUrl` is intentional — covers
+     Safari private-mode where IndexedDB is unavailable. Do NOT remove
+     the fallback; it degrades gracefully without crashing the upload
+     flow.
+  4. Boot-time orphan-backup cleanup only removes `sfa_lbk_*` keys NOT
+     listed in `sfa_lbk_index`. Indexed backups (real backup snapshots)
+     stay intact. Do not relax this filter — operator-created manual
+     backups would be deleted.
+- **Verification:** Open DevTools → Application → Storage tab:
+  - localStorage: `sfa_bg_cache_*` should be gone after one full reload
+  - IndexedDB → `sfa_bg_cache` → `bg` object store should contain the
+    cached floor BG data URLs (keys = floor IDs)
+  - Console: `[bg-cache:migrate] moved N floor BG cache(s) to IndexedDB`
+  - No more `[quota] localStorage usage > 80%` warnings
+  - Fit-to-walls still works (uses cached BG via async path)
+- **Regression test:** none — manual UI only.
+- **Related PR / issue:** none
+- **Porting note:** Lives on `claude/cool-faraday-3b7318`. Standalone.
+
+---
+
+### 17. Lease envelope id consistency + dual move-in pill (2026-05-17)
+
+- **Status:** active
+- **Branch / commit:** `fix/lease-envelope-id-mismatch` @ (this commit) — branched off `claude/cool-faraday-3b7318` @ `9e8dedb`
+- **Area:** DocuSign envelopes / lease documents migration / unit panel header pills
+- **Files:**
+  - `floor-map-editor.html`
+- **Functions:**
+  - `_hasAnyLeaseDoc` (внутри `_renderUnitOverviewPane`) — Send-lease CTA gate
+  - `_ensureLeaseDocuments` — envelope→doc migration
+  - `_leaseDocLiveStatus`
+  - `_leaseDocPdfUrl`
+  - `_renderLeaseDocCard` — sourceLine
+  - `_renderUnitV2Header` — pill compute + render блоки
+- **Bug it fixed:** Оператор отправил DocuSign-договор Suite 20512 → email
+  пришёл → но UI остался в исходном состоянии: (1) yellow «Lease not sent
+  yet» CTA на Overview осталась с кнопкой «Send lease →», (2) сверху
+  единственный pill «Awaiting Deposit» — без «Awaiting Signature», (3) на
+  Lease tab "LEASE DOCUMENTS" показывал «No lease documents yet».
+  Root cause: writer envelope'а (`openSendLeaseModal` + bulk-send) пишет
+  объект с ключом `envelopeId`, а пять мест в коде (`_hasAnyLeaseDoc` gate,
+  `_ensureLeaseDocuments` migration loop, `_leaseDocLiveStatus`,
+  `_leaseDocPdfUrl`, sourceLine в `_renderLeaseDocCard`) искали по `e.id`,
+  которого в объекте нет. Find()/some() возвращали undefined → CTA не
+  пряталась, миграция не срабатывала, doc-card не рендерилась.
+  Бонус: pill «Awaiting Signature» и «Awaiting Deposit» были mutually
+  exclusive (else-if), хотя в реальности обе ноги move-in pipeline могут
+  быть открыты одновременно.
+- **Invariant — DO NOT BREAK:**
+  1. Любой код, ищущий envelope в `u.leaseEnvelopes`, MUST принимать оба
+     ключа: `e.envelopeId || e.id`. Никогда не сравнивать только по
+     `e.id` — writer его не ставит.
+
+     ```js
+     // ❌ BAD — writer пишет envelopeId, не id
+     const env = u.leaseEnvelopes.find(e => e && e.id === doc.envelopeId);
+     // ✅ GOOD — оба ключа
+     const env = u.leaseEnvelopes.find(e => e && (e.envelopeId || e.id) === doc.envelopeId);
+     ```
+
+  2. `_renderUnitV2Header` MUST поддерживать одновременный показ
+     «Awaiting Signature» (primary) + «Awaiting Deposit» (secondary) когда
+     обе ноги move-in pipeline активны. Не возвращать к else-if цепочке,
+     которая теряла одну из двух нот.
+  3. Secondary pill MUST использовать ту же clickable-логику что и
+     primary deposit pill — кнопка `markUnitDepositPaid` для роли с
+     `canEdit()`, иначе `<span>`.
+- **Verification:**
+  1. Создать tenant в Vacant unit с email, депозитом, lease-start в
+     будущем. Открыть unit panel → клик «Send lease →» в Overview
+     CTA → ввести данные → отправить. После redirect'а:
+     - Yellow CTA исчезает.
+     - Title bar показывает ДВА pill'а: «Awaiting Signature» (синий) +
+       «Awaiting Deposit →» (фиолетовый, clickable).
+     - Lease tab → «LEASE DOCUMENTS» (1) — карточка lease с
+       «Awaiting signature» status pill.
+  2. Кликнуть «Awaiting Deposit →» → подтверждает что pill всё ещё
+     clickable как primary был.
+- **Regression test:** none — manual UI only.
+- **Related PR / issue:** none
+- **Porting note:** Lives on `fix/lease-envelope-id-mismatch`. Standalone —
+  не зависит от Entry 4 / 3. Конфликтов с main не будет (правки точечные
+  внутри функций, которые на main отсутствуют — ветка должна сначала
+  смерджиться через `claude/cool-faraday-3b7318`).
+
+---
+
 ## Recommended porting order
 
 The two source branches do not currently conflict, but they touch the same

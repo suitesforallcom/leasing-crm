@@ -1,21 +1,20 @@
-# SuitesForAll — Engineering Principles
+# CLAUDE.md
 
-You are a world-class staff software engineer, systems architect, and product-minded technical lead. Your job is to design and build production-grade software quickly, safely, and maintainably using modern best practices.
+> **MODE SWITCH 2026-05-11 (PM session, evening).** Tony explicitly re-enabled **auto-deploy + auto-push** mode («мне нужно чтобы все правки выгружались сразу онлайн чтобы выгрузка происходило автоматически»). The local-only maintenance mode introduced earlier today is now **suspended** — preserved as «§ Alternative Mode (currently inactive)» at the bottom of this file in case Tony wants to switch back.
+>
+> All other docs in this repo (DEVELOPMENT_WORKFLOW.md, AUTOMATION_BOUNDARIES.md, LOCAL_SETUP.md, etc.) reference «local-only mode» conditionally — those rules apply when local-only is active. **Current active mode = AUTO-DEPLOY.**
 
-# Project Rules for Claude — Website Development Rules (set 2026-05-01, non-negotiable)
+---
 
-## Highest Priority Rules
+## Project Mode (active)
 
-You are working on a business-critical website. The website generates leads and revenue. Do not treat it as an experimental project.
+This is a business-critical program in **auto-deploy + auto-push mode**.
 
-> **Scope note for SuitesForAll (set 2026-05-01):** SuitesForAll is currently
-> a logged-in admin tool — no public marketing landing page yet. The
-> "Business-Critical Website Elements" section below (HubSpot, GA, GTM,
-> Meta Pixel, UTM, schema markup, lead source tracking, SEO metadata,
-> "Schedule a Tour" button) becomes IN-FORCE the moment a marketing surface
-> is added. Until then the active items from that list are: contact forms,
-> phone numbers, page URLs, email notifications, CRM integrations (when
-> configured). All other rules below apply now without exception.
+Active rules:
+- Every commit on the active feature branch → parse-check → commit → release-stamp → `firebase deploy --only hosting` → `git push origin <branch>` — automatic, no per-deploy approval phrase needed.
+- The `<meta name="sfa-release">` tag is bumped to the committed hash before every deploy so Sentry can tag events with the live release.
+- GitHub mirror at `https://github.com/suitesforallcom/leasing-crm` (remote `origin`).
+- Hosting URL: `https://suitesforall.web.app`.
 
 ## 0. Regression Memory (set 2026-05-12, mandatory)
 
@@ -41,63 +40,279 @@ the replacement.
 - Never delete, rename, move, or overwrite files unless approved.
 - Never perform broad refactoring unless approved.
 
-## 2. Required Workflow
-For all tasks affecting more than one file:
-1. Explore the codebase.
-2. Identify relevant files.
-3. Explain current behavior.
-4. Propose implementation plan.
-5. Wait for approval.
-6. Implement in small steps.
-7. Run build/lint/tests.
-8. Summarize results.
-9. Provide rollback instructions.
+If a change touches anything in the «Approval STILL required» list, **stop and ask** — even though deploy itself is automatic.
 
-## 3. Git / Backup Rules
-- Before editing, run `git status`.
-- If working tree is dirty, STOP and ask.
-- Create a branch named:
-  `feature/[short-task-name]`
-  `fix/[short-task-name]`
-  `backup/[date-task-name]`
-- Make small commits with clear messages.
-- Never use without explicit approval:
-  - `git reset --hard`
-  - `git clean -fd`
-  - `rm -rf`
-  - force push
-  - database drop commands
-  - destructive migration commands
+## Main Rule
 
-## 4. Business-Critical Website Elements
-Do not remove or break:
-- contact forms
-- phone numbers
-- "Schedule a Tour" buttons
-- pricing sections
-- CRM integrations
-- HubSpot forms or tracking
-- Google Analytics
-- Google Tag Manager
-- Meta Pixel
-- UTM tracking
-- SEO metadata
-- schema markup
-- page URLs
-- lead source tracking
-- email notifications
-- call tracking scripts
+Ship safely. Each commit ships immediately to production. Therefore:
+- Parse-check is **mandatory** before commit.
+- Commits are **small + focused** (legacy rule § 9 — ≤ 3-5 files per pass).
+- Final report after every shipped change must include rollback instruction.
 
-## 5. Design Rules
-- Keep the website professional, clean, and conversion-oriented.
-- Reuse existing components before creating new ones.
-- Keep mobile responsiveness — desktop, tablet, and phone.
-- Do not redesign the whole site unless requested.
+## Primary Goal
+
+Maintain and improve the program quickly + safely with auto-deploy, while preserving every business-critical contract documented in the rest of the repo.
+
+## Allowed Work (auto-fires after commit)
+
+Claude may, automatically after each commit:
+
+- Run parse-check on `floor-map-editor.html`
+- Stamp release via `scripts/stamp-release.sh` (or inline `sed` of `<meta name="sfa-release">`)
+- `firebase deploy --only hosting`
+- `git push origin <branch-name>`
+- Resolve corresponding Sentry issue if the commit explicitly fixes a known bug ID
+
+Claude may also (without per-action ask):
+
+- Inspect any file in the repo
+- Run `git status / log / diff` and other read-only git ops
+- Edit `floor-map-editor.html` for small focused fixes (announce intent first if non-trivial)
+- Create / update doc files
+- Run Playwright smoke tests after a deploy
+- Query Sentry for new errors after a deploy
+
+## Approval STILL required
+
+Even in auto-deploy mode, STOP and ask Tony before:
+
+- Editing `firestore.rules` / `firestore.indexes.json` / `cors.json` / `firebase.json`
+- Editing `functions/index.js` (Cloud Functions code)
+- Touching `functions/.env` or any secret-bearing file
+- Running `firebase functions:secrets:set` / `:get` / `:remove`
+- Adding a new dependency (`npm install <pkg>`)
+- Force-push (`git push --force` / `--force-with-lease`)
+- File / branch deletion (`git branch -D`, `rm tracked-file`)
+- Schema changes to `state.*` (rename / remove / type-change a field)
+- Auth gate / role helper changes
+- Stripe / DocuSign / UniFi / Sentry external API calls beyond passive reads
+- Bulk-modifying `u.payments[*]` records, voiding invoices, issuing refunds
+- Member invite / role-change / workspace ownership transfer
+- Changing `STRIPE_MODE` (live ↔ test toggle)
+
+**Financial-model gate (set 2026-05-11 evening):**
+
+Tony will provide a canonical financial model. Until that model is loaded into `FINANCIAL_MODEL_REFERENCE.md`, **HOLD all changes to financial computation paths**:
+
+- effective-rent formula (`u.contractRent || u.rent`)
+- late-fee math (pct × rent / minUsd / graceDays)
+- waiver pro-rate (`_unitProrationCredit` and any wiring of it)
+- building valuation defaults (cap rate %, opex %, vacancy %)
+- Investment Analysis BRRRR formulas (NOI, EGI, IRR, DSCR, refi terms)
+- Forecast «Potential Value» card defaults (currently 9% / 35% / 0% vacancy)
+- Auto-billing cron logic (functions/index.js — already requires Tony approval per Cloud Functions rule)
+
+After the model is loaded:
+1. Every proposed financial change is FIRST validated against `FINANCIAL_MODEL_REFERENCE.md` formulas + defaults.
+2. Discrepancies are reported to Tony BEFORE committing.
+3. Only after explicit alignment is the change shipped.
+
+UI-only changes, doc updates, non-financial features, and bug fixes that don't touch any of the above continue to auto-deploy normally.
+
+If unsure, ASK. Better one extra question than one accidental finance bug.
+
+## Tony Approval Required
+
+Stop and ask Tony **before** any work that touches:
+- real money,
+- invoices,
+- payments,
+- bank accounts,
+- reconciliation,
+- accounting,
+- customer financial data,
+- database schema,
+- migrations,
+- authentication,
+- permissions,
+- roles,
+- production deployment,
+- external APIs,
+- secrets,
+- legal/business-critical workflows,
+- destructive changes,
+- new dependencies,
+- large refactors.
+
+## Communication Rules
+
+- Explain to Tony in **Russian** unless he asks for English.
+- UI text inside the app stays in **English** (existing convention).
+- In-file code comments stay in **Russian** (existing convention from MEMORY.md).
+- Keep reports practical and business-oriented.
+- Do not over-explain basic technical theory unless Tony asks.
+- Always give exact next steps.
+- When giving commands, give copy-paste ready commands in fenced ```bash blocks (per Section 13 of legacy rules).
+
+## Work Style
+
+Before making changes:
+1. Inspect relevant files.
+2. Explain what you found.
+3. Explain what you plan to change.
+4. Identify risks.
+5. Ask Tony only if approval is needed.
+
+After making changes:
+1. List files changed.
+2. Explain what changed.
+3. Explain how to test.
+4. List checks run.
+5. List checks not available.
+6. List remaining risks.
+
+## Local Checks
+
+Use only commands that **actually exist** in the project. Do not invent scripts.
+
+Available checks (verified 2026-05-11):
+
+| Check | Command | Notes |
+|---|---|---|
+| Parse-check inline scripts | `node -e "..."` (see `QA_CHECKLIST.md`) | Validates every `<script>` block in `floor-map-editor.html` parses. **Required after every edit.** |
+| Playwright smoke | `cd tests && npx playwright test` | 3 specs: app-loads, auth-gate, static-pages. Default target = production; override with `PW_BASE_URL=http://localhost:5577`. |
+| Functions package | `cd functions && npm run lint` | Currently a no-op (`echo` placeholder) — pure vanilla JS, no toolchain. |
+
+NOT available in this project:
+- `npm run lint` at root — no root `package.json`.
+- `npm run typecheck` — no TypeScript at root.
+- `npm run build` — single-file HTML, no build step.
+- `npm test` at root — no root test runner.
+
+If a command is unavailable, write: **"Not available in this project."**
+
+## Git Rules
+
+Git **does** exist. Current branch: `fix/autobilling-respect-archive-filters` (verify with `git branch --show-current`).
+
+Rules in active **auto-deploy mode**:
+- Check `git status` before changes.
+- Do not use `--no-verify`.
+- **Push automatically after every commit** (`git push origin <branch>`) — part of the auto-pipeline.
+- Do not create PRs (this project doesn't use PR workflow).
+- Do not auto-merge.
+- Do not create branches unless Tony asks.
+- Do not force-push without Tony's explicit approval.
+- Do not push to `main` / `master` without Tony's explicit approval.
+
+If git push fails (auth expired, network), report once + ask Tony to fix; do not silently retry forever.
+
+## Automation Philosophy
+
+Active mode = **maximum automation up to but not crossing the «Approval STILL required» boundaries above**.
+
+**Allowed automation (auto-fires after commit):**
+- Parse-check
+- Release stamp (`<meta name="sfa-release">`)
+- `firebase deploy --only hosting`
+- `git push origin <branch>`
+- Sentry resolve when commit fixes a tracked bug ID
+- Project documentation updates
+- Playwright smoke test runs
+
+**Forbidden automation (always require explicit per-action approval):**
+- `firebase deploy --only functions` (Cloud Functions changes)
+- Editing `firestore.rules` / `firestore.indexes.json` / `cors.json`
+- `firebase functions:secrets:set` / any secret writes
+- `npm install <pkg>` / new dependencies
+- Force-push / branch deletion / `git reset --hard`
+- Direct Stripe / DocuSign / UniFi / Plaid API calls
+- Sending real emails / SMS / DocuSign envelopes from Claude tools
+- Production database row mutations beyond what the app's own code paths do
+
+## Final Response Format
+
+Every final report should use this structure:
+
+```markdown
+# Executive Summary
+- Project status:
+- What was done:
+- Main risk:
+- Recommended next step:
+
+# Files Created / Updated
+- File:
+- Purpose:
+- Notes:
+
+# Commands Run
+- Command:
+- Result:
+
+# Checks
+- Passed:
+- Failed:
+- Not available:
+
+# Safe Next Tasks
+1.
+2.
+3.
+
+# Tony Decisions Needed
+Only list real business, legal, financial, production, auth, or data-risk decisions.
+
+# Exact Next Command
+Give Tony the exact next command or instruction.
+```
+
+---
+
+## Doc map (read in this order at session start)
+
+1. **`CLAUDE.md`** (this file) — operating mode + non-negotiables
+2. **`PROJECT_CONTEXT.md`** — what the program does
+3. **`ARCHITECTURE.md`** — tech stack + folder structure
+4. **`DECISIONS.md`** — terminology, formulas, UX conventions, latent bugs (§ 6)
+5. **`SESSION_LOG.md`** — chronological log; tail-50 for recent context
+6. **`KNOWN_ISSUES.md`** — current open problems
+7. **`RISK_MATRIX.md`** — what can go wrong + impact
+8. **`AUTOMATION_BOUNDARIES.md`** — what Claude may auto-execute vs ask first
+9. **`PM_OPERATING_MODE.md`** — how Claude PM-coordinates this project
+10. Topic files (`PAYMENTS_AND_FINANCE_RULES.md`, `AUTH_AND_PERMISSIONS_RULES.md`, `DATABASE_RULES.md`) — read when working on those areas
+
+---
+
+## § Alternative Mode (currently inactive) — local-only maintenance
+
+If Tony ever switches back to local-only maintenance mode (was active briefly 2026-05-11 between docs-creation and re-enable), use these rules instead of the auto-deploy ones above:
+
+- No `firebase deploy` (suspended).
+- No `git push` (suspended).
+- All commits stay local; report to Tony but don't ship.
+- No external service calls beyond passive read-only inspection.
+- Tony manually deploys / pushes when he wants something live.
+
+Switch back to local-only via: Tony says «switch to local-only mode» → Claude updates this file's «Project Mode (active)» section accordingly + logs the switch in DECISION_LOG.md + SESSION_LOG.md.
+
+---
+
+## § Legacy Project Rules (preserved for business-logic reference — STILL AUTHORITATIVE)
+
+The rules below describe business logic Claude must NOT break — independent of operational mode. Sections 4 / 5 / 6 / 7 / 9 / 10 / 14, plus Engineering Principles, apply ALWAYS.
+
+### Highest Priority Rules (legacy)
+
+This is a business-critical website. The website generates leads and revenue. Do not treat it as an experimental project.
+
+> **Scope note for SuitesForAll (set 2026-05-01):** SuitesForAll is currently a logged-in admin tool — no public marketing landing page yet. The "Business-Critical Website Elements" section below becomes IN-FORCE the moment a marketing surface is added. Until then the active items from that list are: contact forms, phone numbers, page URLs, email notifications, CRM integrations (when configured).
+
+### 4. Business-Critical Website Elements (do not break)
+
+contact forms · phone numbers · "Schedule a Tour" buttons · pricing sections · CRM integrations · HubSpot forms or tracking · Google Analytics · Google Tag Manager · Meta Pixel · UTM tracking · SEO metadata · schema markup · page URLs · lease source tracking · email notifications · call tracking scripts
+
+### 5. Design Rules
+
+- Keep professional, clean, conversion-oriented.
+- Reuse existing components.
+- Keep mobile responsiveness — desktop, tablet, phone.
+- Do not redesign without request.
 - Do not introduce new colors, fonts, frameworks, or libraries unless approved.
-- Keep important CTAs visible above the fold where appropriate.
-- Important business actions must stay visible: phone number, contact form, "Schedule a Tour" button, pricing, location, availability.
+- Important business actions stay visible: phone, contact form, "Schedule a Tour", pricing, location, availability.
 
-## 6. Code Rules
+### 6. Code Rules
+
 - Follow existing architecture and file structure.
 - Follow existing naming conventions.
 - Prefer small, simple changes.
@@ -106,7 +321,8 @@ Do not remove or break:
 - Do not add dependencies unless approved.
 - Do not change environment variables unless approved.
 
-## 7. Approval Rules
+### 7. Approval Rules (carried forward unchanged)
+
 Ask for approval before:
 - deleting files
 - renaming files
@@ -116,247 +332,83 @@ Ask for approval before:
 - changing forms or CRM integration
 - changing SEO structure
 - adding new dependencies
-- changing hosting/deployment configuration (firebase.json, channels, target sites)
+- changing hosting/deployment configuration
 - making large visual redesigns
 - removing old code that may still be used
 - broad refactoring
 
-## 8. Testing
-After changes, run the appropriate checks:
-- `npm run build` (if applicable)
-- `npm run lint` (if applicable)
-- `npm run test` (if available)
-- For the SuitesForAll single-file architecture: `node --check`-equivalent
-  parse-validation of every `<script>` block in `floor-map-editor.html`
-- Manually inspect affected pages.
-- Check responsive behavior.
-- Check browser console for errors / warnings.
-- Check forms and buttons.
-- Check that no important SEO / analytics / tracking code was removed.
+### 9. Step Size & Review Cadence
 
-## 9. Step Size & Review Cadence (set 2026-05-01)
 - Work in small, reviewable steps.
 - Do NOT modify more than 3–5 files in one pass unless explicitly approved.
-- After EACH step, summarize the changes and WAIT for the operator's
-  confirmation before continuing to the next step.
-- "Confirmation" = the operator explicitly types something like "ok",
-  "go ahead", "next", or substantive feedback. Silence is not approval.
-- If a task naturally requires touching more files, propose the file
-  list up front and wait for approval BEFORE making any edits.
+- After each step, summarize and WAIT for confirmation.
+- "Confirmation" = explicit "ok", "go ahead", "next", or substantive feedback.
+- If a task naturally requires touching more files, propose the file list up front.
 
-## 10. Rollback Instructions (set 2026-05-01)
-At the end of EVERY task (not just substantial ones), include a
-"Rollback" block with these four pieces:
-- **Commit hash before changes** — the SHA the working tree was at
-  before this task started (run `git rev-parse HEAD` at task start
-  and stash it).
-- **Branch name** — which feature/fix branch the work was done on.
-- **Files changed** — exact paths that were touched.
-- **Command to revert if needed** — copy-pasteable shell command(s)
-  that restore the pre-task state. Examples:
-  - `git checkout <branch> -- <file>` (revert single file)
-  - `git reset --hard <hash>` (revert whole branch — DESTRUCTIVE,
-    flag clearly)
-  - `git checkout main` followed by `git branch -D <feature-branch>`
-    (abandon the branch entirely).
+### 10. Rollback Instructions
 
-Even when no commit was made yet, list the working-tree files that
-were modified so the operator can `git checkout HEAD -- <file>` per
-file if desired.
+At the end of every task, include a "Rollback" block with:
+- Commit hash before changes (run `git rev-parse HEAD` at task start)
+- Branch name
+- Files changed (exact paths)
+- Command to revert (e.g. `git checkout <branch> -- <file>`)
 
-## 11. Final Report (set 2026-05-01)
-After completing work, the report MUST include:
-- **Summary of changes** — one-paragraph plain-language description.
-- **Files changed** — exact paths.
-- **Tests / checks performed** — every check actually run (parse,
-  build, lint, manual UI inspection, console scrub, form test, etc.).
-- **Anything not tested** — be honest: what should the operator verify
-  before merging or shipping? (e.g. "did not test on mobile",
-  "did not test under multi-user Firestore concurrency").
-- **Risks** — what could break, what edge cases weren't handled.
-- **Rollback instructions** — see Section 10. Always present, even on
-  trivial changes.
+### 14. Tables UX Standard (still in force — do not break)
 
-The Final Report is the deliverable. Code without a Final Report is
-half-done.
-
-## 12. Fast-track for trivial changes (set 2026-05-01)
-The Required Workflow (Section 2) and the propose-then-wait cadence
-(Section 9) exist to prevent surprises on substantial work. They are
-overkill for small tweaks. A change qualifies as **fast-track** when
-ALL of these hold:
-- Single file touched.
-- < 30 lines net diff.
-- Pure UI (label / color / copy / spacing / abbreviation / hide-show).
-- No data-model change, no migration, no new dependency, no auth /
-  payment / CRM / form / SEO logic touched, no Firestore-rules edit.
-- Reversible by a single `git checkout <hash> -- <file>`.
-
-For fast-track changes:
-1. Skip "explain current behavior + propose plan + wait approval" —
-   just do the edit.
-2. Run parse-check (or build/lint) immediately.
-3. Compress the Final Report to 3 lines: what changed (one sentence) +
-   files (one line) + rollback (one line). Section 11's full template
-   is not required.
-4. Branch + commit still required (Section 1, Section 3) — but can be
-   batched into one terminal paste at the end of several fast-track
-   tweaks rather than after each.
-5. Operator can always escalate back to full workflow by saying "stop,
-   propose first" — that overrides fast-track for the rest of the
-   conversation.
-
-If in doubt whether a change is fast-track: assume it's NOT, and use
-the full workflow.
-
-## 13. Deploy command rendering (set 2026-05-01)
-When sending the operator a deploy command (or any shell command they're
-expected to copy + paste), render it as a fenced ```bash code block in
-the chat reply — never as inline backticks alone, never as a plain
-sentence. Code blocks render with a copy icon in the chat UI, so the
-operator can grab the whole multi-step pipeline in one click. Continue
-also writing to clipboard via computer-use, but the visible code block
-is mandatory.
-
-## Core principles
-
-1. Always optimize for correctness, clarity, maintainability, security, and delivery speed together.
-2. Do not jump into coding immediately. First understand the business goal, user flow, technical constraints, and acceptance criteria.
-3. Prefer simple architectures that are easy to scale, test, and maintain.
-4. Avoid overengineering, unnecessary abstractions, and premature optimization.
-5. Reuse proven frameworks and libraries when appropriate instead of reinventing standard components.
-6. Write code that a strong senior engineer would approve in production.
-
-## Engineering workflow
-
-1. Restate the goal clearly.
-2. List assumptions and missing information.
-3. Propose the best architecture and explain why.
-4. Break the work into small implementation steps.
-5. Implement in a production-ready way.
-6. Add or describe tests for critical paths.
-7. Review the result for bugs, edge cases, security risks, and maintainability issues.
-8. Suggest the next highest-value improvement.
-
-## Coding standards
-
-- Prefer readability over cleverness.
-- Keep modules and functions small and focused.
-- Use clear naming.
-- Eliminate duplication.
-- Make data flow explicit.
-- Use strong typing where available.
-- Handle errors explicitly.
-- Log meaningful events, not noise.
-- Write comments only where needed to explain intent or non-obvious decisions.
-- Do not leave dead code, placeholders, or TODOs unless explicitly requested.
-
-## Architecture standards
-
-- Prefer modular, loosely coupled design.
-- Separate UI, business logic, data access, and infrastructure concerns.
-- Design for observability, testability, and future extension.
-- Make assumptions explicit.
-- Consider failure modes and recovery paths.
-- For APIs, use consistent contracts, validation, and version-safe design.
-- For databases, use migrations, indexes, constraints, and transaction safety where needed.
-
-## Security standards
-
-- Never hardcode secrets or credentials.
-- Validate and sanitize all external inputs.
-- Use parameterized queries only.
-- Apply least privilege.
-- Protect authentication, authorization, and session handling.
-- Avoid insecure defaults.
-- Flag any area with security uncertainty.
-- Include a security review section in substantial tasks.
-
-## Performance standards
-
-- Start with a robust MVP.
-- Avoid premature optimization.
-- Identify likely bottlenecks before optimizing.
-- Use efficient queries and avoid unnecessary network/database calls.
-- Consider caching, batching, and pagination where relevant.
-
-## Delivery standards
-
-- Ship in small, working increments.
-- For each task, choose the highest-leverage next step.
-- If requirements are unclear, make reasonable assumptions and state them clearly.
-- Do not produce vague output. Be concrete.
-- When asked to build, produce usable code, file structure, and implementation notes.
-
-## Response format
-
-Use this structure unless told otherwise:
-
-1. Goal
-2. Assumptions
-3. Recommended architecture
-4. Implementation plan
-5. Code
-6. Tests
-7. Security and risk review
-8. Next steps
-
-## When reviewing existing code
-
-- Identify architectural issues first.
-- Then identify correctness bugs.
-- Then identify security risks.
-- Then identify performance and maintainability issues.
-- Propose the minimum-change fix first, and the better long-term fix second.
-
-## When building business software
-
-- Optimize for reliability, auditability, permissions, data integrity, admin usability, and maintainable workflows.
-- Think like an owner: favor systems that reduce support burden and future rework.
-
-## Non-negotiables
-
-- Never pretend something is production-ready if it is not.
-- Always state tradeoffs clearly.
-
-## For every non-trivial feature, before writing code, provide
-
-- The proposed folder/file structure
-- The main entities and data model
-- API endpoints or interfaces
-- Validation rules
-- Failure cases
-- Test cases
-- Security concerns
-- Deployment implications
-
-## Pushback
-
-If the requested solution is weak architecturally, say so directly and propose a better alternative. Do not agree with poor design decisions without warning.
+Every data table must satisfy: column sort + drag-to-reorder + per-column tooltip + visibility gear menu. Use `mountTablePrefs` + `attachTableSort` + `applyTableSort` + `ensureColumnsButton` helpers. Sort + reorder must be PURE UI — must not change row count or totals. CSV export must follow current view.
 
 ---
 
-# Project-specific context
+## Engineering principles (legacy — still in force)
 
-**SuitesForAll** is a multi-building office floor plan manager. Phase 1 is a single self-contained HTML file using pure SVG (no framework) for the interactive floor plan editor. Phase 2 will add Firebase for real-time multi-user sync. Phase 3 adds Stripe (payments) and DocuSign (e-signing).
+1. Optimize for correctness, clarity, maintainability, security, and delivery speed together.
+2. Don't jump into coding immediately. Understand business goal, user flow, technical constraints, acceptance criteria.
+3. Prefer simple architectures.
+4. Avoid overengineering, unnecessary abstractions, premature optimization.
+5. Reuse proven frameworks/libraries.
+6. Write code a strong senior engineer would approve in production.
+
+### Coding standards
+
+- Readability over cleverness.
+- Small, focused modules and functions.
+- Clear naming.
+- No duplication.
+- Explicit data flow.
+- Strong typing where available (this project: vanilla JS, no static types).
+- Explicit error handling.
+- Meaningful logs, not noise.
+- Comments where they explain intent or non-obvious decisions (in Russian per project convention).
+- No dead code, placeholders, or TODOs unless explicitly requested.
+
+### Pushback
+
+If the requested solution is weak architecturally, say so directly and propose a better alternative.
+
+---
+
+## Project-specific context
+
+**SuitesForAll** is a multi-building office floor-plan manager with leasing/billing/Stripe/Firebase/DocuSign integration.
+
+- **Phase 1**: single self-contained HTML file using pure SVG (no framework) for the interactive floor plan editor — `floor-map-editor.html`.
+- **Phase 2**: Firebase for real-time multi-user sync (Firestore + Auth + Storage + Functions).
+- **Phase 3**: Stripe (payments) + DocuSign (e-signing).
 
 **Architecture boundaries:**
-
 - UI: DOM + SVG event handlers
 - Business logic: pure JS functions operating on `state` object
-- Persistence: `localStorage` (Phase 1), will migrate to Firestore (Phase 2)
-- State shape: `{ buildings: [...], tenants: [...], leases: [...], settings: {...}, ui: {...} }`
+- Persistence: `localStorage` (Phase 1) → Firestore (Phase 2)
+- State shape: `{ buildings: [...], tenants: [...], leases: [...], settings: {...}, ui: {...}, investments: {...}, recoveryCases: [...] }`
 
-**Key tradeoffs currently in play:**
+**Key tradeoffs:**
+- `localStorage` size limit (~5 MB) vs uploaded images/photos — mitigated by warnings, full fix via Storage.
+- Role-based access is UX-layer + Firestore rules.
+- CDN dependencies minimized (only `pdf.js` + `dxf-parser` lazily loaded with multi-CDN fallback).
 
-- `localStorage` size limit (~5 MB) vs uploaded images/photos — mitigated by warnings, full fix in Phase 2
-- Role-based access is UX-layer only (no real auth) until Phase 2 backend
-- CDN dependencies are minimized (only pdf.js loaded lazily, with multi-CDN fallback)
-
-**Review checklist before shipping any change:**
-
-1. Does it preserve `state` backwards compatibility? (don't break user's saved data)
+**Review checklist before any change:**
+1. Does it preserve `state` backwards compatibility?
 2. Are new features discoverable without a tutorial?
 3. Has every user-typed field been sanitized (`esc()` on render)?
-4. If localStorage could fill up, is the failure graceful?
-5. Run Node.js mock test — does the script initialize without errors?
+4. If localStorage could fill up, does it fail gracefully?
+5. Parse-check passes (see QA_CHECKLIST.md).
