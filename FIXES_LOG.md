@@ -46,8 +46,10 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ## Active invariants (sorted newest-first)
 
-> _Entries 1, 2, 6, 7: **active** (ported to `main` 2026-05-13).
-> Entries 3-5: still **needs-porting** — see "Recommended porting order"._
+> _Entries 1-7: **active** (Entries 1-2, 6-7 ported 2026-05-13;
+> Entries 3, 5 ported 2026-05-13; Entry 4 ported 2026-05-17 via the
+> cool-faraday merge `5ad0661`). All originally-listed branches in the
+> "Recommended porting order" section below are now satisfied._
 >
 > **Pre-deploy invariant check is live as of 2026-05-13.**
 > `scripts/check-invariants.sh` runs as the `hosting.predeploy` hook in
@@ -204,10 +206,14 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ### 4. Proration consolidated into `_monthBilling` (2026-05-12)
 
-- **Status:** needs-porting
+- **Status:** active (ported to main 2026-05-17 via merge `5ad0661`, which
+  brought `claude/cool-faraday-3b7318` content including the consolidation
+  commit `5ff2be7` — a clean port of `357b0c0` with Entry 1's lease-start
+  gate kept intact at the top of `_computeUnitMoney`. Test suite
+  `tests/overdue.test.js` runs `node tests/overdue.test.js` → 9/9 pass.)
 - **Branch / commit:** `feature/consolidate-overdue-formula` @ `357b0c0`
   (consolidation) + `fd9a42a` + `4d85d89` + `03b6364` + `237dc8b` (consumers
-  + tests)
+  + tests) — original source. Active port on main is commit `5ff2be7`.
 - **Area:** Finance / billing / rent calculation
 - **Files:**
   - `floor-map-editor.html`
@@ -241,11 +247,9 @@ to the replacement entry) if a fix is intentionally rewritten.
 - **Regression test:** `tests/overdue.test.js` — **automated** (the only
   automated regression test in the project as of 2026-05-12).
 - **Related PR / issue:** none
-- **Porting note:** Exists on branch `feature/consolidate-overdue-formula`.
-  Commits `357b0c0` + `fd9a42a` + `4d85d89` + `03b6364` + `237dc8b`. Porting
-  is non-trivial: brings new `tests/` directory and `package.json` to a
-  repo that currently has neither on `main`. Recommend merging the whole
-  branch rather than cherry-picking.
+- **Porting note:** Ported 2026-05-17 (merge `5ad0661` on `main`). Source
+  branch can be archived. The proration helper + tests/ directory +
+  package.json all landed via the cool-faraday merge.
 
 ---
 
@@ -672,11 +676,17 @@ file (`floor-map-editor.html`). Suggested merge sequence:
    archived (or kept for reference; no further commits needed).
 2. ~~**Next:** Entry 5 (commit `d5738e6`) standalone cherry-pick~~ — **done
    2026-05-13** in commit `c930613` (conflict with Entry 7 resolved).
-3. **Pending:** `feature/consolidate-overdue-formula` → `main`
-   - Entry 3 (Stripe self-heal — paired commits `1025ee2` + `6496f71`)
-   - Entry 4 (proration via `_monthBilling` + adds `package.json` +
-     `tests/overdue.test.js`; bigger — needs explicit approval per
-     CLAUDE.md §9)
+3. ~~`feature/consolidate-overdue-formula` → `main`~~ — **done 2026-05-17**
+   via the cool-faraday merge `5ad0661`, which brought:
+   - Entry 3 (Stripe self-heal — was already ported earlier in commits
+     `d1f6cb2` + `103a230`; the cool-faraday merge confirmed parity)
+   - Entry 4 (proration via `_monthBilling` + `package.json` +
+     `tests/overdue.test.js`) — landed in commit `5ff2be7`. Run
+     `node tests/overdue.test.js` to confirm 9/9 pass.
+
+All originally-listed source branches are now satisfied. Surviving
+locally-ahead branches are duplicates with different SHAs — safe to
+archive after diff review.
 
 After each port, flip Status `needs-porting` → `active` for the affected
 entry and add a corresponding `check_gate` line to
