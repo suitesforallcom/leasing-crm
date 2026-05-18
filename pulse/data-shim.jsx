@@ -278,40 +278,50 @@
     ' · EVENTS=' + (window.DATA.ALL_EVENTS || []).length
   );
 
-  // ---------- Sidebar back-link to floor-map ----------
-  // The prototype's sidebar renders after this script runs (React mounts in
-  // app.jsx, which loads after us). Use a MutationObserver to inject the
-  // back-link when the sidebar first appears, then disconnect.
-  function injectBackLink() {
-    if (document.getElementById('pulseBackToMap')) return true;
-    // Sidebar root in the prototype carries `.sidebar` class.
-    const sidebar = document.querySelector('.sidebar');
-    if (!sidebar) return false;
+  // ---------- Back-link to floor-map (position:fixed, outside React tree) ----------
+  // First version injected into .sidebar via MutationObserver, but React's
+  // re-renders kept blowing away the appended anchor. Now anchored to <body>
+  // with position:fixed at the bottom-left of the sidebar column. React
+  // can't touch elements it doesn't own.
+  function ensureBackLink() {
+    if (document.getElementById('pulseBackToMap')) return;
     const a = document.createElement('a');
     a.id = 'pulseBackToMap';
     a.href = '/floor-map-editor.html';
     a.title = 'Return to the floor-map app';
-    a.style.cssText = 'display:flex; align-items:center; gap:8px; padding:10px 14px; margin:8px 12px 4px; ' +
-                      'border-radius:10px; font-size:12.5px; font-weight:600; ' +
-                      'color: var(--accent-ink, oklch(35% 0.14 264)); ' +
-                      'background: var(--accent-soft, oklch(96% 0.03 264)); ' +
-                      'border:1px solid transparent; cursor:pointer; text-decoration:none; ' +
-                      'transition: background .12s, border-color .12s;';
-    a.onmouseenter = function () { a.style.background = 'oklch(93% 0.05 264)'; a.style.borderColor = 'oklch(85% 0.07 264)'; };
-    a.onmouseleave = function () { a.style.background = 'var(--accent-soft, oklch(96% 0.03 264))'; a.style.borderColor = 'transparent'; };
+    a.style.cssText =
+      'position: fixed; left: 16px; bottom: 16px; z-index: 9000; ' +
+      'display: inline-flex; align-items: center; gap: 8px; ' +
+      'padding: 9px 14px; border-radius: 999px; ' +
+      'font-family: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; ' +
+      'font-size: 12.5px; font-weight: 600; ' +
+      'color: oklch(35% 0.14 264); ' +
+      'background: white; ' +
+      'border: 1px solid oklch(85% 0.06 264); ' +
+      'box-shadow: 0 4px 14px rgba(20,22,30,.08), 0 0 0 1px rgba(20,22,30,.03); ' +
+      'cursor: pointer; text-decoration: none; ' +
+      'transition: background .12s, border-color .12s, transform .08s;';
+    a.onmouseenter = function () {
+      a.style.background = 'oklch(96% 0.03 264)';
+      a.style.borderColor = 'oklch(75% 0.10 264)';
+    };
+    a.onmouseleave = function () {
+      a.style.background = 'white';
+      a.style.borderColor = 'oklch(85% 0.06 264)';
+    };
+    a.onmousedown = function () { a.style.transform = 'scale(0.97)'; };
+    a.onmouseup   = function () { a.style.transform = 'scale(1)'; };
     a.innerHTML =
       '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
         '<polyline points="15 18 9 12 15 6"/>' +
       '</svg>' +
       '<span>Floor map</span>';
-    sidebar.insertBefore(a, sidebar.firstChild);
-    return true;
+    document.body.appendChild(a);
   }
-  const obs = new MutationObserver(function () { if (injectBackLink()) obs.disconnect(); });
-  obs.observe(document.body, { childList: true, subtree: true });
-  // Also try immediately after DOMContentLoaded in case sidebar is already there.
-  document.addEventListener('DOMContentLoaded', function () { injectBackLink(); });
-  setTimeout(function () { injectBackLink(); }, 1500);
+  if (document.body) ensureBackLink();
+  document.addEventListener('DOMContentLoaded', ensureBackLink);
+  setTimeout(ensureBackLink, 500);
+  setTimeout(ensureBackLink, 2000);
 
   // ---------- Live sync — reload when state changes in another tab ----------
   // The floor-map saves to `sfa_v5_state` whenever the leader writes. Pulse
