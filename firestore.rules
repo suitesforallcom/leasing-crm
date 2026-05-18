@@ -162,6 +162,27 @@ service cloud.firestore {
                           && request.auth.token.email.lower() == email);
       }
 
+      // Corporate-domain allowlist (FIXES_LOG Entry 25). Admin lists
+      // company email domains here so anyone signing up with a matching
+      // address auto-onboards as a workspace member without per-email
+      // pre-authorization. Doc id is the lowercase domain (e.g.
+      // "al-en.com"); data: { role: 'manager'|..., buildings: [...],
+      // addedBy, addedAt }.
+      //
+      // Read: any signed-in user can read THEIR OWN domain (so the
+      // bootstrap can self-onboard them on first sign-in). Members can
+      // also list the whole collection for the Settings UI.
+      //
+      // Write: admin only — adding a domain is a workspace-wide auth
+      // grant and a real privilege-escalation surface if loose.
+      match /domainAllowlist/{domain} {
+        allow read:  if isMember(wid)
+                     || (request.auth != null
+                         && request.auth.token.email != null
+                         && request.auth.token.email.lower().split('@')[1] == domain);
+        allow create, update, delete: if isAdmin(wid);
+      }
+
       // Invite links — admin creates/revokes; invitee reads the token to
       // consume it (they might not be a member yet, so isMember can't apply).
       // SECURITY: previously `allow read: if request.auth != null` let
