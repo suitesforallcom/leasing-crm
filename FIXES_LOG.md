@@ -901,6 +901,92 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 22. Server-authoritative envelope state-write + audit reconciliation (2026-05-18)
+
+- **Status:** active
+- **Branch / commit:** main @ (this commit)
+- **Area:** DocuSign integration / state persistence / Web Locks interaction
+- **Files:**
+  - `functions/index.js` (CF `dsSendEnvelope` — Firestore transaction on
+    state document)
+  - `floor-map-editor.html` (`docusignSendEnvelope` passes unit context;
+    post-send local push skipped in JWT mode; new `_dsReconcileEnvelopes`
+    function + hooks)
+- **Functions:**
+  - Server: `dsSendEnvelope` (new required args + transactional state write)
+  - Client: `docusignSendEnvelope` (unit-context propagation),
+    `_dsReconcileEnvelopes` (new), `_dsSyncInit` (calls reconcile)
+- **Bug it fixed:** Manager Drew sent a lease to Suite 403 / Daniel
+  (booking@dimitryahhair.com) via the JWT CF on 2026-05-18 02:27 UTC.
+  DocuSign delivered the envelope (email arrived), CF audit log recorded
+  the send, but `state.leaseEnvelopes` stayed empty — admin couldn't see
+  any record of the lease being sent. Root cause: Drew's tab was a Web
+  Locks **follower** (FIXES_LOG Entry 16), so the client-side
+  `u.leaseEnvelopes.push(...)` + `saveState()` after the CF returned hit
+  the follower-skip gate and the local mutation never reached Firestore.
+  Pre-JWT this had been masked by `_dsHasValidToken()` failing for
+  managers entirely (Entry 20) — the moment JWT unlocked managers to
+  send leases, the follower-skip data-loss became reachable in production.
+- **Invariant — DO NOT BREAK:**
+  1. **CF `dsSendEnvelope` MUST do the state write itself** via Firestore
+     transaction on `workspaces/{wid}/data/state`. Don't move the write
+     back to the client — Web Locks follower tabs skip writes silently
+     and the data loss isn't observable until the operator looks for the
+     envelope.
+  2. **CF `dsSendEnvelope` MUST require `unitId + buildingId + floorId`
+     in args.** Without these the transaction can't find the target unit
+     and the envelope orphans (created in DocuSign, no state record).
+     Reject with `invalid-argument` instead of guessing.
+  3. **The transactional push MUST be idempotent.** A retry from the same
+     caller (network blip, double-click) should NOT result in two
+     envelope records. Implementation: scan
+     `u.leaseEnvelopes.find(e => e.envelopeId === data.envelopeId)`
+     before pushing.
+  4. **Audit log entry MUST include `unitId + buildingId + floorId +
+     stateWriteOk`** so `_dsReconcileEnvelopes` can find the target unit
+     when backfilling. Without these the audit log is incomplete and
+     reconciliation degrades to fuzzy email matching.
+  5. **Client `_dsReconcileEnvelopes` MUST run on `_dsSyncInit`** (every
+     sign-in) and **after every successful send the local tab performs**.
+     The sign-in pass catches anything previously orphaned; the post-send
+     pass catches anything the CF's own transaction couldn't write
+     (edge case: target unit didn't exist in state at write time).
+  6. **Reconciliation must NEVER overwrite an existing envelope record.**
+     Treat the local state as the source of truth for fields like
+     `signedPdfPath`, `lastChecked`, `archivedAt` — these only exist
+     post-completion and reconciliation must respect them. Match by
+     `envelopeId === audit.envelopeId` and skip if a match exists.
+  7. **CF must NOT throw on state-write failure** when the DocuSign API
+     call already succeeded. The envelope is real (email landed in
+     tenant's inbox); throwing would mislead the operator into thinking
+     the send failed. Instead: log the error, set `stateWriteOk: false`
+     in the response + audit log, and let client-side reconciliation
+     pick it up on next sign-in.
+- **Verification:**
+  1. Manager (NOT admin) opens the app in **two browsers**. Both tabs
+     authenticate as the same manager. Web Locks elects one as leader,
+     the other becomes a read-only follower.
+  2. From the **follower** tab: open a unit → "+ Add lease document" →
+     fill form → Save → "Send via DocuSign" → click Send.
+  3. Wait ~5s for sync. Check the **leader** tab → unit panel → Lease
+     tab. Envelope card "Awaiting signature" should appear with status
+     pill. Audit log entry exists with `stateWriteOk: true`.
+  4. Pre-fix, the envelope would NOT appear in either tab's view until
+     manual backfill — the local push silently failed.
+  5. Force-test the reconciliation path: from a one-off Firestore write
+     (or by editing state to clear `u.leaseEnvelopes`), reload the page →
+     `_dsReconcileEnvelopes` pulls the audit entry → backfills the
+     envelope. Toast: "✓ Recovered N sent leases from server audit log".
+- **Regression test:** none — manual UI only.
+- **Related PR / issue:** none
+- **First production loss:** Drew (manager) / Suite 403 / Daniel Maycon
+  dos Santos Moreira / envelope `ed528919-1581-8333-8380-c8c934b66e96` /
+  2026-05-18 02:27 UTC. Backfilled manually during diagnosis; would
+  have been recovered automatically by `_dsReconcileEnvelopes` on next
+  sign-in once this commit deployed.
+
+---
+
 ## Recommended porting order
 
 The two source branches do not currently conflict, but they touch the same
