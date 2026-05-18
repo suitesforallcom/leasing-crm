@@ -116,70 +116,135 @@
     if (e.email) empByEmail.set(e.email.toLowerCase(), e);
   });
 
-  // ---------- Walk leaseEnvelopes once → tally contracts per email + collect activity events ----------
+  // ---------- Single pass over state → bin every email-attributed action ----------
+  // Phase 7 (FIXES_LOG Entry 26) — aggregate real activity by employee email.
+  // Every record carrying a `sentBy` / `callerEmail` / `recordedBy` stamp gets
+  // counted into the matching employee's bucket. Score, contracts, emails,
+  // calls, actions all derive from this single walk so we never iterate the
+  // state more than once.
   const monthStartMs = startOfMonth(new Date());
-  const contractsByEmpEmail = new Map();     // emp.email.lower → count of envelopes sent this month
-  const recentEnvelopeEvents = [];           // for ALL_EVENTS (last 24h)
   const last24Ms = Date.now() - 24 * 60 * 60 * 1000;
+  function blankStats() {
+    return {
+      contractsMtd: 0,        // leaseEnvelopes sent this month
+      contractsCompleted: 0,  // status=completed within month
+      envelopesAllTime: 0,    // lifetime envelope count
+      emailsMtd: 0,           // outreach type contains 'email'/'lease' this month
+      callsMtd: 0,            // outreach type === 'call' / 'phone'
+      notesMtd: 0,            // outreach type 'note'
+      paymentsMtd: 0,         // u.payments[ym].sentBy this month
+      invoicesMtd: 0,         // u.stripe.*.sentBy stamps this month
+      actionsMtd: 0,          // sum of all the above
+      lastActivityMs: 0,
+    };
+  }
+  const statsByEmail = new Map();
+  function bucket(email) {
+    const e = (email || '').toLowerCase();
+    if (!e) return null;
+    if (!statsByEmail.has(e)) statsByEmail.set(e, blankStats());
+    return statsByEmail.get(e);
+  }
+
+  const recentEnvelopeEvents = [];
+  const recentOutreachEvents = [];
+
   try {
     for (const b of buildings) {
       for (const f of (b.floors || [])) {
         for (const u of (f.units || [])) {
+          // --- Lease envelopes ---
           for (const env of (u.leaseEnvelopes || [])) {
-            const sentBy = (env.sentBy || '').toLowerCase();
+            const stat = bucket(env.sentBy);
             const sentMs = new Date(env.sentAt || env.createdAt || 0).getTime();
-            if (sentBy && sentMs >= monthStartMs) {
-              contractsByEmpEmail.set(sentBy, (contractsByEmpEmail.get(sentBy) || 0) + 1);
+            if (stat) {
+              stat.envelopesAllTime++;
+              if (sentMs >= monthStartMs) {
+                stat.contractsMtd++;
+                stat.actionsMtd++;
+                if (env.status === 'completed') stat.contractsCompleted++;
+              }
+              if (sentMs > stat.lastActivityMs) stat.lastActivityMs = sentMs;
             }
             if (sentMs >= last24Ms) {
               recentEnvelopeEvents.push({
-                ts: sentMs, sentBy: sentBy,
+                ts: sentMs, sentBy: (env.sentBy || '').toLowerCase(),
                 cat: 'contract', type: 'sent',
                 desc: 'Sent lease contract',
-                ent: {
-                  kind: 'contract',
-                  name: 'Lease — Suite ' + (u.id || '?'),
-                  id: env.envelopeId || env.id || ''
-                },
+                ent: { kind: 'contract', name: 'Lease — Suite ' + (u.id || '?'), id: env.envelopeId || env.id || '' },
                 status: env.status === 'completed' ? 'ok' : (env.status === 'voided' ? 'cancelled' : 'pending'),
                 source: 'docusign',
               });
             }
           }
-        }
-      }
-    }
-  } catch (e) { console.warn('[pulse-shim] envelope walk failed:', e); }
 
-  // ---------- Walk outreach across all units → events ----------
-  const recentOutreachEvents = [];
-  try {
-    for (const b of buildings) {
-      for (const f of (b.floors || [])) {
-        for (const u of (f.units || [])) {
+          // --- Outreach trail ---
           for (const o of (u.outreach || [])) {
             const ts = new Date(o.ts || 0).getTime();
-            if (!ts || ts < last24Ms) continue;
+            const email = (o.sentBy || o.callerEmail || '').toLowerCase();
             const type = String(o.type || '').toLowerCase();
-            let cat = 'system';
-            if (type === 'lease' || type.includes('contract')) cat = 'contract';
-            else if (type === 'email') cat = 'email';
-            else if (type === 'call' || type === 'phone') cat = 'call';
-            else if (type === 'note') cat = 'task';
-            else if (type === 'payment') cat = 'invoice';
-            recentOutreachEvents.push({
-              ts: ts, sentBy: (o.sentBy || o.callerEmail || '').toLowerCase(),
-              cat: cat, type: type || 'note',
-              desc: (o.text || o.summary || '(no description)').slice(0, 140),
-              ent: { kind: 'unit', name: 'Suite ' + (u.id || '?'), id: u.id },
-              status: 'ok',
-              source: 'web',
-            });
+            const stat = bucket(email);
+            if (stat && ts >= monthStartMs) {
+              if (type === 'email' || type === 'lease') stat.emailsMtd++;
+              else if (type === 'call' || type === 'phone') stat.callsMtd++;
+              else if (type === 'note') stat.notesMtd++;
+              stat.actionsMtd++;
+              if (ts > stat.lastActivityMs) stat.lastActivityMs = ts;
+            }
+            if (ts >= last24Ms) {
+              let cat = 'system';
+              if (type === 'lease' || type.includes('contract')) cat = 'contract';
+              else if (type === 'email') cat = 'email';
+              else if (type === 'call' || type === 'phone') cat = 'call';
+              else if (type === 'note') cat = 'task';
+              else if (type === 'payment') cat = 'invoice';
+              recentOutreachEvents.push({
+                ts: ts, sentBy: email,
+                cat: cat, type: type || 'note',
+                desc: (o.text || o.summary || '(no description)').slice(0, 140),
+                ent: { kind: 'unit', name: 'Suite ' + (u.id || '?'), id: u.id },
+                status: 'ok', source: 'web',
+              });
+            }
+          }
+
+          // --- Stripe invoice stamps (per FIXES_LOG Entry 10) ---
+          const stripeStamps = [
+            u.stripe?.moveInRent,
+            u.stripe?.depositInvoice,
+            u.stripe?.lastInvoice,
+          ];
+          for (const s of stripeStamps) {
+            if (!s || !s.sentBy) continue;
+            const stat = bucket(s.sentBy);
+            const sentMs = new Date(s.sentAt || s.createdAt || 0).getTime();
+            if (!stat) continue;
+            if (sentMs >= monthStartMs) {
+              stat.invoicesMtd++;
+              stat.actionsMtd++;
+            }
+            if (sentMs > stat.lastActivityMs) stat.lastActivityMs = sentMs;
+          }
+
+          // --- Per-month payment stamps ---
+          if (u.payments && typeof u.payments === 'object') {
+            for (const ym of Object.keys(u.payments)) {
+              const p = u.payments[ym];
+              if (!p || !p.sentBy) continue;
+              const stat = bucket(p.sentBy);
+              const ts = new Date(p.recordedAt || p.sentAt || p.date || 0).getTime();
+              if (!stat) continue;
+              if (ts >= monthStartMs) {
+                stat.paymentsMtd++;
+                stat.actionsMtd++;
+              }
+              if (ts > stat.lastActivityMs) stat.lastActivityMs = ts;
+            }
           }
         }
       }
     }
-  } catch (e) { console.warn('[pulse-shim] outreach walk failed:', e); }
+  } catch (e) { console.warn('[pulse-shim] state walk failed:', e); }
 
   // ---------- Map state.employees → DATA.USERS ----------
   const DEVICES = ['MacBook Pro · Chrome', 'Dell XPS · Edge', 'Lenovo ThinkPad · Firefox', 'iMac · Safari', 'Surface Laptop · Chrome'];
@@ -200,9 +265,47 @@
       const score = 60 + (seed % 40);
       const prev  = 55 + ((seed >> 2) % 38);
 
-      // ↓ Real fields where we have them
+      // ↓ Real fields aggregated from state walk above (Phase 7).
+      // Every value below is keyed off emp.email — same email that the
+      // CFs (dsSendEnvelope, createStripeInvoice, recordOutreach) stamp
+      // when this employee acts on a unit. Sign-in attribution is the
+      // contract: corporate-domain auto-onboard (Entry 25) gives every
+      // new employee a member doc with email → their actions stamp →
+      // these counters reflect their work without manual wiring.
       const emailLower = (emp.email || '').toLowerCase();
-      const realContracts = contractsByEmpEmail.get(emailLower) || 0;
+      const realStats = statsByEmail.get(emailLower) || blankStats();
+      const realContracts = realStats.contractsMtd;
+      const realEmails    = realStats.emailsMtd;
+      const realCalls     = realStats.callsMtd;
+      const realInvoices  = realStats.invoicesMtd;
+      const realPayments  = realStats.paymentsMtd;
+      const realActions   = realStats.actionsMtd;
+      const hasAnyActivity = realActions > 0;
+
+      // Score = simple weighted hit-rate (0..100). Each metric capped so a
+      // single huge category can't drag the score artificially. Weights:
+      // contracts 30, emails 25, calls 20, invoices 15, notes 10.
+      // Targets are role-tuned so an agent doing 4 contracts/month maxes
+      // the contracts axis; a manager handling 6 maxes it.
+      const tgt = role === 'agent'
+        ? { contracts: 4, emails: 60, calls: 30, invoices: 8 }
+        : role === 'manager'
+          ? { contracts: 6, emails: 40, calls: 20, invoices: 15 }
+          : role === 'accountant'
+            ? { contracts: 0, emails: 30, calls: 5, invoices: 20 }
+            : { contracts: 1, emails: 20, calls: 10, invoices: 5 };
+      function pctOf(x, t) { return t > 0 ? Math.min(1, x / t) : 0; }
+      const realScore = hasAnyActivity ? Math.round(
+        pctOf(realContracts, tgt.contracts) * 30 +
+        pctOf(realEmails,    tgt.emails)    * 25 +
+        pctOf(realCalls,     tgt.calls)     * 20 +
+        pctOf(realInvoices,  tgt.invoices)  * 15 +
+        Math.min(1, realStats.notesMtd / 10) * 10
+      ) : 0;
+      // Fall back to seed only when employee has zero real activity (so
+      // freshly-onboarded employees still show something rather than a
+      // flat zero leaderboard row). Once they act, real numbers take over.
+      const scoreFinal = hasAnyActivity ? realScore : score;
 
       const u = {
         id: 'u' + (i + 1),
@@ -221,18 +324,22 @@
         ip: '10.0.' + (1 + (seed >> 3) % 200) + '.' + (1 + seed % 250),
         device: DEVICES[seed % DEVICES.length],
         loc: LOCS[(seed >> 4) % LOCS.length],
-        actions: 60 + (seed % 80) + realContracts * 4,
-        calls: 5 + (seed % 30),
-        emails: 8 + ((seed >> 1) % 25),
-        contracts: realContracts,         // ← REAL count from leaseEnvelopes
-        docs: (seed % 10),
-        score: score,
+        actions: hasAnyActivity ? realActions : (60 + (seed % 80)),
+        calls: hasAnyActivity ? realCalls : (5 + (seed % 30)),
+        emails: hasAnyActivity ? realEmails : (8 + ((seed >> 1) % 25)),
+        contracts: realContracts,
+        docs: realStats.notesMtd || (seed % 10),
+        invoices: realInvoices,
+        payments: realPayments,
+        score: scoreFinal,
         prev: prev,
-        unusual: (seed % 13) === 0,
+        unusual: realActions === 0 && status !== 'offline',
         center: (window.DATA.CENTERS || []).find(function (c) { return c.id === centerId; }),
         _empId: emp.id,
         _hireDate: emp.hireDate || null,
         _workspaceMemberUid: emp.workspaceMemberUid || null,
+        _statsAreReal: hasAnyActivity,
+        _lastActivityMs: realStats.lastActivityMs || 0,
       };
       usersByEmail.set(emailLower, u);
       return u;
