@@ -22,6 +22,10 @@
   <!-- App modules — order matters -->
   <script type="text/babel" src="/pulse/icons.jsx"></script>
   <script type="text/babel" src="/pulse/data.jsx"></script>
+  <!-- Real-data shim — replaces mock USERS/CENTERS with values from
+       /floor-map-editor.html's state in localStorage. Runs before any
+       page module so React mounts with real people on the first render. -->
+  <script type="text/babel" src="/pulse/data-shim.jsx"></script>
   <script type="text/babel" src="/pulse/components.jsx"></script>
   <script type="text/babel" src="/pulse/forms.jsx"></script>
   <script type="text/babel" src="/pulse/metrics.jsx"></script>
