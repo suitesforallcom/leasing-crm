@@ -5835,33 +5835,127 @@ async function _dsAudit(action, callerInfo, extra) {
   } catch (e) { logger.warn('[docusign:audit] log write failed', e); }
 }
 
-// Send envelope. Client builds the full payload (template body OR inline HTML
-// + recipients/tabs/notification/emailSettings) — CF just relays. This keeps
-// template rendering / merge-field interpolation client-side where the lease
-// HTML and lease_defaults state live.
+// Send envelope. Client builds the full DocuSign payload (template body OR
+// inline HTML + recipients/tabs/notification/emailSettings) — CF relays it.
+//
+// Server-authoritative state write (FIXES_LOG Entry 22, 2026-05-18):
+// After DocuSign success, CF ALSO writes the envelope record into
+// state.buildings[bid].floors[fid].units[uid].leaseEnvelopes via a
+// Firestore transaction. Client used to push it after the CF call, but
+// follower tabs (Web Locks FIXES_LOG Entry 16) skip Firestore writes —
+// envelope went out, email arrived, but state never reflected it (Suite
+// 403, Drew/manager, 2026-05-18 02:27 UTC was the first observed loss).
+// Now the write rides on the SERVER side via admin SDK so it can't be
+// blocked by tab leadership rules.
 exports.dsSendEnvelope = onCall(
-  { secrets: [DOCUSIGN_PRIVATE_KEY], timeoutSeconds: 60 },
+  { secrets: [DOCUSIGN_PRIVATE_KEY], timeoutSeconds: 90 },
   async (request) => {
     const caller = await _dsAssertCanSendLeases(request.auth);
-    const { payload, recipientEmail } = request.data || {};
+    const { payload, recipientEmail, unitId, buildingId, floorId, envelopeMeta } = request.data || {};
     if (!payload || typeof payload !== 'object') {
       throw new HttpsError('invalid-argument', 'payload (envelope body) required');
     }
     if (!recipientEmail) {
       throw new HttpsError('invalid-argument', 'recipientEmail required for audit');
     }
+    if (!unitId || !buildingId || !floorId) {
+      throw new HttpsError('invalid-argument', 'unitId + buildingId + floorId required for server-authoritative state write');
+    }
     const res = await _dsApi('/envelopes', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
     const data = await res.json();
+
+    // Build the envelope record that will land in u.leaseEnvelopes. Client
+    // may supply additional metadata via envelopeMeta (leaseStart, leaseEnd,
+    // rent, mode, recipientName, subject, templateId). Server-authoritative
+    // fields (envelopeId, status, sentAt, sentBy) always win.
+    const nowIso = new Date().toISOString();
+    const envelopeRecord = {
+      // Server-authoritative
+      envelopeId: data.envelopeId,
+      status: data.status || 'sent',
+      createdAt: nowIso,
+      sentAt: nowIso,
+      lastChecked: nowIso,
+      sentBy: caller.email || caller.uid,
+      sentByUid: caller.uid,
+      recipientEmail,
+      // Client-supplied (may be undefined)
+      recipientName:  (envelopeMeta && envelopeMeta.recipientName)  || null,
+      subject:        (envelopeMeta && envelopeMeta.subject)        || payload.emailSubject || null,
+      templateId:     (envelopeMeta && envelopeMeta.templateId)     || payload.templateId || null,
+      mode:           (envelopeMeta && envelopeMeta.mode)           || (payload.templateId ? 'template' : 'inline'),
+      leaseStart:     (envelopeMeta && envelopeMeta.leaseStart)     || null,
+      leaseEnd:       (envelopeMeta && envelopeMeta.leaseEnd)       || null,
+      rent:           (envelopeMeta && envelopeMeta.rent != null) ? +envelopeMeta.rent : 0,
+    };
+
+    // Transactional state push. Read state, walk to target unit, push
+    // envelope, write state back. Retries automatically on conflict.
+    const stateRef = db.doc(`workspaces/${WORKSPACE_ID}/data/state`);
+    let writeOk = false;
+    try {
+      await db.runTransaction(async (tx) => {
+        const snap = await tx.get(stateRef);
+        if (!snap.exists) throw new Error('state document missing');
+        const state = snap.data() || {};
+        const b = (state.buildings || []).find(x => x.id === buildingId);
+        if (!b) throw new Error(`building ${buildingId} not found in state`);
+        const f = (b.floors || []).find(x => x.id === floorId);
+        if (!f) throw new Error(`floor ${floorId} not found in state`);
+        const u = (f.units || []).find(x => x.id === unitId);
+        if (!u) throw new Error(`unit ${unitId} not found in state`);
+
+        // Idempotency — if we already wrote this envelope (e.g. retry from
+        // the same caller), skip. Caller's audit log entry already exists.
+        u.leaseEnvelopes = Array.isArray(u.leaseEnvelopes) ? u.leaseEnvelopes : [];
+        const dup = u.leaseEnvelopes.find(e => e && (e.envelopeId === data.envelopeId || e.id === data.envelopeId));
+        if (dup) return;
+
+        u.leaseEnvelopes.push(envelopeRecord);
+        u.currentLeaseEnvelopeId = data.envelopeId;
+
+        // Outreach trail so the Activity Log on the unit panel reflects this
+        // send. Same shape the client used to write post-CF.
+        u.outreach = Array.isArray(u.outreach) ? u.outreach : [];
+        u.outreach.push({
+          type: 'lease',
+          ts: nowIso,
+          text: `DocuSign lease sent to ${recipientEmail} (envelope ${data.envelopeId.slice(0, 8)}…)`,
+          envelopeId: data.envelopeId,
+          recipientEmail,
+          sentBy: caller.email || caller.uid,
+        });
+
+        tx.set(stateRef, state);
+      });
+      writeOk = true;
+    } catch (e) {
+      logger.error('[docusign:state-write] failed', { envelopeId: data.envelopeId, unitId, error: e.message });
+      // DocuSign envelope is created, audit log gets the failure too — operator
+      // can reconcile via _dsReconcileEnvelopes on the client. We do NOT throw
+      // here because the envelope physically went out (email reaching tenant);
+      // throwing would mislead the operator into thinking nothing happened.
+    }
+
     await _dsAudit('send', caller, {
       envelopeId: data.envelopeId,
       recipientEmail,
       status: data.status || null,
       hasTemplateId: !!payload.templateId,
+      unitId, buildingId, floorId,
+      stateWriteOk: writeOk,
     });
-    return { envelopeId: data.envelopeId, status: data.status || 'sent', statusDateTime: data.statusDateTime };
+
+    return {
+      envelopeId: data.envelopeId,
+      status: data.status || 'sent',
+      statusDateTime: data.statusDateTime,
+      envelopeRecord,
+      stateWriteOk: writeOk,
+    };
   }
 );
 
