@@ -245,16 +245,30 @@ service cloud.firestore {
         allow read, write: if false;
       }
 
-      // Integration tokens — DocuSign access/refresh tokens shared at
-      // workspace level. RESTRICTED TO ADMIN ONLY (previously also
-      // open to managers — a too-broad scope for raw OAuth tokens
-      // that, if exfiltrated, could be used to send leases as the
-      // owning Stripe / DocuSign account from outside our app).
-      // Managers retain ability to SEND leases via the existing CFs;
-      // they just don't get the raw bearer tokens in their browser.
-      // Archived members blocked even if they had the role.
+      // Integration config — DocuSign JWT setup (FIXES_LOG Entry 20, 2026-05-17).
+      // Doc contains NON-SECRET config only: integrationKey (public),
+      // userId (GUID), accountId, baseUri, oauthHost, env, authMode,
+      // consentedAt, consentedBy. The actual JWT private key lives in
+      // Secret Manager (DOCUSIGN_PRIVATE_KEY). Therefore:
+      //   - READ allowed for any workspace member (client needs to
+      //     surface "DocuSign connected" status, account_id, etc.)
+      //   - WRITE restricted to admin (config changes affect everyone)
+      //   - Archived members blocked even if they had the role.
+      // Pre-JWT era stored access/refresh tokens here and locked the doc
+      // to admin-only; that prevented managers from sending leases at all
+      // because client_dsSync* failed with PERMISSION_DENIED. JWT moves
+      // bearer tokens server-side, so read is safe to broaden.
       match /integrations/{name} {
-        allow read, write: if isAdmin(wid);
+        allow read:  if isMember(wid);
+        allow write: if isAdmin(wid);
+      }
+
+      // DocuSign action audit log (FIXES_LOG Entry 20).
+      // Written ONLY by Cloud Functions via admin SDK (bypasses rules).
+      // Admin can read for compliance review; nobody can mutate from clients.
+      match /docusign_log/{entryId} {
+        allow read:  if isAdmin(wid);
+        allow write: if false;
       }
     }
 

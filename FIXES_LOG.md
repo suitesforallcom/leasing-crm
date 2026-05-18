@@ -795,6 +795,112 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 20. DocuSign JWT-grant proxy via Cloud Functions (2026-05-17)
+
+- **Status:** active
+- **Branch / commit:** main @ (this commit)
+- **Area:** DocuSign integration / OAuth / Cloud Functions / firestore.rules
+- **Files:**
+  - `functions/index.js` (+~250 lines — new section "DocuSign JWT-grant proxy")
+  - `firestore.rules` (integrations/{name} read opened to members + new docusign_log/{entryId} rules)
+  - `floor-map-editor.html` (route docusignSendEnvelope/leaseResendEnvelope/leaseVoidEnvelope/_dsArchiveSignedEnvelope/status-polling via CFs when JWT mode active; `_dsHasValidToken`, `_dsLoadJwtMode`, `_dsCallCF` helpers; OAuth flow stays as fallback)
+- **Functions / endpoints:**
+  - CF `dsConfigureJwt(integrationKey, userId, accountId, apiAccountId, baseUri, oauthHost, env)` — one-time bootstrap; admin only; writes config to `workspaces/{id}/integrations/docusign`
+  - CF `dsSendEnvelope({payload, recipientEmail})` — relays envelope creation to DocuSign with JWT auth
+  - CF `dsGetEnvelope({envelopeId})` — single-envelope status
+  - CF `dsListEnvelopes({envelopeIds, fromDate})` — batch status (used by polling tracker)
+  - CF `dsResend({envelopeId})` — re-emails signing notification
+  - CF `dsVoid({envelopeId, reason})` — cancels pending envelope
+  - CF `dsListTemplates()` — returns up to 100 templates
+  - CF `dsDownloadCombinedPdf({envelopeId})` — returns base64 PDF for archival
+  - Internal helpers: `_dsLoadConfig`, `_dsGetAccessToken` (caches access token ~1h per CF instance), `_dsApi`, `_dsAssertCanSendLeases`, `_dsAudit`
+- **Bug it fixed:** Two independent problems with the same root cause —
+  client-side OAuth flow + admin-only Firestore rule on tokens doc:
+  1. **Manager permission bug.** firestore.rules:256 restricted
+     `integrations/docusign` to `isAdmin(wid)`. `canSendLeases()` client-side
+     allowed manager → manager passed UI gate → `_dsSyncPullTokens()` got
+     `FirebaseError: Missing or insufficient permissions` from Firestore →
+     no token in manager's localStorage → toast «DocuSign not connected —
+     authorize first». Rule comment said managers send via "existing CFs"
+     but those CFs didn't exist.
+  2. **30-day re-auth bug.** DocuSign Authorization Code grant refresh
+     tokens are 30-day rolling. Refresh happens on demand only (when
+     access_token expires AND user actively sends a lease). If 30+ days
+     pass with no refresh attempt, the chain breaks → full OAuth re-auth.
+- **Invariant — DO NOT BREAK:**
+  1. **DocuSign private key MUST live in Firebase Secret Manager** as
+     `DOCUSIGN_PRIVATE_KEY`. Never in the floor-map-editor.html, never in
+     firestore, never in localStorage. The `defineSecret` declaration in
+     functions/index.js binds the secret to CFs that need it via the
+     `secrets:` array in onCall options. Adding a new CF that uses JWT
+     auth → MUST add `DOCUSIGN_PRIVATE_KEY` to that CF's `secrets`.
+  2. **Config doc at `workspaces/{id}/integrations/docusign` contains
+     NON-SECRET fields only.** `integrationKey` (public client ID),
+     `userId` (impersonated user GUID), `accountId`, `apiAccountId`,
+     `baseUri`, `oauthHost`, `env`, `authMode: 'jwt'`, `consentedAt`,
+     `consentedBy`. Never write access/refresh tokens here. Firestore rule
+     `integrations/{name}` allows read by any member (config-only, safe).
+  3. **JWT consent_for_life requires one-time admin consent.** URL pattern:
+     `https://account.docusign.com/oauth/auth?response_type=code&scope=signature%20impersonation&client_id=<KEY>&redirect_uri=<REGISTERED>`.
+     If consent is revoked at DocuSign side, CF returns `consent_required` —
+     admin must re-grant via the URL above.
+  4. **Token cache `_dsTokenCache` is per CF instance.** Different
+     instances (cold-started independently) each mint their own access
+     token via JWT exchange. No cross-instance sharing needed because JWT
+     mint is cheap (~200ms) and tokens live 1h. Don't add Firestore-backed
+     access token storage — that's a footgun that re-introduces the
+     refresh-rotation race condition we just got rid of.
+  5. **`_dsAssertCanSendLeases` is the auth gate for ALL CFs.** Verifies
+     caller's workspace member doc → role ∈ {admin, manager} ∧ NOT archived.
+     Adding new ds* CF → MUST call this gate before any DocuSign API call.
+  6. **Audit log writes to `docusign_log/{autoId}` MUST happen on every
+     mutating action** (send, resend, void, download). Read-only listing
+     (templates, status polling) can skip audit. Audit doc shape:
+     `{action, callerUid, callerEmail, callerRole, envelopeId?, ...extra, at}`.
+  7. **Client routes through CF only when `_dsIsJwtMode() === true`.**
+     OAuth flow stays as fallback — older workspaces or rolled-back
+     deploys without JWT setup keep working. Detection: read
+     `workspaces/{id}/integrations/docusign.authMode === 'jwt'`, cache
+     in `window._dsJwtModeCache`. Invalidate cache after `dsConfigureJwt`
+     completes.
+- **Verification:**
+  1. As admin: open SuitesForAll → Send lease to a tenant → envelope
+     arrives in tenant's email. CF logs show `[docusign:audit] send`.
+  2. As manager (NOT admin): repeat → envelope sent successfully, no
+     "DocuSign not connected" error. Previously this failed at the
+     Firestore-rules layer.
+  3. Wait >30 days → first lease send after that gap still works (no
+     OAuth popup, no "Reconnect DocuSign" prompt). Old Auth Code refresh
+     would have died; JWT mints fresh tokens via consent_for_life.
+  4. Firestore Console → `workspaces/default/integrations/docusign` →
+     `authMode: 'jwt'`, `consentedAt` set, NO access/refresh fields.
+  5. Firebase Secret Manager → `DOCUSIGN_PRIVATE_KEY` exists with at
+     least one version. Function service account has secretAccessor role.
+- **Regression test:** none — manual UI only. Future: CF emulator-based
+  test that mocks DocuSign /oauth/token + /envelopes endpoints and
+  asserts dsSendEnvelope completes end-to-end without errors.
+- **Related PR / issue:** none
+- **Setup procedure (for re-onboarding a workspace):**
+  1. Generate RSA keypair: `openssl genrsa -out private.pem 2048 &&
+     openssl rsa -in private.pem -pubout -out public.pem`
+  2. Upload `public.pem` to DocuSign Admin → Apps and Keys → app →
+     Service Integration → Upload RSA → Save app
+  3. Visit consent URL once as admin user: `https://account.docusign.com/oauth/auth?response_type=code&scope=signature%20impersonation&client_id=<INTEGRATION_KEY>&redirect_uri=<REGISTERED_URI>`
+     → click Allow Access
+  4. Upload private key: `firebase functions:secrets:set
+     DOCUSIGN_PRIVATE_KEY --data-file=- < private.pem`
+  5. Deploy: `firebase deploy --only functions,firestore:rules`
+  6. Initialize config: call `dsConfigureJwt` CF with integrationKey,
+     userId, accountId, apiAccountId, baseUri, oauthHost, env
+  7. Verify: call `dsListTemplates` CF → returns 200 with template list
+- **Suggested follow-up (out of scope here):** Remove the legacy OAuth
+  client code paths (`_dsRefreshAccess`, `_dsSyncPushTokens`,
+  `_dsSyncPullTokens`, `_dsExchangeCode`, `docusignOAuth` popup flow,
+  `DS_LS.ACCESS/REFRESH/EXPIRES/PKCE_*` localStorage keys) once all
+  workspaces are confirmed migrated to JWT.
+
+---
+
 ## Recommended porting order
 
 The two source branches do not currently conflict, but they touch the same

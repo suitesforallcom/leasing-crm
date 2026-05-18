@@ -5692,3 +5692,299 @@ exports.dismissBankMatch = onCall(
     return { ok: true };
   }
 );
+
+// ============================================================================
+// DocuSign JWT-grant proxy (FIXES_LOG Entry 20 — 2026-05-17)
+// ============================================================================
+// Replaces the browser OAuth + localStorage-tokens flow. JWT private key lives
+// in Secret Manager; browser NEVER sees raw tokens. Solves:
+//   1. Manager permission bug: previously only admin could read tokens from
+//      Firestore /workspaces/{id}/integrations/docusign (firestore.rules:256).
+//      Managers got "DocuSign not connected" toast. Now manager invokes CF;
+//      CF holds tokens server-side; rules don't gate it.
+//   2. 30-day re-authorize bug: Auth Code refresh tokens expired after 30
+//      days. JWT grant has consent_for_life — server mints fresh access
+//      tokens via signed JWT assertions, no human in the loop.
+//
+// Config doc at workspaces/{id}/integrations/docusign:
+//   { integrationKey, userId, apiAccountId, baseUri, oauthHost, env,
+//     authMode: 'jwt', consentedAt, consentedBy }
+// Audit log at workspaces/{id}/docusign_log/{autoId}.
+
+const DOCUSIGN_PRIVATE_KEY = defineSecret('DOCUSIGN_PRIVATE_KEY');
+
+// In-memory access-token cache (per CF instance). DocuSign JWT access tokens
+// live for 1 hour by default. We refresh 60s early to avoid mid-call expiry.
+let _dsTokenCache = null;
+
+async function _dsLoadConfig() {
+  const snap = await db.doc(`workspaces/${WORKSPACE_ID}/integrations/docusign`).get();
+  if (!snap.exists) {
+    throw new HttpsError('failed-precondition',
+      'DocuSign config missing — admin must run /init DocuSign JWT setup');
+  }
+  const cfg = snap.data() || {};
+  if (cfg.authMode !== 'jwt') {
+    throw new HttpsError('failed-precondition',
+      `DocuSign config authMode is "${cfg.authMode || '(unset)'}", expected "jwt".`);
+  }
+  if (!cfg.integrationKey || !cfg.userId || !cfg.baseUri || !cfg.oauthHost) {
+    throw new HttpsError('failed-precondition',
+      'DocuSign config incomplete (need integrationKey, userId, baseUri, oauthHost)');
+  }
+  if (!cfg.apiAccountId && !cfg.accountId) {
+    throw new HttpsError('failed-precondition',
+      'DocuSign config missing accountId / apiAccountId');
+  }
+  return cfg;
+}
+
+async function _dsGetAccessToken() {
+  if (_dsTokenCache && _dsTokenCache.expiresAt > Date.now() + 60_000) {
+    return _dsTokenCache;
+  }
+  const jwt = require('jsonwebtoken');
+  const cfg = await _dsLoadConfig();
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
+    iss: cfg.integrationKey,
+    sub: cfg.userId,
+    iat: now,
+    exp: now + 3600,  // JWT lifetime; DocuSign accepts up to 1 hour
+    aud: cfg.oauthHost,  // 'account.docusign.com' for prod, 'account-d.docusign.com' for demo
+    scope: 'signature impersonation',
+  };
+  const privateKey = DOCUSIGN_PRIVATE_KEY.value();
+  const assertion = jwt.sign(payload, privateKey, { algorithm: 'RS256' });
+  const tokenUrl = `https://${cfg.oauthHost}/oauth/token`;
+  const res = await fetch(tokenUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+      assertion,
+    }).toString(),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    logger.error('[docusign:jwt] token exchange failed', { status: res.status, body: txt.slice(0, 500) });
+    // Most common cause: consent_required → admin needs to re-run the consent URL.
+    if (txt.includes('consent_required')) {
+      throw new HttpsError('failed-precondition',
+        'DocuSign JWT consent expired — admin must re-grant access via /consent URL');
+    }
+    throw new HttpsError('internal', `DocuSign JWT token exchange failed (${res.status})`);
+  }
+  const data = await res.json();
+  _dsTokenCache = {
+    token: data.access_token,
+    expiresAt: Date.now() + ((data.expires_in || 3600) - 60) * 1000,
+    baseUri: cfg.baseUri,
+    accountId: cfg.apiAccountId || cfg.accountId,
+    cfg,
+  };
+  return _dsTokenCache;
+}
+
+// Bypasses Firestore rules — admin SDK call. Verifies caller's workspace role
+// for the CF entry point, NOT the underlying API call.
+async function _dsAssertCanSendLeases(authContext) {
+  if (!authContext || !authContext.uid) {
+    throw new HttpsError('unauthenticated', 'Sign in to send leases');
+  }
+  const snap = await db.doc(`workspaces/${WORKSPACE_ID}/members/${authContext.uid}`).get();
+  if (!snap.exists) {
+    throw new HttpsError('permission-denied', 'Not a workspace member');
+  }
+  const m = snap.data() || {};
+  if (m.archived) {
+    throw new HttpsError('permission-denied', 'Account archived');
+  }
+  if (m.role !== 'admin' && m.role !== 'manager') {
+    throw new HttpsError('permission-denied', `Role "${m.role || 'viewer'}" cannot send leases`);
+  }
+  return { uid: authContext.uid, email: m.email || authContext.token?.email || null, role: m.role };
+}
+
+// Generic DocuSign REST relay. Handles auth header injection + error mapping.
+async function _dsApi(path, options = {}) {
+  const t = await _dsGetAccessToken();
+  const url = `${t.baseUri}/restapi/v2.1/accounts/${t.accountId}${path}`;
+  const headers = Object.assign({}, options.headers || {});
+  headers['Authorization'] = `Bearer ${t.token}`;
+  if (options.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+  const res = await fetch(url, { method: options.method || 'GET', headers, body: options.body });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    logger.error('[docusign:api] failed', { path, status: res.status, body: txt.slice(0, 1000) });
+    throw new HttpsError('internal', `DocuSign API ${path} failed (${res.status}): ${txt.slice(0, 300)}`);
+  }
+  return res;
+}
+
+async function _dsAudit(action, callerInfo, extra) {
+  try {
+    await db.collection(`workspaces/${WORKSPACE_ID}/docusign_log`).add({
+      action,
+      callerUid: callerInfo.uid,
+      callerEmail: callerInfo.email || null,
+      callerRole: callerInfo.role || null,
+      at: admin.firestore.FieldValue.serverTimestamp(),
+      ...(extra || {}),
+    });
+  } catch (e) { logger.warn('[docusign:audit] log write failed', e); }
+}
+
+// Send envelope. Client builds the full payload (template body OR inline HTML
+// + recipients/tabs/notification/emailSettings) — CF just relays. This keeps
+// template rendering / merge-field interpolation client-side where the lease
+// HTML and lease_defaults state live.
+exports.dsSendEnvelope = onCall(
+  { secrets: [DOCUSIGN_PRIVATE_KEY], timeoutSeconds: 60 },
+  async (request) => {
+    const caller = await _dsAssertCanSendLeases(request.auth);
+    const { payload, recipientEmail } = request.data || {};
+    if (!payload || typeof payload !== 'object') {
+      throw new HttpsError('invalid-argument', 'payload (envelope body) required');
+    }
+    if (!recipientEmail) {
+      throw new HttpsError('invalid-argument', 'recipientEmail required for audit');
+    }
+    const res = await _dsApi('/envelopes', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    await _dsAudit('send', caller, {
+      envelopeId: data.envelopeId,
+      recipientEmail,
+      status: data.status || null,
+      hasTemplateId: !!payload.templateId,
+    });
+    return { envelopeId: data.envelopeId, status: data.status || 'sent', statusDateTime: data.statusDateTime };
+  }
+);
+
+// Read envelope (status polling, recipient info, last-checked, etc.).
+exports.dsGetEnvelope = onCall(
+  { secrets: [DOCUSIGN_PRIVATE_KEY], timeoutSeconds: 30 },
+  async (request) => {
+    await _dsAssertCanSendLeases(request.auth);
+    const { envelopeId } = request.data || {};
+    if (!envelopeId) throw new HttpsError('invalid-argument', 'envelopeId required');
+    const res = await _dsApi(`/envelopes/${encodeURIComponent(envelopeId)}?include=recipients`);
+    return await res.json();
+  }
+);
+
+// Batch-status — fetch many envelopes by id. Used by lease polling tracker
+// to avoid N HTTP round-trips for N envelopes. DocuSign's /envelopes
+// endpoint with envelope_ids query supports up to 1000 ids per request.
+exports.dsListEnvelopes = onCall(
+  { secrets: [DOCUSIGN_PRIVATE_KEY], timeoutSeconds: 60 },
+  async (request) => {
+    await _dsAssertCanSendLeases(request.auth);
+    const { envelopeIds, fromDate } = request.data || {};
+    if (!Array.isArray(envelopeIds) || envelopeIds.length === 0) {
+      throw new HttpsError('invalid-argument', 'envelopeIds (non-empty array) required');
+    }
+    const qs = new URLSearchParams({
+      envelope_ids: envelopeIds.join(','),
+      from_date: fromDate || '2024-01-01',
+      include: 'recipients',
+    });
+    const res = await _dsApi(`/envelopes?${qs.toString()}`);
+    const data = await res.json();
+    return { envelopes: data.envelopes || [] };
+  }
+);
+
+// Re-email the signing notification to the recipient.
+exports.dsResend = onCall(
+  { secrets: [DOCUSIGN_PRIVATE_KEY], timeoutSeconds: 30 },
+  async (request) => {
+    const caller = await _dsAssertCanSendLeases(request.auth);
+    const { envelopeId } = request.data || {};
+    if (!envelopeId) throw new HttpsError('invalid-argument', 'envelopeId required');
+    await _dsApi(`/envelopes/${encodeURIComponent(envelopeId)}?resend_envelope=true`, {
+      method: 'PUT',
+      body: JSON.stringify({ status: 'sent' }),
+    });
+    await _dsAudit('resend', caller, { envelopeId });
+    return { ok: true };
+  }
+);
+
+// Void (cancel) a pending envelope.
+exports.dsVoid = onCall(
+  { secrets: [DOCUSIGN_PRIVATE_KEY], timeoutSeconds: 30 },
+  async (request) => {
+    const caller = await _dsAssertCanSendLeases(request.auth);
+    const { envelopeId, reason } = request.data || {};
+    if (!envelopeId) throw new HttpsError('invalid-argument', 'envelopeId required');
+    await _dsApi(`/envelopes/${encodeURIComponent(envelopeId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ status: 'voided', voidedReason: reason || 'Cancelled by operator' }),
+    });
+    await _dsAudit('void', caller, { envelopeId, reason: reason || null });
+    return { ok: true };
+  }
+);
+
+// List the templates available in this DocuSign account.
+exports.dsListTemplates = onCall(
+  { secrets: [DOCUSIGN_PRIVATE_KEY], timeoutSeconds: 30 },
+  async (request) => {
+    await _dsAssertCanSendLeases(request.auth);
+    const res = await _dsApi('/templates?count=100');
+    const data = await res.json();
+    return { templates: data.envelopeTemplates || [], total: +data.totalSetSize || 0 };
+  }
+);
+
+// Fetch the combined signed PDF for an envelope. Returned as base64 so the
+// client can either preview or upload to Cloud Storage for archival.
+exports.dsDownloadCombinedPdf = onCall(
+  { secrets: [DOCUSIGN_PRIVATE_KEY], timeoutSeconds: 60, memory: '1GiB' },
+  async (request) => {
+    const caller = await _dsAssertCanSendLeases(request.auth);
+    const { envelopeId } = request.data || {};
+    if (!envelopeId) throw new HttpsError('invalid-argument', 'envelopeId required');
+    const res = await _dsApi(`/envelopes/${encodeURIComponent(envelopeId)}/documents/combined`);
+    const buffer = Buffer.from(await res.arrayBuffer());
+    await _dsAudit('download', caller, { envelopeId, sizeKb: Math.round(buffer.length / 1024) });
+    return { pdfBase64: buffer.toString('base64'), mimeType: 'application/pdf', sizeBytes: buffer.length };
+  }
+);
+
+// One-time bootstrap — write the integration config to Firestore so the
+// API functions above can find it. Admin-only. Idempotent: caller can re-run
+// to update any field (e.g. rotated user_id, env change, region migration).
+exports.dsConfigureJwt = onCall(
+  { timeoutSeconds: 10 },
+  async (request) => {
+    if (!request.auth?.uid) throw new HttpsError('unauthenticated', 'Sign in');
+    const snap = await db.doc(`workspaces/${WORKSPACE_ID}/members/${request.auth.uid}`).get();
+    const m = snap.exists ? (snap.data() || {}) : {};
+    if (m.role !== 'admin') throw new HttpsError('permission-denied', 'Admin only');
+    const { integrationKey, userId, accountId, apiAccountId, baseUri, oauthHost, env } = request.data || {};
+    if (!integrationKey || !userId || !baseUri || !oauthHost) {
+      throw new HttpsError('invalid-argument',
+        'integrationKey, userId, baseUri, oauthHost required');
+    }
+    const doc = {
+      integrationKey, userId, accountId: accountId || null,
+      apiAccountId: apiAccountId || null,
+      baseUri, oauthHost, env: env || 'prod_eu',
+      authMode: 'jwt',
+      consentedAt: admin.firestore.FieldValue.serverTimestamp(),
+      consentedBy: m.email || request.auth.token?.email || null,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    await db.doc(`workspaces/${WORKSPACE_ID}/integrations/docusign`).set(doc, { merge: true });
+    // Bust the in-memory cache so the next API call re-reads config.
+    _dsTokenCache = null;
+    return { ok: true };
+  }
+);
+
