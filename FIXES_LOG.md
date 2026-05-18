@@ -717,7 +717,81 @@ to the replacement entry) if a fix is intentionally rewritten.
 - **Suggested UX follow-up (out of scope here):** Overview CTA could detect
   "prospect signed but no lease doc" state and offer "📎 Upload signed PDF"
   as a peer button next to "Send via DocuSign" — clearer choice for
-  offline-signed flow than the implicit "Send lease →" only path.
+  offline-signed flow than the implicit "Send lease →" only path. **Done
+  2026-05-17 in commit `7ed96f1`.**
+
+---
+
+### 19. View-As mode — client-only employee impersonation preview (2026-05-17)
+
+- **Status:** active
+- **Branch / commit:** main @ (this commit)
+- **Area:** Permissions / user menu / topbar UX / support tooling
+- **Files:**
+  - `floor-map-editor.html`
+- **Functions:**
+  - `currentRole` — checks `_viewAsGet()` BEFORE `fbSync.role`
+  - `canAccessBuilding` — uses `viewAs.buildings` scope when active
+  - `_viewAsGet` / `_viewAsSet` — sessionStorage-backed state (key
+    `sfa_view_as_v1`)
+  - `_viewAsActive` / `_viewAsCanEnter` / `_viewAsInferRole`
+  - `openViewAsModal` / `closeViewAsModal` / `_viewAsRenderList` /
+    `_viewAsFilter` / `_viewAsSetFilterRole`
+  - `_viewAsActivate(empId)` / `_viewAsExit()`
+  - `_viewAsRenderBanner` (called from `applyRoleVisibility`)
+- **Feature it added:** Operator (admin/manager) clicks their name → user
+  menu → "Switch to employee…" → searchable modal with all employees
+  (grouped by workspace role, with HR role + buildings shown). Click an
+  employee → permissions immediately preview as that role. Sticky yellow
+  banner at top shows "Viewing as X · role · buildings — Exit view".
+- **Invariant — DO NOT BREAK:**
+  1. **View-as is CLIENT-ONLY.** Firebase Auth NEVER swaps. `fbSync.user`
+     stays the operator's real auth identity. ALL Firestore writes happen
+     as the real user. `createdBy` / `updatedBy` / `sentBy` / etc. attribute
+     to the real operator, not the impersonated employee.
+  2. **`currentRole()` is the single funnel for view-as.** Don't bypass it
+     by reading `fbSync.role` directly when checking permissions. Adding a
+     new gate? Use `currentRole()` (it already honors view-as).
+  3. **Building scope override.** `canAccessBuilding` must read
+     `_viewAsGet().buildings` when active — NOT `fbSync.memberBuildings`
+     (which is the real user's scope, irrelevant when previewing).
+  4. **Non-root admin can NOT view-as another admin.** Modal disables
+     admin rows for non-root operators. Without this gate, a workspace
+     admin could preview-as another admin and try to take privileged
+     actions — those still ride on real auth (Firestore rules enforce),
+     but disabling at UI level prevents confusion / abuse vectors.
+  5. **Cannot enter view-as while already in view-as.** `_viewAsCanEnter`
+     returns false if `_viewAsActive()`. Operator must exit first to
+     prevent nested impersonation confusion.
+  6. **Tab-local persistence.** Storage is `sessionStorage` (not
+     `localStorage`, not Firestore state.ui) — view-as state stays
+     per-tab and disappears on browser close. Sharing it across tabs/
+     devices would confuse multi-tab edit (Web Locks Entry 16).
+  7. **No effect on Firestore rules.** Server-side rules continue to check
+     the real auth UID's claims. View-as is preview-only — operator can't
+     bypass rules even when "viewing as" a higher-permission employee
+     (which is blocked at UI anyway by rule 4).
+- **Verification:**
+  1. As admin, click user badge → "Switch to employee…" → modal opens
+     with all active employees.
+  2. Pick a teamviewer employee → banner appears, `currentRole()` returns
+     'teamviewer', `canSeeFinance()` returns false, finance UI hidden.
+  3. Exit view-as → banner gone, full admin access restored.
+  4. As non-root admin: admin rows in modal are aria-disabled.
+  5. As manager: "Switch to employee…" item visible (manager can preview);
+     "Switch to employee…" hidden for viewer/teamviewer/mapeditor.
+  6. Open DevTools → Application → Session Storage → key
+     `sfa_view_as_v1` present while in view-as, removed on exit.
+  7. Write a note / edit something while in view-as → activity log shows
+     real operator's email, not the impersonated employee's.
+- **Regression test:** none — manual UI only.
+- **Related PR / issue:** none
+- **Suggested follow-up (out of scope here):** Real impersonation via Cloud
+  Function-issued custom token + audit log + Firestore rules update —
+  needed if operator wants writes attributed to the employee (e.g., for
+  support sessions where employee asks operator to act on their behalf).
+  That's a Path A change requiring server work; current Entry 19 is the
+  Path B preview-only flow.
 
 ---
 
