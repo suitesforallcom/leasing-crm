@@ -1,0 +1,968 @@
+/* global React, Icon, DATA, Avatar, CatIcon, StatusDot, Trend, Sparkline, HourBars, DayBar, fmt, parseTime, groupByBucket, metricsFor, StatusPill, TargetMeter, BonusBadge, HelpHint, CenterChip, AuditLogTab */
+
+/* ================================================================
+   Employee detail page — header + tab nav + tab body
+   ================================================================ */
+
+window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpenEvent, onBack, onCompareAdd, onMessage, onOpenFilter, onSendKudos, role }) {
+  const u = DATA.USERS.find(x => x.id === employeeId);
+  if (!u) return <div className="page">Employee not found.</div>;
+
+  /* Events for this user (only Maya has detailed; others have micro events) */
+  const events = DATA.ALL_EVENTS.filter(e => e.userId === u.id);
+  const calls  = events.filter(e => e.cat === "call");
+  const emails = events.filter(e => e.cat === "email");
+  const docs   = events.filter(e => e.cat === "document");
+  const contracts = events.filter(e => e.cat === "contract");
+
+  const m = metricsFor(u);
+  const tabs = [
+    { id: "performance",  label: "Performance",   icon: "star" },
+    { id: "timeline",     label: "Timeline",      icon: "activity", count: events.length },
+    { id: "audit",        label: "Full audit log",icon: "signal",   count: u.id === "u1" ? 80 : null },
+    { id: "documents",    label: "Documents",     icon: "doc",      count: docs.length },
+    { id: "contracts",    label: "Contracts",     icon: "contract", count: contracts.length },
+    { id: "calls",        label: "Calls",         icon: "phone",    count: calls.length },
+    { id: "emails",       label: "Emails",        icon: "mail",     count: emails.length },
+    { id: "logins",       label: "Login history", icon: "login" },
+    { id: "productivity", label: "Productivity",  icon: "trendUp" },
+  ];
+
+  return (
+    <div className="page">
+      {/* Header */}
+      <div className="row" style={{ marginBottom: 8 }}>
+        <button className="btn is-ghost is-small" onClick={onBack}>
+          <Icon name="chevL" /> All people
+        </button>
+      </div>
+
+      <div className="card" style={{ padding: 22, marginBottom: 22 }}>
+        <div className="emp-head">
+          <div className="row" style={{ gap: 16, flex: 1, minWidth: 0 }}>
+            <Avatar user={u} size="xl" />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <h1 style={{ fontSize: 24, fontWeight: 700, margin: 0, letterSpacing: "-.02em" }}>{u.name}</h1>
+                <span className="chip">{DATA.ROLES[u.role].label}</span>
+                <span className={"chip is-" + (u.status === "online" ? "success" : u.status === "idle" ? "warning" : "")}>
+                  <span className="dot" style={{ background: u.status === "online" ? "var(--success)" : u.status === "idle" ? "var(--warning)" : "var(--muted-2)" }} />
+                  {u.status === "online" ? "Online now" : u.status === "idle" ? "Idle 12m" : "Offline"}
+                </span>
+                <StatusPill status={m.status} size="lg" />
+                <BonusBadge tier={m.tier} amount={m.bonusMtd} />
+                <CenterChip center={u.center} />
+              </div>
+              <div className="muted" style={{ marginTop: 4, fontSize: 13, display: "flex", gap: 12, flexWrap: "wrap" }}>
+                <span><Icon name="mail" style={{ width: 12, height: 12, verticalAlign: "-2px", marginRight: 4 }} />{u.first.toLowerCase()}.{u.last.toLowerCase().replace(/[^a-z]/g, "")}@crestview.co</span>
+                <span><Icon name="ipin" style={{ width: 12, height: 12, verticalAlign: "-2px", marginRight: 4 }} />{u.loc}</span>
+                <span><Icon name="laptop" style={{ width: 12, height: 12, verticalAlign: "-2px", marginRight: 4 }} />{u.device}</span>
+              </div>
+            </div>
+          </div>
+          <div className="row" style={{ gap: 8 }}>
+            <button className="btn" onClick={() => onSendKudos && onSendKudos(u)}><Icon name="star" /> Kudos</button>
+            <button className="btn" onClick={() => onCompareAdd(u.id)}><Icon name="compare" /> Compare</button>
+            <button className="btn" onClick={() => window.toast("Employee report exported as PDF", "success")}><Icon name="download" /> Export</button>
+            <button className="btn is-primary" onClick={() => onMessage && onMessage(u)}><Icon name="mail" /> Message</button>
+          </div>
+        </div>
+
+        {/* Hours worked progress — prominent */}
+        <div style={{ marginTop: 18, display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", gap: 16 }} className="head-row-2">
+          <div style={{ padding: 14, background: "var(--surface-2)", borderRadius: 12 }}>
+            <div className="row" style={{ marginBottom: 8 }}>
+              <Icon name="clock" style={{ color: "var(--muted)" }} />
+              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>Working today</span>
+              <div className="spacer" />
+              <span className="chip is-success">on time</span>
+            </div>
+            <div className="row" style={{ alignItems: "baseline", gap: 8 }}>
+              <div className="num" style={{ fontSize: 32, fontWeight: 800, letterSpacing: "-.025em", whiteSpace: "nowrap" }}>{u.status === "offline" ? "—" : fmt.hm(u.online)}</div>
+              <div className="muted" style={{ fontSize: 14, whiteSpace: "nowrap" }}>of {m.targets.hoursWorked}h target</div>
+            </div>
+            <div style={{ height: 8, background: "var(--surface-3)", borderRadius: 999, marginTop: 8, overflow: "hidden" }}>
+              <span style={{ display: "block", height: "100%", width: Math.min(100, (u.online / 60) / m.targets.hoursWorked * 100) + "%", background: m.today.hours.hit ? "var(--success)" : "var(--accent)", borderRadius: 999 }} />
+            </div>
+            <div className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>
+              First login <span className="mono" style={{ color: "var(--ink)" }}>{u.login || "—"}</span> · Last activity <span className="mono" style={{ color: "var(--ink)" }}>{u.status === "online" ? "now" : u.logout || "—"}</span>
+            </div>
+          </div>
+
+          <div style={{ padding: 14, background: "var(--surface-2)", borderRadius: 12 }}>
+            <div className="row" style={{ marginBottom: 8 }}>
+              <Icon name="signal" style={{ color: "var(--muted)" }} />
+              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>Targets hit today</span>
+            </div>
+            <div className="row" style={{ alignItems: "baseline", gap: 8 }}>
+              <div className="num" style={{ fontSize: 32, fontWeight: 800, letterSpacing: "-.025em" }}>{m.hits}<span className="muted" style={{ fontSize: 16, fontWeight: 600 }}>/{m.expected}</span></div>
+              <Trend now={m.hits} prev={Math.max(0, m.hits - 1)} suffix="" />
+            </div>
+            <div className="row" style={{ gap: 4, marginTop: 8 }}>
+              {[m.today.calls, m.today.emails, m.today.hours, m.today.reply, m.today.pickup].map((mm, i) => (
+                <span key={i} title={mm.label} style={{ flex: 1, height: 8, borderRadius: 4, background: mm.tone === "success" ? "var(--success)" : mm.tone === "warning" ? "var(--warning)" : mm.tone === "danger" ? "var(--danger)" : "var(--surface-3)" }} />
+              ))}
+            </div>
+            <div className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>Calls · Emails · Hours · Reply · Pickup</div>
+          </div>
+
+          <div style={{ padding: 14, background: m.tier.id !== "none" ? `linear-gradient(135deg, ${m.tier.color}10, ${m.tier.color}24)` : "var(--surface-2)", borderRadius: 12, border: m.tier.id === "gold" || m.tier.id === "platinum" ? `1px solid ${m.tier.color}55` : "1px solid transparent" }}>
+            <div className="row" style={{ marginBottom: 8 }}>
+              <Icon name="star" style={{ color: m.tier.id !== "none" ? m.tier.color : "var(--muted)" }} />
+              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>May bonus · {m.tier.label}</span>
+            </div>
+            <div className="num" style={{ fontSize: 32, fontWeight: 800, letterSpacing: "-.025em", color: m.tier.id !== "none" ? m.tier.color : "var(--muted)" }}>${m.bonusMtd.toLocaleString()}</div>
+            {m.nextTier ? (
+              <>
+                <div className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>+${m.nextTier.amount - m.tier.amount} to reach {m.nextTier.label}</div>
+                <div style={{ height: 6, background: "var(--surface-3)", borderRadius: 999, marginTop: 6, overflow: "hidden" }}>
+                  <span style={{ display: "block", height: "100%", width: Math.round(m.progressToNext * 100) + "%", background: m.nextTier.color, borderRadius: 999 }} />
+                </div>
+              </>
+            ) : <div className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>Top tier reached this month 🎉</div>}
+          </div>
+        </div>
+
+        {/* Compact stats strip */}
+        <div className="emp-stats">
+          <Stat icon="login"    label="First login"     value={u.login || "—"}                  sub="on time" />
+          <Stat icon="logout"   label="Last activity"   value={u.logout || (u.status === "offline" ? "—" : "now")} sub={u.status === "online" ? "active" : ""} />
+          <Stat icon="zap"      label="Actions today"   value={u.actions}                       trend={<Trend now={u.actions} prev={Math.round(u.actions * .92)} />} />
+          <Stat icon="phone"    label="Calls"           value={u.calls + "/" + m.targets.calls} sub={`pickup ${m.actuals.callPickupSec}s · ${m.actuals.missedCalls} missed`} />
+          <Stat icon="mail"     label="Emails"          value={u.emails + "/" + m.targets.emails} sub={u.emails > 0 ? `avg reply ${m.actuals.emailReplyMin}m` : ""} />
+          <Stat icon="contract" label="Contracts"       value={u.contracts + (m.targets.contracts > 0 ? "/" + m.targets.contracts : "")} sub={u.contracts > 0 ? "2 signed" : ""} />
+          <Stat icon="star"     label="Productivity"    value={u.score === 0 ? "—" : u.score}   trend={u.score > 0 ? <Trend now={u.score} prev={u.prev} suffix=" / 30d" /> : null} onClick={u.score > 0 ? () => window.openScoreExplainer(u) : null} />
+          <Stat icon="signal"   label="Status"          value={m.status.label}                 sub={""} />
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="tabs">
+        {tabs.map(t => (
+          <button key={t.id} className={"tab" + (tab === t.id ? " is-active" : "")} onClick={() => onTab(t.id)}>
+            <Icon name={t.icon} />
+            {t.label}
+            {t.count != null && <span className="count">{t.count}</span>}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab body */}
+      {tab === "performance" && <PerformanceTab user={u} metrics={m} />}
+      {tab === "timeline" && <TimelineTab events={events} user={u} onOpenEvent={onOpenEvent} />}
+      {tab === "audit" && <AuditLogTab user={u} onOpenEvent={onOpenEvent} />}
+      {tab === "documents" && <DocumentsTab events={docs} onOpenEvent={onOpenEvent} />}
+      {tab === "contracts" && <ContractsTab events={contracts} onOpenEvent={onOpenEvent} />}
+      {tab === "calls" && <CallsTab events={calls} user={u} onOpenEvent={onOpenEvent} metrics={m} />}
+      {tab === "emails" && <EmailsTab events={emails} user={u} onOpenEvent={onOpenEvent} metrics={m} />}
+      {tab === "logins" && <LoginsTab user={u} />}
+      {tab === "productivity" && <ProductivityTab user={u} />}
+
+      <style>{`
+        .emp-head { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+        .emp-stats {
+          display: grid;
+          grid-template-columns: repeat(8, 1fr);
+          gap: 16px;
+          margin-top: 20px;
+          padding-top: 20px;
+          border-top: 1px dashed var(--border);
+        }
+        @media (max-width: 1100px) { .emp-stats { grid-template-columns: repeat(4, 1fr); } .head-row-2 { grid-template-columns: 1fr !important; } }
+        @media (max-width: 640px)  { .emp-stats { grid-template-columns: repeat(2, 1fr); } }
+      `}</style>
+    </div>
+  );
+};
+
+function Stat({ icon, label, value, sub, trend, onClick }) {
+  return (
+    <div style={{ cursor: onClick ? "pointer" : "default" }} onClick={onClick}>
+      <div className="kpi-head" style={{ marginBottom: 4 }}><Icon name={icon} />{label}{onClick && <Icon name="search" style={{ width: 10, height: 10, color: "var(--muted-2)", marginLeft: 2 }} />}</div>
+      <div className="num" style={{ fontSize: 18, fontWeight: 700, letterSpacing: "-.01em", textDecoration: onClick ? "underline dotted var(--muted-2)" : "none" }}>{value}</div>
+      {(sub || trend) && (
+        <div className="kpi-foot" style={{ marginTop: 1 }}>
+          {trend}{sub && <span>{sub}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ================================================================
+   Timeline tab — grouped by time bucket, vertical track
+   ================================================================ */
+function TimelineTab({ events, user, onOpenEvent }) {
+  const [cats, setCats] = React.useState(new Set());
+  const [query, setQuery] = React.useState("");
+
+  const allCats = [...new Set(events.map(e => e.cat))];
+
+  const filtered = events.filter(e => {
+    if (cats.size > 0 && !cats.has(e.cat)) return false;
+    if (query) {
+      const q = query.toLowerCase();
+      if (!e.desc.toLowerCase().includes(q) && !(e.ent && e.ent.name.toLowerCase().includes(q))) return false;
+    }
+    return true;
+  });
+
+  const buckets = groupByBucket([...filtered].sort((a, b) => parseTime(a.time) - parseTime(b.time)));
+
+  function toggleCat(c) {
+    const n = new Set(cats);
+    n.has(c) ? n.delete(c) : n.add(c);
+    setCats(n);
+  }
+
+  if (events.length === 0) {
+    return <div className="card"><Empty icon="activity" title="No activity yet">When {user.first} starts working, events will stream in here in real time.</Empty></div>;
+  }
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 280px", gap: 18 }} className="tl-grid">
+      <div>
+        {/* filters */}
+        <div className="filters">
+          <div className="search" style={{ minWidth: 240, padding: "6px 10px", background: "var(--surface)" }}>
+            <Icon name="search" />
+            <input placeholder="Search timeline…" value={query} onChange={e => setQuery(e.target.value)} />
+          </div>
+          {allCats.map(c => (
+            <button
+              key={c}
+              className={"chip" + (cats.has(c) ? " is-accent" : "")}
+              onClick={() => toggleCat(c)}
+              style={{ cursor: "pointer" }}
+            >
+              <span className="dot" style={{ background: DATA.CATEGORIES[c].color }} />
+              {DATA.CATEGORIES[c].label}
+            </button>
+          ))}
+          {cats.size > 0 && (
+            <button className="btn is-small is-ghost" onClick={() => setCats(new Set())}>Clear</button>
+          )}
+        </div>
+
+        {buckets.map(b => (
+          <div className="timeline-group" key={b.label}>
+            <div className="grp-h">
+              <div className="grp-name">{b.label}</div>
+              <div className="grp-sub">{b.sub} · {b.list.length} event{b.list.length === 1 ? "" : "s"}</div>
+              <div className="grp-line" />
+            </div>
+            <div className="tl-track">
+              {b.list.map(e => (
+                <div className="tl-event" key={e.id} onClick={() => onOpenEvent(e)}>
+                  <div className="dot-pos">
+                    <CatIcon cat={e.cat} size="sm" />
+                  </div>
+                  <div className="left">
+                    <div className="body">
+                      <div className="head">
+                        <span className="desc">{e.desc}</span>
+                        {e.ent && <span className="ent">{e.ent.name}</span>}
+                      </div>
+                      <div className="meta">
+                        {e.before && e.after && (
+                          <span className="chip">
+                            <span style={{ color: "var(--danger-ink)", textDecoration: "line-through" }}>{e.before}</span>
+                            <Icon name="arrowR" style={{ width: 10, height: 10 }} />
+                            <span style={{ color: "var(--success-ink)", fontWeight: 600 }}>{e.after}</span>
+                          </span>
+                        )}
+                        {e.ent && e.ent.durationSeconds > 0 && <span><Icon name="clock" style={{ width: 11, height: 11, verticalAlign: "-1px" }} /> {fmt.duration(e.ent.durationSeconds)}</span>}
+                        {e.ent && e.ent.size && <span>{e.ent.size}</span>}
+                        {e.isUnusual && <span className="chip is-warning"><Icon name="warning" /> unusual</span>}
+                        {e.status === "pending" && <span className="chip is-info">pending</span>}
+                        {e.source && <span className="muted">via {e.source}</span>}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="right">
+                    <span className="time">{e.time}</span>
+                    <button className="btn is-small">Open</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Right rail: today summary */}
+      <div className="col">
+        <div className="card">
+          <div style={{ fontWeight: 600, marginBottom: 10, fontSize: 13 }}>Today by category</div>
+          {Object.entries(events.reduce((acc, e) => { acc[e.cat] = (acc[e.cat] || 0) + 1; return acc; }, {}))
+            .sort((a, b) => b[1] - a[1])
+            .map(([c, n]) => (
+              <div key={c} className="row" style={{ padding: "6px 0", fontSize: 13 }}>
+                <CatIcon cat={c} size="sm" />
+                <span style={{ flex: 1 }}>{DATA.CATEGORIES[c].label}</span>
+                <span className="num" style={{ fontWeight: 600 }}>{n}</span>
+              </div>
+            ))}
+        </div>
+
+        <div className="card">
+          <div style={{ fontWeight: 600, marginBottom: 10, fontSize: 13 }}>Workday</div>
+          <DayBar segs={DATA.dayBarFor(user.id)} />
+          <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>
+            First login <span className="mono" style={{ color: "var(--ink)" }}>{user.login || "—"}</span><br />
+            Last activity <span className="mono" style={{ color: "var(--ink)" }}>{user.status === "online" ? "now" : user.logout || "—"}</span><br />
+            Active <span className="mono" style={{ color: "var(--ink)" }}>{fmt.hm(user.online)}</span> · idle {fmt.hm(Math.round(user.online * .14))}
+          </div>
+        </div>
+
+        <div className="card">
+          <div style={{ fontWeight: 600, marginBottom: 10, fontSize: 13 }}>30-day score trend</div>
+          <Sparkline values={DATA.trend30(user.id)} color="var(--success)" />
+          <div className="kpi-foot" style={{ marginTop: 4 }}>
+            <Trend now={user.score} prev={user.prev} /><span>vs. previous 30d</span>
+          </div>
+        </div>
+      </div>
+
+      <style>{`
+        @media (max-width: 980px) {
+          .tl-grid { grid-template-columns: 1fr !important; }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+function Empty({ icon, title, children }) {
+  return (
+    <div className="empty">
+      <div className="icon-wrap"><Icon name={icon} /></div>
+      <h4>{title}</h4>
+      <p>{children}</p>
+    </div>
+  );
+}
+
+/* ================================================================
+   Documents tab
+   ================================================================ */
+function DocumentsTab({ events, onOpenEvent }) {
+  if (events.length === 0) return <div className="card"><Empty icon="doc" title="No documents touched">Uploads, downloads, and edits will show up here.</Empty></div>;
+  return (
+    <div className="card is-clean">
+      <table className="table">
+        <thead>
+          <tr>
+            <th>Document</th>
+            <th>Action</th>
+            <th>Related</th>
+            <th>Status</th>
+            <th>Time</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {events.map(e => (
+            <tr key={e.id} className="is-clickable" onClick={() => onOpenEvent(e)}>
+              <td>
+                <div className="row">
+                  <CatIcon cat="document" size="sm" />
+                  <div>
+                    <div style={{ fontWeight: 600 }}>{e.ent?.name || "Document"}</div>
+                    <div className="muted" style={{ fontSize: 11.5 }}>{e.ent?.id} {e.ent?.size && "· " + e.ent.size}</div>
+                  </div>
+                </div>
+              </td>
+              <td><span className="chip">{e.type}</span></td>
+              <td className="muted">—</td>
+              <td>{e.status === "ok" ? <span className="chip is-success">complete</span> : <span className="chip">{e.status}</span>}</td>
+              <td className="mono">{e.time}</td>
+              <td><button className="btn is-small">Open</button></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ================================================================
+   Contracts tab — kanban-ish status board
+   ================================================================ */
+function ContractsTab({ events, onOpenEvent }) {
+  if (events.length === 0) return <div className="card"><Empty icon="contract" title="No contracts touched">Sent, signed, and voided contracts will appear here.</Empty></div>;
+
+  /* Group by contract id, keep the timeline of events per contract */
+  const byContract = {};
+  events.forEach(e => {
+    const id = e.ent?.id || "unknown";
+    if (!byContract[id]) byContract[id] = { id, name: e.ent?.name || id, events: [] };
+    byContract[id].events.push(e);
+  });
+  const groups = Object.values(byContract);
+
+  const statusOf = (group) => {
+    const types = group.events.map(e => e.type);
+    if (types.includes("signed")) return { l: "Signed", t: "success" };
+    if (types.includes("completed")) return { l: "Completed", t: "success" };
+    if (types.includes("opened")) return { l: "Opened", t: "info" };
+    if (types.includes("sent")) return { l: "Out for signature", t: "warning" };
+    return { l: "Draft", t: "" };
+  };
+
+  return (
+    <div className="col" style={{ gap: 12 }}>
+      {groups.map(g => {
+        const s = statusOf(g);
+        return (
+          <div className="card" key={g.id} style={{ padding: 0, overflow: "hidden" }}>
+            <div className="row" style={{ padding: "14px 18px", borderBottom: "1px solid var(--border)" }}>
+              <CatIcon cat="contract" />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600 }}>{g.name}</div>
+                <div className="muted" style={{ fontSize: 12 }}>Envelope {g.id} · via DocuSign</div>
+              </div>
+              <span className={"chip is-" + s.t}>{s.l}</span>
+              <button className="btn is-small" onClick={(ev) => { ev.stopPropagation(); window.toast(`Opening envelope ${g.id}`); }}>Open envelope</button>
+            </div>
+            <div style={{ padding: "8px 18px 14px" }}>
+              {g.events.map(e => (
+                <div className="row" key={e.id} style={{ padding: "6px 0", fontSize: 13 }} onClick={() => onOpenEvent(e)}>
+                  <span className="cat-icon sm" style={{ background: DATA.CATEGORIES.contract.color }}>
+                    <Icon name={e.type === "signed" ? "docSign" : e.type === "sent" ? "share" : e.type === "opened" ? "eye" : "doc"} />
+                  </span>
+                  <span style={{ flex: 1 }}><span style={{ fontWeight: 500 }}>{e.desc}</span> <span className="muted">· {e.source}</span></span>
+                  <span className="mono muted" style={{ fontSize: 12 }}>{e.time}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ================================================================
+   Calls tab — visual stats + list
+   ================================================================ */
+function CallsTab({ events, user, onOpenEvent, metrics }) {
+  const m = metrics;
+  const outgoing = events.filter(e => e.type === "outgoing").length;
+  const incoming = events.filter(e => e.type === "incoming").length;
+  const missed   = events.filter(e => e.type === "missed").length;
+  const totalSec = events.reduce((s, e) => s + (e.ent?.durationSeconds || 0), 0);
+  const avgSec   = events.length ? Math.round(totalSec / Math.max(1, events.length - missed)) : 0;
+  const expected = m ? m.actuals.callsExpected : null;
+  const pickup = m ? m.actuals.callPickupSec : null;
+  const pickupOk = m ? m.today.pickup.hit : true;
+
+  return (
+    <div>
+      {/* Plain-English summary banner */}
+      {m && (
+        <div className="card" style={{ padding: 14, marginBottom: 14, background: m.today.calls.hit && pickupOk && missed === 0 ? "var(--success-soft)" : missed > 1 ? "var(--danger-soft)" : "var(--warning-soft)", borderColor: "transparent" }}>
+          <div className="row">
+            <Icon name={m.today.calls.hit ? "check" : missed > 1 ? "warning" : "clock"} style={{ color: m.today.calls.hit ? "var(--success-ink)" : missed > 1 ? "var(--danger-ink)" : "var(--warning-ink)" }} />
+            <span style={{ fontWeight: 600, fontSize: 13 }}>
+              {m.today.calls.hit ? `Made ${events.length} calls today — hit the ${expected}-call target` : `${events.length} calls so far — ${expected - events.length} short of the ${expected}-call target`}
+              {missed > 0 && `, ${missed} missed callback${missed > 1 ? "s" : ""} owed`}
+              · average pickup {pickup}s
+            </span>
+          </div>
+        </div>
+      )}
+
+      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(6, 1fr)", marginBottom: 18 }}>
+        <KPILite label="Outgoing" value={outgoing} icon="phoneOut" color="var(--success)" />
+        <KPILite label="Incoming" value={incoming} icon="phoneIn"  color="var(--info)" />
+        <KPILite label="Missed"   value={missed}   icon="phoneMiss" color={missed > 0 ? "var(--danger)" : "var(--muted-2)"} tone={missed > 1 ? "danger" : null} />
+        <KPILite label="Total time" value={fmt.duration(totalSec)} icon="clock" />
+        <KPILite label="Avg call" value={fmt.duration(avgSec)} icon="bars" />
+        {pickup !== null && <KPILite label="Pickup speed" value={pickup + "s"} icon="signal" color={pickupOk ? "var(--success)" : "var(--warning)"} />}
+      </div>
+
+      {events.length === 0 ? (
+        <div className="card"><Empty icon="phone" title="No calls today">{user.first} hasn't made or received calls today.</Empty></div>
+      ) : (
+        <div className="card is-clean">
+          <table className="table">
+            <thead>
+              <tr><th>Direction</th><th>Contact</th><th>Duration</th><th>Outcome</th><th>Time</th><th></th></tr>
+            </thead>
+            <tbody>
+              {events.map(e => {
+                const iconName = e.type === "outgoing" ? "phoneOut" : e.type === "incoming" ? "phoneIn" : "phoneMiss";
+                const color = e.type === "missed" ? "var(--danger)" : e.type === "outgoing" ? "var(--success)" : "var(--info)";
+                return (
+                  <tr key={e.id} className="is-clickable" onClick={() => onOpenEvent(e)}>
+                    <td>
+                      <span className="cat-icon sm" style={{ background: color }}><Icon name={iconName} /></span>
+                    </td>
+                    <td><div style={{ fontWeight: 600 }}>{e.ent?.name}</div><div className="muted" style={{ fontSize: 11.5 }}>{e.ent?.id}</div></td>
+                    <td className="mono">{e.ent?.durationSeconds ? fmt.duration(e.ent.durationSeconds) : "—"}</td>
+                    <td>{e.type === "missed" ? <span className="chip is-danger">missed</span> : <span className="chip is-success">completed</span>}</td>
+                    <td className="mono">{e.time}</td>
+                    <td>
+                      {e.type !== "missed" && <button className="btn is-small" onClick={(ev) => { ev.stopPropagation(); window.toast("▶ Playing recording…"); }}><Icon name="play" /> Recording</button>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ================================================================
+   Emails tab
+   ================================================================ */
+function EmailsTab({ events, user, onOpenEvent, metrics }) {
+  const m = metrics;
+  const sent     = events.filter(e => e.type === "sent" || e.type === "reply").length;
+  const received = events.filter(e => e.type === "received").length;
+  const replies  = events.filter(e => e.type === "reply").length;
+  const replyMin = m ? m.actuals.emailReplyMin : 47;
+  const replyOk  = m ? m.today.reply.hit : true;
+
+  return (
+    <div>
+      {m && (
+        <div className="card" style={{ padding: 14, marginBottom: 14, background: m.today.emails.hit && replyOk ? "var(--success-soft)" : "var(--warning-soft)", borderColor: "transparent" }}>
+          <div className="row">
+            <Icon name={m.today.emails.hit && replyOk ? "check" : "clock"} style={{ color: m.today.emails.hit && replyOk ? "var(--success-ink)" : "var(--warning-ink)" }} />
+            <span style={{ fontWeight: 600, fontSize: 13 }}>
+              {m.today.emails.hit ? `Sent ${sent} emails today — hit the ${m.targets.emails}-email target` : `${sent}/${m.targets.emails} emails sent so far`}
+              · average reply time {replyMin}m {replyOk ? `(under ${m.targets.emailReplyMin}m SLA)` : `(over ${m.targets.emailReplyMin}m SLA)`}
+            </span>
+          </div>
+        </div>
+      )}
+
+      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(5, 1fr)", marginBottom: 18 }}>
+        <KPILite label="Sent"     value={sent}     icon="mailOut" color="var(--success)" />
+        <KPILite label="Received" value={received} icon="mailIn"  color="var(--info)" />
+        <KPILite label="Replies"  value={replies}  icon="mail"    color="var(--accent)" />
+        <KPILite label="Avg reply" value={replyMin + "m"} icon="clock" color={replyOk ? "var(--success)" : "var(--warning)"} />
+        <KPILite label="Reply SLA" value={m ? "<" + m.targets.emailReplyMin + "m" : "—"} icon="signal" />
+      </div>
+
+      {events.length === 0 ? (
+        <div className="card"><Empty icon="mail" title="No emails today">When {user.first} sends or receives email, you'll see it here.</Empty></div>
+      ) : (
+        <div className="card is-clean">
+          <table className="table">
+            <thead><tr><th>Direction</th><th>Subject / contact</th><th>Status</th><th>Time</th><th></th></tr></thead>
+            <tbody>
+              {events.map(e => (
+                <tr key={e.id} className="is-clickable" onClick={() => onOpenEvent(e)}>
+                  <td>
+                    <span className="cat-icon sm" style={{ background: e.type === "received" ? "var(--info)" : "var(--success)" }}>
+                      <Icon name={e.type === "received" ? "mailIn" : "mailOut"} />
+                    </span>
+                  </td>
+                  <td>
+                    <div style={{ fontWeight: 600 }}>{e.ent?.name}</div>
+                    <div className="muted" style={{ fontSize: 11.5 }}>{e.ent?.id}</div>
+                  </td>
+                  <td>
+                    <span className="chip is-success">delivered</span>
+                    {e.type === "reply" && <span className="chip is-accent" style={{ marginLeft: 4 }}>reply</span>}
+                  </td>
+                  <td className="mono">{e.time}</td>
+                  <td><button className="btn is-small">Open</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ================================================================
+   Login history tab
+   ================================================================ */
+function LoginsTab({ user }) {
+  const days = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(); d.setDate(d.getDate() - i);
+    const isToday = i === 0;
+    const isPto = i === 1 && user.id === "u7";
+    days.push({
+      day: d.toLocaleDateString(undefined, { weekday: "short", day: "numeric" }),
+      isToday,
+      pto: isPto,
+      login: isPto ? null : isToday ? user.login : ["8:54 AM", "8:48 AM", "9:02 AM", "8:39 AM", "8:55 AM", "9:11 AM"][i - 1],
+      logout: isPto ? null : isToday ? "in progress" : ["5:18 PM", "5:31 PM", "5:08 PM", "5:42 PM", "5:21 PM", "4:58 PM"][i - 1],
+      hours: isPto ? 0 : isToday ? Math.round(user.online / 60 * 10) / 10 : [7.8, 8.2, 7.6, 8.3, 7.9, 7.4][i - 1],
+      segs: isToday ? DATA.dayBarFor(user.id) : null,
+    });
+  }
+
+  const totalHours = days.filter(d => !d.pto).reduce((s, d) => s + d.hours, 0).toFixed(1);
+  const sessions   = days.filter(d => !d.pto).length;
+
+  return (
+    <div className="col" style={{ gap: 18 }}>
+      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
+        <KPILite label="This week" value={totalHours + "h"} icon="clock" />
+        <KPILite label="Avg start" value="8:54 AM"        icon="login" />
+        <KPILite label="Sessions"  value={sessions}        icon="signal" />
+        <KPILite label="Failed attempts" value={user.id === "u12" ? "3" : "0"} icon="shield" color={user.id === "u12" ? "var(--danger)" : undefined} />
+      </div>
+
+      <div className="card is-clean">
+        <div className="card-h"><div className="card-title">Last 7 days</div></div>
+        <div style={{ padding: "12px 18px" }}>
+          {days.map((d, i) => (
+            <div key={i} style={{ display: "grid", gridTemplateColumns: "80px 90px 90px 1fr 60px", gap: 14, alignItems: "center", padding: "10px 0", borderBottom: i < days.length - 1 ? "1px dashed var(--border)" : "none" }}>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>{d.day}{d.isToday && <span className="chip is-accent" style={{ marginLeft: 6 }}>today</span>}</div>
+              <div className="mono" style={{ fontSize: 13 }}>{d.login || <span className="muted">—</span>}</div>
+              <div className="mono" style={{ fontSize: 13, color: d.logout === "in progress" ? "var(--success-ink)" : "var(--ink)" }}>{d.logout || <span className="muted">PTO</span>}</div>
+              <div>
+                {d.pto ? (
+                  <div className="muted" style={{ fontSize: 12 }}>Paid time off</div>
+                ) : d.segs ? (
+                  <DayBar segs={d.segs} />
+                ) : (
+                  <div className="day-bar"><span className="seg act" style={{ left: "20%", width: "62%" }} /></div>
+                )}
+              </div>
+              <div className="num" style={{ fontWeight: 700, textAlign: "right" }}>{d.pto ? "—" : d.hours + "h"}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="row" style={{ marginBottom: 10 }}>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>Devices & locations</div>
+          <span className="chip is-success" style={{ marginLeft: 6 }}><Icon name="shield" /> all trusted</span>
+        </div>
+        <table className="table">
+          <thead><tr><th>Device</th><th>IP address</th><th>Location</th><th>Last seen</th></tr></thead>
+          <tbody>
+            <tr><td><Icon name="laptop" style={{ verticalAlign: "-3px", marginRight: 6 }} />{user.device}</td><td className="mono">{user.ip}</td><td>{user.loc}</td><td>now</td></tr>
+            <tr><td><Icon name="mobile" style={{ verticalAlign: "-3px", marginRight: 6 }} />iPhone · Safari</td><td className="mono">73.118.42.21</td><td>{user.loc}</td><td>yesterday</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ================================================================
+   Productivity analytics tab
+   ================================================================ */
+function ProductivityTab({ user }) {
+  const hourly = DATA.hourlyActionsFor(user.id);
+  const trend = DATA.trend30(user.id);
+  const teamAvg = Math.round(DATA.USERS.filter(u => u.score > 0).reduce((s, u) => s + u.score, 0) / DATA.USERS.filter(u => u.score > 0).length);
+
+  return (
+    <div className="col" style={{ gap: 18 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 18 }} className="prod-grid">
+        <div className="card">
+          <div className="row" style={{ marginBottom: 14 }}>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>30-day productivity score</div>
+              <div className="muted" style={{ fontSize: 12 }}>Composite of actions, response time, contracts moved, and engagement.</div>
+            </div>
+            <div className="spacer" />
+            <div className="num" style={{ fontSize: 28, fontWeight: 700 }}>{user.score}</div>
+            <Trend now={user.score} prev={user.prev} suffix=" vs. prev. 30d" />
+          </div>
+          <Sparkline values={trend} color="var(--accent)" />
+          <div className="row muted" style={{ fontSize: 11.5, marginTop: 6, justifyContent: "space-between" }}>
+            <span>30 days ago</span><span>today</span>
+          </div>
+        </div>
+
+        <div className="card">
+          <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 10 }}>You vs. team average</div>
+          <div className="col" style={{ gap: 10 }}>
+            <CompareBar label={user.first} value={user.score} max={100} color="var(--accent)" />
+            <CompareBar label="Team avg" value={teamAvg} max={100} color="var(--muted-2)" />
+          </div>
+          <hr className="divider" />
+          <div className="col" style={{ gap: 6, fontSize: 13 }}>
+            <div className="row"><Icon name="trendUp" style={{ color: "var(--success-ink)" }} /><span>Above team avg by <b>{user.score - teamAvg}</b> points</span></div>
+            <div className="row"><Icon name="signal" style={{ color: "var(--muted)" }} /><span>Most productive hour: <b className="mono">{hourly.sort((a,b) => b.v - a.v)[0].h}:00</b></span></div>
+            <div className="row"><Icon name="zap" style={{ color: "var(--muted)" }} /><span><b>{user.actions}</b> total actions today</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 12 }}>Actions per hour</div>
+        <HourBars data={hourly} color="var(--accent)" height={120} />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }} className="prod-mini">
+        <MiniMetric label="Calls / day"     value={user.calls}     unit="avg" />
+        <MiniMetric label="Emails / day"    value={user.emails}    unit="avg" />
+        <MiniMetric label="Contracts / wk"  value={user.contracts * 4} unit="trend" />
+        <MiniMetric label="Avg response"    value="47m" unit="email" />
+      </div>
+
+      <style>{`
+        @media (max-width: 980px) {
+          .prod-grid, .prod-mini { grid-template-columns: 1fr !important; }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+function KPILite({ icon, label, value, color, tone }) {
+  const toneClass = tone === "danger" ? " is-danger" : tone === "warning" ? " is-warning" : "";
+  return (
+    <div className={"kpi" + toneClass}>
+      <div className="kpi-head"><Icon name={icon} style={{ color }} />{label}</div>
+      <div className="kpi-value">{value}</div>
+    </div>
+  );
+}
+
+/* ================================================================
+   Performance & Bonus tab
+   ================================================================ */
+function PerformanceTab({ user, metrics }) {
+  const m = metrics;
+  /* Auto-generated insights — saves managers 15min reading the data */
+  const insights = buildInsights(user, m);
+
+  return (
+    <div className="col" style={{ gap: 18 }}>
+      {/* AI insights summary — the headline that managers skim */}
+      <div className="card" style={{ padding: 18, background: "linear-gradient(135deg, oklch(97% 0.03 264), oklch(98% 0.02 290))", borderColor: "transparent" }}>
+        <div className="row" style={{ marginBottom: 10 }}>
+          <span className="cat-icon" style={{ background: "var(--accent)" }}><Icon name="sparkle" /></span>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 14 }}>Pulse summary · today</div>
+            <div className="muted" style={{ fontSize: 11.5 }}>Auto-generated highlights for your 1:1 prep</div>
+          </div>
+          <div className="spacer" />
+          <button className="btn is-small is-ghost" onClick={() => window.toast("Insights refreshed")}><Icon name="refresh" /></button>
+        </div>
+        <div className="col" style={{ gap: 8 }}>
+          {insights.map((ins, i) => (
+            <div key={i} className="row" style={{ alignItems: "flex-start", gap: 10, padding: "8px 12px", background: "rgba(255,255,255,.6)", borderRadius: 8 }}>
+              <Icon name={ins.icon} style={{ color: ins.color, marginTop: 2, flexShrink: 0 }} />
+              <div style={{ flex: 1, fontSize: 13.5, lineHeight: 1.45 }}>
+                <span style={{ fontWeight: 600 }}>{ins.title}</span>
+                {ins.detail && <span className="muted"> · {ins.detail}</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="row" style={{ marginTop: 12, gap: 6, fontSize: 11.5, color: "var(--muted)" }}>
+          <Icon name="check" style={{ color: "var(--success-ink)" }} />
+          <span>Best talking point: <b style={{ color: "var(--ink-2)" }}>{insights[0]?.title}</b></span>
+        </div>
+      </div>
+
+      {/* Plain-English headline */}
+      <div className="card" style={{ padding: 18 }}>
+        <div className="row" style={{ marginBottom: 6 }}>
+          <Icon name={m.status.icon} style={{ color: "var(--" + (m.status.tone === "success" ? "success" : m.status.tone === "warning" ? "warning" : m.status.tone === "danger" ? "danger" : "muted") + "-ink)" }} />
+          <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--muted)" }}>How {user.first} is doing</span>
+        </div>
+        <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: "-.015em", marginBottom: 4 }}>
+          {m.status.id === "crushing"  && <>{user.first} is <span style={{ color: "var(--success-ink)" }}>crushing it today</span> — {m.hits} of {m.expected} daily targets hit.</>}
+          {m.status.id === "ontrack"   && <>{user.first} is <span style={{ color: "var(--success-ink)" }}>on track</span> — {m.hits} of {m.expected} daily targets hit.</>}
+          {m.status.id === "behind"    && <>{user.first} is <span style={{ color: "var(--warning-ink)" }}>behind pace</span> — {m.hits} of {m.expected} targets hit so far.</>}
+          {m.status.id === "low"       && <>{user.first} is having a <span style={{ color: "var(--warning-ink)" }}>slow start</span> — only {m.hits} of {m.expected} targets hit.</>}
+          {m.status.id === "alert"     && <>{user.first} <span style={{ color: "var(--danger-ink)" }}>needs attention</span> — flagged activity or low productivity.</>}
+          {m.status.id === "off"       && <>{user.first} is off today — {user.away || "no activity yet"}.</>}
+        </div>
+        <div className="muted" style={{ fontSize: 13 }}>
+          Worked <b className="num" style={{ color: "var(--ink)" }}>{fmt.hm(user.online)}</b> of {m.targets.hoursWorked}h target ·
+          {" "}sent <b className="num" style={{ color: "var(--ink)" }}>{user.emails}</b> emails ·
+          {" "}made <b className="num" style={{ color: "var(--ink)" }}>{user.calls}</b> calls
+          {m.actuals.missedCalls > 0 && <> · <b style={{ color: "var(--danger-ink)" }}>{m.actuals.missedCalls} missed</b></>}
+        </div>
+      </div>
+
+      {/* Today's target meters — full size */}
+      <div className="card">
+        <div className="row" style={{ marginBottom: 14 }}>
+          <div style={{ fontWeight: 700, fontSize: 14 }}>Today's targets</div>
+          <HelpHint>Daily expectations based on the {DATA.ROLES[user.role].label} role. Updated live as the day goes on.</HelpHint>
+          <div className="spacer" />
+          <span className="num muted" style={{ fontSize: 12 }}>{m.hits}/{m.expected} hit</span>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 18 }} className="perf-targets">
+          <TargetMeter icon="phone"    label="Calls made"      meter={m.today.calls}   hint={`Expected ${m.targets.calls} calls per workday`} />
+          <TargetMeter icon="mail"     label="Emails sent"     meter={m.today.emails}  hint={`Expected ${m.targets.emails} manual emails per workday`} />
+          {m.targets.contracts > 0
+            ? <TargetMeter icon="contract" label="Contracts sent" meter={m.today.contracts} hint={`Expected ${m.targets.contracts} contracts per workday`} />
+            : <TargetMeter icon="clock" label="Call pickup speed" meter={m.today.pickup} formatValue={v => v + "s"} formatTarget={v => "<" + v + "s"} hint="Target: answer in under 25 seconds" />}
+          <TargetMeter icon="clock"    label="Hours worked"    meter={m.today.hours}   formatValue={v => v + "h"} formatTarget={v => v + "h"} hint="Expected workday length" />
+          <TargetMeter icon="mail"     label="Email reply time" meter={m.today.reply}  formatValue={v => v + "m"} formatTarget={v => "<" + v + "m SLA"} hint={`Reply within ${m.targets.emailReplyMin} minutes`} />
+          <TargetMeter icon="phoneMiss" label="Missed callbacks" meter={{ value: m.actuals.missedCalls, target: 1, pct: m.actuals.missedCalls === 0 ? 0 : 100, hit: m.actuals.missedCalls <= 1, tone: m.actuals.missedCalls === 0 ? "success" : m.actuals.missedCalls > 2 ? "danger" : "warning" }} formatValue={v => v + " open"} formatTarget={v => "max 1"} hint="Open missed calls without a callback" />
+        </div>
+      </div>
+
+      {/* Bonus this month */}
+      <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 18 }} className="perf-bonus-grid">
+        <div className="card" style={{ padding: 22, background: m.tier.id !== "none" ? `linear-gradient(135deg, ${m.tier.color}10, ${m.tier.color}22)` : "var(--surface)", borderColor: m.tier.id === "gold" || m.tier.id === "platinum" ? m.tier.color : "var(--border)" }}>
+          <div className="row" style={{ marginBottom: 10 }}>
+            <Icon name="star" style={{ color: m.tier.id !== "none" ? m.tier.color : "var(--muted)" }} />
+            <div style={{ fontWeight: 700, fontSize: 14 }}>May bonus · <span style={{ color: m.tier.color }}>{m.tier.label}</span></div>
+          </div>
+          <div className="num" style={{ fontSize: 44, fontWeight: 800, letterSpacing: "-.03em", color: m.tier.id !== "none" ? m.tier.color : "var(--muted)" }}>
+            ${m.bonusMtd.toLocaleString()}
+          </div>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 14 }}>
+            Earned month-to-date{m.extraFromContracts > 0 && <> · base ${m.tier.amount} + ${m.extraFromContracts} from contracts</>}
+          </div>
+
+          {m.nextTier ? (
+            <div>
+              <div className="row" style={{ fontSize: 12, marginBottom: 4 }}>
+                <span>Progress to <b style={{ color: m.nextTier.color }}>{m.nextTier.label}</b></span>
+                <div className="spacer" />
+                <span className="num" style={{ fontWeight: 700, color: m.nextTier.color }}>+${m.nextTier.amount - m.tier.amount}</span>
+              </div>
+              <div style={{ height: 10, background: "var(--surface-3)", borderRadius: 999, overflow: "hidden" }}>
+                <span style={{ display: "block", height: "100%", width: Math.round(m.progressToNext * 100) + "%", background: m.nextTier.color, borderRadius: 999 }} />
+              </div>
+            </div>
+          ) : (
+            <div className="row" style={{ padding: "10px 14px", background: "var(--success-soft)", borderRadius: 8, color: "var(--success-ink)", fontSize: 13 }}>
+              <Icon name="check" /> Top tier reached this month — great job!
+            </div>
+          )}
+        </div>
+
+        <div className="card">
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>Month-to-date targets</div>
+          <div className="col" style={{ gap: 12 }}>
+            <TargetMeter
+              icon="phone" label="Calls"
+              meter={{ value: m.mtd.calls, target: m.monthTargets.calls, pct: Math.round(m.mtd.calls / m.monthTargets.calls * 100), hit: m.mtd.calls >= m.monthTargets.calls, tone: m.mtd.calls >= m.monthTargets.calls ? "success" : m.mtd.calls >= m.monthTargets.calls * .7 ? "warning" : "danger" }}
+            />
+            <TargetMeter
+              icon="mail" label="Emails"
+              meter={{ value: m.mtd.emails, target: m.monthTargets.emails, pct: Math.round(m.mtd.emails / m.monthTargets.emails * 100), hit: m.mtd.emails >= m.monthTargets.emails, tone: m.mtd.emails >= m.monthTargets.emails ? "success" : m.mtd.emails >= m.monthTargets.emails * .7 ? "warning" : "danger" }}
+            />
+            {m.targets.contracts > 0 && (
+              <TargetMeter
+                icon="contract" label="Contracts"
+                meter={{ value: m.mtd.contracts, target: Math.round(m.monthTargets.contracts), pct: Math.round(m.mtd.contracts / m.monthTargets.contracts * 100), hit: m.mtd.contracts >= m.monthTargets.contracts, tone: m.mtd.contracts >= m.monthTargets.contracts ? "success" : m.mtd.contracts >= m.monthTargets.contracts * .7 ? "warning" : "danger" }}
+              />
+            )}
+            <TargetMeter
+              icon="cal" label="Days worked"
+              meter={{ value: m.mtd.daysWorked, target: m.mtd.daysExpected, pct: Math.round(m.mtd.daysWorked / m.mtd.daysExpected * 100), hit: m.mtd.daysWorked >= m.mtd.daysExpected, tone: m.mtd.daysWorked >= m.mtd.daysExpected ? "success" : "warning" }}
+              formatValue={v => v + "d"} formatTarget={v => v + "d"}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Response speed comparison */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }} className="perf-bonus-grid">
+        <div className="card">
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>Responsiveness</div>
+          <div className="col" style={{ gap: 14 }}>
+            <ResponseRow icon="mail" label="Email reply" value={m.actuals.emailReplyMin + "m"} target={"under " + m.targets.emailReplyMin + "m"} hit={m.today.reply.hit} />
+            <ResponseRow icon="phone" label="Call pickup" value={m.actuals.callPickupSec + "s"} target={"under " + m.targets.callPickupSec + "s"} hit={m.today.pickup.hit} />
+            <ResponseRow icon="phoneMiss" label="Missed calls" value={m.actuals.missedCalls + " open"} target="max 1" hit={m.actuals.missedCalls <= 1} />
+          </div>
+        </div>
+        <div className="card">
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>Strengths & areas to improve</div>
+          <div className="col" style={{ gap: 8 }}>
+            {strengthsFor(m).map((s, i) => (
+              <div key={i} className="row" style={{ padding: 10, background: s.kind === "good" ? "var(--success-soft)" : "var(--warning-soft)", borderRadius: 8, fontSize: 13, color: s.kind === "good" ? "var(--success-ink)" : "var(--warning-ink)" }}>
+                <Icon name={s.kind === "good" ? "trendUp" : "trendDn"} />
+                <span style={{ flex: 1 }}>{s.text}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <style>{`
+        @media (max-width: 980px) {
+          .perf-targets { grid-template-columns: repeat(2, 1fr) !important; }
+          .perf-bonus-grid { grid-template-columns: 1fr !important; }
+        }
+        @media (max-width: 540px) {
+          .perf-targets { grid-template-columns: 1fr !important; }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+function ResponseRow({ icon, label, value, target, hit }) {
+  return (
+    <div className="row" style={{ padding: "10px 12px", background: "var(--surface-2)", borderRadius: 10 }}>
+      <span className="cat-icon sm" style={{ background: hit ? "var(--success)" : "var(--warning)" }}>
+        <Icon name={icon} />
+      </span>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontWeight: 600, fontSize: 13 }}>{label}</div>
+        <div className="muted" style={{ fontSize: 11.5 }}>Target {target}</div>
+      </div>
+      <div className="num" style={{ fontWeight: 700, fontSize: 18, color: hit ? "var(--success-ink)" : "var(--warning-ink)" }}>{value}</div>
+      {hit && <Icon name="check" style={{ color: "var(--success-ink)" }} />}
+    </div>
+  );
+}
+
+function strengthsFor(m) {
+  const out = [];
+  if (m.today.calls.hit) out.push({ kind: "good", text: `Hit the daily call target (${m.today.calls.value}/${m.today.calls.target})` });
+  if (m.today.emails.hit) out.push({ kind: "good", text: `Exceeded email volume (${m.today.emails.value}/${m.today.emails.target})` });
+  if (m.today.reply.hit && m.actuals.emailReplyMin > 0) out.push({ kind: "good", text: `Fast email reply: ${m.actuals.emailReplyMin}m (target <${m.targets.emailReplyMin}m)` });
+  if (m.today.pickup.hit && m.actuals.callPickupSec > 0) out.push({ kind: "good", text: `Quick call pickup: ${m.actuals.callPickupSec}s` });
+  if (!m.today.calls.hit && m.today.calls.target > 0) out.push({ kind: "bad", text: `Behind on calls — ${m.today.calls.value} of ${m.today.calls.target} (${Math.round((m.today.calls.target - m.today.calls.value))} more to hit target)` });
+  if (!m.today.reply.hit && m.actuals.emailReplyMin > 0) out.push({ kind: "bad", text: `Slow email reply: ${m.actuals.emailReplyMin}m vs ${m.targets.emailReplyMin}m SLA` });
+  if (m.actuals.missedCalls > 1) out.push({ kind: "bad", text: `${m.actuals.missedCalls} missed calls without callback — follow up` });
+  if (out.length === 0) out.push({ kind: "good", text: "All metrics within targets — keep going!" });
+  return out.slice(0, 5);
+}
+
+/* Auto-generated insights for 1:1 prep — what changed, what to talk about */
+function buildInsights(user, m) {
+  const ins = [];
+  if (m.hits >= 4) ins.push({ icon: "trendUp", color: "var(--success-ink)", title: `Crushing it — ${m.hits} of ${m.expected} targets hit today`, detail: "above weekly average" });
+  if (m.today.calls.hit) ins.push({ icon: "phone", color: "var(--success-ink)", title: `Hit the daily call target`, detail: `${m.today.calls.value}/${m.today.calls.target} calls` });
+  else if (m.today.calls.target > 0 && m.today.calls.value < m.today.calls.target * .6) ins.push({ icon: "phone", color: "var(--warning-ink)", title: `Behind on calls`, detail: `only ${m.today.calls.value} of ${m.today.calls.target} — ${m.today.calls.target - m.today.calls.value} to go` });
+  if (m.actuals.emailReplyMin > 0 && m.actuals.emailReplyMin < m.targets.emailReplyMin * .6) ins.push({ icon: "zap", color: "var(--success-ink)", title: `Top-tier response speed`, detail: `replies in ${m.actuals.emailReplyMin}m (SLA ${m.targets.emailReplyMin}m)` });
+  if (m.actuals.missedCalls > 1) ins.push({ icon: "warning", color: "var(--danger-ink)", title: `${m.actuals.missedCalls} missed callbacks open`, detail: "needs follow-up today" });
+  if (user.contracts > 0) ins.push({ icon: "contract", color: "var(--accent-ink)", title: `${user.contracts} contract${user.contracts === 1 ? "" : "s"} sent today`, detail: "moving deals forward" });
+  if (m.tier.id === "gold" || m.tier.id === "platinum") ins.push({ icon: "star", color: m.tier.color, title: `Earning ${m.tier.label} tier bonus`, detail: `$${m.bonusMtd.toLocaleString()} accrued` });
+  if (user.online > 9 * 60) ins.push({ icon: "clock", color: "var(--warning-ink)", title: `Working long hours`, detail: `${fmt.hm(user.online)} today — consider check-in on workload` });
+  if (m.status.id === "alert") ins.push({ icon: "warning", color: "var(--danger-ink)", title: `Flagged for attention`, detail: user.away || "unusual activity detected" });
+  if (ins.length === 0) ins.push({ icon: "check", color: "var(--success-ink)", title: "Quiet productive day", detail: "no anomalies detected" });
+  return ins.slice(0, 5);
+}
+function CompareBar({ label, value, max, color }) {
+  return (
+    <div>
+      <div className="row" style={{ fontSize: 12, marginBottom: 4 }}><span style={{ flex: 1 }}>{label}</span><span className="num" style={{ fontWeight: 700 }}>{value}</span></div>
+      <div className="bar" style={{ height: 10, background: "var(--surface-3)", borderRadius: 999, overflow: "hidden" }}>
+        <span style={{ display: "block", height: "100%", width: (value / max * 100) + "%", background: color, borderRadius: 999 }} />
+      </div>
+    </div>
+  );
+}
+function MiniMetric({ label, value, unit }) {
+  return (
+    <div className="card" style={{ padding: 14 }}>
+      <div className="kpi-head">{label}</div>
+      <div className="kpi-value">{value}</div>
+      <div className="muted" style={{ fontSize: 11.5 }}>{unit}</div>
+    </div>
+  );
+}
