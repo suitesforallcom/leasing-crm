@@ -5,6 +5,20 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>Activity & Productivity Center · Pulse</title>
 
+  <!-- Auth gate — pulse.html doesn't have its own sign-in UI. Floor-map
+       is the auth entry point. If no signed-in state in localStorage,
+       send the operator to floor-map first (it'll bring them back).
+       Same-origin so all auth/state persists across both pages. -->
+  <script>
+    (function () {
+      try {
+        if (!localStorage.getItem('sfa_v5_state')) {
+          window.location.replace('/floor-map-editor.html?next=' + encodeURIComponent(location.pathname));
+        }
+      } catch (e) { /* if localStorage is blocked we let pulse render the mock data */ }
+    })();
+  </script>
+
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
