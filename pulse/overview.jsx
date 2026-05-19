@@ -193,10 +193,14 @@ window.OverviewPage = function OverviewPage({ centerFilter, onOpenEmployee, onOp
             <button className="btn is-small is-ghost"><Icon name="refresh" /></button>
           </div>
           <div className="card is-clean live-feed">
-            {feed.map(e => {
+            {feed.map((e, i) => {
               const u = DATA.USERS.find(x => x.id === e.userId);
+              // Fallback for events without explicit id (Phase 7+ shim
+              // builds events from outreach without an id field) — combine
+              // ts + userId + index to stay unique within this render.
+              const key = e.id || (e.ent?.id) || `${e.time}-${e.userId || 'x'}-${i}`;
               return (
-                <button key={e.id} className="live-row" onClick={() => onOpenEvent(e)}>
+                <button key={key} className="live-row" onClick={() => onOpenEvent(e)}>
                   <CatIcon cat={e.cat} size="sm" />
                   <span className="time">{e.time}</span>
                   <div style={{ minWidth: 0 }}>
