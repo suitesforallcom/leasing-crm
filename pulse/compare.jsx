@@ -5,8 +5,27 @@
    ================================================================ */
 
 window.ComparePage = function ComparePage({ initial, onOpenEmployee }) {
-  const [picked, setPicked] = React.useState(initial && initial.length ? initial : ["u1", "u3", "u9"]);
+  // Phase 12+ — persist user selection across page navigation + reloads.
+  // Source priority: `initial` (passed from caller like compareAdd action)
+  //                  → localStorage saved set → defaults [u1, u3, u9].
+  const LS_KEY = 'pulse_compare_picked';
+  const [picked, setPicked] = React.useState(() => {
+    if (initial && initial.length) return initial;
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr) && arr.length > 0 && arr.length <= 4) return arr;
+      }
+    } catch (e) { /* ignore */ }
+    return ["u1", "u3", "u9"];
+  });
   const [pickerOpen, setPickerOpen] = React.useState(false);
+
+  // Persist on every change. Also fired by togglePicked indirectly via setPicked.
+  React.useEffect(() => {
+    try { localStorage.setItem(LS_KEY, JSON.stringify(picked)); } catch (e) { /* ignore */ }
+  }, [picked]);
 
   function togglePicked(id) {
     if (picked.includes(id)) setPicked(picked.filter(p => p !== id));
