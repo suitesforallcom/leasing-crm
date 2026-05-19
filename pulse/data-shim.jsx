@@ -178,10 +178,17 @@
   // Hoisted out of try{} so user.map() ниже может прочитать (Phase 10).
   const emailStatsByOwner = new Map();
 
-  // Phase 12 — read session-tracking map populated by floor-map-editor's
-  // _refreshSessionsCache(). Keys: workspace member UID. Values:
-  // { lastActivityAt, firstLoginToday, userAgent, device }.
-  const sessionsByUid = (st && typeof st.sessions === 'object' && st.sessions) ? st.sessions : {};
+  // Phase 12 (hotfix) — read sessions from SEPARATE localStorage key
+  // `sfa_v5_sessions`. Stored separately to avoid triggering Pulse's
+  // storage-event reload (which fires only on `sfa_v5_state` changes).
+  const sessionsByUid = (function () {
+    try {
+      const raw = localStorage.getItem('sfa_v5_sessions');
+      if (!raw) return {};
+      const obj = JSON.parse(raw);
+      return (obj && typeof obj === 'object') ? obj : {};
+    } catch (e) { return {}; }
+  })();
 
   // Phase 15 — daily history { email → [snapshots] } written by
   // runDailySnapshot CF. Drives real streak + records.
