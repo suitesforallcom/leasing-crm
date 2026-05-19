@@ -58,12 +58,12 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
                   <Icon name="ipin" style={{ width: 12, height: 12, verticalAlign: "-2px" }} />
                   {u.loc}
-                  {u._isReal && <HelpHint>Локация (Office / Remote / On-site). Сейчас mock — нет реального tracking'а. Реальная детекция требовала бы geo/IP-base или явного ввода.</HelpHint>}
+                  {u._isReal && <HelpHint>Location (Office / Remote / On-site). Not tracked yet — needs geo/IP-based detection or explicit user toggle. Shows «— not tracked —» until wired up.</HelpHint>}
                 </span>
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
                   <Icon name="laptop" style={{ width: 12, height: 12, verticalAlign: "-2px" }} />
                   {u.device}
-                  {u._isReal && <HelpHint>Устройство (Dell XPS · Edge / MacBook · Chrome / etc.). Сейчас mock — рандомно выбирается из 5 вариантов на основе hash имени. Реальное browser-detection через User-Agent потребует отдельной работы.</HelpHint>}
+                  {u._isReal && <HelpHint>Device parsed from the User-Agent string captured on sign-in (e.g. «Mac · Chrome», «Windows · Edge»). Stored in the per-user session document and refreshed every 60 sec while the tab is alive.</HelpHint>}
                 </span>
               </div>
             </div>
@@ -138,34 +138,34 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
         <div className="emp-stats">
           <Stat icon="login"    label="First login"     value={u.login || "—"}                  sub="on time"
             hint={u._isReal
-              ? "Время первого входа в систему сегодня. Сейчас MOCK — нет реального login-tracking'а (Phase 12 TODO)."
-              : "Время первого входа (демо-сотрудник, mock-данные из data.jsx)."} />
+              ? "Time of today's first sign-in, captured by session heartbeat. Shows «—» if the user hasn't signed in today yet."
+              : "First login time (demo seed mock data)."} />
           <Stat icon="logout"   label="Last activity"   value={u.logout || (u.status === "offline" ? "—" : "now")} sub={u.status === "online" ? "active" : ""}
             hint={u._isReal
-              ? "Последняя активность в системе. Сейчас MOCK — нужен activity-tracking (клики/просмотры страниц)."
-              : "Время выхода или 'now' если online (демо)."} />
+              ? "Last heartbeat ping from the user's browser tab (refreshed every 60 sec while a tab is alive). Shows «now» if a tab pinged within the last minute."
+              : "Last activity time (demo mock)."} />
           <Stat icon="zap"      label="Actions today"   value={u.actions}                       trend={<Trend now={u.actions} prev={Math.round(u.actions * .92)} />}
             hint={u._isReal
-              ? "Сумма всех действий сегодня: emails sent + calls + contracts + invoices + payments + notes. Реально считается через outreach/envelopes; если 0 — mock fallback включается."
-              : "Сумма действий за день (демо-mock)."} />
+              ? "Sum of all actions today: emails sent + contracts + invoices + payments + notes. Calls excluded until telephony is connected. Real count from outreach + leaseEnvelopes + stripe stamps."
+              : "Actions count (demo mock)."} />
           <Stat icon="phone"    label="Calls"           value={u.calls + "/" + m.targets.calls} sub={`pickup ${m.actuals.callPickupSec}s · ${m.actuals.missedCalls} missed`}
             hint={u._isReal
-              ? "Звонки за день / role-target. MOCK — телефония не подключена (Twilio/RingCentral webhook нужен)."
-              : "Звонки / target из mock-данных."} />
+              ? "Calls today vs role target. MOCK — telephony integration not connected (needs Twilio / RingCentral / Aircall webhook)."
+              : "Calls / target (demo mock)."} />
           <Stat icon="mail"     label="Emails"          value={u.emails + "/" + m.targets.emails} sub={u.emails > 0 ? `avg reply ${m.actuals.emailReplyMin}m` : ""}
             hint={u._isReal
-              ? "Письма (всего за день, реально SENT) / role-target. Если у тебя нет реальной активности SENT — показывается MOCK fallback. Когда отправишь письмо из Gmail — счётчик начнёт расти через ~30 сек."
-              : "Письма / target (демо-mock)."} />
+              ? "Emails sent today vs role target. Counted from Gmail API SENT events (Phase 10) plus manual outreach records. RECEIVED emails NOT counted — incoming spam isn't the operator's achievement. Shows 0 if you haven't sent anything yet today."
+              : "Emails / target (demo mock)."} />
           <Stat icon="contract" label="Contracts"       value={u.contracts + (m.targets.contracts > 0 ? "/" + m.targets.contracts : "")} sub={u.contracts > 0 ? "2 signed" : ""}
             hint={u._isReal
-              ? "Lease-контракты отправленные через DocuSign за месяц / role-target. РЕАЛЬНЫЕ данные из u.leaseEnvelopes (если 0 — значит ты ничего не отправлял в этом месяце)."
-              : "Контракты / target (демо-mock)."} />
+              ? "Lease envelopes sent via DocuSign this month vs role target. REAL data from u.leaseEnvelopes with sentBy = this employee's email. 0 means no envelopes sent this month."
+              : "Contracts / target (demo mock)."} />
           <Stat icon="star"     label="Productivity"    value={u.score === 0 ? "—" : u.score}   trend={u.score > 0 ? <Trend now={u.score} prev={u.prev} suffix=" / 30d" /> : null} onClick={u.score > 0 ? () => window.openScoreExplainer(u) : null}
             hint={u._isReal
-              ? "Композитный score 0-100. Формула: contracts*30% + emails*25% + calls*20% + invoices*15% + notes*10%, каждый компонент capped 100% от role-target. Click для разбивки."
-              : "Score (демо-mock из data.jsx)."} />
+              ? "Composite score 0-100. Formula: contracts × 30% + emails × 25% + calls × 20% + invoices × 15% + notes × 10%, each component capped at 100% of role target. Click for breakdown."
+              : "Score (demo mock from data.jsx)."} />
           <Stat icon="signal"   label="Status"          value={m.status.label}                 sub={""}
-            hint="Сводный статус по hit-rate сегодняшних targets (calls/emails/hours/reply/pickup). 5/5 = Crushing it, 3+ = On track, 2 = Behind pace, иначе Slow start / Needs attention. Offline если status=offline." />
+            hint="Daily status derived from today's target hit rate (calls / emails / hours / reply / pickup). 5/5 = Crushing it, 3+ = On track, 2 = Behind pace, else Slow start / Needs attention. Offline if status = offline." />
         </div>
       </div>
 

@@ -79,24 +79,24 @@ window.MyDayPage = function MyDayPage({ meId = "u1", onOpenEmployee, onOpenQuick
     {
       label: "Calls", icon: "phone",
       now: 0, prev: 0,
-      hint: "Звонки за эту неделю (Mon–Sun). Интеграция с телефонией не подключена — Twilio/RingCentral/Aircall webhook отсутствует. Показывает 0 пока не настроено.",
+      hint: "Calls this week (Mon–Sun). Telephony integration not connected — Twilio/RingCentral/Aircall webhook missing. Shows 0 until wired up.",
     },
     {
       label: "Emails", icon: "mail",
       now: me.weekEmailsNow || 0,
       prev: me.weekEmailsPrev || 0,
-      hint: "Письма отправленные за эту неделю (Mon–Sun) с твоего корпоративного Gmail. Источник: Gmail API watch на SENT label (Phase 10) + outreach. Сравнение с прошлой неделей.",
+      hint: "Emails sent this week (Mon–Sun) from your corporate Gmail. Source: Gmail API watch on SENT label + outreach records. Compared against last week.",
     },
     {
       label: "Contracts", icon: "contract",
       now: me.weekContractsNow || 0,
       prev: me.weekContractsPrev || 0,
-      hint: "Lease-контракты отправленные через DocuSign за эту неделю (Mon–Sun). Источник: u.leaseEnvelopes с sentBy=твой email. Сравнение с прошлой неделей.",
+      hint: "Lease contracts sent via DocuSign this week (Mon–Sun). Source: u.leaseEnvelopes with sentBy = your email. Compared against last week.",
     },
     {
       label: "Hours", icon: "clock", suffix: "h",
       now: 0, prev: 0,
-      hint: "Рабочие часы за неделю (target 40h). Login-tracking не подключен — нет источника когда менеджер реально работает. Phase 13 TODO (sessions data → hour buckets).",
+      hint: "Hours worked this week (target 40h). Weekly hour buckets not yet aggregated from session heartbeat data — current implementation shows today's hours only, not Mon–Sun roll-up. To-do.",
     },
   ] : [
     // Demo seed users — keep mock values for prototype richness
