@@ -384,18 +384,30 @@ async function _persistEmailRecords(userEmail, records) {
       logger.warn('[gmail-push] state doc missing, skip persist', { userEmail });
       return;
     }
-    const state = snap.data() || {};
-    state.gmailActivity = Array.isArray(state.gmailActivity) ? state.gmailActivity : [];
+    const doc = snap.data() || {};
+    // FIX: Real workspace state lives at doc.state.* (nested). Writing
+    // to top-level doc.gmailActivity is LOST when the app saves state
+    // (fbSanitizeState only whitelists certain fields and tx.set replaces
+    // the doc). So we write to doc.state.gmailActivity (inside payload)
+    // AND ensure the app's whitelist covers it.
+    if (!doc.state) doc.state = {};
+    doc.state.gmailActivity = Array.isArray(doc.state.gmailActivity)
+      ? doc.state.gmailActivity
+      : (Array.isArray(doc.gmailActivity) ? doc.gmailActivity : []);
+    // For convenience inside this transaction:
+    const workspaceState = doc.state;
 
-    // Build tenant → unit index один раз.
-    const tenantIndex = _buildRecipientIndex(state);
+    // Build tenant → unit index используя НАСТОЯЩИЙ state.state.buildings,
+    // не top-level. Раньше top-level buildings не существовал, поэтому
+    // matched ВСЕГДА был 0 — все письма уходили в unmatched gmailActivity.
+    const tenantIndex = _buildRecipientIndex(workspaceState);
 
     let unmatchedAdded = 0;
     let matchedAdded = 0;
 
     for (const r of records) {
       // Идемпотентность через messageId — Gmail-side ID уникален per-mailbox.
-      if (state.gmailActivity.some(g => g && g.messageId === r.messageId)) continue;
+      if (workspaceState.gmailActivity.some(g => g && g.messageId === r.messageId)) continue;
 
       // Для INBOX-писем (direction='received') матчим SENDER против tenant —
       // если tenant нам ответил на цепочку, событие принадлежит unit'у tenant'а.
@@ -427,7 +439,7 @@ async function _persistEmailRecords(userEmail, records) {
         });
         matchedAdded++;
       } else {
-        state.gmailActivity.push({
+        workspaceState.gmailActivity.push({
           messageId: r.messageId,
           messageIdHeader: r.messageIdHeader,
           ts: r.ts,
@@ -445,11 +457,24 @@ async function _persistEmailRecords(userEmail, records) {
     }
 
     // FIFO trim чтобы не раздуть state.
-    if (state.gmailActivity.length > GMAIL_ACTIVITY_CAP) {
-      state.gmailActivity = state.gmailActivity.slice(-GMAIL_ACTIVITY_CAP);
+    if (workspaceState.gmailActivity.length > GMAIL_ACTIVITY_CAP) {
+      workspaceState.gmailActivity = workspaceState.gmailActivity.slice(-GMAIL_ACTIVITY_CAP);
     }
 
-    tx.set(stateRef, state);
+    // Migration: если top-level doc.gmailActivity ещё содержит старые
+    // entries — переносим в doc.state.gmailActivity и обнуляем top-level.
+    // (Делается только в первый раз, потом top-level будет всегда пустым.)
+    if (Array.isArray(doc.gmailActivity) && doc.gmailActivity.length > 0) {
+      const knownIds = new Set(workspaceState.gmailActivity.map(g => g.messageId));
+      for (const g of doc.gmailActivity) {
+        if (g && g.messageId && !knownIds.has(g.messageId)) {
+          workspaceState.gmailActivity.push(g);
+        }
+      }
+      doc.gmailActivity = []; // освобождаем top-level
+    }
+
+    tx.set(stateRef, doc);
     logger.info('[gmail-push] persist', { userEmail, matchedAdded, unmatchedAdded });
   });
 }
