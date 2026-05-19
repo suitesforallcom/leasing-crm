@@ -245,7 +245,10 @@ function TimelineTab({ events, user, onOpenEvent }) {
     return true;
   });
 
-  const buckets = groupByBucket([...filtered].sort((a, b) => parseTime(a.time) - parseTime(b.time)));
+  // Phase 12+ — newest first within each bucket + reverse bucket order
+  // (Evening on top if any, Morning at bottom) so the operator sees the
+  // most recent activity without scrolling.
+  const buckets = groupByBucket([...filtered].sort((a, b) => parseTime(b.time) - parseTime(a.time))).reverse();
 
   function toggleCat(c) {
     const n = new Set(cats);

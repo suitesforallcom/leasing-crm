@@ -220,7 +220,39 @@ window.DETAILED_AUDIT = { events: DETAILED_MAYA, KINDS };
    ================================================================ */
 
 window.AuditLogTab = function AuditLogTab({ user, onOpenEvent }) {
-  const events = user.id === "u1" ? DETAILED_MAYA : [];
+  // Phase 12+ — real users get a synthesized audit log derived from
+  // DATA.ALL_EVENTS (real outreach + envelopes + gmail events). Demo
+  // seed Maya keeps her rich 107-event handcrafted trail; everyone else
+  // gets the same events the Timeline shows, projected into audit-log
+  // shape (kind/action/entity/value/t/_sec).
+  let events;
+  if (user.id === "u1") {
+    events = DETAILED_MAYA;
+  } else {
+    const userEvents = (window.DATA?.ALL_EVENTS || []).filter(e => e.userId === user.id);
+    events = userEvents.map(e => {
+      const m = (e.time || '').match(/(\d+):(\d+)\s*([AP]M)/i);
+      let _sec = 0;
+      if (m) {
+        let h = parseInt(m[1], 10);
+        const mm = parseInt(m[2], 10);
+        const isPM = (m[3] || '').toUpperCase() === 'PM';
+        if (isPM && h !== 12) h += 12;
+        if (!isPM && h === 12) h = 0;
+        _sec = h * 3600 + mm * 60;
+      }
+      return {
+        t: e.time || '',
+        _sec,
+        kind: e.cat || 'system',           // email / contract / call / etc.
+        action: e.desc || '(no action)',
+        entity: e.ent?.name || '',
+        value: e.ent?.id || '',
+        source: e.source || 'web',
+        status: e.status || 'ok',
+      };
+    });
+  }
   const [kindFilter, setKindFilter] = React.useState("all");
   const [search, setSearch] = React.useState("");
 
@@ -255,7 +287,7 @@ window.AuditLogTab = function AuditLogTab({ user, onOpenEvent }) {
   const topKinds = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 9).map(([k]) => k);
 
   if (events.length === 0) {
-    return <div className="card"><div className="empty"><div className="icon-wrap"><Icon name="signal" /></div><h4>Detailed audit only available for Maya</h4><p>This demo includes a full {DETAILED_MAYA.length}-event audit trail for Maya. Click her profile or switch to her view.</p></div></div>;
+    return <div className="card"><div className="empty"><div className="icon-wrap"><Icon name="signal" /></div><h4>No audit events yet</h4><p>When {user.first} acts in the system — sends a lease, replies to a tenant, marks a payment — entries will appear here in real time.</p></div></div>;
   }
 
   return (
