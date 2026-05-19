@@ -72,7 +72,7 @@ function NavItem({ id, view, onNav, icon, label, count, isActive }) {
   );
 }
 
-window.Topbar = function Topbar({ view, employeeId, onNav, role, onRoleChange, centerFilter, onCenterFilterChange, onOpenFilter, onOpenCmd, onOpenNotif, recentIds = [], onOpenEmployee }) {
+window.Topbar = function Topbar({ view, employeeId, onNav, role, onRoleChange, meId, onMeIdChange, centerFilter, onCenterFilterChange, onOpenFilter, onOpenCmd, onOpenNotif, recentIds = [], onOpenEmployee }) {
   const employee = employeeId ? DATA.USERS.find(u => u.id === employeeId) : null;
   const [roleMenu, setRoleMenu] = React.useState(false);
   const [centerMenu, setCenterMenu] = React.useState(false);
@@ -172,13 +172,31 @@ window.Topbar = function Topbar({ view, employeeId, onNav, role, onRoleChange, c
                 <div className="muted" style={{ fontSize: 11 }}>See every employee, center, bonus</div>
               </div>
             </MenuItem>
-            <MenuItem active={role === "employee"} onClick={() => { onRoleChange("employee"); setRoleMenu(false); window.toast("Now viewing as Maya — employee personal view", "success"); }}>
-              <Icon name="user" />
-              <div style={{ textAlign: "left" }}>
-                <div style={{ fontWeight: 700 }}>Employee (Maya Okafor)</div>
-                <div className="muted" style={{ fontSize: 11 }}>Only own stats — gamified My Day</div>
-              </div>
-            </MenuItem>
+            {/* Phase 11b — full list of impersonate-able employees. Real
+                workspace members listed first, then demo seed. Click any
+                to become them (role=employee + meId=their id). */}
+            <div style={{ padding: "8px 10px", marginTop: 4, fontSize: 11, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em", borderTop: "1px solid var(--border)" }}>View as employee</div>
+            <div style={{ maxHeight: 320, overflowY: "auto" }}>
+              {[...DATA.USERS]
+                .sort((a, b) => Number(!!b._isReal) - Number(!!a._isReal)) // real first
+                .map(u => (
+                <MenuItem key={u.id} active={role === "employee" && meId === u.id} onClick={() => {
+                  if (typeof onMeIdChange === "function") onMeIdChange(u.id);
+                  onRoleChange("employee");
+                  setRoleMenu(false);
+                  window.toast("Now viewing as " + u.name, "success");
+                }}>
+                  <Icon name="user" />
+                  <div style={{ textAlign: "left" }}>
+                    <div style={{ fontWeight: 700 }}>
+                      {u.name}
+                      {u._isReal && <span style={{ marginLeft: 6, fontSize: 9, padding: "1px 5px", background: "var(--success-soft)", color: "var(--success-ink)", borderRadius: 4, verticalAlign: "1px" }}>real</span>}
+                    </div>
+                    <div className="muted" style={{ fontSize: 11 }}>{u.email || (u.first + " " + u.last)}</div>
+                  </div>
+                </MenuItem>
+              ))}
+            </div>
           </div>
         )}
       </div>

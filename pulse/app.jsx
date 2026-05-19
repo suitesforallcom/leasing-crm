@@ -23,6 +23,12 @@ function App() {
   /* Global filters */
   const [centerFilter, setCenterFilter] = React.useState("all");
   const [role, setRole] = React.useState("owner");
+  /* Phase 11b — meId chooses which employee is "me" when role=employee.
+     Default to first real employee if any, else seed u1 (Maya). */
+  const [meId, setMeId] = React.useState(() => {
+    const real = (window.DATA?.USERS || []).find(u => u._isReal);
+    return real ? real.id : "u1";
+  });
 
   /* Drawer state */
   const [drawerEvent, setDrawerEvent] = React.useState(null);
@@ -69,7 +75,7 @@ function App() {
     if (v !== "employee") setEmployeeId(null);
   }
   function openEmployee(id) {
-    if (role === "employee" && id !== "u1") {
+    if (role === "employee" && id !== meId) {
       window.toast("Employees only see their own profile.");
       return;
     }
@@ -116,6 +122,8 @@ function App() {
           onNav={nav}
           role={role}
           onRoleChange={setRole}
+          meId={meId}
+          onMeIdChange={setMeId}
           centerFilter={centerFilter}
           onCenterFilterChange={setCenterFilter}
           onOpenFilter={() => setFilterOpen(true)}
@@ -127,7 +135,7 @@ function App() {
 
         {view === "myday" && (
           <MyDayPage
-            meId="u1"
+            meId={meId}
             onOpenEmployee={(id) => openEmployee(id)}
             onOpenQuickAction={() => setQuickOpen(true)}
             onOpenJourney={() => setView("myjourney")}
@@ -135,12 +143,12 @@ function App() {
         )}
         {view === "myjourney" && (
           <MyJourneyPage
-            meId="u1"
+            meId={meId}
             onBack={() => setView("myday")}
           />
         )}
         {view === "earn" && (
-          <EarnPage meId="u1" onBack={() => setView("myday")} />
+          <EarnPage meId={meId} onBack={() => setView("myday")} />
         )}
         {view === "overview" && role === "owner" && (
           <OverviewPage
