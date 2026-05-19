@@ -657,6 +657,10 @@
         records: _recordsFromHistory(emailLower),
         // Phase 14 — today's calendar events from Google Calendar API
         calendarEvents: calendarEventsByEmail[emailLower] || [],
+        // Phase 17 — full daily-history array (last 90 days). EmployeeDetail
+        // page uses this to render stats for any historical date via the
+        // day navigator (← Prev / [date] / Next →).
+        _dailyHistory: Array.isArray(dailyHistoryByEmail[emailLower]) ? dailyHistoryByEmail[emailLower] : [],
         _empId: emp.id,
         _hireDate: emp.hireDate || null,
         _workspaceMemberUid: emp.workspaceMemberUid || null,

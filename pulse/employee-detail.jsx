@@ -15,7 +15,40 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
   const docs   = events.filter(e => e.cat === "document");
   const contracts = events.filter(e => e.cat === "contract");
 
-  const m = metricsFor(u);
+  /* ----------------------------------------------------------------
+     Phase 17 — historical day view.
+     Operator can scroll Prev / Next or pick a date. Today = live
+     metrics from u.*. Past day = read snapshot from u._dailyHistory
+     (Phase 15 cron writes one record per email per UTC day, 90-day
+     retention). If a past day has no snapshot — all counters show 0.
+     May-bonus / month-to-date cards stay MTD regardless of selected
+     day; only «today»-scoped tiles + status pills shift.
+     ---------------------------------------------------------------- */
+  const todayStr = _localDateStr(new Date());
+  const [selectedDate, setSelectedDate] = React.useState(todayStr);
+  const isToday = selectedDate === todayStr;
+  const snapshot = isToday
+    ? null
+    : (Array.isArray(u._dailyHistory) ? u._dailyHistory : []).find(s => s.date === selectedDate);
+
+  // displayUser — патч живого u полями из снапшота, чтобы metricsFor
+  // и все «сегодня»-плитки автоматически отражали выбранный день.
+  // Идентичность (id/name/email/role/avatar) не трогаем.
+  const displayUser = isToday
+    ? u
+    : {
+        ...u,
+        online: snapshot ? Math.round((snapshot.hoursWorked || 0) * 60) : 0,
+        actions: snapshot ? ((snapshot.sentEmails || 0) + (snapshot.contracts || 0)) : 0,
+        calls: 0, // not tracked in daily snapshot until telephony lands
+        emails: snapshot ? (snapshot.sentEmails || 0) : 0,
+        contracts: snapshot ? (snapshot.contracts || 0) : 0,
+        score: snapshot ? (snapshot.score || 0) : 0,
+        // Прошедший день — оператор уже офлайн с этого дня.
+        status: "offline",
+      };
+
+  const m = metricsFor(displayUser);
   const tabs = [
     { id: "performance",  label: "Performance",   icon: "star" },
     { id: "timeline",     label: "Timeline",      icon: "activity", count: events.length },
@@ -76,35 +109,43 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
           </div>
         </div>
 
+        {/* Phase 17 — day navigator. ← / date picker / → / Jump-to-today.
+            All «today»-scoped tiles below switch to the selected day's
+            snapshot when not today. MTD cards (May bonus) stay current.  */}
+        <DateNavigator value={selectedDate} onChange={setSelectedDate} todayStr={todayStr} hasSnapshot={!!snapshot} isToday={isToday} isRealUser={!!u._isReal} />
+
         {/* Hours worked progress — prominent */}
-        <div style={{ marginTop: 18, display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", gap: 16 }} className="head-row-2">
+        <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", gap: 16 }} className="head-row-2">
           <div style={{ padding: 14, background: "var(--surface-2)", borderRadius: 12 }}>
             <div className="row" style={{ marginBottom: 8 }}>
               <Icon name="clock" style={{ color: "var(--muted)" }} />
-              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>Working today</span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>{isToday ? "Working today" : "Worked on " + _shortDateLabel(selectedDate)}</span>
               <div className="spacer" />
-              <span className="chip is-success">on time</span>
+              {isToday && <span className="chip is-success">on time</span>}
+              {!isToday && !snapshot && <span className="chip">no data</span>}
             </div>
             <div className="row" style={{ alignItems: "baseline", gap: 8 }}>
-              <div className="num" style={{ fontSize: 32, fontWeight: 800, letterSpacing: "-.025em", whiteSpace: "nowrap" }}>{u.status === "offline" ? "—" : fmt.hm(u.online)}</div>
+              <div className="num" style={{ fontSize: 32, fontWeight: 800, letterSpacing: "-.025em", whiteSpace: "nowrap" }}>{(isToday && displayUser.status === "offline") || (!isToday && !snapshot) ? "—" : fmt.hm(displayUser.online)}</div>
               <div className="muted" style={{ fontSize: 14, whiteSpace: "nowrap" }}>of {m.targets.hoursWorked}h target</div>
             </div>
             <div style={{ height: 8, background: "var(--surface-3)", borderRadius: 999, marginTop: 8, overflow: "hidden" }}>
-              <span style={{ display: "block", height: "100%", width: Math.min(100, (u.online / 60) / m.targets.hoursWorked * 100) + "%", background: m.today.hours.hit ? "var(--success)" : "var(--accent)", borderRadius: 999 }} />
+              <span style={{ display: "block", height: "100%", width: Math.min(100, (displayUser.online / 60) / m.targets.hoursWorked * 100) + "%", background: m.today.hours.hit ? "var(--success)" : "var(--accent)", borderRadius: 999 }} />
             </div>
             <div className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>
-              First login <span className="mono" style={{ color: "var(--ink)" }}>{u.login || "—"}</span> · Last activity <span className="mono" style={{ color: "var(--ink)" }}>{u.status === "online" ? "now" : u.logout || "—"}</span>
+              {isToday
+                ? <>First login <span className="mono" style={{ color: "var(--ink)" }}>{u.login || "—"}</span> · Last activity <span className="mono" style={{ color: "var(--ink)" }}>{u.status === "online" ? "now" : u.logout || "—"}</span></>
+                : <>Snapshot for <span className="mono" style={{ color: "var(--ink)" }}>{selectedDate}</span></>}
             </div>
           </div>
 
           <div style={{ padding: 14, background: "var(--surface-2)", borderRadius: 12 }}>
             <div className="row" style={{ marginBottom: 8 }}>
               <Icon name="signal" style={{ color: "var(--muted)" }} />
-              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>Targets hit today</span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>{isToday ? "Targets hit today" : "Targets hit"}</span>
             </div>
             <div className="row" style={{ alignItems: "baseline", gap: 8 }}>
               <div className="num" style={{ fontSize: 32, fontWeight: 800, letterSpacing: "-.025em" }}>{m.hits}<span className="muted" style={{ fontSize: 16, fontWeight: 600 }}>/{m.expected}</span></div>
-              <Trend now={m.hits} prev={Math.max(0, m.hits - 1)} suffix="" />
+              {isToday && <Trend now={m.hits} prev={Math.max(0, m.hits - 1)} suffix="" />}
             </div>
             <div className="row" style={{ gap: 4, marginTop: 8 }}>
               {[m.today.calls, m.today.emails, m.today.hours, m.today.reply, m.today.pickup].map((mm, i) => (
@@ -136,36 +177,36 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
             for real users without integration. Operator can hover any «?»
             to understand what the number is and why. */}
         <div className="emp-stats">
-          <Stat icon="login"    label="First login"     value={u.login || "—"}                  sub="on time"
+          <Stat icon="login"    label="First login"     value={isToday ? (u.login || "—") : "—"}                  sub={isToday ? "on time" : ""}
             hint={u._isReal
-              ? "Time of today's first sign-in, captured by session heartbeat. Shows «—» if the user hasn't signed in today yet."
+              ? "Time of today's first sign-in, captured by session heartbeat. Shows «—» if the user hasn't signed in today yet. Historical days do not store login time."
               : "First login time (demo seed mock data)."} />
-          <Stat icon="logout"   label="Last activity"   value={u.logout || (u.status === "offline" ? "—" : "now")} sub={u.status === "online" ? "active" : ""}
+          <Stat icon="logout"   label="Last activity"   value={isToday ? (u.logout || (u.status === "offline" ? "—" : "now")) : "—"} sub={isToday && u.status === "online" ? "active" : ""}
             hint={u._isReal
-              ? "Last heartbeat ping from the user's browser tab (refreshed every 60 sec while a tab is alive). Shows «now» if a tab pinged within the last minute."
+              ? "Last heartbeat ping from the user's browser tab (refreshed every 60 sec while a tab is alive). Shows «now» if a tab pinged within the last minute. Historical days do not store last-activity time."
               : "Last activity time (demo mock)."} />
-          <Stat icon="zap"      label="Actions today"   value={u.actions}                       trend={<Trend now={u.actions} prev={Math.round(u.actions * .92)} />}
+          <Stat icon="zap"      label={isToday ? "Actions today" : "Actions"}   value={displayUser.actions}                       trend={isToday ? <Trend now={displayUser.actions} prev={Math.round(displayUser.actions * .92)} /> : null}
             hint={u._isReal
-              ? "Sum of all actions today: emails sent + contracts + invoices + payments + notes. Calls excluded until telephony is connected. Real count from outreach + leaseEnvelopes + stripe stamps."
+              ? "Sum of all actions for the selected day: emails sent + contracts + invoices + payments + notes. Calls excluded until telephony is connected. Today — live count; past days — from daily snapshot."
               : "Actions count (demo mock)."} />
-          <Stat icon="phone"    label="Calls"           value={u.calls + "/" + m.targets.calls} sub={`pickup ${m.actuals.callPickupSec}s · ${m.actuals.missedCalls} missed`}
+          <Stat icon="phone"    label="Calls"           value={displayUser.calls + "/" + m.targets.calls} sub={isToday ? `pickup ${m.actuals.callPickupSec}s · ${m.actuals.missedCalls} missed` : ""}
             hint={u._isReal
-              ? "Calls today vs role target. MOCK — telephony integration not connected (needs Twilio / RingCentral / Aircall webhook)."
+              ? "Calls vs role target. MOCK — telephony integration not connected (needs Twilio / RingCentral / Aircall webhook)."
               : "Calls / target (demo mock)."} />
-          <Stat icon="mail"     label="Emails"          value={u.emails + "/" + m.targets.emails} sub={u.emails > 0 ? `avg reply ${m.actuals.emailReplyMin}m` : ""}
+          <Stat icon="mail"     label="Emails"          value={displayUser.emails + "/" + m.targets.emails} sub={isToday && displayUser.emails > 0 ? `avg reply ${m.actuals.emailReplyMin}m` : ""}
             hint={u._isReal
-              ? "Emails sent today vs role target. Counted from Gmail API SENT events (Phase 10) plus manual outreach records. RECEIVED emails NOT counted — incoming spam isn't the operator's achievement. Shows 0 if you haven't sent anything yet today."
+              ? "Emails sent for the selected day vs role target. Counted from Gmail API SENT events. RECEIVED emails NOT counted — incoming spam isn't the operator's achievement. Today — live; past days — from snapshot."
               : "Emails / target (demo mock)."} />
-          <Stat icon="contract" label="Contracts"       value={u.contracts + (m.targets.contracts > 0 ? "/" + m.targets.contracts : "")} sub={u.contracts > 0 ? "2 signed" : ""}
+          <Stat icon="contract" label="Contracts"       value={displayUser.contracts + (m.targets.contracts > 0 ? "/" + m.targets.contracts : "")} sub={isToday && displayUser.contracts > 0 ? "2 signed" : ""}
             hint={u._isReal
-              ? "Lease envelopes sent via DocuSign this month vs role target. REAL data from u.leaseEnvelopes with sentBy = this employee's email. 0 means no envelopes sent this month."
+              ? "Lease envelopes sent via DocuSign for the selected day vs role target. REAL data from u.leaseEnvelopes with sentBy = this employee's email. Today — live; past days — from snapshot."
               : "Contracts / target (demo mock)."} />
-          <Stat icon="star"     label="Productivity"    value={u.score === 0 ? "—" : u.score}   trend={u.score > 0 ? <Trend now={u.score} prev={u.prev} suffix=" / 30d" /> : null} onClick={u.score > 0 ? () => window.openScoreExplainer(u) : null}
+          <Stat icon="star"     label="Productivity"    value={displayUser.score === 0 ? "—" : displayUser.score}   trend={isToday && displayUser.score > 0 ? <Trend now={displayUser.score} prev={u.prev} suffix=" / 30d" /> : null} onClick={isToday && displayUser.score > 0 ? () => window.openScoreExplainer(u) : null}
             hint={u._isReal
               ? "Composite score 0-100. Formula: contracts × 30% + emails × 25% + calls × 20% + invoices × 15% + notes × 10%, each component capped at 100% of role target. Click for breakdown."
               : "Score (demo mock from data.jsx)."} />
           <Stat icon="signal"   label="Status"          value={m.status.label}                 sub={""}
-            hint="Daily status derived from today's target hit rate (calls / emails / hours / reply / pickup). 5/5 = Crushing it, 3+ = On track, 2 = Behind pace, else Slow start / Needs attention. Offline if status = offline." />
+            hint="Daily status derived from the selected day's target hit rate (calls / emails / hours / reply / pickup). 5/5 = Crushing it, 3+ = On track, 2 = Behind pace, else Slow start / Needs attention. Offline if no activity that day." />
         </div>
       </div>
 
@@ -1052,6 +1093,104 @@ function MiniMetric({ label, value, unit }) {
       <div className="kpi-head">{label}</div>
       <div className="kpi-value">{value}</div>
       <div className="muted" style={{ fontSize: 11.5 }}>{unit}</div>
+    </div>
+  );
+}
+
+/* ================================================================
+   Phase 17 — date helpers + DateNavigator (Prev / picker / Next / Today)
+   ================================================================ */
+function _localDateStr(d) {
+  // YYYY-MM-DD in local TZ. Cron writes snapshots keyed by local-civil-date
+  // (computed in functions/daily-snapshots.js using the same offset).
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
+
+function _shortDateLabel(s) {
+  // s = "YYYY-MM-DD" → "Mon May 12" (US locale, short). Used in card titles
+  // when the operator scrolls back to a historical day.
+  if (!s) return "—";
+  const d = new Date(s + "T00:00:00");
+  if (isNaN(d.getTime())) return s;
+  const today = new Date();
+  const sameYear = d.getFullYear() === today.getFullYear();
+  return d.toLocaleDateString("en-US", {
+    weekday: "short", month: "short", day: "numeric",
+    year: sameYear ? undefined : "numeric",
+  });
+}
+
+function _humanDateLabel(s) {
+  // «Today» / «Yesterday» / «Mon May 12». Slightly friendlier than the
+  // raw short form — used in the day-navigator pill.
+  if (!s) return "—";
+  const todayStr = _localDateStr(new Date());
+  if (s === todayStr) return "Today";
+  const yest = new Date();
+  yest.setDate(yest.getDate() - 1);
+  if (s === _localDateStr(yest)) return "Yesterday";
+  return _shortDateLabel(s);
+}
+
+function DateNavigator({ value, onChange, todayStr, hasSnapshot, isToday, isRealUser }) {
+  function shift(days) {
+    const d = new Date(value + "T00:00:00");
+    if (isNaN(d.getTime())) return;
+    d.setDate(d.getDate() + days);
+    const next = _localDateStr(d);
+    if (next > todayStr) return; // нельзя в будущее
+    onChange(next);
+  }
+
+  return (
+    <div className="row" style={{
+      marginTop: 18, padding: "10px 12px", borderRadius: 12,
+      background: isToday ? "var(--surface-2)" : "var(--accent-soft)",
+      border: isToday ? "1px solid transparent" : "1px solid var(--accent-border, rgba(99,102,241,.25))",
+      gap: 8, flexWrap: "wrap",
+    }}>
+      <button className="btn is-small" onClick={() => shift(-1)} title="Previous day">
+        <Icon name="chevL" /> Prev day
+      </button>
+      <input
+        type="date"
+        value={value}
+        max={todayStr}
+        onChange={e => e.target.value && onChange(e.target.value)}
+        style={{
+          padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border)",
+          background: "var(--surface)", fontSize: 13, fontWeight: 600,
+          fontFamily: "inherit", color: "var(--ink)",
+        }}
+      />
+      <button className="btn is-small" onClick={() => shift(1)} disabled={value >= todayStr} title="Next day">
+        Next day <Icon name="chevR" />
+      </button>
+      <div style={{
+        padding: "4px 12px", borderRadius: 999,
+        background: isToday ? "var(--success-soft)" : "var(--surface)",
+        color: isToday ? "var(--success-ink)" : "var(--ink)",
+        fontSize: 12, fontWeight: 700, letterSpacing: ".02em",
+        border: "1px solid var(--border)",
+      }}>
+        {_humanDateLabel(value)}
+      </div>
+      {!isToday && (
+        <>
+          {isRealUser && !hasSnapshot && (
+            <span className="muted" style={{ fontSize: 12, fontStyle: "italic" }}>
+              No snapshot recorded for this day yet.
+            </span>
+          )}
+          <div className="spacer" />
+          <button className="btn is-small is-primary" onClick={() => onChange(todayStr)}>
+            <Icon name="clock" /> Jump to today
+          </button>
+        </>
+      )}
     </div>
   );
 }
