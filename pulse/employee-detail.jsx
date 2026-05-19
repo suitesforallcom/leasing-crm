@@ -566,7 +566,22 @@ function EmailsTab({ events, user, onOpenEvent, metrics }) {
                   </td>
                   <td>
                     <div style={{ fontWeight: 600 }}>{e.ent?.name}</div>
-                    <div className="muted" style={{ fontSize: 11.5 }}>{e.ent?.id}</div>
+                    {e._tenantMatch ? (
+                      <div style={{ fontSize: 11.5, marginTop: 2 }}>
+                        <span className="chip is-info" style={{ marginRight: 6 }}>
+                          <Icon name="building" style={{ width: 10, height: 10, marginRight: 3, verticalAlign: "-1px" }} />
+                          Suite {e._tenantMatch.suite}
+                        </span>
+                        <span className="muted">{e._tenantMatch.tenantName}</span>
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 11.5, marginTop: 2 }}>
+                        <span className="chip is-warning">
+                          <Icon name="user" style={{ width: 10, height: 10, marginRight: 3, verticalAlign: "-1px" }} />
+                          New contact
+                        </span>
+                      </div>
+                    )}
                   </td>
                   <td>
                     <span className="chip is-success">delivered</span>

@@ -161,6 +161,29 @@
   // Hoisted out of try{} so user.map() ниже может прочитать (Phase 10).
   const emailStatsByOwner = new Map();
 
+  // Phase 11d — tenant email → unit lookup. Used by EmailsTab to tag
+  // each row as «Tenant · Suite N» (with unit link) vs «New contact».
+  // Source: u.email + u.tenant/company on occupied units.
+  const tenantEmailIndex = new Map(); // email-lower → { unitId, suite, tenantName, buildingName }
+  try {
+    for (const b of buildings) {
+      for (const f of (b.floors || [])) {
+        for (const u of (f.units || [])) {
+          const emailRaw = u.email || '';
+          const email = String(emailRaw).trim().toLowerCase();
+          if (!email) continue;
+          if (tenantEmailIndex.has(email)) continue; // first wins
+          tenantEmailIndex.set(email, {
+            unitId: u.id,
+            suite: u.id, // unit id is the suite number (Suite 305 etc.)
+            tenantName: (u.tenant || u.company || '').trim() || '?',
+            buildingName: b.name || b.id || '',
+          });
+        }
+      }
+    }
+  } catch (e) { console.warn('[pulse-shim] tenant index build failed:', e); }
+
   try {
     for (const b of buildings) {
       for (const f of (b.floors || [])) {
@@ -360,6 +383,13 @@
 
       // Recent events (last 24h) для timeline / live feed.
       if (e.ts >= last24Ms) {
+        // Phase 11d — для received матчим SENDER против tenant'ов, для sent
+        // матчим RECIPIENT. Если совпало — это контакт с существующим
+        // tenant'ом (показываем Suite N + tenantName). Если нет — новый
+        // контакт (внешний адрес, спам, новый lead).
+        const counterparty = (e.direction === 'received' ? e.from : e.to) || '';
+        const tenantMatch = tenantEmailIndex.get(String(counterparty).toLowerCase()) || null;
+
         recentOutreachEvents.push({
           ts: e.ts,
           sentBy: e.owner,
@@ -372,6 +402,7 @@
           ent: { kind: 'contact', name: (e.direction === 'received' ? e.from : e.to) || '(external)', id: e.messageId },
           status: 'ok',
           source: 'gmail',
+          _tenantMatch: tenantMatch, // { unitId, suite, tenantName, buildingName } | null
         });
       }
     }
@@ -528,6 +559,8 @@
         // Phase 10 — добавляем userId чтобы employee-detail.jsx фильтр
         // `events.filter(e => e.userId === u.id)` работал.
         userId: u ? u.id : null,
+        // Phase 11d — пропускаем tenant-match через final map.
+        _tenantMatch: e._tenantMatch || null,
       };
     });
 
