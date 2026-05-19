@@ -530,7 +530,21 @@
         email: emp.email || '',
         phone: emp.phone || '',
         status: status,
-        online: status === 'offline' ? 0 : onlineMin,
+        // Phase 13 — real hours-worked: from session heartbeat
+        // (firstLoginToday → lastActivityAt). Cap at 12h sanity.
+        // Falls back to 0 for users without active session today.
+        online: (function () {
+          const s = sessionsByUid[emp.workspaceMemberUid];
+          if (s && s.firstLoginToday && s.lastActivityAt) {
+            const start = new Date(s.firstLoginToday).getTime();
+            const end = new Date(s.lastActivityAt).getTime();
+            if (end > start) {
+              const minutes = Math.round((end - start) / 60000);
+              return Math.min(12 * 60, minutes); // cap 12h sanity
+            }
+          }
+          return 0;
+        })(),
         // Phase 12 — real session data when available, else null/0 (no mock).
         // Source: state.sessions[emp.workspaceMemberUid] populated by floor-map's
         // _refreshSessionsCache. If member hasn't signed in since deploy → null.

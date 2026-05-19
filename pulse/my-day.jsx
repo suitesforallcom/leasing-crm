@@ -170,20 +170,8 @@ window.MyDayPage = function MyDayPage({ meId = "u1", onOpenEmployee, onOpenQuick
 
       {/* ============ One Big Thing + Coach's note (Grit + Drive) ============ */}
       <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 14, marginBottom: 18 }} className="myday-obt-grid">
-        <div className="card" style={{ padding: 16, background: "linear-gradient(135deg, oklch(96% 0.04 264), oklch(97% 0.04 280))", borderColor: "transparent" }}>
-          <div className="row" style={{ marginBottom: 6 }}>
-            <Icon name="star" style={{ color: "var(--accent)" }} />
-            <span style={{ fontSize: 11, fontWeight: 700, color: "var(--accent-ink)", letterSpacing: ".1em", textTransform: "uppercase" }}>Today's one big thing</span>
-            <div className="spacer" />
-            <button className="btn is-small is-ghost" onClick={() => window.toast("Edit your big thing")}><Icon name="edit" /></button>
-          </div>
-          <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: "-.015em" }}>Send the Greentree Yoga proposal to Andrea by 5 PM.</div>
-          <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>One outcome that makes today a win — Grit by Angela Duckworth.</div>
-          <div className="row" style={{ marginTop: 10 }}>
-            <button className="btn" onClick={() => window.toast("Marked done — well done!", "success")}><Icon name="check" /> Mark done</button>
-            <button className="btn is-ghost is-small">Postpone</button>
-          </div>
-        </div>
+        <OneBigThingCard me={me} />
+
         <div className="card" style={{ padding: 16 }}>
           <div className="row" style={{ marginBottom: 6 }}>
             <Avatar user={DATA.USERS.find(u => u.id === "u2")} size="sm" />
@@ -788,4 +776,137 @@ function fmtHour(h) {
   const ampm = hr >= 12 ? "PM" : "AM";
   const disp = hr % 12 || 12;
   return `${disp}:${String(min).padStart(2, "0")} ${ampm}`;
+}
+
+/* ============================================================================
+   Phase 13 — Today's One Big Thing card. Editable, persists to
+   state.employees[i].todaysOneBigThing in localStorage (employees field is
+   local-only per the current sync architecture; cross-device sync is Phase 16+).
+   ============================================================================ */
+function _obtIsToday(iso) {
+  if (!iso) return false;
+  const d = new Date(iso);
+  const n = new Date();
+  return d.getFullYear() === n.getFullYear()
+      && d.getMonth() === n.getMonth()
+      && d.getDate() === n.getDate();
+}
+function _obtLoad(empId) {
+  if (!empId) return null;
+  try {
+    const st = JSON.parse(localStorage.getItem('sfa_v5_state') || '{}');
+    const emp = (st.employees || []).find(e => e.id === empId);
+    if (!emp || !emp.todaysOneBigThing) return null;
+    if (!_obtIsToday(emp.todaysOneBigThing.setAt)) return null; // expired (yesterday)
+    return emp.todaysOneBigThing;
+  } catch (e) { return null; }
+}
+function _obtSave(empId, payload) {
+  if (!empId) return;
+  try {
+    const st = JSON.parse(localStorage.getItem('sfa_v5_state') || '{}');
+    st.employees = st.employees || [];
+    let emp = st.employees.find(e => e.id === empId);
+    if (!emp) { emp = { id: empId, status: 'active' }; st.employees.push(emp); }
+    emp.todaysOneBigThing = payload;
+    localStorage.setItem('sfa_v5_state', JSON.stringify(st));
+  } catch (e) { console.warn('save OBT failed', e); }
+}
+
+function OneBigThingCard({ me }) {
+  // Demo seed users — keep hardcoded richness for prototype demos.
+  if (!me._isReal) {
+    return (
+      <div className="card" style={{ padding: 16, background: "linear-gradient(135deg, oklch(96% 0.04 264), oklch(97% 0.04 280))", borderColor: "transparent" }}>
+        <div className="row" style={{ marginBottom: 6 }}>
+          <Icon name="star" style={{ color: "var(--accent)" }} />
+          <span style={{ fontSize: 11, fontWeight: 700, color: "var(--accent-ink)", letterSpacing: ".1em", textTransform: "uppercase" }}>Today's one big thing</span>
+        </div>
+        <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: "-.015em" }}>Send the Greentree Yoga proposal to Andrea by 5 PM.</div>
+        <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>One outcome that makes today a win — Grit by Angela Duckworth.</div>
+        <div className="row" style={{ marginTop: 10 }}>
+          <button className="btn" onClick={() => window.toast && window.toast("Marked done — well done!", "success")}><Icon name="check" /> Mark done</button>
+          <button className="btn is-ghost is-small">Postpone</button>
+        </div>
+      </div>
+    );
+  }
+
+  // Real user — editable + persistent.
+  const empId = me._empId;
+  const [obt, setObt] = React.useState(() => _obtLoad(empId));
+  const [editing, setEditing] = React.useState(!obt);
+  const [draft, setDraft] = React.useState(obt?.text || '');
+
+  function save() {
+    const text = (draft || '').trim();
+    if (!text) { setEditing(false); return; }
+    const next = { text, setAt: new Date().toISOString(), doneAt: null };
+    _obtSave(empId, next);
+    setObt(next);
+    setEditing(false);
+    window.toast && window.toast("Saved today's big thing", "success");
+  }
+  function markDone() {
+    if (!obt) return;
+    const next = { ...obt, doneAt: new Date().toISOString() };
+    _obtSave(empId, next);
+    setObt(next);
+    window.toast && window.toast("Crushed it 🎉", "success");
+  }
+  function clearForNew() {
+    setObt(null); setDraft(''); setEditing(true);
+  }
+
+  return (
+    <div className="card" style={{ padding: 16, background: "linear-gradient(135deg, oklch(96% 0.04 264), oklch(97% 0.04 280))", borderColor: "transparent" }}>
+      <div className="row" style={{ marginBottom: 6 }}>
+        <Icon name="star" style={{ color: "var(--accent)" }} />
+        <span style={{ fontSize: 11, fontWeight: 700, color: "var(--accent-ink)", letterSpacing: ".1em", textTransform: "uppercase" }}>Today's one big thing</span>
+        <div className="spacer" />
+        {obt && !editing && !obt.doneAt && (
+          <button className="btn is-small is-ghost" onClick={() => { setDraft(obt.text); setEditing(true); }} title="Edit"><Icon name="edit" /></button>
+        )}
+      </div>
+      {editing ? (
+        <>
+          <input
+            type="text"
+            placeholder="What's your one big thing today?"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(false); }}
+            autoFocus
+            style={{ width: "100%", padding: "8px 10px", fontSize: 15, fontWeight: 600, borderRadius: 6, border: "1px solid var(--border)", background: "white" }}
+          />
+          <div className="row" style={{ marginTop: 10 }}>
+            <button className="btn" onClick={save}><Icon name="check" /> Save</button>
+            {obt && <button className="btn is-ghost is-small" onClick={() => setEditing(false)}>Cancel</button>}
+          </div>
+        </>
+      ) : obt ? (
+        <>
+          <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: "-.015em", textDecoration: obt.doneAt ? "line-through" : "none", color: obt.doneAt ? "var(--muted)" : "inherit" }}>
+            {obt.text}
+          </div>
+          <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+            {obt.doneAt
+              ? `✓ Done at ${new Date(obt.doneAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`
+              : "Saved at " + new Date(obt.setAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+          </div>
+          <div className="row" style={{ marginTop: 10 }}>
+            {!obt.doneAt && <button className="btn" onClick={markDone}><Icon name="check" /> Mark done</button>}
+            {obt.doneAt && <button className="btn is-ghost is-small" onClick={clearForNew}>Set new for today</button>}
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={{ fontSize: 14, color: "var(--muted)", fontStyle: "italic" }}>No priority set for today yet.</div>
+          <div className="row" style={{ marginTop: 10 }}>
+            <button className="btn" onClick={() => setEditing(true)}><Icon name="add" /> Set today's priority</button>
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
