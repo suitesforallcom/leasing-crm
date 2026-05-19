@@ -172,21 +172,41 @@ exports.onGmailPush = onMessagePublished(
     // Тянем delta-историю.
     let messages = [];
     try {
-      const histRes = await gmail.users.history.list({
-        userId: 'me',
-        startHistoryId: String(lastHistoryId),
-        historyTypes: ['messageAdded'],
-        labelId: 'SENT',
-        maxResults: 100,
-      });
-      const history = histRes.data.history || [];
-      const messageIds = new Set();
-      for (const h of history) {
+      // Phase 10: watch SENT + INBOX. У history.list нельзя за один вызов
+      // вытянуть оба label'а — labelId это фильтр. Делаем два параллельных
+      // запроса и объединяем дельту.
+      const [sentHist, inboxHist] = await Promise.all([
+        gmail.users.history.list({
+          userId: 'me',
+          startHistoryId: String(lastHistoryId),
+          historyTypes: ['messageAdded'],
+          labelId: 'SENT',
+          maxResults: 100,
+        }),
+        gmail.users.history.list({
+          userId: 'me',
+          startHistoryId: String(lastHistoryId),
+          historyTypes: ['messageAdded'],
+          labelId: 'INBOX',
+          maxResults: 100,
+        }),
+      ]);
+      const seen = new Map(); // id → label-hint ('SENT' | 'INBOX')
+      for (const h of (sentHist.data.history || [])) {
         for (const m of (h.messagesAdded || [])) {
-          if (m.message && m.message.id) messageIds.add(m.message.id);
+          if (m.message && m.message.id && !seen.has(m.message.id)) {
+            seen.set(m.message.id, 'SENT');
+          }
         }
       }
-      messages = Array.from(messageIds);
+      for (const h of (inboxHist.data.history || [])) {
+        for (const m of (h.messagesAdded || [])) {
+          if (m.message && m.message.id && !seen.has(m.message.id)) {
+            seen.set(m.message.id, 'INBOX');
+          }
+        }
+      }
+      messages = Array.from(seen.entries()).map(([id, labelHint]) => ({ id, labelHint }));
     } catch (e) {
       // Если startHistoryId протух (Gmail держит ~7 дней), сбрасываем
       // baseline и ждём следующего тика. Не throw — иначе Pub/Sub retry-loop.
@@ -208,19 +228,20 @@ exports.onGmailPush = onMessagePublished(
     }
 
     // Для каждого сообщения достаём только заголовки.
+    // In-Reply-To + References парсим чтобы потом склеить replies в цепочки.
     const records = [];
-    for (const mid of messages) {
+    for (const m of messages) {
       try {
         const mres = await gmail.users.messages.get({
           userId: 'me',
-          id: mid,
+          id: m.id,
           format: 'metadata',
-          metadataHeaders: ['Subject', 'From', 'To', 'Cc', 'Date', 'Message-Id'],
+          metadataHeaders: ['Subject', 'From', 'To', 'Cc', 'Date', 'Message-Id', 'In-Reply-To', 'References'],
         });
-        const rec = _extractMetadata(mres.data, userEmail);
+        const rec = _extractMetadata(mres.data, userEmail, m.labelHint);
         if (rec) records.push(rec);
       } catch (e) {
-        logger.warn('[gmail-push] messages.get failed', { userEmail, mid, error: e.message });
+        logger.warn('[gmail-push] messages.get failed', { userEmail, mid: m.id, error: e.message });
       }
     }
 
@@ -240,21 +261,36 @@ exports.onGmailPush = onMessagePublished(
 
 /**
  * Извлекает useful fields из Gmail message envelope.
- * Возвращает запись формата нашего outreach record, или null если письмо
- * не от user'а (например, форвард с другого ящика на этот SENT label).
+ * Phase 10: дополнительно определяет direction ('sent' / 'received') по
+ * labelIds или labelHint, парсит In-Reply-To header для thread-tracking.
+ *
+ * @param {Object} msg - Gmail message resource
+ * @param {string} expectedFrom - email владельца watch'а (для атрибуции)
+ * @param {string|null} labelHint - 'SENT' или 'INBOX' из history.list (fallback
+ *                                  если labelIds в message пустой)
  */
-function _extractMetadata(msg, expectedFrom) {
+function _extractMetadata(msg, expectedFrom, labelHint) {
   if (!msg || !msg.payload || !msg.payload.headers) return null;
   const headers = {};
   for (const h of msg.payload.headers) {
     if (h && h.name) headers[h.name.toLowerCase()] = h.value;
   }
+
+  // Direction: смотрим labelIds, fallback на labelHint из history.list.
+  // SENT-label однозначно → 'sent'. INBOX без SENT → 'received'.
+  // Если у одного письма есть оба (sent-to-self) — приоритет sent (так
+  // менеджер не получит credit за RECEIVED на письма самому себе).
+  const labelIds = Array.isArray(msg.labelIds) ? msg.labelIds : [];
+  const hasSent = labelIds.includes('SENT') || labelHint === 'SENT';
+  const hasInbox = labelIds.includes('INBOX') || labelHint === 'INBOX';
+  let direction;
+  if (hasSent) direction = 'sent';
+  else if (hasInbox) direction = 'received';
+  else return null; // ни SENT, ни INBOX — не интересует (drafts, trash, etc.)
+
   const fromRaw = headers['from'] || '';
   const fromEmail = _parseEmailAddress(fromRaw);
   if (!fromEmail) return null;
-  // Если From не совпадает с владельцем ящика (delegated send, alias) — всё
-  // равно записываем, потому что это его исходящее.
-  // Pulse матчит по sentBy, который мы ставим = expectedFrom (=ящик watch'а).
   const toRaw = headers['to'] || '';
   const toList = _parseEmailList(toRaw);
   const ccList = _parseEmailList(headers['cc'] || '');
@@ -267,18 +303,38 @@ function _extractMetadata(msg, expectedFrom) {
   else tsIso = new Date().toISOString();
   const messageIdHeader = headers['message-id'] || null;
 
+  // In-Reply-To: RFC822 Message-ID родительского письма. Если есть — это reply.
+  // References: список всех Message-ID'ев в треде (для надёжного матчинга
+  // когда In-Reply-To отсутствует, например forward).
+  const inReplyToRaw = headers['in-reply-to'] || '';
+  const inReplyTo = inReplyToRaw ? _normalizeMessageId(inReplyToRaw) : null;
+  const referencesRaw = headers['references'] || '';
+  const references = referencesRaw
+    ? referencesRaw.split(/\s+/).map(_normalizeMessageId).filter(Boolean)
+    : [];
+
   return {
     messageId: msg.id,                 // Gmail-side ID, уникален per-mailbox
-    messageIdHeader,                   // RFC822 Message-ID, глобально уникален
+    messageIdHeader: messageIdHeader ? _normalizeMessageId(messageIdHeader) : null,
     threadId: msg.threadId || null,
     ts: tsIso,
-    from: expectedFrom,                // sentBy = владелец watch'а (canonical)
-    fromHeader: fromEmail,             // что было в письме (может отличаться)
-    to: toList[0] || null,             // primary recipient
+    direction,                         // 'sent' | 'received'
+    owner: expectedFrom,               // ящик чьим watch'ем это попало
+    from: direction === 'sent' ? expectedFrom : fromEmail,
+    fromHeader: fromEmail,
+    to: toList[0] || null,
     allRecipients: toList.concat(ccList),
-    subject: subject.slice(0, 500),    // safety-cap
+    subject: subject.slice(0, 500),
+    inReplyTo,                         // null или Message-ID родителя
+    references,                        // массив Message-ID'ев (может пустой)
     snippet: (msg.snippet || '').slice(0, 280),
   };
+}
+
+function _normalizeMessageId(s) {
+  if (!s) return '';
+  // RFC822 Message-ID обычно <abc@host.com>. Нормализуем — убираем уголки.
+  return String(s).trim().replace(/^<|>$/g, '').toLowerCase();
 }
 
 function _parseEmailAddress(s) {
@@ -318,23 +374,33 @@ async function _persistEmailRecords(userEmail, records) {
     let matchedAdded = 0;
 
     for (const r of records) {
-      // Уже есть в state.gmailActivity?
+      // Идемпотентность через messageId — Gmail-side ID уникален per-mailbox.
       if (state.gmailActivity.some(g => g && g.messageId === r.messageId)) continue;
 
-      // Пробуем найти unit через recipient.
-      const targetUnit = _findUnitForRecipients(tenantIndex, r.allRecipients);
+      // Для INBOX-писем (direction='received') матчим SENDER против tenant —
+      // если tenant нам ответил на цепочку, событие принадлежит unit'у tenant'а.
+      // Для SENT — матчим RECIPIENT.
+      const matchKey = r.direction === 'received'
+        ? [r.fromHeader]
+        : r.allRecipients;
+      const targetUnit = _findUnitForRecipients(tenantIndex, matchKey);
 
       if (targetUnit) {
         targetUnit.outreach = Array.isArray(targetUnit.outreach) ? targetUnit.outreach : [];
         if (targetUnit.outreach.some(o => o && o.messageId === r.messageId)) continue;
         targetUnit.outreach.push({
-          type: 'email',
+          // Phase 10: direction-aware type для соответствия prototype EmailsTab.
+          type: r.direction === 'received' ? 'received' : (r.inReplyTo ? 'reply' : 'email'),
           ts: r.ts,
-          text: 'Email: ' + (r.subject || '(no subject)'),
+          text: (r.direction === 'received' ? 'Email received: ' : 'Email sent: ') + (r.subject || '(no subject)'),
           subject: r.subject,
-          sentBy: userEmail,
+          sentBy: r.from,
           recipientEmail: r.to,
+          ownerEmail: r.owner,
+          direction: r.direction,
           messageId: r.messageId,
+          messageIdHeader: r.messageIdHeader,
+          inReplyTo: r.inReplyTo,
           threadId: r.threadId,
           autoLogged: true,
           source: 'gmail-api',
@@ -343,10 +409,14 @@ async function _persistEmailRecords(userEmail, records) {
       } else {
         state.gmailActivity.push({
           messageId: r.messageId,
+          messageIdHeader: r.messageIdHeader,
           ts: r.ts,
-          from: userEmail,
+          direction: r.direction,
+          owner: r.owner,
+          from: r.from,
           to: r.to,
           subject: r.subject,
+          inReplyTo: r.inReplyTo,
           threadId: r.threadId,
           source: 'gmail-api',
         });
@@ -445,7 +515,9 @@ async function _bootstrapWatchForAllMembers() {
         userId: 'me',
         requestBody: {
           topicName,
-          labelIds: ['SENT'],
+          // Phase 10: оба label'а — SENT для исходящих, INBOX для входящих
+          // (без этого нет данных для RECEIVED/REPLIES/AVG REPLY/SLA).
+          labelIds: ['SENT', 'INBOX'],
           labelFilterBehavior: 'INCLUDE',
         },
       });

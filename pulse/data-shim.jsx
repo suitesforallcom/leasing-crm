@@ -149,6 +149,9 @@
   const recentEnvelopeEvents = [];
   const recentOutreachEvents = [];
 
+  // Hoisted out of try{} so user.map() ниже может прочитать (Phase 10).
+  const emailStatsByOwner = new Map();
+
   try {
     for (const b of buildings) {
       for (const f of (b.floors || [])) {
@@ -245,29 +248,121 @@
       }
     }
 
-    // --- Gmail-ingest unattached events (Phase 8) ---
-    // Письма, у которых recipient не нашёлся в state (не сопоставлен с
-    // tenant unit) — CF gmail-ingest.onGmailPush сохраняет их в
-    // state.gmailActivity[]. Считаем их в emailsMtd по отправителю,
-    // чтобы counter не терял реальные исходящие.
+    // --- Gmail-ingest aggregation (Phase 10) ---
+    // Собираем ВСЕ email-events (и attached → u.outreach, и unattached →
+    // state.gmailActivity) в единый список — чтобы потом построить thread
+    // index и резолвить In-Reply-To через obe source'а.
+    const allEmailEntries = [];
+    for (const b of buildings) {
+      for (const f of (b.floors || [])) {
+        for (const u of (f.units || [])) {
+          for (const o of (u.outreach || [])) {
+            if (o.source !== 'gmail-api' || !o.messageId) continue;
+            allEmailEntries.push({
+              ts: new Date(o.ts || 0).getTime(),
+              messageId: o.messageId,
+              messageIdHeader: (o.messageIdHeader || '').toLowerCase(),
+              direction: o.direction || (o.type === 'received' ? 'received' : 'sent'),
+              owner: (o.ownerEmail || o.sentBy || '').toLowerCase(),
+              from: (o.sentBy || '').toLowerCase(),
+              to: o.recipientEmail || null,
+              subject: o.subject || '',
+              inReplyTo: (o.inReplyTo || '').toLowerCase(),
+              threadId: o.threadId || null,
+              unitId: u.id || null,
+            });
+          }
+        }
+      }
+    }
     const gmailActivity = (st && Array.isArray(st.gmailActivity)) ? st.gmailActivity : [];
     for (const g of gmailActivity) {
-      if (!g || !g.from) continue;
-      const stat = bucket(g.from);
-      const ts = new Date(g.ts || 0).getTime();
+      if (!g || !g.messageId) continue;
+      allEmailEntries.push({
+        ts: new Date(g.ts || 0).getTime(),
+        messageId: g.messageId,
+        messageIdHeader: (g.messageIdHeader || '').toLowerCase(),
+        direction: g.direction || 'sent',
+        owner: (g.owner || g.from || '').toLowerCase(),
+        from: (g.from || '').toLowerCase(),
+        to: g.to || null,
+        subject: g.subject || '',
+        inReplyTo: (g.inReplyTo || '').toLowerCase(),
+        threadId: g.threadId || null,
+        unitId: null,
+      });
+    }
+
+    // Build thread index by messageIdHeader для резолва In-Reply-To.
+    const threadIndex = new Map();
+    for (const e of allEmailEntries) {
+      if (e.messageIdHeader) threadIndex.set(e.messageIdHeader, e);
+    }
+
+    // Per-owner thread stats. owner = email менеджера чьим watch'ем
+    // событие попало; в outreach получаем через ownerEmail/sentBy fallback.
+    // (emailStatsByOwner declared at outer scope above для user.map().)
+    function emailStatBucket(email) {
+      const e = (email || '').toLowerCase();
+      if (!e) return null;
+      if (!emailStatsByOwner.has(e)) emailStatsByOwner.set(e, {
+        sentMtd: 0,
+        receivedMtd: 0,
+        repliesMtd: 0,
+        replyTimesMs: [],
+      });
+      return emailStatsByOwner.get(e);
+    }
+
+    for (const e of allEmailEntries) {
+      const stat = emailStatBucket(e.owner);
       if (!stat) continue;
-      if (ts >= monthStartMs) {
-        stat.emailsMtd++;
-        stat.actionsMtd++;
+      const inMtd = e.ts >= monthStartMs;
+
+      if (e.direction === 'sent') {
+        if (inMtd) stat.sentMtd++;
+
+        // Reply: есть In-Reply-To и парент это полученное письмо.
+        if (e.inReplyTo) {
+          const parent = threadIndex.get(e.inReplyTo);
+          if (parent && parent.direction === 'received' && parent.ts > 0 && parent.ts < e.ts) {
+            if (inMtd) stat.repliesMtd++;
+            const deltaMs = e.ts - parent.ts;
+            // Sanity cap: ответы дольше 30 дней не учитываем (это уже
+            // не reply а новая переписка).
+            if (deltaMs > 0 && deltaMs < 30 * 24 * 60 * 60 * 1000 && inMtd) {
+              stat.replyTimesMs.push(deltaMs);
+            }
+          }
+        }
+
+        // Также делаем legacy `bucket()` инкремент чтобы emailsMtd считался
+        // (он же используется и для не-Gmail outreach типа manual emails).
+        const ownerStat = bucket(e.owner);
+        if (ownerStat && inMtd) {
+          ownerStat.emailsMtd++;
+          ownerStat.actionsMtd++;
+          if (e.ts > ownerStat.lastActivityMs) ownerStat.lastActivityMs = e.ts;
+        }
+      } else if (e.direction === 'received') {
+        if (inMtd) stat.receivedMtd++;
+        // RECEIVED не идёт в emailsMtd/actionsMtd — это входящее, не действие.
       }
-      if (ts > stat.lastActivityMs) stat.lastActivityMs = ts;
-      if (ts >= last24Ms) {
+
+      // Recent events (last 24h) для timeline / live feed.
+      if (e.ts >= last24Ms) {
         recentOutreachEvents.push({
-          ts: ts, sentBy: (g.from || '').toLowerCase(),
-          cat: 'email', type: 'email',
-          desc: 'Email: ' + ((g.subject || '(no subject)')).slice(0, 130),
-          ent: { kind: 'contact', name: g.to || '(external)', id: g.messageId || '' },
-          status: 'ok', source: 'gmail',
+          ts: e.ts,
+          sentBy: e.owner,
+          cat: 'email',
+          type: e.direction === 'received'
+            ? 'received'
+            : (e.inReplyTo && threadIndex.get(e.inReplyTo)?.direction === 'received' ? 'reply' : 'sent'),
+          desc: (e.direction === 'received' ? 'Email from ' + (e.from || '?') + ': ' : 'Email to ' + (e.to || '?') + ': ')
+                + (e.subject || '(no subject)').slice(0, 110),
+          ent: { kind: 'contact', name: (e.direction === 'received' ? e.from : e.to) || '(external)', id: e.messageId },
+          status: 'ok',
+          source: 'gmail',
         });
       }
     }
@@ -308,6 +403,16 @@
       const realPayments  = realStats.paymentsMtd;
       const realActions   = realStats.actionsMtd;
       const hasAnyActivity = realActions > 0;
+
+      // Phase 10 — Gmail thread stats per employee.
+      // emailStatsByOwner buckets by owner email = ящик чьего watch'а событие.
+      const realEmailStat = emailStatsByOwner.get(emailLower) || {
+        sentMtd: 0, receivedMtd: 0, repliesMtd: 0, replyTimesMs: [],
+      };
+      const realAvgReplyMs = realEmailStat.replyTimesMs.length
+        ? realEmailStat.replyTimesMs.reduce((a, b) => a + b, 0) / realEmailStat.replyTimesMs.length
+        : 0;
+      const realAvgReplyMin = realAvgReplyMs ? Math.round(realAvgReplyMs / 60000) : 0;
 
       // Score = simple weighted hit-rate (0..100). Each metric capped so a
       // single huge category can't drag the score artificially. Weights:
@@ -362,6 +467,12 @@
         prev: prev,
         unusual: realActions === 0 && status !== 'offline',
         center: (window.DATA.CENTERS || []).find(function (c) { return c.id === centerId; }),
+        // Phase 10 — Gmail thread-stats (used by EmailsTab + metrics override)
+        emailsSent: realEmailStat.sentMtd,
+        emailsReceived: realEmailStat.receivedMtd,
+        emailsReplies: realEmailStat.repliesMtd,
+        emailReplyMinAvg: realAvgReplyMin,
+        _emailReplyTimesMs: realEmailStat.replyTimesMs,
         _empId: emp.id,
         _hireDate: emp.hireDate || null,
         _workspaceMemberUid: emp.workspaceMemberUid || null,
@@ -392,6 +503,9 @@
         cat: e.cat, type: e.type, desc: e.desc, ent: e.ent,
         status: e.status, source: e.source,
         user: u || null,
+        // Phase 10 — добавляем userId чтобы employee-detail.jsx фильтр
+        // `events.filter(e => e.userId === u.id)` работал.
+        userId: u ? u.id : null,
       };
     });
 

@@ -76,8 +76,24 @@ const BONUS_TIERS = [
 /* Compute everything for a user */
 function computeMetricsFor(user) {
   const t = TARGETS_BY_ROLE[user.role];
-  const r = RESPONSE_ACTUALS[user.id];
-  const mtd = MTD[user.id];
+  // Phase 10 — real numbers override the hardcoded RESPONSE_ACTUALS / MTD mocks
+  // when user has real Gmail-tracked activity (emailReplyMinAvg > 0 or
+  // emailsSent > 0 = data-shim populated us). Falls back to mocks for the
+  // u1..u12 seed records so the prototype page still demoes.
+  const rMock = RESPONSE_ACTUALS[user.id] || { emailReplyMin: 0, callPickupSec: 0, missedCalls: 0, callsExpected: 0 };
+  const hasRealEmailStats = (user.emailsSent || 0) > 0 || (user.emailsReceived || 0) > 0 || (user.emailsReplies || 0) > 0;
+  const r = hasRealEmailStats
+    ? {
+        emailReplyMin: user.emailReplyMinAvg || rMock.emailReplyMin,
+        callPickupSec: rMock.callPickupSec,
+        missedCalls: rMock.missedCalls,
+        callsExpected: rMock.callsExpected,
+      }
+    : rMock;
+  const mtdMock = MTD[user.id] || { calls: 0, emails: 0, contracts: 0, daysWorked: 0, daysExpected: 1 };
+  const mtd = hasRealEmailStats
+    ? { ...mtdMock, emails: user.emailsSent || mtdMock.emails }
+    : mtdMock;
 
   const hoursToday = user.online / 60;
   const offline = user.status === "offline";
