@@ -287,4 +287,51 @@ function App() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+/* Error boundary — prevents blank-page-on-crash. Wraps App so any
+   uncaught render error shows a readable message + recovery buttons
+   instead of a totally empty viewport (operator can no longer tell
+   whether the page is broken or still loading). */
+class PulseErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null, info: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) {
+    this.setState({ info });
+    try { console.error('[pulse] uncaught render error:', error, info); } catch {}
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    const msg = String(this.state.error?.message || this.state.error || 'Unknown error');
+    const stack = String(this.state.error?.stack || '').split('\n').slice(0, 5).join('\n');
+    return (
+      <div style={{ display: 'flex', minHeight: '100vh', alignItems: 'center', justifyContent: 'center', padding: 24, fontFamily: 'Manrope, -apple-system, sans-serif' }}>
+        <div style={{ maxWidth: 560, background: 'white', border: '1px solid #e2e8f0', borderRadius: 14, padding: 24, boxShadow: '0 10px 40px rgba(0,0,0,0.08)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, color: '#dc2626' }}>
+            <span style={{ fontSize: 22 }}>⚠</span>
+            <h2 style={{ margin: 0, fontSize: 18 }}>Something broke while rendering Pulse</h2>
+          </div>
+          <div style={{ fontSize: 13, color: '#475569', marginBottom: 12 }}>
+            The page caught an error before it could mount. Your data is safe — the floor-map app and Firestore aren't affected.
+          </div>
+          <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: 10, fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: '#0f172a', marginBottom: 16, whiteSpace: 'pre-wrap', overflowX: 'auto' }}>
+            <strong>{msg}</strong>
+            {stack && <div style={{ marginTop: 6, fontSize: 11, color: '#64748b' }}>{stack}</div>}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={() => { this.setState({ error: null, info: null }); }} style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid #e2e8f0', background: 'white', cursor: 'pointer', fontWeight: 600 }}>Try again</button>
+            <button onClick={() => { localStorage.removeItem('pulse_compare_picked'); location.reload(); }} style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid #e2e8f0', background: 'white', cursor: 'pointer' }}>Reset filters & reload</button>
+            <button onClick={() => { location.href = '/floor-map-editor.html'; }} style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid #e2e8f0', background: 'white', cursor: 'pointer' }}>Back to Floor map</button>
+          </div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 12 }}>
+            If this keeps happening, copy the error text above and share it with the operator.
+          </div>
+        </div>
+      </div>
+    );
+  }
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(
+  <PulseErrorBoundary>
+    <App />
+  </PulseErrorBoundary>
+);
