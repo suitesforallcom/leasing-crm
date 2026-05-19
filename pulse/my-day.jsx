@@ -13,9 +13,9 @@ window.MyDayPage = function MyDayPage({ meId = "u1", onOpenEmployee, onOpenQuick
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
 
   /* Streak — Atomic Habits "don't break the chain"
-     Phase 12 — hardcoded 14 stays for demo seed; for real users we don't
-     have daily-snapshot infrastructure yet (Phase 15) so show 0. */
-  const streak = me._isReal ? 0 : 14;
+     Phase 15 — real users use me.streak computed from dailyHistory snapshots.
+     Demo seed keeps hardcoded 14 for prototype richness. */
+  const streak = me._isReal ? (me.streak || 0) : 14;
 
   /* Level + XP — mastery loop.
      Phase 12 — for real users derive from real score (~10 XP per score
@@ -106,23 +106,33 @@ window.MyDayPage = function MyDayPage({ meId = "u1", onOpenEmployee, onOpenQuick
     { label: "Hours",     now: 38, prev: 36,  icon: "clock", suffix: "h", hint: "Demo data — seed user from prototype." },
   ];
 
-  /* Personal records */
-  const records = [
+  /* Personal records — Phase 15 — real for _isReal users, mock for demo seed.
+     Real values come from daily snapshots; show «—» until first snapshot. */
+  const records = me._isReal && me.records ? [
+    { icon: "phone",    label: "Most calls in a day",        value: "—", when: "calls not tracked" },
+    { icon: "mail",     label: "Most emails in a day",       value: me.records.mostEmails || "—",    when: me.records.mostEmailsWhen || "no data yet" },
+    { icon: "contract", label: "Most contracts in a day",    value: me.records.mostContracts || "—", when: me.records.mostContractsWhen || "no data yet" },
+    { icon: "bolt",     label: "Highest day score",          value: me.records.highestScore || "—",  when: me.records.highestScoreWhen || "no data yet" },
+  ] : [
     { icon: "phone",    label: "Most calls in a day",        value: 24, when: "May 8" },
     { icon: "mail",     label: "Most emails in a day",       value: 47, when: "May 12" },
     { icon: "contract", label: "Most contracts in a week",   value: 9,  when: "Last week", isNew: true },
     { icon: "bolt",     label: "Highest day score",          value: 96, when: "May 5" },
   ];
 
-  /* Achievements */
-  const achievements = [
-    { id: "first-bonus", title: "First Bonus",     desc: "Earned your first monthly bonus",      icon: "star",      earned: true,  rarity: "common" },
-    { id: "speedster",   title: "Speed Demon",     desc: "Email replies under 30m for a week",   icon: "zap",       earned: true,  rarity: "rare" },
-    { id: "early-bird",  title: "Early Bird",      desc: "Logged in before 8 AM x10",            icon: "login",     earned: true,  rarity: "common" },
-    { id: "contract-k",  title: "Contract King",   desc: "50 contracts in a single month",       icon: "contract",  earned: false, rarity: "epic",      progress: m.mtd.contracts, target: 50 },
-    { id: "streaker",    title: "30-Day Streak",   desc: "Hit targets 30 days in a row",         icon: "bolt",      earned: false, rarity: "legendary", progress: streak, target: 30 },
-    { id: "team-mvp",    title: "Team MVP",        desc: "Top of the leaderboard for a week",    icon: "star",      earned: false, rarity: "rare",      progress: 4, target: 7 },
-  ];
+  /* Achievements — Phase 16 — derived purely from real metrics for _isReal users.
+     No separate engine state: each achievement is a function (user, metrics, records)
+     → { earned, progress, target }. Computed on every render. Cheap and stateless. */
+  const achievements = me._isReal
+    ? _computeAchievements(me, m, streak)
+    : [
+        { id: "first-bonus", title: "First Bonus",     desc: "Earned your first monthly bonus",      icon: "star",      earned: true,  rarity: "common" },
+        { id: "speedster",   title: "Speed Demon",     desc: "Email replies under 30m for a week",   icon: "zap",       earned: true,  rarity: "rare" },
+        { id: "early-bird",  title: "Early Bird",      desc: "Logged in before 8 AM x10",            icon: "login",     earned: true,  rarity: "common" },
+        { id: "contract-k",  title: "Contract King",   desc: "50 contracts in a single month",       icon: "contract",  earned: false, rarity: "epic",      progress: m.mtd.contracts, target: 50 },
+        { id: "streaker",    title: "30-Day Streak",   desc: "Hit targets 30 days in a row",         icon: "bolt",      earned: false, rarity: "legendary", progress: streak, target: 30 },
+        { id: "team-mvp",    title: "Team MVP",        desc: "Top of the leaderboard for a week",    icon: "star",      earned: false, rarity: "rare",      progress: 4, target: 7 },
+      ];
   const earnedCount = achievements.filter(a => a.earned).length;
 
   /* Friendly leaderboard — show me + 2 above + 2 below in my center */
@@ -776,6 +786,51 @@ function fmtHour(h) {
   const ampm = hr >= 12 ? "PM" : "AM";
   const disp = hr % 12 || 12;
   return `${disp}:${String(min).padStart(2, "0")} ${ampm}`;
+}
+
+/* Phase 16 — Achievement rules. Each rule is a pure function of
+   (user, metrics, streak) that returns earned + progress + target.
+   No separate engine state — re-computed each render. */
+function _computeAchievements(u, m, streak) {
+  const rec = u.records || {};
+  return [
+    {
+      id: "first-contract", title: "First Contract", icon: "contract", rarity: "common",
+      desc: "Send your first lease envelope",
+      earned: (u.contracts || 0) >= 1,
+      progress: u.contracts || 0, target: 1,
+    },
+    {
+      id: "speedster", title: "Speed Demon", icon: "zap", rarity: "rare",
+      desc: "Average email reply under 30m",
+      earned: (u.emailReplyMinAvg || 0) > 0 && u.emailReplyMinAvg <= 30,
+      progress: u.emailReplyMinAvg > 0 ? Math.max(0, 60 - u.emailReplyMinAvg) : 0, target: 30,
+    },
+    {
+      id: "email-blitz", title: "Email Blitz", icon: "mail", rarity: "common",
+      desc: "Send 50+ emails in a single day",
+      earned: (rec.mostEmails || 0) >= 50,
+      progress: rec.mostEmails || 0, target: 50,
+    },
+    {
+      id: "contract-k", title: "Contract King", icon: "contract", rarity: "epic",
+      desc: "50 contracts in a single month",
+      earned: (m.mtd.contracts || 0) >= 50,
+      progress: m.mtd.contracts || 0, target: 50,
+    },
+    {
+      id: "streaker", title: "30-Day Streak", icon: "bolt", rarity: "legendary",
+      desc: "Hit targets 30 days in a row",
+      earned: (streak || 0) >= 30,
+      progress: streak || 0, target: 30,
+    },
+    {
+      id: "score-master", title: "Perfect Day", icon: "star", rarity: "rare",
+      desc: "Hit 100 score on any day",
+      earned: (rec.highestScore || 0) >= 100,
+      progress: rec.highestScore || 0, target: 100,
+    },
+  ];
 }
 
 /* ============================================================================

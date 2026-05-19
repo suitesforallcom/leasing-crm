@@ -183,6 +183,53 @@
   // { lastActivityAt, firstLoginToday, userAgent, device }.
   const sessionsByUid = (st && typeof st.sessions === 'object' && st.sessions) ? st.sessions : {};
 
+  // Phase 15 — daily history { email → [snapshots] } written by
+  // runDailySnapshot CF. Drives real streak + records.
+  const dailyHistoryByEmail = (st && typeof st.dailyHistory === 'object' && st.dailyHistory) ? st.dailyHistory : {};
+
+  // Phase 14 — calendar events { email → [today's events] } written by
+  // refreshCalendarEvents CF (polled every 5min). Drives MyDay Schedule.
+  const calendarEventsByEmail = (st && typeof st.calendarEvents === 'object' && st.calendarEvents) ? st.calendarEvents : {};
+  function _streakFromHistory(email) {
+    const arr = dailyHistoryByEmail[email];
+    if (!Array.isArray(arr) || arr.length === 0) return 0;
+    // Sort desc by date
+    const sorted = arr.slice().sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    let streak = 0;
+    let expected = new Date();
+    expected.setHours(0, 0, 0, 0);
+    // If most recent is today AND targetHit → start counting. Otherwise
+    // check yesterday backward.
+    const todayStr = expected.toISOString().slice(0, 10);
+    if (sorted[0].date !== todayStr) {
+      // Move expected to yesterday — streak counts from completed days
+      expected = new Date(expected.getTime() - 24 * 3600 * 1000);
+    }
+    for (const snap of sorted) {
+      const expectedStr = expected.toISOString().slice(0, 10);
+      if (snap.date !== expectedStr) break;
+      if (!snap.targetHit) break;
+      streak++;
+      expected = new Date(expected.getTime() - 24 * 3600 * 1000);
+    }
+    return streak;
+  }
+  function _recordsFromHistory(email) {
+    const arr = dailyHistoryByEmail[email];
+    if (!Array.isArray(arr) || arr.length === 0) {
+      return { mostEmails: 0, mostContracts: 0, highestScore: 0, mostEmailsWhen: '', mostContractsWhen: '', highestScoreWhen: '' };
+    }
+    let mostEmails = 0, mostEmailsWhen = '';
+    let mostContracts = 0, mostContractsWhen = '';
+    let highestScore = 0, highestScoreWhen = '';
+    for (const s of arr) {
+      if ((s.sentEmails || 0) > mostEmails) { mostEmails = s.sentEmails; mostEmailsWhen = s.date; }
+      if ((s.contracts || 0) > mostContracts) { mostContracts = s.contracts; mostContractsWhen = s.date; }
+      if ((s.score || 0) > highestScore) { highestScore = s.score; highestScoreWhen = s.date; }
+    }
+    return { mostEmails, mostContracts, highestScore, mostEmailsWhen, mostContractsWhen, highestScoreWhen };
+  }
+
   // Phase 11d — tenant email → unit lookup. Used by EmailsTab to tag
   // each row as «Tenant · Suite N» (with unit link) vs «New contact».
   // Source: u.email + u.tenant/company on occupied units.
@@ -598,6 +645,11 @@
         // hardcoded 6320/Level 6.
         xpToday: realScore * 10, // 0..1000 per day
         level: Math.max(1, Math.floor((realScore * 10) / 100)),
+        // Phase 15 — real streak + records computed from daily snapshots.
+        streak: _streakFromHistory(emailLower),
+        records: _recordsFromHistory(emailLower),
+        // Phase 14 — today's calendar events from Google Calendar API
+        calendarEvents: calendarEventsByEmail[emailLower] || [],
         _empId: emp.id,
         _hireDate: emp.hireDate || null,
         _workspaceMemberUid: emp.workspaceMemberUid || null,

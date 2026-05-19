@@ -6094,3 +6094,15 @@ exports.bootstrapGmailWatch     = _gmail.bootstrapGmailWatch;
 exports.adminBootstrapGmailWatch = _gmail.adminBootstrapGmailWatch;
 exports.adminStopGmailWatch     = _gmail.adminStopGmailWatch;
 
+// Phase 15 — daily snapshots for streak + records.
+const _snap = require('./daily-snapshots');
+exports.runDailySnapshot = _snap.runDailySnapshot;
+exports.adminRunSnapshot = _snap.adminRunSnapshot;
+
+// Phase 14 — Google Calendar polling. Requires operator to add
+// `https://www.googleapis.com/auth/calendar.events.readonly` scope to
+// the existing Domain-Wide Delegation entry in Workspace Admin Console.
+const _cal = require('./calendar-ingest');
+exports.refreshCalendarEvents = _cal.refreshCalendarEvents;
+exports.adminRefreshCalendar  = _cal.adminRefreshCalendar;
+
