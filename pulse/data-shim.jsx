@@ -77,6 +77,13 @@
     return;
   }
 
+  // Phase 11a — keep DEMO seed users/centers from data.jsx, APPEND real ones
+  // (instead of replacing). Operator wants both: demo for UI richness +
+  // real workspace people with real Phase 10 numbers. Real IDs prefixed
+  // ('r' for users, 'rc' for centers) to avoid collision with seed u1..u12.
+  const _seedUsers   = (Array.isArray(window.DATA.USERS)   ? window.DATA.USERS   : []).slice();
+  const _seedCenters = (Array.isArray(window.DATA.CENTERS) ? window.DATA.CENTERS : []).slice();
+
   // ---------- Map state.buildings → DATA.CENTERS ----------
   const buildings = Array.isArray(st.buildings) ? st.buildings : [];
   const palette = [
@@ -85,7 +92,7 @@
     'oklch(62% 0.14 200)', 'oklch(62% 0.14 130)',
   ];
   if (buildings.length) {
-    window.DATA.CENTERS = buildings.map(function (b, i) {
+    const realCenters = buildings.map(function (b, i) {
       // Count floors+units for "properties" stat
       let propCount = 0;
       try {
@@ -94,7 +101,7 @@
         });
       } catch {}
       return {
-        id: 'c' + (i + 1),
+        id: 'rc' + (i + 1), // Phase 11a — 'rc' prefix to not collide with seed c1..c4
         name: b.name || b.id || ('Building ' + (i + 1)),
         short: ((b.name || b.id || '').slice(0, 3).toUpperCase()) || ('B' + (i + 1)),
         address: b.address || '',
@@ -102,8 +109,10 @@
         color: palette[i % palette.length],
         headcount: 0,
         _bId: b.id,
+        _isReal: true,
       };
     });
+    window.DATA.CENTERS = _seedCenters.concat(realCenters);
     // Also rebuild CENTER_BY_ID for prototype consumers
     window.DATA.CENTER_BY_ID = Object.fromEntries(window.DATA.CENTERS.map(function (c) { return [c.id, c]; }));
   }
@@ -373,13 +382,23 @@
   const LOCS    = ['Office', 'Office', 'Office', 'Remote', 'On-site'];
   const usersByEmail = new Map();   // emp.email.lower → DATA.USERS[i]
 
+  // Phase 11a — prefer real center for real employees so leaderboard
+  // grouping makes sense (real building, not demo c1). Fall back to first
+  // available center if no real one exists.
+  const _realCenterId = (function () {
+    const real = (window.DATA.CENTERS || []).find(function (c) { return c && c._isReal; });
+    if (real) return real.id;
+    if (window.DATA.CENTERS && window.DATA.CENTERS[0]) return window.DATA.CENTERS[0].id;
+    return 'c1';
+  })();
+
   if (active.length) {
-    window.DATA.USERS = active.map(function (emp, i) {
+    const realUsers = active.map(function (emp, i) {
       const seed = hashStr(emp.id || emp.fullName || 'x' + i);
       const first = namePart(emp.fullName, 0);
       const last  = namePart(emp.fullName, 1);
       const role = classifyRole(emp.role);
-      const centerId = (window.DATA.CENTERS && window.DATA.CENTERS[0]) ? window.DATA.CENTERS[0].id : 'c1';
+      const centerId = _realCenterId;
       const onlineMin = 240 + (seed % 280);
       const loginMin  = 480 + (seed % 90);
       const statusPick = seed % 10;
@@ -440,10 +459,11 @@
       const scoreFinal = hasAnyActivity ? realScore : score;
 
       const u = {
-        id: 'u' + (i + 1),
+        id: 'r' + (i + 1), // Phase 11a — 'r' prefix to not collide with seed u1..u12
         first: first,
         last: last,
         name: emp.fullName || (first + ' ' + last).trim() || ('Employee ' + (i + 1)),
+        _isReal: true,
         initials: ((first[0] || '?') + (last[0] || '')).toUpperCase(),
         role: role,
         centerId: centerId,
@@ -483,8 +503,10 @@
       return u;
     });
 
-    // Update center headcount (we have no per-emp center assignment yet — all
-    // employees land on c1 for now; this matches how floor-map treats them).
+    // Phase 11a — append real employees AFTER demo seed (don't replace).
+    window.DATA.USERS = _seedUsers.concat(realUsers);
+
+    // Update center headcount across BOTH seed + real users.
     (window.DATA.CENTERS || []).forEach(function (c) {
       c.headcount = window.DATA.USERS.filter(function (u) { return u.centerId === c.id; }).length;
     });
