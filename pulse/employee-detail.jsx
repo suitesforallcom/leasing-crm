@@ -54,7 +54,7 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
                 <CenterChip center={u.center} />
               </div>
               <div className="muted" style={{ marginTop: 4, fontSize: 13, display: "flex", gap: 12, flexWrap: "wrap" }}>
-                <span><Icon name="mail" style={{ width: 12, height: 12, verticalAlign: "-2px", marginRight: 4 }} />{u.first.toLowerCase()}.{u.last.toLowerCase().replace(/[^a-z]/g, "")}@crestview.co</span>
+                <span><Icon name="mail" style={{ width: 12, height: 12, verticalAlign: "-2px", marginRight: 4 }} />{u.email || (u.first.toLowerCase() + "." + u.last.toLowerCase().replace(/[^a-z]/g, "") + "@crestview.co")}</span>
                 <span><Icon name="ipin" style={{ width: 12, height: 12, verticalAlign: "-2px", marginRight: 4 }} />{u.loc}</span>
                 <span><Icon name="laptop" style={{ width: 12, height: 12, verticalAlign: "-2px", marginRight: 4 }} />{u.device}</span>
               </div>
