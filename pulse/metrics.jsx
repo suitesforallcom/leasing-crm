@@ -75,7 +75,10 @@ const BONUS_TIERS = [
 
 /* Compute everything for a user */
 function computeMetricsFor(user) {
-  const t = TARGETS_BY_ROLE[user.role];
+  // Defensive fallback for unknown roles (real users may carry role
+  // strings that classifyRole didn't normalize, or future role types).
+  // Without this, OverviewPage map throws on the first unknown role.
+  const t = TARGETS_BY_ROLE[user.role] || TARGETS_BY_ROLE.agent;
   // Phase 10 — real numbers override the hardcoded RESPONSE_ACTUALS / MTD mocks
   // when user has real Gmail-tracked activity (emailReplyMinAvg > 0 or
   // emailsSent > 0 = data-shim populated us). Falls back to mocks for the
