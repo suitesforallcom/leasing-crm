@@ -144,7 +144,11 @@ exports.onGmailPush = onMessagePublished(
     // считать дельту).
     const watchRef = db.doc(`workspaces/${WORKSPACE_ID}/gmailWatch/${encodeURIComponent(userEmail)}`);
     const watchSnap = await watchRef.get();
-    const lastHistoryId = watchSnap.exists ? (watchSnap.data() || {}).lastHistoryId : null;
+    // Fallback на `historyId` для записей, созданных bootstrap'ом до того,
+    // как мы переименовали поле в `lastHistoryId`. Без fallback'а первый push
+    // после bootstrap-а трактовался бы как baseline и письмо терялось.
+    const watchData = watchSnap.exists ? (watchSnap.data() || {}) : {};
+    const lastHistoryId = watchData.lastHistoryId || watchData.historyId || null;
 
     if (!lastHistoryId) {
       await watchRef.set({
@@ -446,9 +450,14 @@ async function _bootstrapWatchForAllMembers() {
         },
       });
       const watchRef = db.doc(`workspaces/${WORKSPACE_ID}/gmailWatch/${encodeURIComponent(email)}`);
+      const watchHistoryId = res.data.historyId ? String(res.data.historyId) : null;
       await watchRef.set({
         email,
-        historyId: res.data.historyId ? String(res.data.historyId) : null,
+        // Сохраняем оба имени поля. `lastHistoryId` — каноническое имя,
+        // которое использует onGmailPush для cursor advance. `historyId`
+        // оставлен для обратной совместимости со старыми watch-документами.
+        lastHistoryId: watchHistoryId,
+        historyId: watchHistoryId,
         expiration: res.data.expiration ? Number(res.data.expiration) : null,
         lastWatchAt: admin.firestore.FieldValue.serverTimestamp(),
       }, { merge: true });
