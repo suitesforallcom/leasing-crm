@@ -53,10 +53,18 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
                 <BonusBadge tier={m.tier} amount={m.bonusMtd} />
                 <CenterChip center={u.center} />
               </div>
-              <div className="muted" style={{ marginTop: 4, fontSize: 13, display: "flex", gap: 12, flexWrap: "wrap" }}>
+              <div className="muted" style={{ marginTop: 4, fontSize: 13, display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
                 <span><Icon name="mail" style={{ width: 12, height: 12, verticalAlign: "-2px", marginRight: 4 }} />{u.email || (u.first.toLowerCase() + "." + u.last.toLowerCase().replace(/[^a-z]/g, "") + "@crestview.co")}</span>
-                <span><Icon name="ipin" style={{ width: 12, height: 12, verticalAlign: "-2px", marginRight: 4 }} />{u.loc}</span>
-                <span><Icon name="laptop" style={{ width: 12, height: 12, verticalAlign: "-2px", marginRight: 4 }} />{u.device}</span>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                  <Icon name="ipin" style={{ width: 12, height: 12, verticalAlign: "-2px" }} />
+                  {u.loc}
+                  {u._isReal && <HelpHint>Локация (Office / Remote / On-site). Сейчас mock — нет реального tracking'а. Реальная детекция требовала бы geo/IP-base или явного ввода.</HelpHint>}
+                </span>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                  <Icon name="laptop" style={{ width: 12, height: 12, verticalAlign: "-2px" }} />
+                  {u.device}
+                  {u._isReal && <HelpHint>Устройство (Dell XPS · Edge / MacBook · Chrome / etc.). Сейчас mock — рандомно выбирается из 5 вариантов на основе hash имени. Реальное browser-detection через User-Agent потребует отдельной работы.</HelpHint>}
+                </span>
               </div>
             </div>
           </div>
@@ -123,16 +131,41 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
           </div>
         </div>
 
-        {/* Compact stats strip */}
+        {/* Compact stats strip.
+            Phase 11d — hint on each tile explains data source + flags mock
+            for real users without integration. Operator can hover any «?»
+            to understand what the number is and why. */}
         <div className="emp-stats">
-          <Stat icon="login"    label="First login"     value={u.login || "—"}                  sub="on time" />
-          <Stat icon="logout"   label="Last activity"   value={u.logout || (u.status === "offline" ? "—" : "now")} sub={u.status === "online" ? "active" : ""} />
-          <Stat icon="zap"      label="Actions today"   value={u.actions}                       trend={<Trend now={u.actions} prev={Math.round(u.actions * .92)} />} />
-          <Stat icon="phone"    label="Calls"           value={u.calls + "/" + m.targets.calls} sub={`pickup ${m.actuals.callPickupSec}s · ${m.actuals.missedCalls} missed`} />
-          <Stat icon="mail"     label="Emails"          value={u.emails + "/" + m.targets.emails} sub={u.emails > 0 ? `avg reply ${m.actuals.emailReplyMin}m` : ""} />
-          <Stat icon="contract" label="Contracts"       value={u.contracts + (m.targets.contracts > 0 ? "/" + m.targets.contracts : "")} sub={u.contracts > 0 ? "2 signed" : ""} />
-          <Stat icon="star"     label="Productivity"    value={u.score === 0 ? "—" : u.score}   trend={u.score > 0 ? <Trend now={u.score} prev={u.prev} suffix=" / 30d" /> : null} onClick={u.score > 0 ? () => window.openScoreExplainer(u) : null} />
-          <Stat icon="signal"   label="Status"          value={m.status.label}                 sub={""} />
+          <Stat icon="login"    label="First login"     value={u.login || "—"}                  sub="on time"
+            hint={u._isReal
+              ? "Время первого входа в систему сегодня. Сейчас MOCK — нет реального login-tracking'а (Phase 12 TODO)."
+              : "Время первого входа (демо-сотрудник, mock-данные из data.jsx)."} />
+          <Stat icon="logout"   label="Last activity"   value={u.logout || (u.status === "offline" ? "—" : "now")} sub={u.status === "online" ? "active" : ""}
+            hint={u._isReal
+              ? "Последняя активность в системе. Сейчас MOCK — нужен activity-tracking (клики/просмотры страниц)."
+              : "Время выхода или 'now' если online (демо)."} />
+          <Stat icon="zap"      label="Actions today"   value={u.actions}                       trend={<Trend now={u.actions} prev={Math.round(u.actions * .92)} />}
+            hint={u._isReal
+              ? "Сумма всех действий сегодня: emails sent + calls + contracts + invoices + payments + notes. Реально считается через outreach/envelopes; если 0 — mock fallback включается."
+              : "Сумма действий за день (демо-mock)."} />
+          <Stat icon="phone"    label="Calls"           value={u.calls + "/" + m.targets.calls} sub={`pickup ${m.actuals.callPickupSec}s · ${m.actuals.missedCalls} missed`}
+            hint={u._isReal
+              ? "Звонки за день / role-target. MOCK — телефония не подключена (Twilio/RingCentral webhook нужен)."
+              : "Звонки / target из mock-данных."} />
+          <Stat icon="mail"     label="Emails"          value={u.emails + "/" + m.targets.emails} sub={u.emails > 0 ? `avg reply ${m.actuals.emailReplyMin}m` : ""}
+            hint={u._isReal
+              ? "Письма (всего за день, реально SENT) / role-target. Если у тебя нет реальной активности SENT — показывается MOCK fallback. Когда отправишь письмо из Gmail — счётчик начнёт расти через ~30 сек."
+              : "Письма / target (демо-mock)."} />
+          <Stat icon="contract" label="Contracts"       value={u.contracts + (m.targets.contracts > 0 ? "/" + m.targets.contracts : "")} sub={u.contracts > 0 ? "2 signed" : ""}
+            hint={u._isReal
+              ? "Lease-контракты отправленные через DocuSign за месяц / role-target. РЕАЛЬНЫЕ данные из u.leaseEnvelopes (если 0 — значит ты ничего не отправлял в этом месяце)."
+              : "Контракты / target (демо-mock)."} />
+          <Stat icon="star"     label="Productivity"    value={u.score === 0 ? "—" : u.score}   trend={u.score > 0 ? <Trend now={u.score} prev={u.prev} suffix=" / 30d" /> : null} onClick={u.score > 0 ? () => window.openScoreExplainer(u) : null}
+            hint={u._isReal
+              ? "Композитный score 0-100. Формула: contracts*30% + emails*25% + calls*20% + invoices*15% + notes*10%, каждый компонент capped 100% от role-target. Click для разбивки."
+              : "Score (демо-mock из data.jsx)."} />
+          <Stat icon="signal"   label="Status"          value={m.status.label}                 sub={""}
+            hint="Сводный статус по hit-rate сегодняшних targets (calls/emails/hours/reply/pickup). 5/5 = Crushing it, 3+ = On track, 2 = Behind pace, иначе Slow start / Needs attention. Offline если status=offline." />
         </div>
       </div>
 
@@ -175,10 +208,15 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
   );
 };
 
-function Stat({ icon, label, value, sub, trend, onClick }) {
+function Stat({ icon, label, value, sub, trend, onClick, hint }) {
   return (
     <div style={{ cursor: onClick ? "pointer" : "default" }} onClick={onClick}>
-      <div className="kpi-head" style={{ marginBottom: 4 }}><Icon name={icon} />{label}{onClick && <Icon name="search" style={{ width: 10, height: 10, color: "var(--muted-2)", marginLeft: 2 }} />}</div>
+      <div className="kpi-head" style={{ marginBottom: 4, display: "flex", alignItems: "center", gap: 4 }}>
+        <Icon name={icon} />
+        <span>{label}</span>
+        {hint && <HelpHint>{hint}</HelpHint>}
+        {onClick && <Icon name="search" style={{ width: 10, height: 10, color: "var(--muted-2)" }} />}
+      </div>
       <div className="num" style={{ fontSize: 18, fontWeight: 700, letterSpacing: "-.01em", textDecoration: onClick ? "underline dotted var(--muted-2)" : "none" }}>{value}</div>
       {(sub || trend) && (
         <div className="kpi-foot" style={{ marginTop: 1 }}>
