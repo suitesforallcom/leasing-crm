@@ -1,4 +1,4 @@
-/* global React, Icon, DATA, Avatar, CatIcon, StatusPill, TargetMeter, BonusBadge, CenterChip, Trend, Sparkline, HourBars, GrowthTree, fmt, metricsFor, BONUS_TIERS */
+/* global React, Icon, DATA, Avatar, CatIcon, StatusPill, TargetMeter, BonusBadge, CenterChip, Trend, Sparkline, HourBars, GrowthTree, fmt, metricsFor, BONUS_TIERS, HelpHint */
 
 /* ================================================================
    My Day — personal page for an employee (Maya by default).
@@ -67,12 +67,39 @@ window.MyDayPage = function MyDayPage({ meId = "u1", onOpenEmployee, onOpenQuick
 
   const [openInfo, setOpenInfo] = React.useState(null);
 
-  /* This week vs last week */
-  const weekStats = [
-    { label: "Calls",     now: 62, prev: 51, icon: "phone" },
-    { label: "Emails",    now: 148, prev: 132, icon: "mail" },
-    { label: "Contracts", now: 7,  prev: 5,   icon: "contract" },
-    { label: "Hours",     now: 38, prev: 36,  icon: "clock", suffix: "h" },
+  /* This week vs last week.
+     Phase 11c — для реальных сотрудников (_isReal) показываем 0, если
+     интеграция не подключена. Tooltips объясняют что именно считается.
+     Для demo seed сохраняем mock-цифры чтобы прототип выглядел богато. */
+  const weekStats = me._isReal ? [
+    {
+      label: "Calls", icon: "phone",
+      now: 0, prev: 0,
+      hint: "Звонки за эту неделю (Mon–Sun). Интеграция с телефонией не подключена — Twilio/RingCentral/Aircall webhook отсутствует. Показывает 0 пока не настроено.",
+    },
+    {
+      label: "Emails", icon: "mail",
+      now: me.emailsSent || 0,
+      prev: 0,
+      hint: "Письма отправленные за эту неделю с твоего корпоративного Gmail. Источник: Gmail API watch на SENT label (Phase 10). Сейчас отражает MTD из-за упрощения — точный недельный счёт требует доработки.",
+    },
+    {
+      label: "Contracts", icon: "contract",
+      now: me.contracts || 0,
+      prev: 0,
+      hint: "Lease-контракты отправленные через DocuSign за эту неделю. Источник: u.leaseEnvelopes с sentBy=твой email. Сейчас MTD; недельный счёт — TODO.",
+    },
+    {
+      label: "Hours", icon: "clock", suffix: "h",
+      now: 0, prev: 0,
+      hint: "Рабочие часы за неделю (target 40h). Login-tracking не подключен — нет источника когда менеджер реально работает. Показывает 0 пока не настроено.",
+    },
+  ] : [
+    // Demo seed users — keep mock values for prototype richness
+    { label: "Calls",     now: 62, prev: 51, icon: "phone",    hint: "Demo data — seed user from prototype." },
+    { label: "Emails",    now: 148, prev: 132, icon: "mail",   hint: "Demo data — seed user from prototype." },
+    { label: "Contracts", now: 7,  prev: 5,   icon: "contract",hint: "Demo data — seed user from prototype." },
+    { label: "Hours",     now: 38, prev: 36,  icon: "clock", suffix: "h", hint: "Demo data — seed user from prototype." },
   ];
 
   /* Personal records */
@@ -370,7 +397,11 @@ window.MyDayPage = function MyDayPage({ meId = "u1", onOpenEmployee, onOpenQuick
         <div className="week-grid">
           {weekStats.map(w => (
             <div key={w.label} style={{ padding: 14, background: "var(--surface-2)", borderRadius: 12 }}>
-              <div className="kpi-head"><Icon name={w.icon} />{w.label}</div>
+              <div className="kpi-head" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <Icon name={w.icon} />
+                <span>{w.label}</span>
+                {w.hint && <HelpHint>{w.hint}</HelpHint>}
+              </div>
               <div className="num" style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-.02em" }}>{w.now}{w.suffix || ""}</div>
               <div className="row" style={{ marginTop: 4, fontSize: 11.5 }}>
                 <Trend now={w.now} prev={w.prev} />
