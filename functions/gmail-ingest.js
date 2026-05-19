@@ -276,17 +276,23 @@ function _extractMetadata(msg, expectedFrom, labelHint) {
     if (h && h.name) headers[h.name.toLowerCase()] = h.value;
   }
 
-  // Direction: смотрим labelIds, fallback на labelHint из history.list.
-  // SENT-label однозначно → 'sent'. INBOX без SENT → 'received'.
-  // Если у одного письма есть оба (sent-to-self) — приоритет sent (так
-  // менеджер не получит credit за RECEIVED на письма самому себе).
+  // Direction: ПРИОРИТЕТ — actual labelIds из messages.get (надёжно).
+  // labelHint из history.list используется ТОЛЬКО как fallback, если
+  // labelIds пуст. Иначе мог быть баг: history.list(labelId='SENT')
+  // мог вернуть thread-related INBOX-сообщение → labelHint='SENT' побеждал
+  // фактический labelIds=[INBOX]. Fix: labelIds wins.
   const labelIds = Array.isArray(msg.labelIds) ? msg.labelIds : [];
-  const hasSent = labelIds.includes('SENT') || labelHint === 'SENT';
-  const hasInbox = labelIds.includes('INBOX') || labelHint === 'INBOX';
-  let direction;
-  if (hasSent) direction = 'sent';
-  else if (hasInbox) direction = 'received';
-  else return null; // ни SENT, ни INBOX — не интересует (drafts, trash, etc.)
+  let direction = null;
+  if (labelIds.length > 0) {
+    const inSent  = labelIds.includes('SENT');
+    const inInbox = labelIds.includes('INBOX');
+    if (inSent && inInbox) direction = 'sent';      // sent-to-self → credit sent
+    else if (inSent)       direction = 'sent';
+    else if (inInbox)      direction = 'received';
+    else return null;                               // drafts/trash/spam — skip
+  } else if (labelHint === 'SENT')  direction = 'sent';
+    else if (labelHint === 'INBOX') direction = 'received';
+    else return null;
 
   const fromRaw = headers['from'] || '';
   const fromEmail = _parseEmailAddress(fromRaw);
@@ -312,6 +318,20 @@ function _extractMetadata(msg, expectedFrom, labelHint) {
   const references = referencesRaw
     ? referencesRaw.split(/\s+/).map(_normalizeMessageId).filter(Boolean)
     : [];
+
+  // Diagnostic log: при следующих smoke-тестах позволит точно увидеть какие
+  // labelIds Gmail вернул и каким стало direction. Удалить после стабилизации.
+  logger.info('[gmail-push] decision', {
+    msgId: msg.id,
+    owner: expectedFrom,
+    labelIds: labelIds.slice(0, 12),
+    labelHint: labelHint || null,
+    direction,
+    fromHeader: fromEmail,
+    to: toList[0] || null,
+    inReplyTo: inReplyTo || null,
+    subject: subject.slice(0, 40),
+  });
 
   return {
     messageId: msg.id,                 // Gmail-side ID, уникален per-mailbox
