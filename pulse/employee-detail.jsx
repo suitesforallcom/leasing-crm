@@ -569,6 +569,20 @@ function EmailsTab({ events, user, onOpenEvent, metrics }) {
   const replyMin = m ? m.actuals.emailReplyMin : 47;
   const replyOk  = m ? m.today.reply.hit : true;
 
+  // Phase 12+ — direction filter. Default «sent» per operator request:
+  // operator wants to see what THIS employee did (their outbound activity)
+  // not incoming spam. Chips switch to received / replies / all.
+  const [dirFilter, setDirFilter] = React.useState("sent");
+  const visibleEvents = events.filter(e => {
+    if (dirFilter === "all") return true;
+    if (dirFilter === "sent") return e.type === "sent" || e.type === "reply";
+    if (dirFilter === "received") return e.type === "received";
+    if (dirFilter === "replies") return e.type === "reply";
+    return true;
+  });
+  // Newest first — same convention as Timeline (Phase 12+).
+  const sortedEvents = [...visibleEvents].sort((a, b) => parseTime(b.time) - parseTime(a.time));
+
   return (
     <div>
       {m && (
@@ -591,14 +605,33 @@ function EmailsTab({ events, user, onOpenEvent, metrics }) {
         <KPILite label="Reply SLA" value={m ? "<" + m.targets.emailReplyMin + "m" : "—"} icon="signal" />
       </div>
 
-      {events.length === 0 ? (
-        <div className="card"><Empty icon="mail" title="No emails today">When {user.first} sends or receives email, you'll see it here.</Empty></div>
+      {/* Phase 12+ — direction filter chips. Default «Sent». */}
+      <div className="row" style={{ marginBottom: 12, gap: 8 }}>
+        {[
+          { id: "sent",     label: "Sent",     count: sent     },
+          { id: "received", label: "Received", count: received },
+          { id: "replies",  label: "Replies",  count: replies  },
+          { id: "all",      label: "All",      count: events.length },
+        ].map(f => (
+          <button
+            key={f.id}
+            className={"chip" + (dirFilter === f.id ? " is-accent" : "")}
+            onClick={() => setDirFilter(f.id)}
+            style={{ cursor: "pointer" }}
+          >
+            {f.label} <span style={{ opacity: 0.6, marginLeft: 4 }}>{f.count}</span>
+          </button>
+        ))}
+      </div>
+
+      {sortedEvents.length === 0 ? (
+        <div className="card"><Empty icon="mail" title={`No ${dirFilter === "all" ? "emails" : dirFilter + " emails"} today`}>{dirFilter === "sent" ? `${user.first} hasn't sent any emails today yet.` : `Try a different filter — there are ${events.length} email events in total.`}</Empty></div>
       ) : (
         <div className="card is-clean">
           <table className="table">
             <thead><tr><th>Direction</th><th>Subject / contact</th><th>Status</th><th>Time</th><th></th></tr></thead>
             <tbody>
-              {events.map(e => (
+              {sortedEvents.map(e => (
                 <tr key={e.id} className="is-clickable" onClick={() => onOpenEvent(e)}>
                   <td>
                     <span className="cat-icon sm" style={{ background: e.type === "received" ? "var(--info)" : "var(--success)" }}>
