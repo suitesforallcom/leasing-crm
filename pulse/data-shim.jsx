@@ -244,6 +244,33 @@
         }
       }
     }
+
+    // --- Gmail-ingest unattached events (Phase 8) ---
+    // Письма, у которых recipient не нашёлся в state (не сопоставлен с
+    // tenant unit) — CF gmail-ingest.onGmailPush сохраняет их в
+    // state.gmailActivity[]. Считаем их в emailsMtd по отправителю,
+    // чтобы counter не терял реальные исходящие.
+    const gmailActivity = (st && Array.isArray(st.gmailActivity)) ? st.gmailActivity : [];
+    for (const g of gmailActivity) {
+      if (!g || !g.from) continue;
+      const stat = bucket(g.from);
+      const ts = new Date(g.ts || 0).getTime();
+      if (!stat) continue;
+      if (ts >= monthStartMs) {
+        stat.emailsMtd++;
+        stat.actionsMtd++;
+      }
+      if (ts > stat.lastActivityMs) stat.lastActivityMs = ts;
+      if (ts >= last24Ms) {
+        recentOutreachEvents.push({
+          ts: ts, sentBy: (g.from || '').toLowerCase(),
+          cat: 'email', type: 'email',
+          desc: 'Email: ' + ((g.subject || '(no subject)')).slice(0, 130),
+          ent: { kind: 'contact', name: g.to || '(external)', id: g.messageId || '' },
+          status: 'ok', source: 'gmail',
+        });
+      }
+    }
   } catch (e) { console.warn('[pulse-shim] state walk failed:', e); }
 
   // ---------- Map state.employees → DATA.USERS ----------

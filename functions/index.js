@@ -6082,3 +6082,15 @@ exports.dsConfigureJwt = onCall(
   }
 );
 
+// =========================================================================
+// ===== Gmail ingest (FIXES_LOG Entry 27 — Phase 8) =======================
+// Авто-трекинг исходящей почты сотрудников через Gmail API + Pub/Sub.
+// Полный модуль вынесен в functions/gmail-ingest.js; здесь только
+// re-export, чтобы firebase-functions нашёл их при деплое.
+// =========================================================================
+const _gmail = require('./gmail-ingest');
+exports.onGmailPush             = _gmail.onGmailPush;
+exports.bootstrapGmailWatch     = _gmail.bootstrapGmailWatch;
+exports.adminBootstrapGmailWatch = _gmail.adminBootstrapGmailWatch;
+exports.adminStopGmailWatch     = _gmail.adminStopGmailWatch;
+
