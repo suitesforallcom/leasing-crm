@@ -12,13 +12,17 @@ window.MyDayPage = function MyDayPage({ meId = "u1", onOpenEmployee, onOpenQuick
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
 
-  /* Streak — Atomic Habits "don't break the chain" */
-  const streak = 14;
+  /* Streak — Atomic Habits "don't break the chain"
+     Phase 12 — hardcoded 14 stays for demo seed; for real users we don't
+     have daily-snapshot infrastructure yet (Phase 15) so show 0. */
+  const streak = me._isReal ? 0 : 14;
 
-  /* Level + XP — mastery loop */
-  const xp = 6320;
+  /* Level + XP — mastery loop.
+     Phase 12 — for real users derive from real score (~10 XP per score
+     point per day). For demo seed keep hardcoded richness. */
   const xpPerLevel = 1000;
-  const level = Math.floor(xp / xpPerLevel);
+  const xp = me._isReal ? (me.xpToday || 0) : 6320;
+  const level = me._isReal ? (me.level || 1) : Math.floor(xp / xpPerLevel);
   const xpIntoLevel = xp - level * xpPerLevel;
 
   /* Daily quests — small specific actionable wins */
@@ -79,20 +83,20 @@ window.MyDayPage = function MyDayPage({ meId = "u1", onOpenEmployee, onOpenQuick
     },
     {
       label: "Emails", icon: "mail",
-      now: me.emailsSent || 0,
-      prev: 0,
-      hint: "Письма отправленные за эту неделю с твоего корпоративного Gmail. Источник: Gmail API watch на SENT label (Phase 10). Сейчас отражает MTD из-за упрощения — точный недельный счёт требует доработки.",
+      now: me.weekEmailsNow || 0,
+      prev: me.weekEmailsPrev || 0,
+      hint: "Письма отправленные за эту неделю (Mon–Sun) с твоего корпоративного Gmail. Источник: Gmail API watch на SENT label (Phase 10) + outreach. Сравнение с прошлой неделей.",
     },
     {
       label: "Contracts", icon: "contract",
-      now: me.contracts || 0,
-      prev: 0,
-      hint: "Lease-контракты отправленные через DocuSign за эту неделю. Источник: u.leaseEnvelopes с sentBy=твой email. Сейчас MTD; недельный счёт — TODO.",
+      now: me.weekContractsNow || 0,
+      prev: me.weekContractsPrev || 0,
+      hint: "Lease-контракты отправленные через DocuSign за эту неделю (Mon–Sun). Источник: u.leaseEnvelopes с sentBy=твой email. Сравнение с прошлой неделей.",
     },
     {
       label: "Hours", icon: "clock", suffix: "h",
       now: 0, prev: 0,
-      hint: "Рабочие часы за неделю (target 40h). Login-tracking не подключен — нет источника когда менеджер реально работает. Показывает 0 пока не настроено.",
+      hint: "Рабочие часы за неделю (target 40h). Login-tracking не подключен — нет источника когда менеджер реально работает. Phase 13 TODO (sessions data → hour buckets).",
     },
   ] : [
     // Demo seed users — keep mock values for prototype richness

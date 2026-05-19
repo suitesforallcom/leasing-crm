@@ -133,12 +133,29 @@
   // state more than once.
   const monthStartMs = startOfMonth(new Date());
   const last24Ms = Date.now() - 24 * 60 * 60 * 1000;
+  // Phase 12 — Mon-Sun weekly bucket boundaries. Used for "this week vs
+  // last week" panel in MyDay. Week starts Monday 00:00 local time.
+  function startOfWeekMs(d) {
+    const x = new Date(d);
+    x.setHours(0, 0, 0, 0);
+    const day = x.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+    const diff = day === 0 ? -6 : 1 - day; // back to Monday
+    x.setDate(x.getDate() + diff);
+    return x.getTime();
+  }
+  const thisWeekStartMs = startOfWeekMs(new Date());
+  const lastWeekStartMs = thisWeekStartMs - 7 * 24 * 60 * 60 * 1000;
+  const lastWeekEndMs = thisWeekStartMs - 1;
   function blankStats() {
     return {
       contractsMtd: 0,        // leaseEnvelopes sent this month
       contractsCompleted: 0,  // status=completed within month
+      contractsThisWeek: 0,   // Phase 12 — Mon-Sun current week
+      contractsLastWeek: 0,   // Phase 12 — Mon-Sun previous week
       envelopesAllTime: 0,    // lifetime envelope count
       emailsMtd: 0,           // outreach type contains 'email'/'lease' this month
+      emailsSentThisWeek: 0,  // Phase 12 — Mon-Sun current week (sent only)
+      emailsSentLastWeek: 0,  // Phase 12 — Mon-Sun previous week
       callsMtd: 0,            // outreach type === 'call' / 'phone'
       notesMtd: 0,            // outreach type 'note'
       paymentsMtd: 0,         // u.payments[ym].sentBy this month
@@ -160,6 +177,11 @@
 
   // Hoisted out of try{} so user.map() ниже может прочитать (Phase 10).
   const emailStatsByOwner = new Map();
+
+  // Phase 12 — read session-tracking map populated by floor-map-editor's
+  // _refreshSessionsCache(). Keys: workspace member UID. Values:
+  // { lastActivityAt, firstLoginToday, userAgent, device }.
+  const sessionsByUid = (st && typeof st.sessions === 'object' && st.sessions) ? st.sessions : {};
 
   // Phase 11d — tenant email → unit lookup. Used by EmailsTab to tag
   // each row as «Tenant · Suite N» (with unit link) vs «New contact».
@@ -199,6 +221,9 @@
                 stat.actionsMtd++;
                 if (env.status === 'completed') stat.contractsCompleted++;
               }
+              // Phase 12 — weekly bucket
+              if (sentMs >= thisWeekStartMs) stat.contractsThisWeek++;
+              else if (sentMs >= lastWeekStartMs && sentMs <= lastWeekEndMs) stat.contractsLastWeek++;
               if (sentMs > stat.lastActivityMs) stat.lastActivityMs = sentMs;
             }
             if (sentMs >= last24Ms) {
@@ -371,9 +396,14 @@
         // Также делаем legacy `bucket()` инкремент чтобы emailsMtd считался
         // (он же используется и для не-Gmail outreach типа manual emails).
         const ownerStat = bucket(e.owner);
-        if (ownerStat && inMtd) {
-          ownerStat.emailsMtd++;
-          ownerStat.actionsMtd++;
+        if (ownerStat) {
+          if (inMtd) {
+            ownerStat.emailsMtd++;
+            ownerStat.actionsMtd++;
+          }
+          // Phase 12 — weekly bucket
+          if (e.ts >= thisWeekStartMs) ownerStat.emailsSentThisWeek++;
+          else if (e.ts >= lastWeekStartMs && e.ts <= lastWeekEndMs) ownerStat.emailsSentLastWeek++;
           if (e.ts > ownerStat.lastActivityMs) ownerStat.lastActivityMs = e.ts;
         }
       } else if (e.direction === 'received') {
@@ -484,10 +514,9 @@
         pctOf(realInvoices,  tgt.invoices)  * 15 +
         Math.min(1, realStats.notesMtd / 10) * 10
       ) : 0;
-      // Fall back to seed only when employee has zero real activity (so
-      // freshly-onboarded employees still show something rather than a
-      // flat zero leaderboard row). Once they act, real numbers take over.
-      const scoreFinal = hasAnyActivity ? realScore : score;
+      // Phase 12 — operator wants ALL stats to be real (or 0), no mock
+      // fallback. score = realScore directly (= 0 if no activity).
+      const scoreFinal = realScore;
 
       const u = {
         id: 'r' + (i + 1), // Phase 11a — 'r' prefix to not collide with seed u1..u12
@@ -502,20 +531,40 @@
         phone: emp.phone || '',
         status: status,
         online: status === 'offline' ? 0 : onlineMin,
-        login: status === 'offline' ? null : timeStr(loginMin),
-        logout: status === 'offline' ? timeStr(loginMin + onlineMin) : null,
-        ip: '10.0.' + (1 + (seed >> 3) % 200) + '.' + (1 + seed % 250),
-        device: DEVICES[seed % DEVICES.length],
-        loc: LOCS[(seed >> 4) % LOCS.length],
-        actions: hasAnyActivity ? realActions : (60 + (seed % 80)),
-        calls: hasAnyActivity ? realCalls : (5 + (seed % 30)),
-        emails: hasAnyActivity ? realEmails : (8 + ((seed >> 1) % 25)),
+        // Phase 12 — real session data when available, else null/0 (no mock).
+        // Source: state.sessions[emp.workspaceMemberUid] populated by floor-map's
+        // _refreshSessionsCache. If member hasn't signed in since deploy → null.
+        login: (function () {
+          const s = sessionsByUid[emp.workspaceMemberUid];
+          if (s && s.firstLoginToday) {
+            const d = new Date(s.firstLoginToday);
+            if (!isNaN(d.getTime())) {
+              // Format as h:MM AM/PM for display
+              const h = d.getHours(), mm = String(d.getMinutes()).padStart(2, '0');
+              return ((h % 12) || 12) + ':' + mm + ' ' + (h >= 12 ? 'PM' : 'AM');
+            }
+          }
+          return null;
+        })(),
+        logout: null, // no real logout-tracking yet
+        ip: '', // no IP tracking
+        device: (function () {
+          const s = sessionsByUid[emp.workspaceMemberUid];
+          return (s && s.device) ? s.device : '— not tracked —';
+        })(),
+        loc: '— not tracked —',
+        // Phase 12 — real numbers only. No mock fallback when activity=0.
+        // Exception: `calls` stays mock per operator («подключи всё кроме звонков»)
+        // because we have no telephony integration source.
+        actions: realActions,
+        calls: hasAnyActivity ? realCalls : (5 + (seed % 30)), // mock OK — calls excluded
+        emails: realEmails,
         contracts: realContracts,
-        docs: realStats.notesMtd || (seed % 10),
+        docs: realStats.notesMtd,
         invoices: realInvoices,
         payments: realPayments,
         score: scoreFinal,
-        prev: prev,
+        prev: 0, // historical previous-period score requires daily snapshots (Phase 15)
         unusual: realActions === 0 && status !== 'offline',
         center: (window.DATA.CENTERS || []).find(function (c) { return c.id === centerId; }),
         // Phase 10 — Gmail thread-stats (used by EmailsTab + metrics override)
@@ -524,11 +573,31 @@
         emailsReplies: realEmailStat.repliesMtd,
         emailReplyMinAvg: realAvgReplyMin,
         _emailReplyTimesMs: realEmailStat.replyTimesMs,
+        // Phase 12 — weekly Mon-Sun buckets for MyDay "This week vs last week"
+        weekEmailsNow: realStats.emailsSentThisWeek,
+        weekEmailsPrev: realStats.emailsSentLastWeek,
+        weekContractsNow: realStats.contractsThisWeek,
+        weekContractsPrev: realStats.contractsLastWeek,
+        // Phase 12 — XP/Level derived from score. Each daily target hit
+        // ≈ 100 XP. Composite score 0-100 maps to ~6-7 XP per day on
+        // average. XP * daysInMonth ≈ level. Honest, simple, replaces
+        // hardcoded 6320/Level 6.
+        xpToday: realScore * 10, // 0..1000 per day
+        level: Math.max(1, Math.floor((realScore * 10) / 100)),
         _empId: emp.id,
         _hireDate: emp.hireDate || null,
         _workspaceMemberUid: emp.workspaceMemberUid || null,
         _statsAreReal: hasAnyActivity,
-        _lastActivityMs: realStats.lastActivityMs || 0,
+        // Phase 12 — prefer real session heartbeat lastActivityAt over
+        // activity-derived ms (outreach timestamps).
+        _lastActivityMs: (function () {
+          const s = sessionsByUid[emp.workspaceMemberUid];
+          if (s && s.lastActivityAt) {
+            const ms = new Date(s.lastActivityAt).getTime();
+            if (!isNaN(ms)) return ms;
+          }
+          return realStats.lastActivityMs || 0;
+        })(),
       };
       usersByEmail.set(emailLower, u);
       return u;

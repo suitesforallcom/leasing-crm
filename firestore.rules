@@ -291,6 +291,15 @@ service cloud.firestore {
         allow read:  if isAdmin(wid);
         allow write: if false;
       }
+
+      // Session heartbeat (Phase 12) — each signed-in user writes their
+      // own doc at sessions/{uid} with lastActivityAt + userAgent + firstLoginToday.
+      // Read: any workspace member (so Pulse can show real device + last
+      // activity for each employee). Write: ONLY own uid (no impersonation).
+      match /sessions/{uid} {
+        allow read:  if isMember(wid);
+        allow write: if request.auth != null && request.auth.uid == uid;
+      }
     }
 
     // ----- Legacy per-user state (pre-Stage-2 storage) --------------------
