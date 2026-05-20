@@ -86,9 +86,29 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
                       ? "Idle " + (u._idleMinutes != null ? u._idleMinutes + "m" : "")
                       : (u._isReal && u.logout ? "Last seen " + u.logout : "Offline")}
                 </span>
-                <StatusPill status={m.status} size="lg" />
-                <BonusBadge tier={m.tier} amount={m.bonusMtd} />
-                <CenterChip center={u.center} />
+                {u._isReal && (
+                  <HelpHint>
+                    Presence derived from the session heartbeat ping (every 60 sec while a tab is alive). &lt;2 min since last ping = Online; &lt;15 min = Idle (exact minutes shown); else Offline (last-seen time shown). If no session was ever recorded — Offline.
+                  </HelpHint>
+                )}
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                  <StatusPill status={m.status} size="lg" />
+                  <HelpHint>
+                    Today's status, derived from how many of the five daily targets are hit: 5/5 = Crushing it, 3+ = On track, 2 = Behind pace, 1 = Slow start, 0 = Needs attention. «Offline» appears if the operator hasn't been active today.
+                  </HelpHint>
+                </span>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                  <BonusBadge tier={m.tier} amount={m.bonusMtd} />
+                  <HelpHint>
+                    Bonus tier reached this month. None → Bronze ($150) → Silver ($350) → Gold ($650) → Platinum ($1000). Tier is unlocked when the operator's MTD contracts + emails + calls cross role-specific thresholds. Resets on the 1st of each month.
+                  </HelpHint>
+                </span>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                  <CenterChip center={u.center} />
+                  <HelpHint>
+                    The center / workspace this employee belongs to. Used for leaderboard grouping and «All centers» filter. For real employees this reflects the workspace they signed into; demo seeds are assigned to demo centers.
+                  </HelpHint>
+                </span>
               </div>
               <div className="muted" style={{ marginTop: 4, fontSize: 13, display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
                 <span><Icon name="mail" style={{ width: 12, height: 12, verticalAlign: "-2px", marginRight: 4 }} />{u.email || (u.first.toLowerCase() + "." + u.last.toLowerCase().replace(/[^a-z]/g, "") + "@crestview.co")}</span>
@@ -127,6 +147,9 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
             <div className="row" style={{ marginBottom: 6 }}>
               <Icon name="clock" style={{ color: "var(--muted)", width: 14, height: 14 }} />
               <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>{isToday ? "Working today" : _shortDateLabel(selectedDate)}</span>
+              <HelpHint>
+                Hours worked = time between today's first sign-in (firstLoginToday) and the most recent heartbeat ping (lastActivityAt). The session document refreshes every 60 sec while a tab is alive, so this is roughly «time the operator had Pulse / floor-map open today» — not strictly «actively typing». Capped at 12h sanity. Past days source from the daily snapshot.
+              </HelpHint>
               <div className="spacer" />
               {/* Chip отражает реальный статус из heartbeat. «on time» только
                   если онлайн прямо сейчас; idle / offline получают свой чип. */}
@@ -158,6 +181,10 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
             <div className="row" style={{ marginBottom: 6 }}>
               <Icon name="signal" style={{ color: "var(--muted)", width: 14, height: 14 }} />
               <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>{isToday ? "Targets hit" : "Targets"}</span>
+              <HelpHint>
+                Five daily targets, all role-tuned: Calls (target by role), Emails (sent vs role target), Hours (8h default), Reply time (SLA, default 60min), Pickup speed (telephony — MOCK until wired). Each one is hit or missed; the count «N / 5» drives the daily status pill (5/5 = Crushing it, 3+ = On track, 2 = Behind pace).
+              </HelpHint>
+              <div className="spacer" />
             </div>
             <div className="row" style={{ alignItems: "baseline", gap: 6 }}>
               <div className="num" style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-.025em" }}>{m.hits}<span className="muted" style={{ fontSize: 13, fontWeight: 600 }}>/{m.expected}</span></div>
@@ -175,6 +202,10 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
             <div className="row" style={{ marginBottom: 6 }}>
               <Icon name="star" style={{ color: m.tier.id !== "none" ? m.tier.color : "var(--muted)", width: 14, height: 14 }} />
               <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>May · {m.tier.label}</span>
+              <HelpHint>
+                Month-to-date bonus based on monthly tier progression. Tiers: Bronze ($150), Silver ($350), Gold ($650), Platinum ($1000). Tier reached when the operator hits the role-specific monthly threshold for contracts + emails + calls. Always reflects the CURRENT month — scrolling the day navigator does not change this number.
+              </HelpHint>
+              <div className="spacer" />
             </div>
             <div className="num" style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-.025em", color: m.tier.id !== "none" ? m.tier.color : "var(--muted)" }}>${m.bonusMtd.toLocaleString()}</div>
             {m.nextTier ? (
