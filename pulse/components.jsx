@@ -53,10 +53,19 @@ window.CenterChip = function CenterChip({ center, compact }) {
    ================================================================ */
 
 window.Avatar = function Avatar({ user, size = "md", showStatus = true }) {
+  // Phase 17 rev — guard against undefined user. После удаления демо-сидов
+  // (Maya/Daniel/...) код в нескольких местах всё ещё пытался искать их
+  // по id ("u1", "u2") и передавал undefined → Avatar крашил всю страницу.
+  // Render fallback chip вместо crash.
+  if (!user) {
+    return (
+      <span className={"avatar " + size + " a-c1"} title="(deleted user)">?</span>
+    );
+  }
   return (
-    <span className={"avatar " + size + " " + user.avatar}>
-      {user.initials}
-      {showStatus && <span className={"status " + user.status} />}
+    <span className={"avatar " + size + " " + (user.avatar || "a-c1")}>
+      {user.initials || "?"}
+      {showStatus && user.status && <span className={"status " + user.status} />}
     </span>
   );
 };

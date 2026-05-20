@@ -26,8 +26,14 @@ function App() {
   /* Phase 11b — meId chooses which employee is "me" when role=employee.
      Default to first real employee if any, else seed u1 (Maya). */
   const [meId, setMeId] = React.useState(() => {
-    const real = (window.DATA?.USERS || []).find(u => u._isReal);
-    return real ? real.id : "u1";
+    // Phase 17 rev — после удаления демо-сидов "u1" может не существовать.
+    // Берём первого реального user; если их нет — первый из DATA.USERS;
+    // если массив пустой — null (компоненты должны это переварить).
+    const users = window.DATA?.USERS || [];
+    const real = users.find(u => u && u._isReal);
+    if (real) return real.id;
+    if (users.length > 0 && users[0] && users[0].id) return users[0].id;
+    return null;
   });
 
   /* Drawer state */

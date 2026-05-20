@@ -184,21 +184,31 @@ window.MyDayPage = function MyDayPage({ meId = "u1", onOpenEmployee, onOpenQuick
         </div>
       </div>
 
-      {/* ============ One Big Thing + Coach's note (Grit + Drive) ============ */}
-      <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 14, marginBottom: 18 }} className="myday-obt-grid">
-        <OneBigThingCard me={me} />
-
-        <div className="card" style={{ padding: 16 }}>
-          <div className="row" style={{ marginBottom: 6 }}>
-            <Avatar user={DATA.USERS.find(u => u.id === "u2")} size="sm" />
-            <span style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", letterSpacing: ".1em", textTransform: "uppercase" }}>From Daniel · your manager</span>
-          </div>
-          <div style={{ fontSize: 13.5, fontStyle: "italic", color: "var(--ink-2)", lineHeight: 1.5 }}>
-            "Maya — fastest reply time on the team this week. Keep this up and Gold tier is locked in."
-          </div>
-          <button className="btn is-small" style={{ marginTop: 8 }} onClick={() => window.toast("Thanks sent to Daniel", "success")}><Icon name="check" /> Thank Daniel</button>
+      {/* ============ One Big Thing + Coach's note (Grit + Drive) ============
+          Phase 17 rev — manager note card скрыт для real users (нет
+          messaging backend). Демо-сиды удалены, поэтому DATA.USERS.find
+          по «u2» возвращало undefined и Avatar крашил страницу.
+          Для real users показываем только OneBigThing на полную ширину. */}
+      {me._isReal ? (
+        <div style={{ marginBottom: 18 }} className="myday-obt-grid">
+          <OneBigThingCard me={me} />
         </div>
-      </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 14, marginBottom: 18 }} className="myday-obt-grid">
+          <OneBigThingCard me={me} />
+
+          <div className="card" style={{ padding: 16 }}>
+            <div className="row" style={{ marginBottom: 6 }}>
+              <Avatar user={DATA.USERS.find(u => u.id === "u2")} size="sm" />
+              <span style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", letterSpacing: ".1em", textTransform: "uppercase" }}>From Daniel · your manager</span>
+            </div>
+            <div style={{ fontSize: 13.5, fontStyle: "italic", color: "var(--ink-2)", lineHeight: 1.5 }}>
+              "Maya — fastest reply time on the team this week. Keep this up and Gold tier is locked in."
+            </div>
+            <button className="btn is-small" style={{ marginTop: 8 }} onClick={() => window.toast("Thanks sent to Daniel", "success")}><Icon name="check" /> Thank Daniel</button>
+          </div>
+        </div>
+      )}
 
       {/* ============ Today's schedule strip + Calendar widget ============ */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 280px", gap: 14, marginBottom: 18 }} className="myday-schedule-grid">

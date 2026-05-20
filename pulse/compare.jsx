@@ -15,10 +15,17 @@ window.ComparePage = function ComparePage({ initial, onOpenEmployee }) {
       const raw = localStorage.getItem(LS_KEY);
       if (raw) {
         const arr = JSON.parse(raw);
-        if (Array.isArray(arr) && arr.length > 0 && arr.length <= 4) return arr;
+        if (Array.isArray(arr) && arr.length > 0 && arr.length <= 4) {
+          // Phase 17 rev — filter out stale IDs (demo seeds, deleted real users)
+          const live = arr.filter(id => (window.DATA?.USERS || []).some(u => u && u.id === id));
+          if (live.length > 0) return live;
+        }
       }
     } catch (e) { /* ignore */ }
-    return ["u1", "u3", "u9"];
+    // Phase 17 rev — defaults pulled from current DATA.USERS (top 3 by score).
+    // Demo seed IDs ["u1","u3","u9"] больше не существуют — fallback на live.
+    const users = window.DATA?.USERS || [];
+    return users.slice().sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, 3).map(u => u.id);
   });
   const [pickerOpen, setPickerOpen] = React.useState(false);
 
@@ -200,6 +207,11 @@ window.ComparePage = function ComparePage({ initial, onOpenEmployee }) {
 };
 
 function OverlayBars({ users }) {
+  // Phase 17 rev — guard against empty users[]. После очистки демо-сидов
+  // если saved compare-picked содержал только seed-ids → users=[].
+  if (!users || users.length === 0) {
+    return <div className="muted" style={{ fontSize: 12, padding: 12, fontStyle: "italic" }}>Pick at least one person to see hourly comparison.</div>;
+  }
   const colors = ["var(--accent)", "oklch(62% 0.14 30)", "oklch(62% 0.14 150)", "oklch(62% 0.14 280)"];
   /* group bars per hour */
   const hours = DATA.hourlyActionsFor(users[0].id).map(d => d.h);
