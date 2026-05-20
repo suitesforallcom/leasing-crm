@@ -29,7 +29,7 @@ const KIND_ICON = {
 };
 
 /* ===== Today's meetings widget (compact, for My Day) ===== */
-window.CalendarTodayWidget = function CalendarTodayWidget({ connected = true, onConnect, onBlockFocus }) {
+window.CalendarTodayWidget = function CalendarTodayWidget({ connected = true, onConnect, onBlockFocus, user }) {
   if (!connected) {
     return (
       <div className="card" style={{ padding: 16, background: "linear-gradient(135deg, oklch(97% 0.03 220), oklch(98% 0.02 200))", borderColor: "transparent" }}>
@@ -58,9 +58,46 @@ window.CalendarTodayWidget = function CalendarTodayWidget({ connected = true, on
     if (m[3].toUpperCase() === "AM" && h === 12) h = 0;
     return h * 60 + parseInt(m[2], 10);
   }
-  const upcoming = TODAY_EVENTS.filter(e => eventMin(e.time) >= nowMin).slice(0, 3);
-  const past     = TODAY_EVENTS.filter(e => eventMin(e.time) < nowMin).length;
-  const showList = upcoming.length > 0 ? upcoming : TODAY_EVENTS.slice(0, 3);
+  // Phase 17 rev — для real user'а с реальными событиями строим список
+  // из me.calendarEvents (Phase 14 cron из Google Calendar API).
+  // Real без событий → empty. Demo seed → mock TODAY_EVENTS.
+  const isRealUser = !!(user && user._isReal);
+  const todayStr = (function () {
+    const d = new Date();
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  })();
+  let normalized;
+  if (isRealUser && Array.isArray(user.calendarEvents) && user.calendarEvents.length > 0) {
+    normalized = user.calendarEvents
+      .filter(e => String(e.start || "").slice(0, 10) === todayStr)
+      .map(e => {
+        const s = new Date(e.start);
+        const en = e.end ? new Date(e.end) : new Date(s.getTime() + 30 * 60000);
+        const formatTime = d => {
+          const h = d.getHours(), mm = String(d.getMinutes()).padStart(2, "0");
+          return ((h % 12) || 12) + ":" + mm + " " + (h >= 12 ? "PM" : "AM");
+        };
+        const kind = _kindFromSummary(e.summary);
+        return {
+          id: e.htmlLink || e.summary,
+          title: e.summary || "(untitled event)",
+          time: formatTime(s),
+          end: formatTime(en),
+          attendees: Array.isArray(e.attendees) ? e.attendees.length : 1,
+          kind,
+          color: kind === "lead" ? "oklch(60% 0.13 158)" : kind === "call" ? "oklch(62% 0.14 30)" : "oklch(58% 0.16 264)",
+          _startMin: s.getHours() * 60 + s.getMinutes(),
+          _endMin: en.getHours() * 60 + en.getMinutes(),
+        };
+      });
+  } else if (isRealUser) {
+    normalized = []; // real user, no events today
+  } else {
+    normalized = TODAY_EVENTS.map(e => Object.assign({}, e, { _startMin: eventMin(e.time), _endMin: eventMin(e.end) }));
+  }
+  const upcoming = normalized.filter(e => e._startMin >= nowMin).slice(0, 3);
+  const past     = normalized.filter(e => e._endMin < nowMin).length;
+  const showList = upcoming.length > 0 ? upcoming : normalized.slice(0, 3);
 
   return (
     <div className="card" style={{ padding: 0 }}>
@@ -68,7 +105,7 @@ window.CalendarTodayWidget = function CalendarTodayWidget({ connected = true, on
         <span className="cat-icon" style={{ background: "oklch(58% 0.16 220)" }}><Icon name="cal" /></span>
         <div>
           <div style={{ fontWeight: 700, fontSize: 13 }}>Today's calendar</div>
-          <div className="muted" style={{ fontSize: 11 }}>{TODAY_EVENTS.length} events · {past} done</div>
+          <div className="muted" style={{ fontSize: 11 }}>{normalized.length} events · {past} done</div>
         </div>
         <div className="spacer" />
         <span className="chip is-success" style={{ fontSize: 10.5 }}><Icon name="check" /> Google</span>
@@ -99,8 +136,56 @@ window.CalendarTodayWidget = function CalendarTodayWidget({ connected = true, on
   );
 };
 
-/* ===== Calendar events for the schedule strip (replaces mock) ===== */
-window.getCalendarEvents = function () {
+/* ===== Calendar events for the schedule strip =====
+   Phase 17 rev — для real-users используем реальные события из
+   me.calendarEvents (пишутся Phase 14 cron'ом из Google Calendar API).
+   Если событий нет / user не _isReal → fallback на TODAY_EVENTS mock. */
+function _kindFromSummary(summary) {
+  const s = (summary || "").toLowerCase();
+  if (/\btour\b|property tour|showing/.test(s)) return "lead";
+  if (/\bcall\b/.test(s)) return "call";
+  if (/\bfocus\b|deep work/.test(s)) return "task";
+  if (/standup|1:?1|sync|meet|catch[- ]up/.test(s)) return "task";
+  return "task";
+}
+
+function _eventsFromReal(realEvents) {
+  const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+  const todayStr = (function () {
+    const d = new Date();
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  })();
+  return realEvents
+    .filter(e => {
+      // Только сегодняшние события
+      if (!e.start) return false;
+      const startIso = String(e.start);
+      return startIso.slice(0, 10) === todayStr;
+    })
+    .map(e => {
+      const startDate = new Date(e.start);
+      const endDate   = e.end ? new Date(e.end) : new Date(startDate.getTime() + 30 * 60000);
+      const startMin  = startDate.getHours() * 60 + startDate.getMinutes();
+      const endMin    = endDate.getHours() * 60 + endDate.getMinutes();
+      return {
+        start:   startMin / 60,
+        end:     endMin / 60,
+        label:   e.summary || "(untitled event)",
+        kind:    _kindFromSummary(e.summary),
+        done:    endMin <= nowMin,
+        current: nowMin >= startMin && nowMin < endMin,
+      };
+    });
+}
+
+window.getCalendarEvents = function (me) {
+  // Real user with real events from Google Calendar API
+  if (me && me._isReal && Array.isArray(me.calendarEvents) && me.calendarEvents.length > 0) {
+    return _eventsFromReal(me.calendarEvents);
+  }
+  // Real user but no events today → empty schedule (no mock)
+  if (me && me._isReal) return [];
+  // Demo seed user → keep mock
   return TODAY_EVENTS.map(e => {
     const startMin = eventMinFromStr(e.time);
     const endMin   = eventMinFromStr(e.end);

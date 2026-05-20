@@ -32,14 +32,18 @@ window.MyDayPage = function MyDayPage({ meId = "u1", onOpenEmployee, onOpenQuick
   /* Growth tree — month progress */
   const monthRatio = clamp01((m.mtd.calls / m.monthTargets.calls + m.mtd.emails / m.monthTargets.emails + m.mtd.daysWorked / m.mtd.daysExpected) / 3);
 
-  /* Fruits — each type maps to a different bonus rule trigger */
+  /* Fruits — each type maps to a different bonus rule trigger.
+     Phase 17 rev — для real users показываем 0 там где интеграции
+     ещё не подключены (referrals / reviews / NPS / SMS). Только
+     контракт-производные и daily-target листья — реальные. */
+  const _isRealMe = !!me._isReal;
   const fruits = {
-    apple:  Math.min(8, m.mtd.contracts),  /* contracts signed */
-    plum:   Math.min(4, Math.floor(m.mtd.contracts * .35)),  /* renewals */
-    golden: Math.min(2, Math.floor(m.mtd.contracts * .15)),  /* multi-year */
-    lemon:  3,  /* referrals signed this month (mock) */
-    star:   6,  /* 5-star reviews (FB + Google) */
-    gem:    2,  /* NPS 9-10 */
+    apple:  Math.min(8, m.mtd.contracts),  /* contracts signed — real */
+    plum:   Math.min(4, Math.floor(m.mtd.contracts * .35)),  /* renewals — derived from contracts */
+    golden: Math.min(2, Math.floor(m.mtd.contracts * .15)),  /* multi-year — derived */
+    lemon:  _isRealMe ? 0 : 3,  /* referrals — no tracking yet */
+    star:   _isRealMe ? 0 : 6,  /* reviews — no FB/Google integration yet */
+    gem:    _isRealMe ? 0 : 2,  /* NPS — no survey integration yet */
   };
   const totalFruits = Object.values(fruits).reduce((s, v) => s + v, 0);
 
@@ -48,10 +52,12 @@ window.MyDayPage = function MyDayPage({ meId = "u1", onOpenEmployee, onOpenQuick
   const hasCrown  = m.tier.id === "gold" || m.tier.id === "platinum";
   const weatherMode = m.status.id === "crushing" || m.status.id === "ontrack" ? "sunny" : m.status.id === "behind" || m.status.id === "low" ? "partly" : m.status.id === "alert" ? "cloudy" : "sunny";
 
-  /* Tree attention signals — what's slipping today */
-  const missedCalls    = m.actuals.missedCalls;
-  const unansweredSms  = 2;
-  const staleLeads     = 1;
+  /* Tree attention signals — what's slipping today.
+     Phase 17 rev — real users: missed calls = 0 (без телефонии), SMS = 0
+     (без интеграции), stale leads = 0 (без CRM). Demo seeds сохраняют mock. */
+  const missedCalls    = _isRealMe ? 0 : m.actuals.missedCalls;
+  const unansweredSms  = _isRealMe ? 0 : 2;
+  const staleLeads     = _isRealMe ? 0 : 1;
   const totalIssues    = missedCalls + unansweredSms + staleLeads;
 
   /* Bonus info per fruit/decoration — for the click-to-explain UI */
@@ -205,10 +211,11 @@ window.MyDayPage = function MyDayPage({ meId = "u1", onOpenEmployee, onOpenQuick
             <div className="spacer" />
             <button className="btn is-small is-ghost" onClick={() => window.toast("Block focus time — 25 min Pomodoro started", "success")}><Icon name="bolt" /> Start focus (25m)</button>
           </div>
-          <ScheduleStrip events={typeof window.getCalendarEvents === "function" ? window.getCalendarEvents() : []} />
+          <ScheduleStrip events={typeof window.getCalendarEvents === "function" ? window.getCalendarEvents(me) : []} />
         </div>
         <window.CalendarTodayWidget
           connected={true}
+          user={me}
           onConnect={() => window.toast("Connecting Google Calendar…", "success")}
           onBlockFocus={() => window.toast("Focus block added to calendar (25m)", "success")}
         />
@@ -233,7 +240,7 @@ window.MyDayPage = function MyDayPage({ meId = "u1", onOpenEmployee, onOpenQuick
               unansweredSms={unansweredSms}
               staleLeads={staleLeads}
               streak={streak}
-              achievements={4}
+              achievements={earnedCount}
               hasBird={hasBird}
               hasCrown={hasCrown}
               weather={weatherMode}

@@ -740,7 +740,11 @@
         // Exception: `calls` stays mock per operator («подключи всё кроме звонков»)
         // because we have no telephony integration source.
         actions: realActions,
-        calls: hasAnyActivity ? realCalls : (5 + (seed % 30)), // mock OK — calls excluded
+        // Phase 17 rev — у real users больше НЕ подсовываем мок-звонки.
+        // Tony: «должна сейчас выводиться у новых добавленных пользователей
+        // реальной информация» — поэтому realCalls (= 0 пока телефония
+        // не подключена). Демо-сиды свои calls берут из data.jsx seed.
+        calls: realCalls,
         emails: realEmails,
         contracts: realContracts,
         docs: realStats.notesMtd,

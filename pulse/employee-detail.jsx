@@ -138,12 +138,11 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
             snapshot when not today. MTD cards (May bonus) stay current.  */}
         <DateNavigator value={selectedDate} onChange={setSelectedDate} todayStr={todayStr} hasSnapshot={!!snapshot} isToday={isToday} isRealUser={!!u._isReal} />
 
-        {/* Phase 17 (merged) — 3-column header strip:
-            [WORKING TODAY + HOURLY ACTIVITY] [TARGETS HIT] [MAY BONUS].
-            Раньше Working и Hourly были двумя плитками; объединены в одну
-            широкую — слева hours + progress bar, справа inline-чарт +
-            суммарные цифры. Hover popover работает как раньше. */}
-        <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "2.6fr 1fr 1fr", gap: 12 }} className="head-row-2">
+        {/* Phase 17 rev — упрощённая 3-колонная шапка. Hours/progress
+            убраны: те же данные уже в Stat strip (FIRST LOGIN +
+            LAST ACTIVITY). Слева у Activity-by-hour теперь два
+            подзаголовка: «Started HH:MM» / «Last seen HH:MM». */}
+        <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "1.6fr 1fr 1fr", gap: 12 }} className="head-row-2">
           <WorkingTodayCard
             user={u}
             displayUser={displayUser}
@@ -1135,26 +1134,31 @@ function MiniMetric({ label, value, unit }) {
 }
 
 /* ================================================================
-   Phase 17 (merged) — combined WORKING TODAY + ACTIVITY-BY-HOUR tile.
-   Слева — hours + progress bar + login→logout; справа — почасовой
-   chart с hover popover'ом и сводными цифрами (total actions, peak).
+   Phase 17 rev — simplified WORKING TODAY card. Now just an enriched
+   ACTIVITY-BY-HOUR chart with Started / Last-seen labels above the
+   bars. Hours + progress bar removed — same info already in the Stat
+   strip (FIRST LOGIN + LAST ACTIVITY cells).
    ================================================================ */
 function WorkingTodayCard({ user, displayUser, metrics, isToday, selectedDate, snapshot }) {
-  const m = metrics;
-  const hoursStr = (isToday && displayUser.status === "offline") || (!isToday && !snapshot)
-    ? "—"
-    : fmt.hm(displayUser.online);
-  const pctWidth = Math.min(100, (displayUser.online / 60) / m.targets.hoursWorked * 100);
+  const startedStr = isToday
+    ? (user.login || "—")
+    : (snapshot ? "—" : "—"); // past days don't carry login time
+  const lastSeenStr = isToday
+    ? (user.status === "online" ? "now"
+       : user.status === "idle" ? (user._idleMinutes != null ? user._idleMinutes + "m ago" : "—")
+       : user.logout || "—")
+    : (snapshot ? "—" : "—");
+
   return (
     <div style={{ padding: 14, background: "var(--surface-2)", borderRadius: 12, position: "relative" }}>
       {/* Header: title + ? + status chip */}
-      <div className="row" style={{ marginBottom: 8 }}>
-        <Icon name="clock" style={{ color: "var(--muted)", width: 14, height: 14 }} />
+      <div className="row" style={{ marginBottom: 10 }}>
+        <Icon name="activity" style={{ color: "var(--muted)", width: 14, height: 14 }} />
         <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>
-          {isToday ? "Working today · activity" : _shortDateLabel(selectedDate) + " · activity"}
+          {isToday ? "Activity by hour · today" : "Activity · " + _shortDateLabel(selectedDate)}
         </span>
         <HelpHint>
-          Combined hours-worked + outbound activity for the selected day. Hours = REAL active time, accumulated only while the operator is actually interacting (mouse / keyboard / touch / scroll). Sitting AFK with a tab open does NOT count. Capped at 12h. Activity bars = SENT emails per hour from the Gmail API (office-hour window 7-19). Hover any bar for per-email detail. Past days show snapshot hours.
+          Outbound emails per hour, bucketed from Gmail API SENT events (office-hour window 7-19). Hover any bar to see recipients + subjects of emails in that hour. Received emails / incoming spam excluded — only the operator's outbound actions count. Past days have no hourly snapshot yet (Phase 18 todo).
         </HelpHint>
         <div className="spacer" />
         {isToday && displayUser.status === "online" && <span className="chip is-success is-small" style={{ fontSize: 10 }}>on time</span>}
@@ -1163,30 +1167,17 @@ function WorkingTodayCard({ user, displayUser, metrics, isToday, selectedDate, s
         {!isToday && !snapshot && <span className="chip is-small" style={{ fontSize: 10 }}>no data</span>}
       </div>
 
-      {/* 2-column inner: left = hours block, right = hourly chart */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.8fr", gap: 18, alignItems: "stretch" }}>
-        {/* Hours worked column */}
-        <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-          <div>
-            <div className="muted" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".04em", fontWeight: 600, marginBottom: 4 }}>Hours worked</div>
-            <div className="row" style={{ alignItems: "baseline", gap: 6 }}>
-              <div className="num" style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-.025em", whiteSpace: "nowrap" }}>{hoursStr}</div>
-              <div className="muted" style={{ fontSize: 12, whiteSpace: "nowrap" }}>/ {m.targets.hoursWorked}h</div>
-            </div>
-            <div style={{ height: 6, background: "var(--surface-3)", borderRadius: 999, marginTop: 8, overflow: "hidden" }}>
-              <span style={{ display: "block", height: "100%", width: pctWidth + "%", background: m.today.hours.hit ? "var(--success)" : "var(--accent)", borderRadius: 999 }} />
-            </div>
-          </div>
-          <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>
-            {isToday
-              ? <>{user.login || "—"} → {user.status === "online" ? "now" : user.logout || "—"}</>
-              : <>Snapshot · {selectedDate}</>}
-          </div>
-        </div>
-
-        {/* Hourly chart column — bars + summary footer */}
-        <HourlyChart user={user} isToday={isToday} selectedDate={selectedDate} />
+      {/* Started / Last-seen labels — start/end of work day */}
+      <div className="row" style={{ marginBottom: 8, fontSize: 11 }}>
+        <span className="muted" style={{ textTransform: "uppercase", letterSpacing: ".04em", fontWeight: 600 }}>Started</span>
+        <span className="mono" style={{ fontWeight: 700, color: "var(--ink)", marginLeft: 6 }}>{startedStr}</span>
+        <div className="spacer" />
+        <span className="muted" style={{ textTransform: "uppercase", letterSpacing: ".04em", fontWeight: 600 }}>Last seen</span>
+        <span className="mono" style={{ fontWeight: 700, color: "var(--ink)", marginLeft: 6 }}>{lastSeenStr}</span>
       </div>
+
+      {/* Hourly chart now full-width — was right column of merged tile */}
+      <HourlyChart user={user} isToday={isToday} selectedDate={selectedDate} />
     </div>
   );
 }
