@@ -190,6 +190,19 @@
     } catch (e) { return {}; }
   })();
 
+  // Helper для проверки что firstLoginToday — сегодняшний (по локальной
+  // TZ). Используется при чтении activeMsToday — если запись с вчера,
+  // её не показываем (rollover на полночь).
+  function _isSameLocalDayStr(iso) {
+    if (!iso) return false;
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return false;
+    const now = new Date();
+    return d.getFullYear() === now.getFullYear()
+        && d.getMonth() === now.getMonth()
+        && d.getDate() === now.getDate();
+  }
+
   // Phase 15 — daily history { email → [snapshots] } written by
   // runDailySnapshot CF. Drives real streak + records.
   const dailyHistoryByEmail = (st && typeof st.dailyHistory === 'object' && st.dailyHistory) ? st.dailyHistory : {};
@@ -658,17 +671,31 @@
         email: emp.email || '',
         phone: emp.phone || '',
         status: status,
-        // Phase 13 — real hours-worked: from session heartbeat
-        // (firstLoginToday → lastActivityAt). Cap at 12h sanity.
-        // Falls back to 0 for users without active session today.
+        // Phase 17 (rev) — hours-worked теперь из РЕАЛЬНОЙ активной
+        // работы. Источник: session.activeMsToday — счётчик, который
+        // тикает только когда оператор реально печатает / двигает
+        // мышкой / скроллит (см. floor-map-editor.html). AFK с открытой
+        // вкладкой больше не считается за работу.
+        //
+        // Fallback (для legacy сессий без activeMsToday) — старая
+        // формула lastActivityAt - firstLoginToday, как раньше.
         online: (function () {
           const s = sessionsByUid[emp.workspaceMemberUid];
-          if (s && s.firstLoginToday && s.lastActivityAt) {
+          if (!s) return 0;
+          // Новое поле — приоритет.
+          if (typeof s.activeMsToday === 'number' && s.activeMsToday >= 0) {
+            // Проверяем что это сегодняшний счётчик (не вчерашний — на
+            // случай если бэкенд ещё не обнулил при rollover).
+            if (s.firstLoginToday && _isSameLocalDayStr(s.firstLoginToday)) {
+              return Math.min(12 * 60, Math.round(s.activeMsToday / 60000));
+            }
+          }
+          // Legacy fallback (только пока не все вкладки обновились).
+          if (s.firstLoginToday && s.lastActivityAt) {
             const start = new Date(s.firstLoginToday).getTime();
             const end = new Date(s.lastActivityAt).getTime();
             if (end > start) {
-              const minutes = Math.round((end - start) / 60000);
-              return Math.min(12 * 60, minutes); // cap 12h sanity
+              return Math.min(12 * 60, Math.round((end - start) / 60000));
             }
           }
           return 0;

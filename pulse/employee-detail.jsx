@@ -88,7 +88,7 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
                 </span>
                 {u._isReal && (
                   <HelpHint>
-                    Presence derived from the session heartbeat ping (every 60 sec while a tab is alive). &lt;2 min since last ping = Online; &lt;15 min = Idle (exact minutes shown); else Offline (last-seen time shown). If no session was ever recorded — Offline.
+                    Presence derived from the last REAL user input (mouse / keyboard / touch / scroll / tab focus). Sitting AFK with a tab open does NOT keep the status «Online». &lt;2 min since last input = Online; &lt;15 min = Idle (exact minutes shown); else Offline (last-seen time shown). If no session was ever recorded — Offline.
                   </HelpHint>
                 )}
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
@@ -206,7 +206,7 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
               : "First login time (demo seed mock data)."} />
           <Stat icon="logout"   label="Last activity"   value={isToday ? (u.status === "online" ? "now" : (u.logout || (u.status === "idle" && u._idleMinutes != null ? u._idleMinutes + "m ago" : "—"))) : "—"} sub={isToday && u.status === "online" ? "active" : (isToday && u.status === "idle" ? "idle" : "")}
             hint={u._isReal
-              ? "Last heartbeat ping from the user's browser tab (refreshed every 60 sec while a tab is alive). Status: <2 min = online; <15 min = idle (with exact minute count); else offline (shows last seen time). If no heartbeat has ever been recorded — offline."
+              ? "Last REAL user input (mouse / keyboard / touch / scroll / tab focus). AFK with a tab open does NOT update this. Status: <2 min = online; <15 min = idle (exact minutes shown); else offline (shows last seen time)."
               : "Last activity time (demo mock)."} />
           <Stat icon="zap"      label={isToday ? "Actions today" : "Actions"}   value={displayUser.actions}                       trend={isToday ? <Trend now={displayUser.actions} prev={Math.round(displayUser.actions * .92)} /> : null}
             hint={u._isReal
@@ -1154,7 +1154,7 @@ function WorkingTodayCard({ user, displayUser, metrics, isToday, selectedDate, s
           {isToday ? "Working today · activity" : _shortDateLabel(selectedDate) + " · activity"}
         </span>
         <HelpHint>
-          Combined hours-worked + outbound activity for the selected day. Hours = time between today's firstLoginToday and the most recent heartbeat (cap 12h). Activity bars = SENT emails per hour from the Gmail API (office-hour window 7-19). Hover any bar for per-email detail. Past days show snapshot hours; hourly distribution comes once Phase 18 snapshot extension lands.
+          Combined hours-worked + outbound activity for the selected day. Hours = REAL active time, accumulated only while the operator is actually interacting (mouse / keyboard / touch / scroll). Sitting AFK with a tab open does NOT count. Capped at 12h. Activity bars = SENT emails per hour from the Gmail API (office-hour window 7-19). Hover any bar for per-email detail. Past days show snapshot hours.
         </HelpHint>
         <div className="spacer" />
         {isToday && displayUser.status === "online" && <span className="chip is-success is-small" style={{ fontSize: 10 }}>on time</span>}
