@@ -200,6 +200,29 @@
     } catch (e) { return {}; }
   })();
 
+  // Phase 17 rev — format last-seen ts с day context. Tony заметил:
+  // если Ann последний раз была вчера в 4:10 PM, шапка показывала
+  // «Last seen 4:10 PM» без даты — оператор думал что это сегодня.
+  // Теперь: today → «4:10 PM»; вчера → «Yesterday 4:10 PM»;
+  // этой неделей → «Mon 4:10 PM»; старее → «May 19, 4:10 PM».
+  function _formatLastSeenIso(iso) {
+    if (!iso) return null;
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return null;
+    const now = new Date();
+    const h = d.getHours(), mm = String(d.getMinutes()).padStart(2, '0');
+    const hhmm = ((h % 12) || 12) + ':' + mm + ' ' + (h >= 12 ? 'PM' : 'AM');
+    const dStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const nowStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const diffDays = Math.floor((nowStart - dStart) / 86400000);
+    if (diffDays === 0) return hhmm;
+    if (diffDays === 1) return 'Yesterday ' + hhmm;
+    if (diffDays > 1 && diffDays < 7) {
+      return d.toLocaleDateString('en-US', { weekday: 'short' }) + ' ' + hhmm;
+    }
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ', ' + hhmm;
+  }
+
   // Helper для проверки что firstLoginToday — сегодняшний (по локальной
   // TZ). Используется при чтении activeMsToday — если запись с вчера,
   // её не показываем (rollover на полночь).
@@ -688,7 +711,8 @@
         // вкладкой больше не считается за работу.
         //
         // Fallback (для legacy сессий без activeMsToday) — старая
-        // формула lastActivityAt - firstLoginToday, как раньше.
+        // формула lastActivityAt - firstLoginToday, ТОЛЬКО если оба ts
+        // сегодняшние (иначе показывали бы вчерашние часы).
         online: (function () {
           const s = sessionsByUid[emp.workspaceMemberUid];
           if (!s) return 0;
@@ -699,9 +723,10 @@
             if (s.firstLoginToday && _isSameLocalDayStr(s.firstLoginToday)) {
               return Math.min(12 * 60, Math.round(s.activeMsToday / 60000));
             }
+            return 0;
           }
-          // Legacy fallback (только пока не все вкладки обновились).
-          if (s.firstLoginToday && s.lastActivityAt) {
+          // Legacy fallback — только если firstLoginToday СЕГОДНЯ.
+          if (s.firstLoginToday && _isSameLocalDayStr(s.firstLoginToday) && s.lastActivityAt) {
             const start = new Date(s.firstLoginToday).getTime();
             const end = new Date(s.lastActivityAt).getTime();
             if (end > start) {
@@ -710,32 +735,29 @@
           }
           return 0;
         })(),
-        // Phase 12 — real session data when available, else null/0 (no mock).
-        // Source: state.sessions[emp.workspaceMemberUid] populated by floor-map's
-        // _refreshSessionsCache. If member hasn't signed in since deploy → null.
+        // Phase 17 rev — login показывается ТОЛЬКО если firstLoginToday
+        // действительно сегодня. Раньше (bug, Tony: «Почему здесь
+        // показывается вчерашняя информация») мы возвращали отформа-
+        // тированный ts из firstLoginToday без проверки даты — если
+        // оператор последний раз заходил вчера, шапка показывала
+        // вчерашнее «8:55 AM» как «First login» сегодня.
         login: (function () {
           const s = sessionsByUid[emp.workspaceMemberUid];
-          if (s && s.firstLoginToday) {
-            const d = new Date(s.firstLoginToday);
-            if (!isNaN(d.getTime())) {
-              // Format as h:MM AM/PM for display
-              const h = d.getHours(), mm = String(d.getMinutes()).padStart(2, '0');
-              return ((h % 12) || 12) + ':' + mm + ' ' + (h >= 12 ? 'PM' : 'AM');
-            }
-          }
-          return null;
-        })(),
-        // Phase 17 — для offline-юзеров показываем «last seen HH:MM AM/PM»
-        // (формат как login). Источник — lastActivityAt из session doc.
-        // Если real-user активен сейчас — null (employee-detail сам
-        // покажет «now»).
-        logout: (function () {
-          if (status !== 'offline') return null;
-          if (!_lastActMs) return null;
-          const d = new Date(_lastActMs);
+          if (!s || !s.firstLoginToday) return null;
+          if (!_isSameLocalDayStr(s.firstLoginToday)) return null;
+          const d = new Date(s.firstLoginToday);
           if (isNaN(d.getTime())) return null;
           const h = d.getHours(), mm = String(d.getMinutes()).padStart(2, '0');
           return ((h % 12) || 12) + ':' + mm + ' ' + (h >= 12 ? 'PM' : 'AM');
+        })(),
+        // Phase 17 rev — last-seen теперь с day context.
+        // Today → «4:10 PM»; вчера → «Yesterday 4:10 PM»; этой неделей
+        // → «Mon 4:10 PM»; старее → «May 19, 4:10 PM». Без даты
+        // оператор не понимал когда именно сотрудник был последний раз.
+        logout: (function () {
+          if (status !== 'offline') return null;
+          if (!_lastActMs) return null;
+          return _formatLastSeenIso(new Date(_lastActMs).toISOString());
         })(),
         // Точное число минут с последнего heartbeat'а — для chip «Idle Nm»
         // в employee-detail (раньше было захардкожено «Idle 12m»).
