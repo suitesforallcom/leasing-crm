@@ -219,10 +219,14 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
             hint={u._isReal
               ? "Emails sent + replies on the selected day vs role target. Counted from Gmail API SENT events + manual outreach records with type=email/lease. INCOMING (received) emails are NOT counted — only outbound activity is the operator's work. Today value updates live; past days come from the daily snapshot."
               : "Emails sent / target (demo mock)."} />
-          <Stat icon="contract" label="Contracts"       value={displayUser.contracts + (m.targets.contracts > 0 ? "/" + m.targets.contracts : "")} sub={isToday && displayUser.contracts > 0 ? "2 signed" : ""}
+          {/* Phase 17 rev — Tony: «здесь мне нужно писать только
+              контракты подписаны за этот месяц не нужно писать цель».
+              Показываем contractsSignedMtd (envelopes со status=completed
+              этого месяца по completedAt). Без «/N target». */}
+          <Stat icon="contract" label="Contracts signed · MTD" value={(u.contractsSignedMtd != null ? u.contractsSignedMtd : (displayUser.contracts || 0))} sub=""
             hint={u._isReal
-              ? "Lease envelopes sent via DocuSign for the selected day vs role target. REAL data from u.leaseEnvelopes with sentBy = this employee's email. Today — live; past days — from snapshot."
-              : "Contracts / target (demo mock)."} />
+              ? "Lease envelopes signed (status=completed) this month. Based on env.completedAt — envelope counts as «signed this month» if its completion timestamp falls in the current calendar month, regardless of when it was sent. Pre-DocuSign-integration envelopes that lack completedAt fall back to sentAt as a proxy."
+              : "Contracts signed (demo mock)."} />
           {/* Phase 17 — Tours columns. Источник: HubSpot CRM (meetings +
               deal stages). Интеграция ещё не подключена; для real users
               сейчас 0/0; для демо-сидов — синтетические числа. */}

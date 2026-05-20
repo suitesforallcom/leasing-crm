@@ -166,7 +166,8 @@
   function blankStats() {
     return {
       contractsMtd: 0,        // leaseEnvelopes sent this month
-      contractsCompleted: 0,  // status=completed within month
+      contractsCompleted: 0,  // status=completed within month (legacy)
+      contractsSignedMtd: 0,  // Phase 17 rev — envelopes completed (signed) THIS month (completedAt-based)
       contractsThisWeek: 0,   // Phase 12 — Mon-Sun current week
       contractsLastWeek: 0,   // Phase 12 — Mon-Sun previous week
       envelopesAllTime: 0,    // lifetime envelope count
@@ -332,10 +333,22 @@
                 stat.actionsMtd++;
                 if (env.status === 'completed') stat.contractsCompleted++;
               }
-              // Phase 17 rev — today bucket
+              // Phase 17 rev — today bucket (sent today)
               if (sentMs >= startOfTodayMs) {
                 stat.contractsToday++;
                 stat.actionsToday++;
+              }
+              // Phase 17 rev — Tony: «контракты подписаны за этот месяц».
+              // Считаем envelopes completed (signed) ЭТОГО месяца по
+              // completedAt timestamp (не sentAt — envelope мог быть
+              // отправлен в прошлом месяце и подписан в этом).
+              if (env.status === 'completed') {
+                const completedMs = env.completedAt
+                  ? new Date(env.completedAt).getTime()
+                  : sentMs; // fallback на sentAt если completedAt не записан
+                if (completedMs && completedMs >= monthStartMs) {
+                  stat.contractsSignedMtd++;
+                }
               }
               // Phase 12 — weekly bucket
               if (sentMs >= thisWeekStartMs) stat.contractsThisWeek++;
@@ -824,6 +837,7 @@
         emailsMtd: realStats.emailsMtd,
         callsMtd: realStats.callsMtd,
         contractsMtd: realStats.contractsMtd,
+        contractsSignedMtd: realStats.contractsSignedMtd, // signed this month
         actionsMtd: realStats.actionsMtd,
         // Phase 17 — Tours назначенные / проведённые. Источник —
         // HubSpot CRM (meetings + deal stages). Интеграция ещё не
