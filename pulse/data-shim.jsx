@@ -492,16 +492,19 @@
     }
 
     // ----------------------------------------------------------------
-    // Phase 17 — bucket allEmailEntries SENT events by hour-of-day for
-    // TODAY only. Stash on window.__pulseHourlyByEmail так как
-    // allEmailEntries — const внутри этого try; helper _hourlyTodayFor
-    // ниже читает из window-глобала.
+    // Phase 17 (rev) — bucket SENT events by hour-of-day for TODAY.
+    // Сохраняем не только counts, но и сами события (to/subject/ts) —
+    // чтобы при hover'е на bar показать кому/что/во сколько отправил.
+    // Лимит 8 items per hour bucket — больше нет смысла отображать в UI.
+    // Stash on window.__pulseHourlyByEmail так как allEmailEntries —
+    // const внутри try; helper _hourlyTodayFor ниже читает из window.
     // ----------------------------------------------------------------
     const _startOfTodayMs = (function () {
       const d = new Date();
       d.setHours(0, 0, 0, 0);
       return d.getTime();
     })();
+    const PER_BUCKET_LIMIT = 8;
     const hourlyTodayByEmail = new Map();
     for (const e of allEmailEntries) {
       if (!e.owner || !e.ts) continue;
@@ -511,7 +514,16 @@
       if (h < 7 || h > 19) continue;
       if (!hourlyTodayByEmail.has(e.owner)) hourlyTodayByEmail.set(e.owner, new Map());
       const bucket = hourlyTodayByEmail.get(e.owner);
-      bucket.set(h, (bucket.get(h) || 0) + 1);
+      if (!bucket.has(h)) bucket.set(h, { count: 0, items: [] });
+      const slot = bucket.get(h);
+      slot.count++;
+      if (slot.items.length < PER_BUCKET_LIMIT) {
+        slot.items.push({
+          ts: e.ts,
+          to: e.to || '(no recipient)',
+          subject: e.subject || '(no subject)',
+        });
+      }
     }
     window.__pulseHourlyByEmail = hourlyTodayByEmail;
   } catch (e) { console.warn('[pulse-shim] state walk failed:', e); }
@@ -527,7 +539,14 @@
   function _hourlyTodayFor(email) {
     const m = (window.__pulseHourlyByEmail instanceof Map) ? window.__pulseHourlyByEmail.get((email || '').toLowerCase()) : null;
     const out = [];
-    for (let h = 7; h <= 19; h++) out.push({ h, v: m ? (m.get(h) || 0) : 0 });
+    for (let h = 7; h <= 19; h++) {
+      const slot = m ? m.get(h) : null;
+      out.push({
+        h,
+        v: slot ? slot.count : 0,
+        items: slot ? slot.items : [],   // [{ts, to, subject}], up to PER_BUCKET_LIMIT
+      });
+    }
     return out;
   }
 

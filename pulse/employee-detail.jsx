@@ -1118,30 +1118,34 @@ function HourlyCard({ user, displayUser, isToday, selectedDate }) {
   //  - mock user → DATA.hourlyActionsFor(u.id) (статичный mock,
   //    нечуствительный к дате — для демо-сидов).
   const isReal = !!user._isReal;
+  const [hoveredHour, setHoveredHour] = React.useState(null);
   let data, totalActions, isMock = false, isMissing = false;
 
   if (isReal) {
     if (isToday) {
       data = Array.isArray(user._hourlyToday) && user._hourlyToday.length
         ? user._hourlyToday
-        : DATA.hourlyActionsFor(user.id).map(d => ({ h: d.h, v: 0 }));
+        : DATA.hourlyActionsFor(user.id).map(d => ({ h: d.h, v: 0, items: [] }));
     } else {
       // Прошлый день без снапшота — нули.
-      data = DATA.hourlyActionsFor(user.id).map(d => ({ h: d.h, v: 0 }));
+      data = DATA.hourlyActionsFor(user.id).map(d => ({ h: d.h, v: 0, items: [] }));
       isMissing = true;
     }
     totalActions = data.reduce((s, d) => s + d.v, 0);
   } else {
-    data = DATA.hourlyActionsFor(user.id);
+    // Mock seeds — добавим items: [] для совместимости с hover-логикой.
+    data = DATA.hourlyActionsFor(user.id).map(d => ({ h: d.h, v: d.v, items: [] }));
     totalActions = data.reduce((s, d) => s + d.v, 0);
     isMock = true;
   }
 
   // Пиковый час — для подсказки «peak 14:00 → 12 events».
   const peak = data.reduce((best, d) => (d.v > best.v ? d : best), { h: -1, v: 0 });
+  const max = Math.max(1, ...data.map(d => d.v));
+  const hoveredBar = hoveredHour != null ? data.find(d => d.h === hoveredHour) : null;
 
   return (
-    <div style={{ padding: 12, background: "var(--surface-2)", borderRadius: 12, display: "flex", flexDirection: "column" }}>
+    <div style={{ padding: 12, background: "var(--surface-2)", borderRadius: 12, display: "flex", flexDirection: "column", position: "relative" }}>
       <div className="row" style={{ marginBottom: 6 }}>
         <Icon name="activity" style={{ color: "var(--muted)", width: 14, height: 14 }} />
         <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>
@@ -1151,20 +1155,51 @@ function HourlyCard({ user, displayUser, isToday, selectedDate }) {
         {isReal && (
           <HelpHint>
             {isToday
-              ? "Outbound emails per hour today, bucketed from Gmail API SENT events. Office-hour window 7-19. Received emails and incoming spam are excluded — only the operator's outbound actions count."
+              ? "Outbound emails per hour today, bucketed from Gmail API SENT events. Office-hour window 7-19. Hover any bar to see the recipients and subjects of emails sent in that hour. Received emails and incoming spam are excluded — only the operator's outbound actions count."
               : "Hourly distribution is not yet stored in daily snapshots. Past-day buckets will appear once Phase 18 snapshot extension lands."}
           </HelpHint>
         )}
-        {isMock && <HelpHint>Hourly distribution (demo seed mock data).</HelpHint>}
+        {isMock && <HelpHint>Hourly distribution (demo seed mock data — no per-email detail available).</HelpHint>}
       </div>
+
       <div style={{ flex: 1, minHeight: 70, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
         {isMissing ? (
           <div className="muted" style={{ fontSize: 11.5, padding: "12px 4px", fontStyle: "italic" }}>
             No hourly data for this day yet.
           </div>
         ) : (
-          <HourBars data={data} color="var(--accent)" height={70} />
+          <div
+            style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 70 }}
+            onMouseLeave={() => setHoveredHour(null)}
+          >
+            {data.map(d => {
+              const h = Math.max(2, (d.v / max) * 52);
+              const isHover = d.h === hoveredHour;
+              return (
+                <div
+                  key={d.h}
+                  onMouseEnter={() => setHoveredHour(d.h)}
+                  style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, cursor: d.v > 0 ? "pointer" : "default" }}
+                >
+                  <div
+                    style={{
+                      width: "100%",
+                      height: h + "px",
+                      background: isHover ? "var(--accent-ink, var(--accent))" : "var(--accent)",
+                      opacity: hoveredHour != null && !isHover ? 0.45 : 0.9,
+                      borderRadius: "4px 4px 2px 2px",
+                      transition: "opacity 120ms, background 120ms",
+                    }}
+                  />
+                  <div style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: isHover ? "var(--ink)" : "var(--muted)", fontWeight: isHover ? 700 : 400 }}>
+                    {d.h % 4 === 0 ? d.h : ""}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         )}
+
         <div className="row" style={{ marginTop: 6, fontSize: 10.5 }}>
           <span className="muted">
             {totalActions} {totalActions === 1 ? "action" : "actions"}
@@ -1177,6 +1212,65 @@ function HourlyCard({ user, displayUser, isToday, selectedDate }) {
           )}
         </div>
       </div>
+
+      {/* Hover popover — appears anchored to the card. Shows time-range
+          + per-email detail (recipient + subject) for the hovered bar. */}
+      {hoveredBar && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 6px)", left: 0, right: 0,
+            background: "var(--surface)",
+            border: "1px solid var(--border)",
+            borderRadius: 10,
+            padding: 12,
+            boxShadow: "0 8px 24px rgba(0,0,0,.12)",
+            zIndex: 30,
+            fontSize: 12,
+            pointerEvents: "none",
+          }}
+        >
+          <div className="row" style={{ marginBottom: 6 }}>
+            <span className="mono" style={{ fontWeight: 700, color: "var(--ink)", fontSize: 13 }}>
+              {String(hoveredBar.h).padStart(2, "0")}:00 – {String(hoveredBar.h + 1).padStart(2, "0")}:00
+            </span>
+            <div className="spacer" />
+            <span className="chip is-accent" style={{ fontSize: 10.5 }}>
+              {hoveredBar.v} {hoveredBar.v === 1 ? "email" : "emails"}
+            </span>
+          </div>
+          {hoveredBar.v === 0 ? (
+            <div className="muted" style={{ fontSize: 11.5, fontStyle: "italic" }}>No outbound emails in this hour.</div>
+          ) : isMock ? (
+            <div className="muted" style={{ fontSize: 11.5, fontStyle: "italic" }}>Per-email detail unavailable for demo seed users.</div>
+          ) : !Array.isArray(hoveredBar.items) || hoveredBar.items.length === 0 ? (
+            <div className="muted" style={{ fontSize: 11.5, fontStyle: "italic" }}>Email metadata still loading.</div>
+          ) : (
+            <div className="col" style={{ gap: 4 }}>
+              {hoveredBar.items.slice(0, 8).map((it, i) => {
+                const t = new Date(it.ts);
+                const hh = String(t.getHours()).padStart(2, "0");
+                const mm = String(t.getMinutes()).padStart(2, "0");
+                const recipient = typeof it.to === "string" ? it.to : (Array.isArray(it.to) ? it.to.join(", ") : "");
+                return (
+                  <div key={i} className="row" style={{ alignItems: "baseline", gap: 6 }}>
+                    <span className="mono muted" style={{ fontSize: 10.5, width: 38, flexShrink: 0 }}>{hh}:{mm}</span>
+                    <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      <span style={{ color: "var(--accent-ink)", fontWeight: 600 }}>→ {recipient}</span>
+                      {it.subject && <span className="muted"> · {it.subject}</span>}
+                    </span>
+                  </div>
+                );
+              })}
+              {hoveredBar.v > hoveredBar.items.length && (
+                <div className="muted" style={{ fontSize: 10.5, fontStyle: "italic", marginTop: 2 }}>
+                  + {hoveredBar.v - hoveredBar.items.length} more…
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
