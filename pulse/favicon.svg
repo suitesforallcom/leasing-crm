@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="crown" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#15803d"/>
+    </linearGradient>
+    <linearGradient id="trunk" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#a16207"/>
+      <stop offset="100%" stop-color="#78350f"/>
+    </linearGradient>
+  </defs>
+  <!-- soft round backdrop so favicon stands out on browser tab strip -->
+  <circle cx="16" cy="16" r="15.5" fill="#ecfdf5" stroke="#86efac" stroke-width=".8"/>
+  <!-- trunk -->
+  <rect x="14.5" y="19.5" width="3" height="8" rx="1" fill="url(#trunk)"/>
+  <!-- crown: 3 stacked circles for organic shape -->
+  <circle cx="16" cy="12" r="7.5" fill="url(#crown)"/>
+  <circle cx="9.5" cy="14.5" r="5.5" fill="url(#crown)" opacity=".92"/>
+  <circle cx="22.5" cy="14.5" r="5.5" fill="url(#crown)" opacity=".92"/>
+  <!-- fruits -->
+  <circle cx="12" cy="10.5" r="1.4" fill="#dc2626"/>
+  <circle cx="19" cy="13.5" r="1.4" fill="#f59e0b"/>
+  <!-- apple highlight -->
+  <circle cx="11.4" cy="9.9" r=".4" fill="#fecaca"/>
+</svg>
