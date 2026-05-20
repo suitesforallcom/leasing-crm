@@ -100,11 +100,19 @@
           propCount += (f.units || []).filter(function (u) { return u && u.type === 'office'; }).length;
         });
       } catch {}
+      // Phase 17 rev — Tony: «Здесь нужно вводить реальный адрес
+      // проекта». Раньше Pulse dropdown показывал b.name (часто
+      // workspace branding типа «SuitesForAll», одинаково на разных
+      // зданиях). Теперь приоритет address → name → id.
+      const addr = (b.address || '').trim();
+      const nm   = (b.name || '').trim();
+      const label = addr || nm || b.id || ('Building ' + (i + 1));
       return {
         id: 'rc' + (i + 1), // Phase 11a — 'rc' prefix to not collide with seed c1..c4
-        name: b.name || b.id || ('Building ' + (i + 1)),
-        short: ((b.name || b.id || '').slice(0, 3).toUpperCase()) || ('B' + (i + 1)),
-        address: b.address || '',
+        name: label,                  // используется в dropdown'е, CenterChip и т.д.
+        short: (label.slice(0, 3).toUpperCase()) || ('B' + (i + 1)),
+        address: addr,                // явное поле для callers которые хотят только address
+        buildingName: nm,             // явное поле для callers которые хотят только name
         properties: propCount,
         color: palette[i % palette.length],
         headcount: 0,
