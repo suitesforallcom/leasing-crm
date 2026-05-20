@@ -689,6 +689,13 @@
         docs: realStats.notesMtd,
         invoices: realInvoices,
         payments: realPayments,
+        // Phase 17 — Tours назначенные / проведённые. Источник —
+        // HubSpot CRM (meetings + deal stages). Интеграция ещё не
+        // подключена; пока заглушка 0 для всех real users. Когда
+        // HubSpot wired up, fill from hubspotMeetingsByEmail map.
+        toursScheduled: 0,
+        toursCompleted: 0,
+        _toursMock: true, // флаг для UI — показать «pending HubSpot».
         score: scoreFinal,
         prev: 0, // historical previous-period score requires daily snapshots (Phase 15)
         unusual: realActions === 0 && status !== 'offline',
@@ -741,6 +748,18 @@
       };
       usersByEmail.set(emailLower, u);
       return u;
+    });
+
+    // Phase 17 — pad demo seed users with mock tour counts so the new
+    // «Tours scheduled / completed» columns не пустые в демо-просмотре.
+    // Real users получают 0/0 (см. выше — будет HubSpot).
+    _seedUsers.forEach(function (u, i) {
+      if (u.toursScheduled == null) {
+        const seed = (u.id || 'u').charCodeAt(1) || (7 + i);
+        u.toursScheduled = u.role === 'agent' ? 3 + (seed % 7) : (seed % 4);
+        u.toursCompleted = Math.max(0, u.toursScheduled - 1 - (seed % 3));
+        u._toursMock = true;
+      }
     });
 
     // Phase 11a — append real employees AFTER demo seed (don't replace).

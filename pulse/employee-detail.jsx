@@ -209,6 +209,17 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
             hint={u._isReal
               ? "Lease envelopes sent via DocuSign for the selected day vs role target. REAL data from u.leaseEnvelopes with sentBy = this employee's email. Today — live; past days — from snapshot."
               : "Contracts / target (demo mock)."} />
+          {/* Phase 17 — Tours columns. Источник: HubSpot CRM (meetings +
+              deal stages). Интеграция ещё не подключена; для real users
+              сейчас 0/0; для демо-сидов — синтетические числа. */}
+          <Stat icon="people"   label="Tours scheduled" value={u.toursScheduled != null ? u.toursScheduled : 0} sub={u._toursMock ? "pending HubSpot" : ""}
+            hint={u._isReal
+              ? "Tours scheduled this month — count of tour bookings linked to this employee in HubSpot CRM. PENDING — HubSpot integration not connected yet. Will pull from hubspotMeetingsByEmail once the API is wired up (meetings with type=tour and contact owner = this employee)."
+              : "Tours scheduled this month (demo mock — placeholder for HubSpot data)."} />
+          <Stat icon="check"    label="Tours done"      value={u.toursCompleted != null ? u.toursCompleted : 0} sub={u._toursMock ? "pending HubSpot" : ""}
+            hint={u._isReal
+              ? "Tours completed this month — count of tour bookings that moved to a «completed» / «toured» deal stage in HubSpot CRM. PENDING — HubSpot integration not connected yet."
+              : "Tours completed this month (demo mock — placeholder for HubSpot data)."} />
           <Stat icon="star"     label="Productivity"    value={displayUser.score === 0 ? "—" : displayUser.score}   trend={isToday && displayUser.score > 0 ? <Trend now={displayUser.score} prev={u.prev} suffix=" / 30d" /> : null} onClick={isToday && displayUser.score > 0 ? () => window.openScoreExplainer(u) : null}
             hint={u._isReal
               ? "Composite score 0-100. Formula: contracts × 30% + emails × 25% + calls × 20% + invoices × 15% + notes × 10%, each component capped at 100% of role target. Click for breakdown."
@@ -244,15 +255,17 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
         .emp-head { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
         .emp-stats {
           display: grid;
-          grid-template-columns: repeat(8, 1fr);
-          gap: 16px;
+          grid-template-columns: repeat(10, 1fr);
+          gap: 12px;
           margin-top: 20px;
           padding-top: 20px;
           border-top: 1px dashed var(--border);
         }
+        @media (max-width: 1450px) { .emp-stats { grid-template-columns: repeat(5, 1fr); } }
         @media (max-width: 1300px) { .head-row-2 { grid-template-columns: 1fr 1fr !important; } }
-        @media (max-width: 1100px) { .emp-stats { grid-template-columns: repeat(4, 1fr); } .head-row-2 { grid-template-columns: 1fr !important; } }
-        @media (max-width: 640px)  { .emp-stats { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 1100px) { .emp-stats { grid-template-columns: repeat(5, 1fr); } .head-row-2 { grid-template-columns: 1fr !important; } }
+        @media (max-width: 800px)  { .emp-stats { grid-template-columns: repeat(3, 1fr); } }
+        @media (max-width: 540px)  { .emp-stats { grid-template-columns: repeat(2, 1fr); } }
       `}</style>
     </div>
   );
