@@ -112,8 +112,10 @@
         _isReal: true,
       };
     });
-    window.DATA.CENTERS = _seedCenters.concat(realCenters);
-    // Also rebuild CENTER_BY_ID for prototype consumers
+    // Phase 17 rev — Tony: «убери всех фейковых, оставь только реальных».
+    // Demo seed centers (c1 Cypress Heights / c2 Forest Glen) больше не
+    // добавляются — Pulse показывает только реальные buildings.
+    window.DATA.CENTERS = realCenters;
     window.DATA.CENTER_BY_ID = Object.fromEntries(window.DATA.CENTERS.map(function (c) { return [c.id, c]; }));
   }
 
@@ -811,20 +813,12 @@
       return u;
     });
 
-    // Phase 17 — pad demo seed users with mock tour counts so the new
-    // «Tours scheduled / completed» columns не пустые в демо-просмотре.
-    // Real users получают 0/0 (см. выше — будет HubSpot).
-    _seedUsers.forEach(function (u, i) {
-      if (u.toursScheduled == null) {
-        const seed = (u.id || 'u').charCodeAt(1) || (7 + i);
-        u.toursScheduled = u.role === 'agent' ? 3 + (seed % 7) : (seed % 4);
-        u.toursCompleted = Math.max(0, u.toursScheduled - 1 - (seed % 3));
-        u._toursMock = true;
-      }
-    });
-
-    // Phase 11a — append real employees AFTER demo seed (don't replace).
-    window.DATA.USERS = _seedUsers.concat(realUsers);
+    // Phase 17 rev — Tony: «убери всех фейковый аккаунт оставь только
+    // реально». Демо-сиды Maya / Aaliyah / Daniel / Elena / Beatriz / ...
+    // больше НЕ подмешиваются в DATA.USERS. Activity Center, leaderboard,
+    // people list, compare picker — все теперь видят ТОЛЬКО реальных
+    // сотрудников из state.employees.
+    window.DATA.USERS = realUsers;
 
     // Update center headcount across BOTH seed + real users.
     (window.DATA.CENTERS || []).forEach(function (c) {
@@ -853,15 +847,16 @@
       };
     });
 
+  // Phase 17 rev — Tony: «убери всех фейковый». Всегда заменяем
+  // ALL_EVENTS на реальные (даже если []) — демо-события из data.jsx
+  // больше не показываются ни в Live activity, ни в Timeline.
+  window.DATA.ALL_EVENTS = allRealEvents;
+  window.DATA.EVENTS_MAYA = allRealEvents;
+  window.DATA.EVENTS_OTHERS = allRealEvents;
   if (allRealEvents.length > 0) {
-    window.DATA.ALL_EVENTS = allRealEvents;
-    // Split for prototype's "EVENTS_MAYA" (their featured-user subject) +
-    // "EVENTS_OTHERS" if any code depends on the split — point both at the
-    // same array so consumers see the same data regardless of which they
-    // happened to grab.
-    window.DATA.EVENTS_MAYA = allRealEvents;
-    window.DATA.EVENTS_OTHERS = allRealEvents;
     console.info('[pulse-shim] replaced ALL_EVENTS with ' + allRealEvents.length + ' real events from outreach + envelopes (last 24h)');
+  } else {
+    console.info('[pulse-shim] ALL_EVENTS cleared — no real outreach/envelope events in last 24h');
   }
 
   console.info(
