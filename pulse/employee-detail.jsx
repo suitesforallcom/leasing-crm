@@ -215,10 +215,10 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
             hint={u._isReal
               ? "Calls vs role target. MOCK — telephony integration not connected (needs Twilio / RingCentral / Aircall webhook)."
               : "Calls / target (demo mock)."} />
-          <Stat icon="mail"     label="Emails"          value={displayUser.emails + "/" + m.targets.emails} sub={isToday && displayUser.emails > 0 ? `avg reply ${m.actuals.emailReplyMin}m` : ""}
+          <Stat icon="mail"     label={isToday ? "Emails sent" : "Emails sent"}          value={displayUser.emails + "/" + m.targets.emails} sub={isToday && displayUser.emails > 0 ? `avg reply ${m.actuals.emailReplyMin}m` : ""}
             hint={u._isReal
-              ? "Emails sent for the selected day vs role target. Counted from Gmail API SENT events. RECEIVED emails NOT counted — incoming spam isn't the operator's achievement. Today — live; past days — from snapshot."
-              : "Emails / target (demo mock)."} />
+              ? "Emails sent + replies on the selected day vs role target. Counted from Gmail API SENT events + manual outreach records with type=email/lease. INCOMING (received) emails are NOT counted — only outbound activity is the operator's work. Today value updates live; past days come from the daily snapshot."
+              : "Emails sent / target (demo mock)."} />
           <Stat icon="contract" label="Contracts"       value={displayUser.contracts + (m.targets.contracts > 0 ? "/" + m.targets.contracts : "")} sub={isToday && displayUser.contracts > 0 ? "2 signed" : ""}
             hint={u._isReal
               ? "Lease envelopes sent via DocuSign for the selected day vs role target. REAL data from u.leaseEnvelopes with sentBy = this employee's email. Today — live; past days — from snapshot."

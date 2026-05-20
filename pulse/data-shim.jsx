@@ -156,6 +156,13 @@
   const thisWeekStartMs = startOfWeekMs(new Date());
   const lastWeekStartMs = thisWeekStartMs - 7 * 24 * 60 * 60 * 1000;
   const lastWeekEndMs = thisWeekStartMs - 1;
+  // Phase 17 rev — today bucket (local TZ). Hoisted out of the try-block
+  // so outreach + envelope + email walks can all use it.
+  const startOfTodayMs = (function () {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  })();
   function blankStats() {
     return {
       contractsMtd: 0,        // leaseEnvelopes sent this month
@@ -164,12 +171,16 @@
       contractsLastWeek: 0,   // Phase 12 — Mon-Sun previous week
       envelopesAllTime: 0,    // lifetime envelope count
       emailsMtd: 0,           // outreach type contains 'email'/'lease' this month
+      emailsSentToday: 0,     // Phase 17 rev — Tony: «выведи только отправленные и отвеченные» — sent-direction (sent + replies-to-incoming), TODAY only
       emailsSentThisWeek: 0,  // Phase 12 — Mon-Sun current week (sent only)
       emailsSentLastWeek: 0,  // Phase 12 — Mon-Sun previous week
       callsMtd: 0,            // outreach type === 'call' / 'phone'
+      callsToday: 0,          // Phase 17 rev — today's call count
       notesMtd: 0,            // outreach type 'note'
       paymentsMtd: 0,         // u.payments[ym].sentBy this month
       invoicesMtd: 0,         // u.stripe.*.sentBy stamps this month
+      contractsToday: 0,      // Phase 17 rev — leaseEnvelopes sent TODAY
+      actionsToday: 0,        // Phase 17 rev — sum of today's: emails + calls + contracts + payments (today)
       actionsMtd: 0,          // sum of all the above
       lastActivityMs: 0,
     };
@@ -321,6 +332,11 @@
                 stat.actionsMtd++;
                 if (env.status === 'completed') stat.contractsCompleted++;
               }
+              // Phase 17 rev — today bucket
+              if (sentMs >= startOfTodayMs) {
+                stat.contractsToday++;
+                stat.actionsToday++;
+              }
               // Phase 12 — weekly bucket
               if (sentMs >= thisWeekStartMs) stat.contractsThisWeek++;
               else if (sentMs >= lastWeekStartMs && sentMs <= lastWeekEndMs) stat.contractsLastWeek++;
@@ -350,6 +366,12 @@
               else if (type === 'note') stat.notesMtd++;
               stat.actionsMtd++;
               if (ts > stat.lastActivityMs) stat.lastActivityMs = ts;
+            }
+            // Phase 17 rev — today bucket
+            if (stat && ts >= startOfTodayMs) {
+              if (type === 'email' || type === 'lease') stat.emailsSentToday++;
+              else if (type === 'call' || type === 'phone') stat.callsToday++;
+              stat.actionsToday++;
             }
             if (ts >= last24Ms) {
               let cat = 'system';
@@ -504,6 +526,13 @@
           // Phase 12 — weekly bucket
           if (e.ts >= thisWeekStartMs) ownerStat.emailsSentThisWeek++;
           else if (e.ts >= lastWeekStartMs && e.ts <= lastWeekEndMs) ownerStat.emailsSentLastWeek++;
+          // Phase 17 rev — today bucket (только sent + replies — direction
+          // === 'sent' already filtered above). Tony: «выведи только
+          // отправленные письма и отвеченные».
+          if (e.ts >= startOfTodayMs) {
+            ownerStat.emailsSentToday++;
+            ownerStat.actionsToday++;
+          }
           if (e.ts > ownerStat.lastActivityMs) ownerStat.lastActivityMs = e.ts;
         }
       } else if (e.direction === 'received') {
@@ -650,13 +679,19 @@
       // these counters reflect their work without manual wiring.
       const emailLower = (emp.email || '').toLowerCase();
       const realStats = statsByEmail.get(emailLower) || blankStats();
-      const realContracts = realStats.contractsMtd;
-      const realEmails    = realStats.emailsMtd;
-      const realCalls     = realStats.callsMtd;
-      const realInvoices  = realStats.invoicesMtd;
+      // Phase 17 rev — Stat strip / leaderboard / today-targets ожидают
+      // СЕГОДНЯШНИЕ значения (u.emails, u.calls, u.contracts, u.actions).
+      // Раньше мы засовывали туда MTD — и Tony видел «13/20» как «13
+      // отправленных писем сегодня» против «target 20 сегодня», когда
+      // на самом деле 13 — это MTD. Чиним: u.* = today; MTD доступно
+      // отдельно (см. metricsFor → m.mtd).
+      const realContracts = realStats.contractsToday;
+      const realEmails    = realStats.emailsSentToday;  // sent + replies today
+      const realCalls     = realStats.callsToday;
+      const realInvoices  = realStats.invoicesMtd;      // invoices reads MTD elsewhere
       const realPayments  = realStats.paymentsMtd;
-      const realActions   = realStats.actionsMtd;
-      const hasAnyActivity = realActions > 0;
+      const realActions   = realStats.actionsToday;
+      const hasAnyActivity = realStats.actionsMtd > 0;
 
       // Phase 10 — Gmail thread stats per employee.
       // emailStatsByOwner buckets by owner email = ящик чьего watch'а событие.
@@ -782,6 +817,14 @@
         docs: realStats.notesMtd,
         invoices: realInvoices,
         payments: realPayments,
+        // Phase 17 rev — MTD aggregates как отдельные поля для кода,
+        // который явно хочет «месяц-до-даты» (overview leaderboard,
+        // center totals, etc.). Today values живут в u.emails / .calls /
+        // .contracts / .actions выше.
+        emailsMtd: realStats.emailsMtd,
+        callsMtd: realStats.callsMtd,
+        contractsMtd: realStats.contractsMtd,
+        actionsMtd: realStats.actionsMtd,
         // Phase 17 — Tours назначенные / проведённые. Источник —
         // HubSpot CRM (meetings + deal stages). Интеграция ещё не
         // подключена; пока заглушка 0 для всех real users. Когда
