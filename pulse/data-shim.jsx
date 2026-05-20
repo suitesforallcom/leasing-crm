@@ -490,34 +490,42 @@
         });
       }
     }
+
+    // ----------------------------------------------------------------
+    // Phase 17 — bucket allEmailEntries SENT events by hour-of-day for
+    // TODAY only. Stash on window.__pulseHourlyByEmail так как
+    // allEmailEntries — const внутри этого try; helper _hourlyTodayFor
+    // ниже читает из window-глобала.
+    // ----------------------------------------------------------------
+    const _startOfTodayMs = (function () {
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      return d.getTime();
+    })();
+    const hourlyTodayByEmail = new Map();
+    for (const e of allEmailEntries) {
+      if (!e.owner || !e.ts) continue;
+      if (e.ts < _startOfTodayMs) continue;
+      if (e.direction !== 'sent') continue;
+      const h = new Date(e.ts).getHours();
+      if (h < 7 || h > 19) continue;
+      if (!hourlyTodayByEmail.has(e.owner)) hourlyTodayByEmail.set(e.owner, new Map());
+      const bucket = hourlyTodayByEmail.get(e.owner);
+      bucket.set(h, (bucket.get(h) || 0) + 1);
+    }
+    window.__pulseHourlyByEmail = hourlyTodayByEmail;
   } catch (e) { console.warn('[pulse-shim] state walk failed:', e); }
 
   // ----------------------------------------------------------------
   // Phase 17 — per-email hourly buckets for «Activity by hour today».
-  // Walk allEmailEntries (gmailActivity + outreach), keep only items
-  // dated today + with hour in 7-19 (office-hour window matching
-  // HourBars). SENT emails count; RECEIVED не идёт в график — это не
-  // достижение оператора. Records are bucketed by hour and stamped on
-  // u._hourlyToday для employee-detail.jsx.
+  // KEY INVARIANT: allEmailEntries — const внутри try выше; до выноса
+  // в outer scope мы НЕ можем читать его здесь напрямую (ReferenceError
+  // ломал весь шим, и реальные сотрудники пропадали из DATA.USERS).
+  // Поэтому используем уже наполненный hourlyTodayByEmail, который
+  // строим внутри try (см. ниже). Тут только _hourlyTodayFor helper.
   // ----------------------------------------------------------------
-  const _startOfTodayMs = (function () {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    return d.getTime();
-  })();
-  const hourlyTodayByEmail = new Map();
-  for (const e of allEmailEntries) {
-    if (!e.owner || !e.ts) continue;
-    if (e.ts < _startOfTodayMs) continue;
-    if (e.direction !== 'sent') continue;
-    const h = new Date(e.ts).getHours();
-    if (h < 7 || h > 19) continue;
-    if (!hourlyTodayByEmail.has(e.owner)) hourlyTodayByEmail.set(e.owner, new Map());
-    const bucket = hourlyTodayByEmail.get(e.owner);
-    bucket.set(h, (bucket.get(h) || 0) + 1);
-  }
   function _hourlyTodayFor(email) {
-    const m = hourlyTodayByEmail.get((email || '').toLowerCase());
+    const m = (window.__pulseHourlyByEmail instanceof Map) ? window.__pulseHourlyByEmail.get((email || '').toLowerCase()) : null;
     const out = [];
     for (let h = 7; h <= 19; h++) out.push({ h, v: m ? (m.get(h) || 0) : 0 });
     return out;
