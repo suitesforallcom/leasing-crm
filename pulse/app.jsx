@@ -92,7 +92,16 @@ function App() {
     window.scrollTo({ top: 0 });
   }
   function compareAdd(id) {
-    setCompareInit([id, "u3", "u9"].filter((v, i, a) => a.indexOf(v) === i).slice(0, 4));
+    // Phase 17 rev — defaults pull from live DATA.USERS (top-2 by score
+    // excluding clicked user). Demo seed IDs ["u3","u9"] больше не
+    // существуют после removal of seeds → compare.jsx крашил.
+    const users = window.DATA?.USERS || [];
+    const others = users
+      .filter(u => u && u.id !== id)
+      .sort((a, b) => (b.score || 0) - (a.score || 0))
+      .slice(0, 3)
+      .map(u => u.id);
+    setCompareInit([id, ...others].filter((v, i, a) => a.indexOf(v) === i).slice(0, 4));
     setView("compare");
   }
   function openMessage(user) {

@@ -7,7 +7,18 @@
    ================================================================ */
 
 window.MyDayPage = function MyDayPage({ meId = "u1", onOpenEmployee, onOpenQuickAction, onOpenJourney }) {
-  const me = DATA.USERS.find(u => u.id === meId);
+  const me = DATA.USERS.find(u => u && u.id === meId);
+  // Phase 17 rev — guard against undefined me (no real users / stale meId
+  // from removed demo seed). metricsFor would crash on undefined.
+  if (!me) {
+    return (
+      <div className="page" style={{ padding: 40, textAlign: "center" }}>
+        <div className="muted" style={{ fontSize: 14 }}>
+          No employee record linked to this view yet. Add tracked employees in Settings → Team.
+        </div>
+      </div>
+    );
+  }
   const m = metricsFor(me);
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";

@@ -223,8 +223,8 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
           {/* Phase 17 rev — Tony: «здесь мне нужно писать только
               контракты подписаны за этот месяц не нужно писать цель».
               Показываем contractsSignedMtd (envelopes со status=completed
-              этого месяца по completedAt). Без «/N target». */}
-          <Stat icon="contract" label="Contracts signed · MTD" value={(u.contractsSignedMtd != null ? u.contractsSignedMtd : (displayUser.contracts || 0))} sub=""
+              этого месяца по completedAt). Всегда MTD (не today). */}
+          <Stat icon="contract" label="Contracts signed · MTD" value={u.contractsSignedMtd || 0} sub=""
             hint={u._isReal
               ? "Lease envelopes signed (status=completed) this month. Based on env.completedAt — envelope counts as «signed this month» if its completion timestamp falls in the current calendar month, regardless of when it was sent. Pre-DocuSign-integration envelopes that lack completedAt fall back to sentAt as a proxy."
               : "Contracts signed (demo mock)."} />

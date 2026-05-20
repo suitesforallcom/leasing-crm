@@ -7,7 +7,14 @@
    ================================================================ */
 
 window.MyJourneyPage = function MyJourneyPage({ meId = "u1", onBack }) {
-  const me = DATA.USERS.find(u => u.id === meId);
+  const me = DATA.USERS.find(u => u && u.id === meId);
+  if (!me) {
+    return (
+      <div className="page" style={{ padding: 40, textAlign: "center" }}>
+        <div className="muted" style={{ fontSize: 14 }}>No employee linked yet.</div>
+      </div>
+    );
+  }
   const m = metricsFor(me);
   const isReal = !!me._isReal;
 

@@ -52,6 +52,19 @@ window.CenterChip = function CenterChip({ center, compact }) {
    Shared UI primitives
    ================================================================ */
 
+// Phase 17 rev — safe DATA-map accessors. После добавления real-users
+// через data-shim, у нас могут появиться значения role/category/centerId
+// которых нет в hardcoded DATA.ROLES / DATA.CATEGORIES — то старый
+// код просто крашил («Cannot read properties of undefined»).
+window.safeRole = function safeRole(roleKey) {
+  if (DATA && DATA.ROLES && DATA.ROLES[roleKey]) return DATA.ROLES[roleKey];
+  return (DATA && DATA.ROLES && DATA.ROLES.agent) || { label: roleKey || "—", color: "var(--muted)" };
+};
+window.safeCategory = function safeCategory(catKey) {
+  if (DATA && DATA.CATEGORIES && DATA.CATEGORIES[catKey]) return DATA.CATEGORIES[catKey];
+  return (DATA && DATA.CATEGORIES && DATA.CATEGORIES.system) || { label: catKey || "—", color: "var(--muted)", icon: "bolt" };
+};
+
 window.Avatar = function Avatar({ user, size = "md", showStatus = true }) {
   // Phase 17 rev — guard against undefined user. После удаления демо-сидов
   // (Maya/Daniel/...) код в нескольких местах всё ещё пытался искать их
