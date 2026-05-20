@@ -138,44 +138,20 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
             snapshot when not today. MTD cards (May bonus) stay current.  */}
         <DateNavigator value={selectedDate} onChange={setSelectedDate} todayStr={todayStr} hasSnapshot={!!snapshot} isToday={isToday} isRealUser={!!u._isReal} />
 
-        {/* Phase 17 — compact 4-column header strip:
-            [WORKING] [HOURLY ACTIVITY] [TARGETS HIT] [MAY BONUS].
-            HourlyCard is the visual emphasis (1.6fr); the other three are
-            denser status tiles (smaller paddings + 22px num). */}
-        <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "1fr 1.6fr 1fr 1fr", gap: 12 }} className="head-row-2">
-          <div style={{ padding: 12, background: "var(--surface-2)", borderRadius: 12 }}>
-            <div className="row" style={{ marginBottom: 6 }}>
-              <Icon name="clock" style={{ color: "var(--muted)", width: 14, height: 14 }} />
-              <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>{isToday ? "Working today" : _shortDateLabel(selectedDate)}</span>
-              <HelpHint>
-                Hours worked = time between today's first sign-in (firstLoginToday) and the most recent heartbeat ping (lastActivityAt). The session document refreshes every 60 sec while a tab is alive, so this is roughly «time the operator had Pulse / floor-map open today» — not strictly «actively typing». Capped at 12h sanity. Past days source from the daily snapshot.
-              </HelpHint>
-              <div className="spacer" />
-              {/* Chip отражает реальный статус из heartbeat. «on time» только
-                  если онлайн прямо сейчас; idle / offline получают свой чип. */}
-              {isToday && displayUser.status === "online" && <span className="chip is-success is-small" style={{ fontSize: 10 }}>on time</span>}
-              {isToday && displayUser.status === "idle" && <span className="chip is-warning is-small" style={{ fontSize: 10 }}>idle</span>}
-              {isToday && displayUser.status === "offline" && u._isReal && <span className="chip is-small" style={{ fontSize: 10 }}>offline</span>}
-              {!isToday && !snapshot && <span className="chip is-small" style={{ fontSize: 10 }}>no data</span>}
-            </div>
-            <div className="row" style={{ alignItems: "baseline", gap: 6 }}>
-              <div className="num" style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-.025em", whiteSpace: "nowrap" }}>{(isToday && displayUser.status === "offline") || (!isToday && !snapshot) ? "—" : fmt.hm(displayUser.online)}</div>
-              <div className="muted" style={{ fontSize: 11.5, whiteSpace: "nowrap" }}>/ {m.targets.hoursWorked}h</div>
-            </div>
-            <div style={{ height: 6, background: "var(--surface-3)", borderRadius: 999, marginTop: 6, overflow: "hidden" }}>
-              <span style={{ display: "block", height: "100%", width: Math.min(100, (displayUser.online / 60) / m.targets.hoursWorked * 100) + "%", background: m.today.hours.hit ? "var(--success)" : "var(--accent)", borderRadius: 999 }} />
-            </div>
-            <div className="muted" style={{ fontSize: 10.5, marginTop: 5 }}>
-              {isToday
-                ? <>{u.login || "—"} → {u.status === "online" ? "now" : u.logout || "—"}</>
-                : <>Snapshot · {selectedDate}</>}
-            </div>
-          </div>
-
-          {/* Hourly activity — main visual column. Real users → outbound
-              emails bucketed by hour today; mock seeds → DATA.hourlyActionsFor.
-              Past days have no hourly snapshot yet (Phase 18 todo). */}
-          <HourlyCard user={u} displayUser={displayUser} isToday={isToday} selectedDate={selectedDate} />
+        {/* Phase 17 (merged) — 3-column header strip:
+            [WORKING TODAY + HOURLY ACTIVITY] [TARGETS HIT] [MAY BONUS].
+            Раньше Working и Hourly были двумя плитками; объединены в одну
+            широкую — слева hours + progress bar, справа inline-чарт +
+            суммарные цифры. Hover popover работает как раньше. */}
+        <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "2.6fr 1fr 1fr", gap: 12 }} className="head-row-2">
+          <WorkingTodayCard
+            user={u}
+            displayUser={displayUser}
+            metrics={m}
+            isToday={isToday}
+            selectedDate={selectedDate}
+            snapshot={snapshot}
+          />
 
           <div style={{ padding: 12, background: "var(--surface-2)", borderRadius: 12 }}>
             <div className="row" style={{ marginBottom: 6 }}>
@@ -301,7 +277,7 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
           border-top: 1px dashed var(--border);
         }
         @media (max-width: 1450px) { .emp-stats { grid-template-columns: repeat(5, 1fr); } }
-        @media (max-width: 1300px) { .head-row-2 { grid-template-columns: 1fr 1fr !important; } }
+        @media (max-width: 1200px) { .head-row-2 { grid-template-columns: 1fr 1fr !important; } }
         @media (max-width: 1100px) { .emp-stats { grid-template-columns: repeat(5, 1fr); } .head-row-2 { grid-template-columns: 1fr !important; } }
         @media (max-width: 800px)  { .emp-stats { grid-template-columns: repeat(3, 1fr); } }
         @media (max-width: 540px)  { .emp-stats { grid-template-columns: repeat(2, 1fr); } }
@@ -1159,8 +1135,208 @@ function MiniMetric({ label, value, unit }) {
 }
 
 /* ================================================================
-   Phase 17 — Hourly activity card (compact, lives in the header grid)
+   Phase 17 (merged) — combined WORKING TODAY + ACTIVITY-BY-HOUR tile.
+   Слева — hours + progress bar + login→logout; справа — почасовой
+   chart с hover popover'ом и сводными цифрами (total actions, peak).
    ================================================================ */
+function WorkingTodayCard({ user, displayUser, metrics, isToday, selectedDate, snapshot }) {
+  const m = metrics;
+  const hoursStr = (isToday && displayUser.status === "offline") || (!isToday && !snapshot)
+    ? "—"
+    : fmt.hm(displayUser.online);
+  const pctWidth = Math.min(100, (displayUser.online / 60) / m.targets.hoursWorked * 100);
+  return (
+    <div style={{ padding: 14, background: "var(--surface-2)", borderRadius: 12, position: "relative" }}>
+      {/* Header: title + ? + status chip */}
+      <div className="row" style={{ marginBottom: 8 }}>
+        <Icon name="clock" style={{ color: "var(--muted)", width: 14, height: 14 }} />
+        <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>
+          {isToday ? "Working today · activity" : _shortDateLabel(selectedDate) + " · activity"}
+        </span>
+        <HelpHint>
+          Combined hours-worked + outbound activity for the selected day. Hours = time between today's firstLoginToday and the most recent heartbeat (cap 12h). Activity bars = SENT emails per hour from the Gmail API (office-hour window 7-19). Hover any bar for per-email detail. Past days show snapshot hours; hourly distribution comes once Phase 18 snapshot extension lands.
+        </HelpHint>
+        <div className="spacer" />
+        {isToday && displayUser.status === "online" && <span className="chip is-success is-small" style={{ fontSize: 10 }}>on time</span>}
+        {isToday && displayUser.status === "idle" && <span className="chip is-warning is-small" style={{ fontSize: 10 }}>idle</span>}
+        {isToday && displayUser.status === "offline" && user._isReal && <span className="chip is-small" style={{ fontSize: 10 }}>offline</span>}
+        {!isToday && !snapshot && <span className="chip is-small" style={{ fontSize: 10 }}>no data</span>}
+      </div>
+
+      {/* 2-column inner: left = hours block, right = hourly chart */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.8fr", gap: 18, alignItems: "stretch" }}>
+        {/* Hours worked column */}
+        <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+          <div>
+            <div className="muted" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".04em", fontWeight: 600, marginBottom: 4 }}>Hours worked</div>
+            <div className="row" style={{ alignItems: "baseline", gap: 6 }}>
+              <div className="num" style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-.025em", whiteSpace: "nowrap" }}>{hoursStr}</div>
+              <div className="muted" style={{ fontSize: 12, whiteSpace: "nowrap" }}>/ {m.targets.hoursWorked}h</div>
+            </div>
+            <div style={{ height: 6, background: "var(--surface-3)", borderRadius: 999, marginTop: 8, overflow: "hidden" }}>
+              <span style={{ display: "block", height: "100%", width: pctWidth + "%", background: m.today.hours.hit ? "var(--success)" : "var(--accent)", borderRadius: 999 }} />
+            </div>
+          </div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>
+            {isToday
+              ? <>{user.login || "—"} → {user.status === "online" ? "now" : user.logout || "—"}</>
+              : <>Snapshot · {selectedDate}</>}
+          </div>
+        </div>
+
+        {/* Hourly chart column — bars + summary footer */}
+        <HourlyChart user={user} isToday={isToday} selectedDate={selectedDate} />
+      </div>
+    </div>
+  );
+}
+
+/* HourlyChart — без обёртки card, рендерит chart + footer-сводку.
+   Используется внутри WorkingTodayCard. Hover popover anchor — на
+   собственном relative-контейнере чтобы корректно позиционироваться
+   под объединённой плиткой. */
+function HourlyChart({ user, isToday, selectedDate }) {
+  const isReal = !!user._isReal;
+  const [hoveredHour, setHoveredHour] = React.useState(null);
+  let data, totalActions, isMock = false, isMissing = false;
+
+  if (isReal) {
+    if (isToday) {
+      data = Array.isArray(user._hourlyToday) && user._hourlyToday.length
+        ? user._hourlyToday
+        : DATA.hourlyActionsFor(user.id).map(d => ({ h: d.h, v: 0, items: [] }));
+    } else {
+      data = DATA.hourlyActionsFor(user.id).map(d => ({ h: d.h, v: 0, items: [] }));
+      isMissing = true;
+    }
+    totalActions = data.reduce((s, d) => s + d.v, 0);
+  } else {
+    data = DATA.hourlyActionsFor(user.id).map(d => ({ h: d.h, v: d.v, items: [] }));
+    totalActions = data.reduce((s, d) => s + d.v, 0);
+    isMock = true;
+  }
+
+  const peak = data.reduce((best, d) => (d.v > best.v ? d : best), { h: -1, v: 0 });
+  const max = Math.max(1, ...data.map(d => d.v));
+  const hoveredBar = hoveredHour != null ? data.find(d => d.h === hoveredHour) : null;
+
+  return (
+    <div style={{ position: "relative", display: "flex", flexDirection: "column" }}>
+      <div className="row" style={{ marginBottom: 4 }}>
+        <span className="muted" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".04em", fontWeight: 600 }}>
+          {isToday ? "Activity by hour · today" : "Activity by hour"}
+        </span>
+        <div className="spacer" />
+        {totalActions > 0 && (
+          <span className="muted" style={{ fontSize: 10.5 }}>
+            {totalActions} {totalActions === 1 ? "action" : "actions"}
+            {peak.v > 0 && <> · peak <span className="mono" style={{ color: "var(--ink)" }}>{String(peak.h).padStart(2, "0")}:00</span> · {peak.v}</>}
+          </span>
+        )}
+      </div>
+
+      {isMissing ? (
+        <div className="muted" style={{ fontSize: 11.5, padding: "16px 4px", fontStyle: "italic" }}>
+          No hourly data for this day yet.
+        </div>
+      ) : (
+        <div
+          style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 70 }}
+          onMouseLeave={() => setHoveredHour(null)}
+        >
+          {data.map(d => {
+            const barH = Math.max(2, (d.v / max) * 52);
+            const isHover = d.h === hoveredHour;
+            return (
+              <div
+                key={d.h}
+                onMouseEnter={() => setHoveredHour(d.h)}
+                style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, cursor: d.v > 0 ? "pointer" : "default" }}
+              >
+                <div
+                  style={{
+                    width: "100%",
+                    height: barH + "px",
+                    background: isHover ? "var(--accent-ink, var(--accent))" : "var(--accent)",
+                    opacity: hoveredHour != null && !isHover ? 0.45 : 0.9,
+                    borderRadius: "4px 4px 2px 2px",
+                    transition: "opacity 120ms, background 120ms",
+                  }}
+                />
+                <div style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: isHover ? "var(--ink)" : "var(--muted)", fontWeight: isHover ? 700 : 400 }}>
+                  {d.h % 4 === 0 ? d.h : ""}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Hover popover — anchored to this chart container (not the
+          outer merged card) so it floats right under the chart. */}
+      {hoveredBar && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 8px)", left: 0, right: 0,
+            background: "var(--surface)",
+            border: "1px solid var(--border)",
+            borderRadius: 10,
+            padding: 12,
+            boxShadow: "0 8px 24px rgba(0,0,0,.12)",
+            zIndex: 30,
+            fontSize: 12,
+            pointerEvents: "none",
+          }}
+        >
+          <div className="row" style={{ marginBottom: 6 }}>
+            <span className="mono" style={{ fontWeight: 700, color: "var(--ink)", fontSize: 13 }}>
+              {String(hoveredBar.h).padStart(2, "0")}:00 – {String(hoveredBar.h + 1).padStart(2, "0")}:00
+            </span>
+            <div className="spacer" />
+            <span className="chip is-accent" style={{ fontSize: 10.5 }}>
+              {hoveredBar.v} {hoveredBar.v === 1 ? "email" : "emails"}
+            </span>
+          </div>
+          {hoveredBar.v === 0 ? (
+            <div className="muted" style={{ fontSize: 11.5, fontStyle: "italic" }}>No outbound emails in this hour.</div>
+          ) : isMock ? (
+            <div className="muted" style={{ fontSize: 11.5, fontStyle: "italic" }}>Per-email detail unavailable for demo seed users.</div>
+          ) : !Array.isArray(hoveredBar.items) || hoveredBar.items.length === 0 ? (
+            <div className="muted" style={{ fontSize: 11.5, fontStyle: "italic" }}>Email metadata still loading.</div>
+          ) : (
+            <div className="col" style={{ gap: 4 }}>
+              {hoveredBar.items.slice(0, 8).map((it, i) => {
+                const t = new Date(it.ts);
+                const hh = String(t.getHours()).padStart(2, "0");
+                const mm = String(t.getMinutes()).padStart(2, "0");
+                const recipient = typeof it.to === "string" ? it.to : (Array.isArray(it.to) ? it.to.join(", ") : "");
+                return (
+                  <div key={i} className="row" style={{ alignItems: "baseline", gap: 6 }}>
+                    <span className="mono muted" style={{ fontSize: 10.5, width: 38, flexShrink: 0 }}>{hh}:{mm}</span>
+                    <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      <span style={{ color: "var(--accent-ink)", fontWeight: 600 }}>→ {recipient}</span>
+                      {it.subject && <span className="muted"> · {it.subject}</span>}
+                    </span>
+                  </div>
+                );
+              })}
+              {hoveredBar.v > hoveredBar.items.length && (
+                <div className="muted" style={{ fontSize: 10.5, fontStyle: "italic", marginTop: 2 }}>
+                  + {hoveredBar.v - hoveredBar.items.length} more…
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* HourlyCard — legacy standalone card wrapper. Kept for backwards
+   compatibility if anything outside employee-detail still imports it
+   (none currently); thin wrap around HourlyChart with own header. */
 function HourlyCard({ user, displayUser, isToday, selectedDate }) {
   // Источник данных:
   //  - real user + today → u._hourlyToday (заполнен data-shim'ом из
