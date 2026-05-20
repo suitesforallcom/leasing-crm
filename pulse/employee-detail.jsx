@@ -80,7 +80,11 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
                 <span className="chip">{DATA.ROLES[u.role].label}</span>
                 <span className={"chip is-" + (u.status === "online" ? "success" : u.status === "idle" ? "warning" : "")}>
                   <span className="dot" style={{ background: u.status === "online" ? "var(--success)" : u.status === "idle" ? "var(--warning)" : "var(--muted-2)" }} />
-                  {u.status === "online" ? "Online now" : u.status === "idle" ? "Idle 12m" : "Offline"}
+                  {u.status === "online"
+                    ? "Online now"
+                    : u.status === "idle"
+                      ? "Idle " + (u._idleMinutes != null ? u._idleMinutes + "m" : "")
+                      : (u._isReal && u.logout ? "Last seen " + u.logout : "Offline")}
                 </span>
                 <StatusPill status={m.status} size="lg" />
                 <BonusBadge tier={m.tier} amount={m.bonusMtd} />
@@ -124,7 +128,11 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
               <Icon name="clock" style={{ color: "var(--muted)", width: 14, height: 14 }} />
               <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>{isToday ? "Working today" : _shortDateLabel(selectedDate)}</span>
               <div className="spacer" />
-              {isToday && <span className="chip is-success is-small" style={{ fontSize: 10 }}>on time</span>}
+              {/* Chip отражает реальный статус из heartbeat. «on time» только
+                  если онлайн прямо сейчас; idle / offline получают свой чип. */}
+              {isToday && displayUser.status === "online" && <span className="chip is-success is-small" style={{ fontSize: 10 }}>on time</span>}
+              {isToday && displayUser.status === "idle" && <span className="chip is-warning is-small" style={{ fontSize: 10 }}>idle</span>}
+              {isToday && displayUser.status === "offline" && u._isReal && <span className="chip is-small" style={{ fontSize: 10 }}>offline</span>}
               {!isToday && !snapshot && <span className="chip is-small" style={{ fontSize: 10 }}>no data</span>}
             </div>
             <div className="row" style={{ alignItems: "baseline", gap: 6 }}>
@@ -189,9 +197,9 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
             hint={u._isReal
               ? "Time of today's first sign-in, captured by session heartbeat. Shows «—» if the user hasn't signed in today yet. Historical days do not store login time."
               : "First login time (demo seed mock data)."} />
-          <Stat icon="logout"   label="Last activity"   value={isToday ? (u.logout || (u.status === "offline" ? "—" : "now")) : "—"} sub={isToday && u.status === "online" ? "active" : ""}
+          <Stat icon="logout"   label="Last activity"   value={isToday ? (u.status === "online" ? "now" : (u.logout || (u.status === "idle" && u._idleMinutes != null ? u._idleMinutes + "m ago" : "—"))) : "—"} sub={isToday && u.status === "online" ? "active" : (isToday && u.status === "idle" ? "idle" : "")}
             hint={u._isReal
-              ? "Last heartbeat ping from the user's browser tab (refreshed every 60 sec while a tab is alive). Shows «now» if a tab pinged within the last minute. Historical days do not store last-activity time."
+              ? "Last heartbeat ping from the user's browser tab (refreshed every 60 sec while a tab is alive). Status: <2 min = online; <15 min = idle (with exact minute count); else offline (shows last seen time). If no heartbeat has ever been recorded — offline."
               : "Last activity time (demo mock)."} />
           <Stat icon="zap"      label={isToday ? "Actions today" : "Actions"}   value={displayUser.actions}                       trend={isToday ? <Trend now={displayUser.actions} prev={Math.round(displayUser.actions * .92)} /> : null}
             hint={u._isReal

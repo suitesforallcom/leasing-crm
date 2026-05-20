@@ -566,18 +566,34 @@
   })();
 
   if (active.length) {
+    const _now = Date.now();
     const realUsers = active.map(function (emp, i) {
       const seed = hashStr(emp.id || emp.fullName || 'x' + i);
       const first = namePart(emp.fullName, 0);
       const last  = namePart(emp.fullName, 1);
       const role = classifyRole(emp.role);
       const centerId = _realCenterId;
-      const onlineMin = 240 + (seed % 280);
-      const loginMin  = 480 + (seed % 90);
-      const statusPick = seed % 10;
-      const status = statusPick < 7 ? 'online' : statusPick < 9 ? 'idle' : 'offline';
       const score = 60 + (seed % 40);
       const prev  = 55 + ((seed >> 2) % 38);
+
+      // -----------------------------------------------------------
+      // Phase 12 → Phase 17 BUG-FIX. ДО этого `status` бралось из
+      // `seed % 10` (хеш emp.id), и каждый real-user показывал
+      // «Online now» независимо от реальной активности. Теперь
+      // выводим из ts последнего heartbeat'а:
+      //   < 2 min  → 'online'
+      //   < 15 min → 'idle'    (idleMin = точное число минут)
+      //   else     → 'offline' (показываем «last seen HH:MM AM/PM»)
+      // Если сессии нет вообще — 'offline'.
+      // -----------------------------------------------------------
+      const _sess = sessionsByUid[emp.workspaceMemberUid] || null;
+      const _lastActMs = (_sess && _sess.lastActivityAt) ? new Date(_sess.lastActivityAt).getTime() : 0;
+      const _idleMs = _lastActMs ? (_now - _lastActMs) : Number.POSITIVE_INFINITY;
+      const _idleMinutes = isFinite(_idleMs) ? Math.max(0, Math.round(_idleMs / 60000)) : null;
+      const status = !_lastActMs ? 'offline'
+                   : _idleMs < 2 * 60 * 1000  ? 'online'
+                   : _idleMs < 15 * 60 * 1000 ? 'idle'
+                   :                            'offline';
 
       // ↓ Real fields aggregated from state walk above (Phase 7).
       // Every value below is keyed off emp.email — same email that the
@@ -672,7 +688,21 @@
           }
           return null;
         })(),
-        logout: null, // no real logout-tracking yet
+        // Phase 17 — для offline-юзеров показываем «last seen HH:MM AM/PM»
+        // (формат как login). Источник — lastActivityAt из session doc.
+        // Если real-user активен сейчас — null (employee-detail сам
+        // покажет «now»).
+        logout: (function () {
+          if (status !== 'offline') return null;
+          if (!_lastActMs) return null;
+          const d = new Date(_lastActMs);
+          if (isNaN(d.getTime())) return null;
+          const h = d.getHours(), mm = String(d.getMinutes()).padStart(2, '0');
+          return ((h % 12) || 12) + ':' + mm + ' ' + (h >= 12 ? 'PM' : 'AM');
+        })(),
+        // Точное число минут с последнего heartbeat'а — для chip «Idle Nm»
+        // в employee-detail (раньше было захардкожено «Idle 12m»).
+        _idleMinutes: _idleMinutes,
         ip: '', // no IP tracking
         device: (function () {
           const s = sessionsByUid[emp.workspaceMemberUid];
