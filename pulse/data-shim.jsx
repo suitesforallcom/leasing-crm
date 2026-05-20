@@ -120,8 +120,16 @@
   }
 
   // ---------- Build emp index for sentBy lookup ----------
+  // Phase 17 rev — admin может выключить сотрудника из Pulse через
+  // toggle «In Pulse» в Employees panel (state.employees[i].trackInPulse).
+  // Скрытые сотрудники (trackInPulse=false) не попадают в DATA.USERS,
+  // leaderboard, compare picker, activity totals. По умолчанию = true.
   const emps = Array.isArray(st.employees) ? st.employees : [];
-  const active = emps.filter(function (e) { return e && e.status !== 'terminated'; });
+  const active = emps.filter(function (e) {
+    if (!e || e.status === 'terminated') return false;
+    if (e.trackInPulse === false) return false;
+    return true;
+  });
   const empByEmail = new Map();
   active.forEach(function (e) {
     if (e.email) empByEmail.set(e.email.toLowerCase(), e);
@@ -829,7 +837,15 @@
   // ---------- Replace ALL_EVENTS with real events from outreach + envelopes ----------
   // Prototype shape: {time, cat, type, desc, ent, status, source, user}.
   // We sort by ts desc, cap at 200 for performance, attach user via sentBy.
+  // Phase 17 rev — skip events from employees not tracked in Pulse
+  // (trackInPulse=false). Их sentBy email не лежит в usersByEmail после
+  // фильтрации active выше, поэтому проверяем .has() для строгого
+  // отбора. Системные события без sentBy продолжают проходить.
   const allRealEvents = recentOutreachEvents.concat(recentEnvelopeEvents)
+    .filter(function (e) {
+      if (!e.sentBy) return true;  // system events have no operator
+      return usersByEmail.has(e.sentBy);  // drop hidden-operator events
+    })
     .sort(function (a, b) { return b.ts - a.ts; })
     .slice(0, 200)
     .map(function (e) {
