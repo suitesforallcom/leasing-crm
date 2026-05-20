@@ -9,9 +9,50 @@
 window.MyJourneyPage = function MyJourneyPage({ meId = "u1", onBack }) {
   const me = DATA.USERS.find(u => u.id === meId);
   const m = metricsFor(me);
+  const isReal = !!me._isReal;
 
-  /* Long-term goal hierarchy — Grit */
-  const goals = {
+  // --- Identity (Phase 17 rev — real role + level) ---
+  const roleLabel = (DATA.ROLES && DATA.ROLES[me.role] && DATA.ROLES[me.role].label) || "Pro";
+  const realLevel = me.level || 1;
+  const identityTitle = isReal
+    ? `I'm a ${roleLabel} · L${realLevel}`
+    : `I'm a Leasing Pro · L${Math.floor(6320 / 1000)}`;
+
+  /* Long-term goal hierarchy — для real users показываем placeholder
+     «Set a goal» там где нет источника. Year/Quarter не отслеживаются.
+     Month — real (bonus tier progression). Today — One Big Thing
+     из localStorage (если есть). */
+  const _obtFromStorage = (function () {
+    try {
+      const raw = localStorage.getItem('pulse_obt_' + (me.id || ''));
+      if (!raw) return null;
+      const o = JSON.parse(raw);
+      return o && o.text ? o : null;
+    } catch (e) { return null; }
+  })();
+
+  const goals = isReal ? {
+    year:    null,  // no source — placeholder
+    quarter: null,  // no source — placeholder
+    month:   m.nextTier ? {
+      label: `Reach ${m.nextTier.label} tier in ${new Date().toLocaleDateString('en-US', { month: 'long' })}`,
+      progress: m.progressToNext || 0,
+      current: m.bonusMtd,
+      target: m.nextTier.amount,
+      unit: "$ bonus",
+    } : {
+      label: `Maintain ${m.tier.label} tier`,
+      progress: 1,
+      current: m.bonusMtd,
+      target: m.tier.amount,
+      unit: "$ bonus",
+    },
+    today:   _obtFromStorage ? {
+      label: _obtFromStorage.text,
+      progress: _obtFromStorage.done ? 1 : 0,
+      due: _obtFromStorage.due || "today",
+    } : null,
+  } : {
     year:    { label: "Top 3 Leasing Agent in Texas region",        progress: 0.61, target: "Dec 2026", drives: "career growth" },
     quarter: { label: "Close 30 contracts in Q2",                   progress: 0.78, current: 38, target: 30,    unit: "contracts" },
     month:   { label: "Hit Gold tier in May",                       progress: 0.84, current: m.bonusMtd, target: 500, unit: "$ bonus" },
@@ -21,47 +62,56 @@ window.MyJourneyPage = function MyJourneyPage({ meId = "u1", onBack }) {
   /* Mood check-in */
   const [mood, setMood] = React.useState(null);
 
-  /* Mock past-12-months data */
-  const months = ["Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb", "Mar", "Apr", "May"];
-  const monthlyData = months.map((mo, i) => {
-    const seed = (i * 13 + 7) % 11;
-    const factor = i === months.length - 1 ? .92 : 1; /* MTD so smaller */
-    return {
-      month: mo, current: i === months.length - 1,
-      calls:     Math.round((280 + seed * 12 + i * 4) * factor),
-      emails:    Math.round((520 + seed * 18 + i * 8) * factor),
-      contracts: Math.max(28, Math.round((32 + seed - 2 + i * .5) * factor)),
-      bonus:     Math.round((320 + seed * 28 + i * 18) * factor),
-      score:     Math.min(99, 72 + seed + (i / 2 | 0)),
-    };
-  });
+  /* Past 12 months — для real users аггрегируем из _dailyHistory.
+     Demo seeds → mock как было. */
+  const monthsList = ["Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb", "Mar", "Apr", "May"];
+  const monthlyData = isReal
+    ? _buildRealMonthly(me._dailyHistory || [])
+    : monthsList.map((mo, i) => {
+        const seed = (i * 13 + 7) % 11;
+        const factor = i === monthsList.length - 1 ? .92 : 1;
+        return {
+          month: mo, current: i === monthsList.length - 1,
+          calls:     Math.round((280 + seed * 12 + i * 4) * factor),
+          emails:    Math.round((520 + seed * 18 + i * 8) * factor),
+          contracts: Math.max(28, Math.round((32 + seed - 2 + i * .5) * factor)),
+          bonus:     Math.round((320 + seed * 28 + i * 18) * factor),
+          score:     Math.min(99, 72 + seed + (i / 2 | 0)),
+        };
+      });
   /* mark new PRs */
-  monthlyData.forEach((m, i) => {
+  monthlyData.forEach((mm, i) => {
     if (i > 0) {
       ["calls", "emails", "contracts", "bonus", "score"].forEach(k => {
-        if (m[k] > Math.max(...monthlyData.slice(0, i).map(x => x[k]))) m[k + "PR"] = true;
+        if (mm[k] > Math.max(...monthlyData.slice(0, i).map(x => x[k] || 0))) mm[k + "PR"] = true;
       });
     }
   });
 
-  /* Weekly history — last 12 weeks */
-  const weeks = Array.from({ length: 12 }, (_, i) => {
-    const seed = (i * 7 + 13) % 13;
-    return {
-      label: `W${i + 1}`,
-      score: Math.min(99, 70 + seed + i),
-      calls: 50 + seed + i,
-      emails: 110 + seed * 3 + i * 2,
-      contracts: 4 + (seed % 4),
-      pr: i === 10 || i === 6,
-    };
-  });
+  /* Last 12 weeks history */
+  const weeks = isReal
+    ? _buildRealWeekly(me._dailyHistory || [])
+    : Array.from({ length: 12 }, (_, i) => {
+        const seed = (i * 7 + 13) % 13;
+        return {
+          label: `W${i + 1}`,
+          score: Math.min(99, 70 + seed + i),
+          calls: 50 + seed + i,
+          emails: 110 + seed * 3 + i * 2,
+          contracts: 4 + (seed % 4),
+          pr: i === 10 || i === 6,
+        };
+      });
 
   /* Year heatmap — 52 weeks × 7 days */
-  const heatmap = buildHeatmap();
+  const heatmap = isReal
+    ? _buildRealHeatmap(me._dailyHistory || [])
+    : buildHeatmap();
+  const activeDays = heatmap.filter(c => c.v > 0).length;
+  const personalRecordsCount = monthlyData.reduce((n, mm) => n + ["calls","emails","contracts","bonus","score"].filter(k => mm[k + "PR"]).length, 0);
 
-  /* Skill mastery — Peak / Drive */
-  const skills = [
+  /* Skill mastery — пока нет источника для real users → скрываем. */
+  const skills = isReal ? [] : [
     { name: "Cold outreach",  level: 7, max: 10, xp: 720, color: "oklch(58% 0.16 30)" },
     { name: "Contract speed", level: 8, max: 10, xp: 856, color: "oklch(58% 0.16 264)" },
     { name: "Response time",  level: 9, max: 10, xp: 945, color: "oklch(58% 0.16 150)" },
@@ -69,27 +119,51 @@ window.MyJourneyPage = function MyJourneyPage({ meId = "u1", onBack }) {
     { name: "Tenant care",    level: 8, max: 10, xp: 812, color: "oklch(58% 0.16 200)" },
   ];
 
-  /* Records timeline */
-  const records = [
-    { date: "May 12",  icon: "phone",    label: "Most calls in a day",       value: 24, isNew: true },
-    { date: "May 8",   icon: "mail",     label: "Most emails in a day",      value: 47 },
-    { date: "May 5",   icon: "bolt",     label: "Highest day score",         value: 96 },
-    { date: "Apr 28",  icon: "contract", label: "Most contracts in a week",  value: 9 },
-    { date: "Apr 14",  icon: "clock",    label: "Fastest email reply",       value: "8m" },
-    { date: "Mar 30",  icon: "star",     label: "First Gold tier bonus",     value: "$500" },
-  ];
+  /* Records — для real users из me.records (Phase 15 snapshots);
+     показываем только те где value есть. */
+  const records = isReal
+    ? (me.records ? [
+        me.records.mostEmails    && { date: me.records.mostEmailsWhen    || "—", icon: "mail",     label: "Most emails in a day",    value: me.records.mostEmails },
+        me.records.mostContracts && { date: me.records.mostContractsWhen || "—", icon: "contract", label: "Most contracts in a day", value: me.records.mostContracts },
+        me.records.highestScore  && { date: me.records.highestScoreWhen  || "—", icon: "bolt",     label: "Highest day score",       value: me.records.highestScore },
+      ].filter(Boolean) : [])
+    : [
+        { date: "May 12",  icon: "phone",    label: "Most calls in a day",       value: 24, isNew: true },
+        { date: "May 8",   icon: "mail",     label: "Most emails in a day",      value: 47 },
+        { date: "May 5",   icon: "bolt",     label: "Highest day score",         value: 96 },
+        { date: "Apr 28",  icon: "contract", label: "Most contracts in a week",  value: 9 },
+        { date: "Apr 14",  icon: "clock",    label: "Fastest email reply",       value: "8m" },
+        { date: "Mar 30",  icon: "star",     label: "First Gold tier bonus",     value: "$500" },
+      ];
 
-  /* Achievement timeline (earned) */
-  const achievements = [
-    { date: "May 14", title: "Speed Demon",     desc: "Replies under 30m for a week",   icon: "zap",       color: "oklch(58% 0.16 264)" },
-    { date: "May 1",  title: "First Bonus",     desc: "Earned May's bronze tier",       icon: "star",      color: "oklch(60% 0.10 50)" },
-    { date: "Apr 22", title: "Early Bird",      desc: "Logged in before 8 AM x10",      icon: "login",     color: "oklch(60% 0.14 200)" },
-    { date: "Mar 28", title: "Closer",          desc: "Sent 30+ contracts in a month",  icon: "contract",  color: "oklch(58% 0.18 300)" },
-    { date: "Feb 11", title: "Onboarded",       desc: "Completed Pulse training",       icon: "check",     color: "oklch(60% 0.13 158)" },
-  ];
+  /* Achievements — для real users из _computeAchievements (Phase 16). */
+  const achievements = isReal
+    ? ((typeof window._computeAchievements === "function"
+        ? window._computeAchievements(me, m, (me.streak && me.streak.current) || 0)
+        : []).filter(a => a.earned).map(a => ({
+            date: a.earnedDate || "—",
+            title: a.title,
+            desc: a.desc,
+            icon: a.icon || "star",
+            color: "var(--accent)",
+          })))
+    : [
+        { date: "May 14", title: "Speed Demon",     desc: "Replies under 30m for a week",   icon: "zap",       color: "oklch(58% 0.16 264)" },
+        { date: "May 1",  title: "First Bonus",     desc: "Earned May's bronze tier",       icon: "star",      color: "oklch(60% 0.10 50)" },
+        { date: "Apr 22", title: "Early Bird",      desc: "Logged in before 8 AM x10",      icon: "login",     color: "oklch(60% 0.14 200)" },
+        { date: "Mar 28", title: "Closer",          desc: "Sent 30+ contracts in a month",  icon: "contract",  color: "oklch(58% 0.18 300)" },
+        { date: "Feb 11", title: "Onboarded",       desc: "Completed Pulse training",       icon: "check",     color: "oklch(60% 0.13 158)" },
+      ];
 
-  /* Reflection journal — Mindset / Grit */
-  const journal = [
+  /* Social-proof percentile — real centre peers. */
+  const _centerPeers = (DATA.USERS || []).filter(u => u && u.centerId === me.centerId && u.score > 0);
+  const _myRank = _centerPeers.slice().sort((a, b) => b.score - a.score).findIndex(u => u.id === me.id) + 1;
+  const _peerCount = _centerPeers.length;
+  const _percentileTop = _peerCount > 0 && _myRank > 0 ? Math.round((_myRank / _peerCount) * 100) : null;
+
+  /* Reflection journal — Mindset / Grit. Для real users скрыто пока
+     нет источника записи (no journal storage backend yet). */
+  const journal = isReal ? [] : [
     { date: "Yesterday",   prompt: "What's one thing I did well?",     entry: "Closed Bluestone renewal 6 days early." },
     { date: "May 14",      prompt: "Where can I grow this week?",       entry: "Cold call open-rate — only 38%, want 55%." },
     { date: "May 12",      prompt: "What surprised me today?",          entry: "ABC Medical wants 36-month, not 24." },
@@ -126,7 +200,7 @@ window.MyJourneyPage = function MyJourneyPage({ meId = "u1", onBack }) {
           <Avatar user={me} size="xl" />
           <div style={{ flex: 1, minWidth: 240 }}>
             <div className="muted" style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase" }}>Your identity</div>
-            <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-.02em", marginTop: 2 }}>I'm a Leasing Pro · L{Math.floor(6320 / 1000)}</div>
+            <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-.02em", marginTop: 2 }}>{identityTitle}</div>
             <div className="muted" style={{ fontSize: 13.5, marginTop: 2 }}>
               "Every contract you send is a vote for the agent you're becoming."
               <span style={{ display: "block", marginTop: 4 }}>— inspired by Atomic Habits</span>
@@ -171,14 +245,24 @@ window.MyJourneyPage = function MyJourneyPage({ meId = "u1", onBack }) {
           <span className="muted" style={{ fontSize: 11.5 }}>· Year → Quarter → Month → Today</span>
         </div>
         <div className="goal-grid">
-          <GoalBox label="2026 goal"    title={goals.year.label}    progress={goals.year.progress}    sub={`Target: ${goals.year.target}`}                    tone="oklch(58% 0.18 300)" big />
-          <GoalBox label="Q2 goal"      title={goals.quarter.label} progress={goals.quarter.progress} sub={`${goals.quarter.current} / ${goals.quarter.target} ${goals.quarter.unit}`} tone="oklch(58% 0.16 264)" />
-          <GoalBox label="May goal"     title={goals.month.label}   progress={goals.month.progress}   sub={`$${goals.month.current.toLocaleString()} / $${goals.month.target}`}        tone="oklch(60% 0.13 158)" />
-          <GoalBox label="Today"        title={goals.today.label}   progress={goals.today.progress}   sub={goals.today.due}                                   tone="oklch(73% 0.15 78)"   isToday />
+          {goals.year
+            ? <GoalBox label={new Date().getFullYear() + " goal"} title={goals.year.label} progress={goals.year.progress} sub={`Target: ${goals.year.target}`} tone="oklch(58% 0.18 300)" big />
+            : <GoalBoxEmpty label={new Date().getFullYear() + " goal"} tone="oklch(58% 0.18 300)" big />}
+          {goals.quarter
+            ? <GoalBox label="Q-goal" title={goals.quarter.label} progress={goals.quarter.progress} sub={`${goals.quarter.current} / ${goals.quarter.target} ${goals.quarter.unit}`} tone="oklch(58% 0.16 264)" />
+            : <GoalBoxEmpty label="Q-goal" tone="oklch(58% 0.16 264)" />}
+          <GoalBox label={new Date().toLocaleDateString('en-US', { month: 'long' }) + " goal"} title={goals.month.label} progress={goals.month.progress} sub={`$${(goals.month.current || 0).toLocaleString()} / $${goals.month.target}`} tone="oklch(60% 0.13 158)" />
+          {goals.today
+            ? <GoalBox label="Today" title={goals.today.label} progress={goals.today.progress} sub={goals.today.due} tone="oklch(73% 0.15 78)" isToday />
+            : <GoalBoxEmpty label="Today" tone="oklch(73% 0.15 78)" hint="Set your One Big Thing in My Day" />}
         </div>
-        <div className="row" style={{ marginTop: 14, padding: "8px 12px", background: "var(--accent-soft)", color: "var(--accent-ink)", borderRadius: 8, fontSize: 12.5 }}>
-          <Icon name="sparkle" /><span><b>Yet language:</b> You haven't hit Gold tier <i>yet</i> — you're 84% of the way. Sixteen more days to grow.</span>
-        </div>
+        {/* «Yet language» encouragement — derive from real month goal */}
+        {goals.month && goals.month.progress < 1 && (
+          <div className="row" style={{ marginTop: 14, padding: "8px 12px", background: "var(--accent-soft)", color: "var(--accent-ink)", borderRadius: 8, fontSize: 12.5 }}>
+            <Icon name="sparkle" />
+            <span><b>Yet language:</b> You haven't hit {m.nextTier ? m.nextTier.label : "the next tier"} <i>yet</i> — you're {Math.round(goals.month.progress * 100)}% of the way.</span>
+          </div>
+        )}
       </div>
 
       {/* ============ Year consistency heatmap (Atomic Habits — don't break the chain) ============ */}
@@ -186,7 +270,7 @@ window.MyJourneyPage = function MyJourneyPage({ meId = "u1", onBack }) {
         <div className="row" style={{ marginBottom: 12, flexWrap: "wrap" }}>
           <Icon name="cal" style={{ color: "var(--muted)" }} />
           <div style={{ fontWeight: 700, fontSize: 14 }}>Consistency · last 12 months</div>
-          <span className="chip is-success">242 active days · 18 PRs</span>
+          <span className="chip is-success">{activeDays} active day{activeDays === 1 ? "" : "s"} · {personalRecordsCount} PR{personalRecordsCount === 1 ? "" : "s"}</span>
           <div className="spacer" />
           <div className="row" style={{ fontSize: 11, color: "var(--muted)", gap: 4 }}>
             <span>Less</span>
@@ -214,25 +298,27 @@ window.MyJourneyPage = function MyJourneyPage({ meId = "u1", onBack }) {
         </div>
       </div>
 
-      {/* ============ Skill tree (Drive — mastery + Peak — deliberate practice) ============ */}
-      <div className="card" style={{ marginBottom: 18 }}>
-        <div className="card-h">
-          <div className="row">
-            <Icon name="sparkle" style={{ color: "var(--accent)" }} />
-            <div className="card-title">Your mastery tree</div>
+      {/* ============ Skill tree — hidden for real users (no source) ============ */}
+      {!isReal && skills.length > 0 && (
+        <div className="card" style={{ marginBottom: 18 }}>
+          <div className="card-h">
+            <div className="row">
+              <Icon name="sparkle" style={{ color: "var(--accent)" }} />
+              <div className="card-title">Your mastery tree</div>
+            </div>
+            <span className="muted" style={{ fontSize: 11.5 }}>Skill levels build with deliberate practice</span>
           </div>
-          <span className="muted" style={{ fontSize: 11.5 }}>Skill levels build with deliberate practice</span>
+          <div style={{ padding: 18 }}>
+            <div className="col" style={{ gap: 14 }}>
+              {skills.map(s => <SkillRow key={s.name} s={s} />)}
+            </div>
+            <div className="row" style={{ marginTop: 14, padding: "10px 12px", background: "var(--surface-2)", borderRadius: 8, fontSize: 12.5 }}>
+              <Icon name="bolt" style={{ color: "var(--warning-ink)" }} />
+              <span><b>Effort × Skill = Achievement</b> — Angela Duckworth. Your weakest skill is <b>Deal closing</b>. Practice it and your trajectory steepens.</span>
+            </div>
+          </div>
         </div>
-        <div style={{ padding: 18 }}>
-          <div className="col" style={{ gap: 14 }}>
-            {skills.map(s => <SkillRow key={s.name} s={s} />)}
-          </div>
-          <div className="row" style={{ marginTop: 14, padding: "10px 12px", background: "var(--surface-2)", borderRadius: 8, fontSize: 12.5 }}>
-            <Icon name="bolt" style={{ color: "var(--warning-ink)" }} />
-            <span><b>Effort × Skill = Achievement</b> — Angela Duckworth. Your weakest skill is <b>Deal closing</b>. Practice it and your trajectory steepens.</span>
-          </div>
-        </div>
-      </div>
+      )}
 
       {/* ============ Weekly history + Records timeline (Atomic Habits + Peak) ============ */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, marginBottom: 18 }} className="journey-2col">
@@ -292,19 +378,27 @@ window.MyJourneyPage = function MyJourneyPage({ meId = "u1", onBack }) {
         </div>
       </div>
 
-      {/* ============ Social proof + Variable reward + Coach (Influence + Hooked + Drive) ============ */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 18, marginBottom: 18 }} className="journey-3col">
+      {/* ============ Social proof + Variable reward + Coach (real users:
+          hide manager note since no source; show real percentile) ============ */}
+      <div style={{ display: "grid", gridTemplateColumns: isReal ? "1fr 1fr" : "1fr 1fr 1fr", gap: 18, marginBottom: 18 }} className="journey-3col">
+        {/* Real percentile from peers in same center. */}
         <div className="card" style={{ padding: 16 }}>
           <div className="row" style={{ marginBottom: 8 }}>
             <Icon name="people" style={{ color: "var(--accent)" }} />
             <div style={{ fontWeight: 700, fontSize: 13 }}>Social proof</div>
           </div>
-          <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-.02em" }}>You're in the <span style={{ color: "var(--success-ink)" }}>top 12%</span></div>
-          <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>across all Leasing Agents in {me.center?.name}.</div>
-          <div style={{ height: 8, background: "var(--surface-3)", borderRadius: 999, marginTop: 10, overflow: "hidden" }}>
-            <span style={{ display: "block", height: "100%", width: "88%", background: "linear-gradient(90deg, var(--accent), oklch(58% 0.16 290))", borderRadius: 999 }} />
-          </div>
-          <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Better than 88% of peers</div>
+          {_percentileTop != null ? (
+            <>
+              <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-.02em" }}>You're in the <span style={{ color: "var(--success-ink)" }}>top {_percentileTop}%</span></div>
+              <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>among {_peerCount} {roleLabel}s in {me.center && me.center.name ? me.center.name : "your center"}.</div>
+              <div style={{ height: 8, background: "var(--surface-3)", borderRadius: 999, marginTop: 10, overflow: "hidden" }}>
+                <span style={{ display: "block", height: "100%", width: Math.max(2, 100 - _percentileTop) + "%", background: "linear-gradient(90deg, var(--accent), oklch(58% 0.16 290))", borderRadius: 999 }} />
+              </div>
+              <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Rank #{_myRank} of {_peerCount}</div>
+            </>
+          ) : (
+            <div className="muted" style={{ fontSize: 12.5, fontStyle: "italic" }}>Need at least one teammate with score &gt; 0 in your center to compute percentile.</div>
+          )}
         </div>
 
         <div className="card" style={{ padding: 16, background: "linear-gradient(135deg, oklch(96% 0.05 30), oklch(95% 0.08 350))", borderColor: "transparent" }}>
@@ -318,40 +412,46 @@ window.MyJourneyPage = function MyJourneyPage({ meId = "u1", onBack }) {
           <button className="btn is-small" style={{ width: "100%", marginTop: 10 }} onClick={() => window.toast("Mystery reward locked — keep working!")}>What's inside?</button>
         </div>
 
-        <div className="card" style={{ padding: 16 }}>
-          <div className="row" style={{ marginBottom: 8 }}>
-            <Icon name="mail" style={{ color: "var(--success-ink)" }} />
-            <div style={{ fontWeight: 700, fontSize: 13 }}>From your manager</div>
+        {/* Manager note — hidden for real users (no messaging backend) */}
+        {!isReal && (
+          <div className="card" style={{ padding: 16 }}>
+            <div className="row" style={{ marginBottom: 8 }}>
+              <Icon name="mail" style={{ color: "var(--success-ink)" }} />
+              <div style={{ fontWeight: 700, fontSize: 13 }}>From your manager</div>
+            </div>
+            <div style={{ fontSize: 13.5, fontStyle: "italic", color: "var(--ink-2)", lineHeight: 1.5 }}>
+              "Maya — your response time this week is fastest on the team. Keep this rhythm into June and Gold tier is locked in. 👏"
+            </div>
+            <div className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>— Daniel P. · 2h ago</div>
           </div>
-          <div style={{ fontSize: 13.5, fontStyle: "italic", color: "var(--ink-2)", lineHeight: 1.5 }}>
-            "Maya — your response time this week is fastest on the team. Keep this rhythm into June and Gold tier is locked in. 👏"
-          </div>
-          <div className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>— Daniel P. · 2h ago</div>
-        </div>
+        )}
       </div>
 
-      {/* ============ Reflection journal (Mindset + Grit) ============ */}
-      <div className="card" style={{ marginBottom: 18, padding: 18 }}>
-        <div className="row" style={{ marginBottom: 14 }}>
-          <Icon name="edit" style={{ color: "var(--accent)" }} />
-          <div style={{ fontWeight: 700, fontSize: 14 }}>Reflection journal</div>
-          <span className="muted" style={{ fontSize: 11.5 }}>· build a growth mindset by writing one line a day</span>
-          <div className="spacer" />
-          <button className="btn is-small" onClick={() => window.toast("Today's prompt: What's one thing you did well?")}>Today's prompt</button>
-        </div>
-        <div className="col" style={{ gap: 10 }}>
-          {journal.map((j, i) => (
-            <div key={i} style={{ padding: 12, borderRadius: 10, background: "var(--surface-2)" }}>
-              <div className="row" style={{ marginBottom: 4, fontSize: 11.5, color: "var(--muted)" }}>
-                <span style={{ fontWeight: 600 }}>{j.date}</span>
-                <span>·</span>
-                <span>{j.prompt}</span>
+      {/* ============ Reflection journal — hidden for real users
+          (no journal storage backend yet). Demo seeds keep mock. ============ */}
+      {!isReal && journal.length > 0 && (
+        <div className="card" style={{ marginBottom: 18, padding: 18 }}>
+          <div className="row" style={{ marginBottom: 14 }}>
+            <Icon name="edit" style={{ color: "var(--accent)" }} />
+            <div style={{ fontWeight: 700, fontSize: 14 }}>Reflection journal</div>
+            <span className="muted" style={{ fontSize: 11.5 }}>· build a growth mindset by writing one line a day</span>
+            <div className="spacer" />
+            <button className="btn is-small" onClick={() => window.toast("Today's prompt: What's one thing you did well?")}>Today's prompt</button>
+          </div>
+          <div className="col" style={{ gap: 10 }}>
+            {journal.map((j, i) => (
+              <div key={i} style={{ padding: 12, borderRadius: 10, background: "var(--surface-2)" }}>
+                <div className="row" style={{ marginBottom: 4, fontSize: 11.5, color: "var(--muted)" }}>
+                  <span style={{ fontWeight: 600 }}>{j.date}</span>
+                  <span>·</span>
+                  <span>{j.prompt}</span>
+                </div>
+                <div style={{ fontSize: 13.5, color: "var(--ink-2)", fontStyle: "italic" }}>"{j.entry}"</div>
               </div>
-              <div style={{ fontSize: 13.5, color: "var(--ink-2)", fontStyle: "italic" }}>"{j.entry}"</div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       <style>{`
         .goal-grid {
@@ -400,6 +500,26 @@ function GoalBox({ label, title, progress, sub, tone, big, isToday }) {
   );
 }
 
+function GoalBoxEmpty({ label, tone, big, hint }) {
+  return (
+    <div style={{
+      padding: 14,
+      borderRadius: 12,
+      background: "var(--surface-2)",
+      border: "1px dashed var(--border)",
+      opacity: .8,
+    }}>
+      <div className="muted" style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: ".06em", textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontWeight: 700, fontSize: big ? 15 : 13, lineHeight: 1.3, marginTop: 4, minHeight: big ? 40 : 36, color: "var(--muted)" }}>
+        Not set yet
+      </div>
+      <div className="muted" style={{ fontSize: 11.5, marginTop: 10, fontStyle: "italic" }}>
+        {hint || "Goal not configured yet. Will be available once goal-setting UI is built."}
+      </div>
+    </div>
+  );
+}
+
 function SkillRow({ s }) {
   return (
     <div>
@@ -420,6 +540,116 @@ function SkillRow({ s }) {
       </div>
     </div>
   );
+}
+
+/* ============================================================
+   Phase 17 — real-data aggregators for _isReal users.
+   _dailyHistory shape (from functions/daily-snapshots.js):
+     { date: "YYYY-MM-DD", sentEmails, receivedEmails, repliedEmails,
+       contracts, hoursWorked, score, targetHit }
+   ============================================================ */
+function _buildRealHeatmap(dailyHistory) {
+  // 52 weeks × 7 days, ending today. Каждая клетка — интенсивность
+  // активности (score / 100), 0 если день не было снапшота.
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const byDate = new Map();
+  (dailyHistory || []).forEach(s => { if (s && s.date) byDate.set(s.date, s); });
+
+  const cells = [];
+  // Start 52 weeks ago, Monday of that week.
+  const start = new Date(today);
+  start.setDate(start.getDate() - 52 * 7);
+  // Snap to Monday
+  const dow = (start.getDay() + 6) % 7;
+  start.setDate(start.getDate() - dow);
+
+  for (let w = 0; w < 52; w++) {
+    for (let d = 0; d < 7; d++) {
+      const cellDate = new Date(start);
+      cellDate.setDate(cellDate.getDate() + w * 7 + d);
+      if (cellDate > today) { cells.push({ w, d, v: 0 }); continue; }
+      const key = cellDate.getFullYear() + "-" + String(cellDate.getMonth() + 1).padStart(2, "0") + "-" + String(cellDate.getDate()).padStart(2, "0");
+      const snap = byDate.get(key);
+      const v = snap && typeof snap.score === "number" ? Math.min(1, snap.score / 100) : 0;
+      cells.push({ w, d, v });
+    }
+  }
+  return cells;
+}
+
+function _buildRealMonthly(dailyHistory) {
+  // Group snapshots by YYYY-MM, sum metrics; emit last 12 months ending
+  // with current month (marked current=true).
+  const byMonth = new Map();
+  (dailyHistory || []).forEach(s => {
+    if (!s || !s.date) return;
+    const ym = s.date.slice(0, 7);
+    if (!byMonth.has(ym)) byMonth.set(ym, { calls: 0, emails: 0, contracts: 0, bonus: 0, score: 0, days: 0 });
+    const b = byMonth.get(ym);
+    b.calls     += 0; // no telephony yet
+    b.emails    += s.sentEmails || 0;
+    b.contracts += s.contracts || 0;
+    b.bonus     += 0; // no per-day bonus accrual yet
+    b.score      = Math.max(b.score, s.score || 0); // peak score per month
+    b.days       += 1;
+  });
+
+  const monthsList = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const out = [];
+  const now = new Date();
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const ym = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+    const b = byMonth.get(ym) || { calls: 0, emails: 0, contracts: 0, bonus: 0, score: 0 };
+    out.push({
+      month: monthsList[d.getMonth()],
+      current: i === 0,
+      calls: b.calls,
+      emails: b.emails,
+      contracts: b.contracts,
+      bonus: b.bonus,
+      score: b.score,
+    });
+  }
+  return out;
+}
+
+function _buildRealWeekly(dailyHistory) {
+  // Last 12 weeks (Mon-Sun), sum daily metrics into weekly rows.
+  const byDate = new Map();
+  (dailyHistory || []).forEach(s => { if (s && s.date) byDate.set(s.date, s); });
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  // Snap today to start of current week (Mon).
+  const dow = (today.getDay() + 6) % 7;
+  const currentWeekStart = new Date(today);
+  currentWeekStart.setDate(currentWeekStart.getDate() - dow);
+
+  const out = [];
+  for (let i = 11; i >= 0; i--) {
+    const weekStart = new Date(currentWeekStart);
+    weekStart.setDate(weekStart.getDate() - i * 7);
+    let calls = 0, emails = 0, contracts = 0, score = 0;
+    for (let d = 0; d < 7; d++) {
+      const day = new Date(weekStart);
+      day.setDate(day.getDate() + d);
+      if (day > today) break;
+      const key = day.getFullYear() + "-" + String(day.getMonth() + 1).padStart(2, "0") + "-" + String(day.getDate()).padStart(2, "0");
+      const s = byDate.get(key);
+      if (!s) continue;
+      emails    += s.sentEmails || 0;
+      contracts += s.contracts || 0;
+      score      = Math.max(score, s.score || 0);
+    }
+    out.push({
+      label: "W" + (12 - i),
+      score, calls, emails, contracts,
+      pr: false, // PR detection cross-weeks done later
+    });
+  }
+  return out;
 }
 
 /* ============ Year heatmap ============ */
@@ -455,7 +685,14 @@ function YearHeatmap({ data }) {
   const cell = 11, gap = 2;
   const w = weeks * (cell + gap);
   const h = days * (cell + gap);
-  const monthLabels = ["Jun","Jul","Aug","Sep","Oct","Nov","Dec","Jan","Feb","Mar","Apr","May"];
+  // Динамические подписи: 12 месяцев назад до сегодняшнего, в порядке слева→направо.
+  const _monthsAll = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const _now = new Date();
+  const monthLabels = [];
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(_now.getFullYear(), _now.getMonth() - i, 1);
+    monthLabels.push(_monthsAll[d.getMonth()]);
+  }
   return (
     <div style={{ overflowX: "auto" }}>
       <svg viewBox={`0 0 ${w + 24} ${h + 24}`} style={{ width: "100%", minWidth: 600, height: "auto" }}>
