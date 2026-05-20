@@ -211,14 +211,15 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
             hint={u._isReal
               ? "Sum of all actions for the selected day: emails sent + contracts + invoices + payments + notes. Calls excluded until telephony is connected. Today — live count; past days — from daily snapshot."
               : "Actions count (demo mock)."} />
-          <Stat icon="phone"    label="Calls"           value={displayUser.calls + "/" + m.targets.calls} sub={isToday ? `pickup ${m.actuals.callPickupSec}s · ${m.actuals.missedCalls} missed` : ""}
+          {/* Phase 17 rev — Tony: «Убери с цифры с таргетом». Pure counts. */}
+          <Stat icon="phone"    label="Calls"           value={displayUser.calls} sub={isToday ? `pickup ${m.actuals.callPickupSec}s · ${m.actuals.missedCalls} missed` : ""}
             hint={u._isReal
-              ? "Calls vs role target. MOCK — telephony integration not connected (needs Twilio / RingCentral / Aircall webhook)."
-              : "Calls / target (demo mock)."} />
-          <Stat icon="mail"     label={isToday ? "Emails sent" : "Emails sent"}          value={displayUser.emails + "/" + m.targets.emails} sub={isToday && displayUser.emails > 0 ? `avg reply ${m.actuals.emailReplyMin}m` : ""}
+              ? "Calls made today. MOCK — telephony integration not connected (needs Twilio / RingCentral / Aircall webhook). Will read from u.callRecords once wired."
+              : "Calls (demo mock)."} />
+          <Stat icon="mail"     label="Emails sent"     value={displayUser.emails} sub={isToday && displayUser.emails > 0 ? `avg reply ${m.actuals.emailReplyMin}m` : ""}
             hint={u._isReal
-              ? "Emails sent + replies on the selected day vs role target. Counted from Gmail API SENT events + manual outreach records with type=email/lease. INCOMING (received) emails are NOT counted — only outbound activity is the operator's work. Today value updates live; past days come from the daily snapshot."
-              : "Emails sent / target (demo mock)."} />
+              ? "Emails sent + replies on the selected day. Counted from Gmail API SENT events + manual outreach records with type=email/lease. INCOMING (received) emails are NOT counted — only outbound activity is the operator's work. Today value updates live; past days come from the daily snapshot."
+              : "Emails sent (demo mock)."} />
           {/* Phase 17 rev — Tony: «здесь мне нужно писать только
               контракты подписаны за этот месяц не нужно писать цель».
               Показываем contractsSignedMtd (envelopes со status=completed
