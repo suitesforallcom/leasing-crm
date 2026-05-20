@@ -114,61 +114,69 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
             snapshot when not today. MTD cards (May bonus) stay current.  */}
         <DateNavigator value={selectedDate} onChange={setSelectedDate} todayStr={todayStr} hasSnapshot={!!snapshot} isToday={isToday} isRealUser={!!u._isReal} />
 
-        {/* Hours worked progress — prominent */}
-        <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", gap: 16 }} className="head-row-2">
-          <div style={{ padding: 14, background: "var(--surface-2)", borderRadius: 12 }}>
-            <div className="row" style={{ marginBottom: 8 }}>
-              <Icon name="clock" style={{ color: "var(--muted)" }} />
-              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>{isToday ? "Working today" : "Worked on " + _shortDateLabel(selectedDate)}</span>
+        {/* Phase 17 — compact 4-column header strip:
+            [WORKING] [HOURLY ACTIVITY] [TARGETS HIT] [MAY BONUS].
+            HourlyCard is the visual emphasis (1.6fr); the other three are
+            denser status tiles (smaller paddings + 22px num). */}
+        <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "1fr 1.6fr 1fr 1fr", gap: 12 }} className="head-row-2">
+          <div style={{ padding: 12, background: "var(--surface-2)", borderRadius: 12 }}>
+            <div className="row" style={{ marginBottom: 6 }}>
+              <Icon name="clock" style={{ color: "var(--muted)", width: 14, height: 14 }} />
+              <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>{isToday ? "Working today" : _shortDateLabel(selectedDate)}</span>
               <div className="spacer" />
-              {isToday && <span className="chip is-success">on time</span>}
-              {!isToday && !snapshot && <span className="chip">no data</span>}
+              {isToday && <span className="chip is-success is-small" style={{ fontSize: 10 }}>on time</span>}
+              {!isToday && !snapshot && <span className="chip is-small" style={{ fontSize: 10 }}>no data</span>}
             </div>
-            <div className="row" style={{ alignItems: "baseline", gap: 8 }}>
-              <div className="num" style={{ fontSize: 32, fontWeight: 800, letterSpacing: "-.025em", whiteSpace: "nowrap" }}>{(isToday && displayUser.status === "offline") || (!isToday && !snapshot) ? "—" : fmt.hm(displayUser.online)}</div>
-              <div className="muted" style={{ fontSize: 14, whiteSpace: "nowrap" }}>of {m.targets.hoursWorked}h target</div>
+            <div className="row" style={{ alignItems: "baseline", gap: 6 }}>
+              <div className="num" style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-.025em", whiteSpace: "nowrap" }}>{(isToday && displayUser.status === "offline") || (!isToday && !snapshot) ? "—" : fmt.hm(displayUser.online)}</div>
+              <div className="muted" style={{ fontSize: 11.5, whiteSpace: "nowrap" }}>/ {m.targets.hoursWorked}h</div>
             </div>
-            <div style={{ height: 8, background: "var(--surface-3)", borderRadius: 999, marginTop: 8, overflow: "hidden" }}>
+            <div style={{ height: 6, background: "var(--surface-3)", borderRadius: 999, marginTop: 6, overflow: "hidden" }}>
               <span style={{ display: "block", height: "100%", width: Math.min(100, (displayUser.online / 60) / m.targets.hoursWorked * 100) + "%", background: m.today.hours.hit ? "var(--success)" : "var(--accent)", borderRadius: 999 }} />
             </div>
-            <div className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>
+            <div className="muted" style={{ fontSize: 10.5, marginTop: 5 }}>
               {isToday
-                ? <>First login <span className="mono" style={{ color: "var(--ink)" }}>{u.login || "—"}</span> · Last activity <span className="mono" style={{ color: "var(--ink)" }}>{u.status === "online" ? "now" : u.logout || "—"}</span></>
-                : <>Snapshot for <span className="mono" style={{ color: "var(--ink)" }}>{selectedDate}</span></>}
+                ? <>{u.login || "—"} → {u.status === "online" ? "now" : u.logout || "—"}</>
+                : <>Snapshot · {selectedDate}</>}
             </div>
           </div>
 
-          <div style={{ padding: 14, background: "var(--surface-2)", borderRadius: 12 }}>
-            <div className="row" style={{ marginBottom: 8 }}>
-              <Icon name="signal" style={{ color: "var(--muted)" }} />
-              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>{isToday ? "Targets hit today" : "Targets hit"}</span>
+          {/* Hourly activity — main visual column. Real users → outbound
+              emails bucketed by hour today; mock seeds → DATA.hourlyActionsFor.
+              Past days have no hourly snapshot yet (Phase 18 todo). */}
+          <HourlyCard user={u} displayUser={displayUser} isToday={isToday} selectedDate={selectedDate} />
+
+          <div style={{ padding: 12, background: "var(--surface-2)", borderRadius: 12 }}>
+            <div className="row" style={{ marginBottom: 6 }}>
+              <Icon name="signal" style={{ color: "var(--muted)", width: 14, height: 14 }} />
+              <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>{isToday ? "Targets hit" : "Targets"}</span>
             </div>
-            <div className="row" style={{ alignItems: "baseline", gap: 8 }}>
-              <div className="num" style={{ fontSize: 32, fontWeight: 800, letterSpacing: "-.025em" }}>{m.hits}<span className="muted" style={{ fontSize: 16, fontWeight: 600 }}>/{m.expected}</span></div>
+            <div className="row" style={{ alignItems: "baseline", gap: 6 }}>
+              <div className="num" style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-.025em" }}>{m.hits}<span className="muted" style={{ fontSize: 13, fontWeight: 600 }}>/{m.expected}</span></div>
               {isToday && <Trend now={m.hits} prev={Math.max(0, m.hits - 1)} suffix="" />}
             </div>
-            <div className="row" style={{ gap: 4, marginTop: 8 }}>
+            <div className="row" style={{ gap: 3, marginTop: 6 }}>
               {[m.today.calls, m.today.emails, m.today.hours, m.today.reply, m.today.pickup].map((mm, i) => (
-                <span key={i} title={mm.label} style={{ flex: 1, height: 8, borderRadius: 4, background: mm.tone === "success" ? "var(--success)" : mm.tone === "warning" ? "var(--warning)" : mm.tone === "danger" ? "var(--danger)" : "var(--surface-3)" }} />
+                <span key={i} title={mm.label} style={{ flex: 1, height: 6, borderRadius: 3, background: mm.tone === "success" ? "var(--success)" : mm.tone === "warning" ? "var(--warning)" : mm.tone === "danger" ? "var(--danger)" : "var(--surface-3)" }} />
               ))}
             </div>
-            <div className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>Calls · Emails · Hours · Reply · Pickup</div>
+            <div className="muted" style={{ fontSize: 10.5, marginTop: 5 }}>Calls · Emails · Hrs · Rply · Pkup</div>
           </div>
 
-          <div style={{ padding: 14, background: m.tier.id !== "none" ? `linear-gradient(135deg, ${m.tier.color}10, ${m.tier.color}24)` : "var(--surface-2)", borderRadius: 12, border: m.tier.id === "gold" || m.tier.id === "platinum" ? `1px solid ${m.tier.color}55` : "1px solid transparent" }}>
-            <div className="row" style={{ marginBottom: 8 }}>
-              <Icon name="star" style={{ color: m.tier.id !== "none" ? m.tier.color : "var(--muted)" }} />
-              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>May bonus · {m.tier.label}</span>
+          <div style={{ padding: 12, background: m.tier.id !== "none" ? `linear-gradient(135deg, ${m.tier.color}10, ${m.tier.color}24)` : "var(--surface-2)", borderRadius: 12, border: m.tier.id === "gold" || m.tier.id === "platinum" ? `1px solid ${m.tier.color}55` : "1px solid transparent" }}>
+            <div className="row" style={{ marginBottom: 6 }}>
+              <Icon name="star" style={{ color: m.tier.id !== "none" ? m.tier.color : "var(--muted)", width: 14, height: 14 }} />
+              <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>May · {m.tier.label}</span>
             </div>
-            <div className="num" style={{ fontSize: 32, fontWeight: 800, letterSpacing: "-.025em", color: m.tier.id !== "none" ? m.tier.color : "var(--muted)" }}>${m.bonusMtd.toLocaleString()}</div>
+            <div className="num" style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-.025em", color: m.tier.id !== "none" ? m.tier.color : "var(--muted)" }}>${m.bonusMtd.toLocaleString()}</div>
             {m.nextTier ? (
               <>
-                <div className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>+${m.nextTier.amount - m.tier.amount} to reach {m.nextTier.label}</div>
-                <div style={{ height: 6, background: "var(--surface-3)", borderRadius: 999, marginTop: 6, overflow: "hidden" }}>
+                <div className="muted" style={{ fontSize: 10.5, marginTop: 3 }}>+${m.nextTier.amount - m.tier.amount} → {m.nextTier.label}</div>
+                <div style={{ height: 5, background: "var(--surface-3)", borderRadius: 999, marginTop: 5, overflow: "hidden" }}>
                   <span style={{ display: "block", height: "100%", width: Math.round(m.progressToNext * 100) + "%", background: m.nextTier.color, borderRadius: 999 }} />
                 </div>
               </>
-            ) : <div className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>Top tier reached this month 🎉</div>}
+            ) : <div className="muted" style={{ fontSize: 10.5, marginTop: 3 }}>Top tier 🎉</div>}
           </div>
         </div>
 
@@ -242,6 +250,7 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
           padding-top: 20px;
           border-top: 1px dashed var(--border);
         }
+        @media (max-width: 1300px) { .head-row-2 { grid-template-columns: 1fr 1fr !important; } }
         @media (max-width: 1100px) { .emp-stats { grid-template-columns: repeat(4, 1fr); } .head-row-2 { grid-template-columns: 1fr !important; } }
         @media (max-width: 640px)  { .emp-stats { grid-template-columns: repeat(2, 1fr); } }
       `}</style>
@@ -1093,6 +1102,81 @@ function MiniMetric({ label, value, unit }) {
       <div className="kpi-head">{label}</div>
       <div className="kpi-value">{value}</div>
       <div className="muted" style={{ fontSize: 11.5 }}>{unit}</div>
+    </div>
+  );
+}
+
+/* ================================================================
+   Phase 17 — Hourly activity card (compact, lives in the header grid)
+   ================================================================ */
+function HourlyCard({ user, displayUser, isToday, selectedDate }) {
+  // Источник данных:
+  //  - real user + today → u._hourlyToday (заполнен data-shim'ом из
+  //    gmailActivity SENT events with today timestamp).
+  //  - real user + past day → нет hourly в snapshot (Phase 18 todo).
+  //    Покажем плоскую полосу + надпись «No hourly data».
+  //  - mock user → DATA.hourlyActionsFor(u.id) (статичный mock,
+  //    нечуствительный к дате — для демо-сидов).
+  const isReal = !!user._isReal;
+  let data, totalActions, isMock = false, isMissing = false;
+
+  if (isReal) {
+    if (isToday) {
+      data = Array.isArray(user._hourlyToday) && user._hourlyToday.length
+        ? user._hourlyToday
+        : DATA.hourlyActionsFor(user.id).map(d => ({ h: d.h, v: 0 }));
+    } else {
+      // Прошлый день без снапшота — нули.
+      data = DATA.hourlyActionsFor(user.id).map(d => ({ h: d.h, v: 0 }));
+      isMissing = true;
+    }
+    totalActions = data.reduce((s, d) => s + d.v, 0);
+  } else {
+    data = DATA.hourlyActionsFor(user.id);
+    totalActions = data.reduce((s, d) => s + d.v, 0);
+    isMock = true;
+  }
+
+  // Пиковый час — для подсказки «peak 14:00 → 12 events».
+  const peak = data.reduce((best, d) => (d.v > best.v ? d : best), { h: -1, v: 0 });
+
+  return (
+    <div style={{ padding: 12, background: "var(--surface-2)", borderRadius: 12, display: "flex", flexDirection: "column" }}>
+      <div className="row" style={{ marginBottom: 6 }}>
+        <Icon name="activity" style={{ color: "var(--muted)", width: 14, height: 14 }} />
+        <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>
+          {isToday ? "Activity by hour · today" : "Activity by hour · " + _shortDateLabel(selectedDate)}
+        </span>
+        <div className="spacer" />
+        {isReal && (
+          <HelpHint>
+            {isToday
+              ? "Outbound emails per hour today, bucketed from Gmail API SENT events. Office-hour window 7-19. Received emails and incoming spam are excluded — only the operator's outbound actions count."
+              : "Hourly distribution is not yet stored in daily snapshots. Past-day buckets will appear once Phase 18 snapshot extension lands."}
+          </HelpHint>
+        )}
+        {isMock && <HelpHint>Hourly distribution (demo seed mock data).</HelpHint>}
+      </div>
+      <div style={{ flex: 1, minHeight: 70, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+        {isMissing ? (
+          <div className="muted" style={{ fontSize: 11.5, padding: "12px 4px", fontStyle: "italic" }}>
+            No hourly data for this day yet.
+          </div>
+        ) : (
+          <HourBars data={data} color="var(--accent)" height={70} />
+        )}
+        <div className="row" style={{ marginTop: 6, fontSize: 10.5 }}>
+          <span className="muted">
+            {totalActions} {totalActions === 1 ? "action" : "actions"}
+          </span>
+          {peak.v > 0 && (
+            <>
+              <div className="spacer" />
+              <span className="muted">peak <span className="mono" style={{ color: "var(--ink)" }}>{String(peak.h).padStart(2, "0")}:00</span> · {peak.v}</span>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

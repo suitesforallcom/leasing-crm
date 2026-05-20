@@ -492,6 +492,37 @@
     }
   } catch (e) { console.warn('[pulse-shim] state walk failed:', e); }
 
+  // ----------------------------------------------------------------
+  // Phase 17 — per-email hourly buckets for «Activity by hour today».
+  // Walk allEmailEntries (gmailActivity + outreach), keep only items
+  // dated today + with hour in 7-19 (office-hour window matching
+  // HourBars). SENT emails count; RECEIVED не идёт в график — это не
+  // достижение оператора. Records are bucketed by hour and stamped on
+  // u._hourlyToday для employee-detail.jsx.
+  // ----------------------------------------------------------------
+  const _startOfTodayMs = (function () {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  })();
+  const hourlyTodayByEmail = new Map();
+  for (const e of allEmailEntries) {
+    if (!e.owner || !e.ts) continue;
+    if (e.ts < _startOfTodayMs) continue;
+    if (e.direction !== 'sent') continue;
+    const h = new Date(e.ts).getHours();
+    if (h < 7 || h > 19) continue;
+    if (!hourlyTodayByEmail.has(e.owner)) hourlyTodayByEmail.set(e.owner, new Map());
+    const bucket = hourlyTodayByEmail.get(e.owner);
+    bucket.set(h, (bucket.get(h) || 0) + 1);
+  }
+  function _hourlyTodayFor(email) {
+    const m = hourlyTodayByEmail.get((email || '').toLowerCase());
+    const out = [];
+    for (let h = 7; h <= 19; h++) out.push({ h, v: m ? (m.get(h) || 0) : 0 });
+    return out;
+  }
+
   // ---------- Map state.employees → DATA.USERS ----------
   const DEVICES = ['MacBook Pro · Chrome', 'Dell XPS · Edge', 'Lenovo ThinkPad · Firefox', 'iMac · Safari', 'Surface Laptop · Chrome'];
   const LOCS    = ['Office', 'Office', 'Office', 'Remote', 'On-site'];
@@ -661,6 +692,11 @@
         // page uses this to render stats for any historical date via the
         // day navigator (← Prev / [date] / Next →).
         _dailyHistory: Array.isArray(dailyHistoryByEmail[emailLower]) ? dailyHistoryByEmail[emailLower] : [],
+        // Phase 17 — per-hour activity for today (7-19h buckets).
+        // Real outbound emails только; past days сейчас не сохраняются
+        // (snapshot cron не пишет hourly). Используется в карточке
+        // «Activity by hour» в шапке employee-detail.
+        _hourlyToday: _hourlyTodayFor(emailLower),
         _empId: emp.id,
         _hireDate: emp.hireDate || null,
         _workspaceMemberUid: emp.workspaceMemberUid || null,
