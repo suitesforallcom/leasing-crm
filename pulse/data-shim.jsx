@@ -268,6 +268,12 @@
   // durationSec, answerSec, status, fromNumber, toNumber, recordingUrl}] }
   // written by pullAircallStats CF. Bucketed below into today/MTD/pickup/missed.
   const callActivityByEmail = (st && typeof st.callActivity === 'object' && st.callActivity) ? st.callActivity : {};
+
+  // Phase 18 rev — Aircall numbers assigned to each operator.
+  // { email → [{id, name, digits, country}] }. Tony asked: «мою менеджеру
+  // нужно показывать номер который к нему привязан а в скобках показывает
+  // название этого номера». Stamp on user record as u.phoneNumbers.
+  const aircallNumbersByEmail = (st && typeof st.aircallUserNumbers === 'object' && st.aircallUserNumbers) ? st.aircallUserNumbers : {};
   function _callStatsFor(email) {
     const arr = Array.isArray(callActivityByEmail[email]) ? callActivityByEmail[email] : [];
     let callsToday = 0, callsMtd = 0;
@@ -878,6 +884,10 @@
         _aircallConnected: _aircallStats.total > 0,
         missedCalls: _aircallStats.missedToday,
         callPickupSec: _aircallStats.pickupSec,
+        // Phase 18 rev — Aircall phone numbers assigned to this operator.
+        // Array of { id, name, digits, country }. UI renders каждый номер
+        // как chip с digits + name в скобках.
+        phoneNumbers: Array.isArray(aircallNumbersByEmail[emailLower]) ? aircallNumbersByEmail[emailLower] : [],
         // Phase 17 — Tours назначенные / проведённые. Источник —
         // HubSpot CRM (meetings + deal stages). Интеграция ещё не
         // подключена; пока заглушка 0 для всех real users. Когда

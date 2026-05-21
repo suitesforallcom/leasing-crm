@@ -112,6 +112,15 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
               </div>
               <div className="muted" style={{ marginTop: 4, fontSize: 13, display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
                 <span><Icon name="mail" style={{ width: 12, height: 12, verticalAlign: "-2px", marginRight: 4 }} />{u.email || (u.first.toLowerCase() + "." + u.last.toLowerCase().replace(/[^a-z]/g, "") + "@crestview.co")}</span>
+                {/* Phase 18 rev — Aircall phone number(s) для оператора.
+                    Format: «+1 984 261 1316 (Ann Noel Number)». Tony asked. */}
+                {Array.isArray(u.phoneNumbers) && u.phoneNumbers.length > 0 && u.phoneNumbers.map((pn, i) => (
+                  <span key={pn.id || i} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    <Icon name="phone" style={{ width: 12, height: 12, verticalAlign: "-2px" }} />
+                    <span style={{ fontWeight: 600, color: "var(--ink)" }}>{pn.digits || "—"}</span>
+                    {pn.name && <span style={{ color: "var(--muted)" }}>({pn.name})</span>}
+                  </span>
+                ))}
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
                   <Icon name="ipin" style={{ width: 12, height: 12, verticalAlign: "-2px" }} />
                   {u.loc}

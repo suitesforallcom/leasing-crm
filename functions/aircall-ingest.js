@@ -94,8 +94,9 @@ async function _fetchUserMap() {
  * If a number has no users → return null (orphan; falls through to
  * heuristic from number.name).
  */
-async function _fetchNumberToUserMap() {
-  const numberMap = new Map();
+async function _fetchNumberMaps() {
+  const numberToUser = new Map();              // numberId → primaryUserEmail
+  const userToNumbers = new Map();             // userEmail → [{id, name, digits}]
   // 1. List all numbers (minimal data).
   let next = `/numbers?per_page=${PER_PAGE}`;
   const allNumberIds = [];
@@ -115,15 +116,37 @@ async function _fetchNumberToUserMap() {
       const data = await _aircallFetch(`/numbers/${nid}`);
       const num = (data && data.number) || {};
       const users = Array.isArray(num.users) ? num.users : [];
+      // Diagnostic warning — multi-user numbers cause biased attribution
+      // (we always pick users[0]; Aircall ordering is not deterministic).
+      if (users.length > 1) {
+        const userList = users.map(u => u.email || '?').join(', ');
+        logger.warn(`[aircall] number ${num.id} «${num.name}» has ${users.length} users assigned (${userList}) — calls will all attribute to ${users[0].email}; consider 1-user-per-number or webhook ingest`);
+      }
       if (users.length > 0 && users[0] && users[0].email) {
-        numberMap.set(String(num.id), users[0].email.toLowerCase());
+        numberToUser.set(String(num.id), users[0].email.toLowerCase());
+      }
+      // Build reverse map (user → numbers they own). For multi-user numbers
+      // we list the number under EACH user — operator should see they have
+      // access to it even if attribution biases to users[0].
+      const numberRec = {
+        id: num.id,
+        name: num.name || '',
+        digits: num.digits || '',
+        country: num.country || '',
+        isDefault: false, // не выводится list endpoint'ом; PUNT — пока не размечаем default
+      };
+      for (const u of users) {
+        if (!u || !u.email) continue;
+        const e = u.email.toLowerCase();
+        if (!userToNumbers.has(e)) userToNumbers.set(e, []);
+        userToNumbers.get(e).push(numberRec);
       }
       await _sleep(REQ_PACE_MS);
     } catch (e) {
       logger.warn(`[aircall] number ${nid} fetch failed: ${e.message}`);
     }
   }
-  return numberMap;
+  return { numberToUser, userToNumbers };
 }
 
 /**
@@ -332,14 +355,31 @@ async function _setLastSync(sec) {
  * Core ingest routine — used by both scheduled + admin-callable.
  */
 async function _runPull({ sinceSec, isBootstrap = false }) {
-  const [userMap, numberToUserMap, employeeRoster] = await Promise.all([
+  const [userMap, numberMaps, employeeRoster] = await Promise.all([
     _fetchUserMap(),
-    _fetchNumberToUserMap(),
+    _fetchNumberMaps(),
     _fetchEmployeeRoster(),
   ]);
+  const { numberToUser: numberToUserMap, userToNumbers } = numberMaps;
   logger.info(`[aircall] user map size = ${userMap.size}, number→user map size = ${numberToUserMap.size}, employee roster size = ${employeeRoster.length}`);
   logger.info(`[aircall] roster names: ${employeeRoster.map(e => e.fullName).join(', ')}`);
   logger.info(`[aircall] number assignments: ${Array.from(numberToUserMap.entries()).map(([n, e]) => `${n}→${e}`).join(', ')}`);
+
+  // Phase 18 rev — persist userToNumbers map to state so Pulse data-shim
+  // can render phone numbers per operator on the employee detail page.
+  // Format: { email → [{id, name, digits, country, isDefault}] }
+  try {
+    const userNumbersObj = {};
+    for (const [email, nums] of userToNumbers.entries()) {
+      userNumbersObj[email] = nums;
+    }
+    await db().doc(STATE_PATH).set({
+      state: { aircallUserNumbers: userNumbersObj },
+    }, { merge: true });
+    logger.info(`[aircall] persisted aircallUserNumbers for ${userToNumbers.size} operators`);
+  } catch (e) {
+    logger.warn(`[aircall] persist userNumbers failed: ${e.message}`);
+  }
 
   // For incremental: use lastSync. For bootstrap: explicit sinceSec.
   let fromSec = sinceSec;
