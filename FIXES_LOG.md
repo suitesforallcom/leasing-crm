@@ -60,6 +60,67 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 29. State bloat audit + self-healing payments slim — DO NOT use loose "empty" detection (2026-05-21)
+
+- **Status:** active
+- **Branch / commit:** `claude/modest-curie-8a50ad` (this commit)
+- **Area:** Sync / Firestore doc-size hygiene / Finance (data integrity)
+- **Files:**
+  - `floor-map-editor.html` (`fbSanitizeState`)
+  - `FIXES_LOG.md`
+- **Functions:**
+  - `fbSanitizeState` — added self-healing pass before the nested-array scrubber
+- **Bug it fixed:** Production state hit 958.7 KB / 96 % of Firestore's 1MB
+  doc limit. A prior cleanup attempt run from the browser console used a
+  loose "empty payment" detector (checked only key count) and removed
+  **1286 real payment records** — each with `amount/date/memo/paidBy/
+  paidVia/status` populated. Local state was wiped; the remote doc was
+  re-read with `getDoc(workspaces/default/data/state)` to restore the
+  data. A local backup was written to a timestamped `sfa_v5_state_BACKUP_*`
+  key before the overwrite so the wiped state remains recoverable.
+- **Invariant — DO NOT BREAK:**
+  1. The slim pass in `fbSanitizeState` only drops `u.payments[ym]` when
+     it's literally `[]` OR when it's an object with **zero** of these
+     fields populated: `status`, `amount`, `date`, `paidVia`,
+     `stripeInvoiceId`, `paidAtIso`, `receiptPath`. Any operator-meaningful
+     field present → keep the entry. If you add a new field to the
+     payment shape, add it to the keep-list.
+  2. Never write a "drop empty payment month" utility that uses a looser
+     criterion (key count, presence of any field, etc.). The codebase
+     reads `u.payments[ym].status` / `.amount` / `.date` widely — losing
+     those means losing real accounting history.
+  3. If a state-bloat audit is needed, ALWAYS back up `localStorage
+     .getItem('sfa_v5_state')` to a timestamped key BEFORE any mutation,
+     and verify a sample of mutated entries against the remote doc before
+     calling `fbPushNow()`.
+- **Verification:**
+  1. Open DevTools console on production, run:
+     ```js
+     (() => { const s = JSON.parse(localStorage.getItem('sfa_v5_state')||'{}'); let real=0,empty=0;
+       for (const b of s.buildings||[]) for (const f of b.floors||[]) for (const u of f.units||[]) {
+         if (!u.payments) continue;
+         for (const ym of Object.keys(u.payments)) {
+           const p=u.payments[ym];
+           if (p && (p.status||p.amount||p.date||p.paidVia||p.stripeInvoiceId)) real++;
+           else empty++;
+         }
+       }
+       return {real, empty};
+     })()
+     ```
+     Expected after the fix lands and a push completes: `empty: 0` (the
+     self-healing pass strips them on push). `real` should match the
+     workspace's actual payment-record count (currently ~1286).
+  2. Trigger a Firestore push (`fbPushNow()`) and verify the console emits
+     `[fbSanitizeState] self-healing: dropped N empty u.payments[ym] entries`
+     when N > 0. No emission when N = 0.
+- **Regression test:** none — manual UI / console verification only. A
+  unit test for `fbSanitizeState` would require extracting it from the
+  single-file HTML, which is out of scope for this fix.
+- **Related PR / issue:** none (direct commit on `claude/modest-curie-8a50ad`)
+
+---
+
 ### 1. Lease-start gate — anti phantom $7,800 (2026-05-13)
 
 - **Status:** active
