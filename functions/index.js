@@ -1041,8 +1041,15 @@ exports.createStripeInvoice = onCall(
           if (!desc) { logger.warn('[createStripeInvoice] extra line missing description, skipped'); continue; }
           if (amt <= 0 || !Number.isFinite(amt)) { logger.warn(`[createStripeInvoice] extra line "${desc}" has bad amount ${amt}, skipped`); continue; }
           const cents = Math.round(amt * 100);
+          // type='advance' (FIXES_LOG Entry 30) — это дополнительный месяц
+          // в multi-month advance prepayment. Для Stripe это просто extra
+          // rent line; metadata.purpose='rent_advance' помечает её как
+          // часть multi-month flow (полезно для аналитики и для cron
+          // Stripe Search дедупа — см. ниже).
           const itemType = (item.type === 'late-fee' ? 'late_fee'
-                           : (item.type === 'recurring' ? 'service' : 'custom'));
+                           : item.type === 'advance' ? 'rent_advance'
+                           : item.type === 'recurring' ? 'service'
+                           : 'custom');
           await stripe.invoiceItems.create({
             customer: customerId,
             invoice: invoice.id,
@@ -2439,6 +2446,65 @@ async function handleInvoicePaid(invoice) {
         paidAt,
       },
     };
+    // Multi-month advance prepayment (FIXES_LOG Entry 30) — frontend
+    // застампил несколько месяцев с одним и тем же stripeInvoiceId +
+    // paidVia='stripe-advance'. Сейчас, когда tenant заплатил по invoice,
+    // ВСЕ покрытые месяцы должны flip'нуться в paid одновременно.
+    //
+    // Сканируем все u.payments[*] вместо чтения coversInvoiceMonths с
+    // anchor-месяца — защита от случая, когда frontend stamp на anchor
+    // был перезаписан (мы это только что сделали выше). Sibling-месяцы
+    // всё ещё держат ссылку через stripeInvoiceId.
+    try {
+      let coveredCount = 0;
+      const pmap = f.unit.payments || {};
+      for (const sibYm of Object.keys(pmap)) {
+        if (sibYm === ym) continue;  // anchor уже выставлен выше
+        const sib = pmap[sibYm];
+        if (!sib || typeof sib !== 'object') continue;
+        if (sib.paidVia !== 'stripe-advance') continue;
+        if (sib.stripeInvoiceId !== invoice.id) continue;
+        // Sibling помечен как покрытый этим advance invoice — flip в paid.
+        const sibPriorHistory = Array.isArray(sib.history) ? sib.history.slice() : [];
+        if (sib.status) {
+          sibPriorHistory.push({
+            ts: new Date().toISOString(),
+            status: sib.status,
+            amount: sib.amount || 0,
+            paidVia: sib.paidVia,
+            invoiceId: invoice.id,
+            replacedBy: invoice.id,
+            replacedReason: 'webhook-advance-paid',
+          });
+          while (sibPriorHistory.length > 10) sibPriorHistory.shift();
+        }
+        pmap[sibYm] = {
+          status: 'paid',
+          amount: sib.amount || 0,
+          date: new Date(paidAt).toISOString().slice(0, 10),
+          paidVia: 'stripe-advance',
+          paidAtIso: new Date(paidAt).toISOString(),
+          memo: sib.memo || `Prepaid as part of advance invoice ${invoice.id}`,
+          ...(sib.sentBy ? { sentBy: sib.sentBy } : {}),
+          ...(sib.coversInvoiceMonths ? { coversInvoiceMonths: sib.coversInvoiceMonths } : {}),
+          ...(sibPriorHistory.length ? { history: sibPriorHistory } : {}),
+          stripe: {
+            invoiceId: invoice.id,
+            chargeId,
+            paymentMethod,
+            hostedInvoiceUrl: invoice.hosted_invoice_url || null,
+            paidAt,
+            advance: true,
+          },
+        };
+        coveredCount++;
+      }
+      if (coveredCount > 0) {
+        logger.info(`[stripe] ✓ advance-paid: ${unitId} also flipped ${coveredCount} sibling month(s) via invoice ${invoice.id}`);
+      }
+    } catch (e) {
+      logger.warn(`[stripe] advance-paid sweep failed: ${e.message}`);
+    }
     f.unit.stripe = f.unit.stripe || {};
     f.unit.stripe.customerId = invoice.customer || f.unit.stripe.customerId;
     f.unit.stripe.lastInvoiceId = invoice.id;
@@ -2496,6 +2562,52 @@ async function handleInvoiceFailed(invoice) {
         failureMessage: invoice.last_finalization_error?.message || null,
       },
     };
+    // Multi-month advance — если этот failed invoice покрывал несколько
+    // месяцев, sibling-месяцы тоже flip'аем обратно из 'open' в 'late'.
+    // Иначе они застряли бы в 'open' (cron их skip'ает) пока tenant
+    // не оплатит — но он не может, потому что invoice failed. И оператор
+    // ничего нового не выставит, потому что rent grid думает «всё OK».
+    try {
+      let siblingCount = 0;
+      const pmap = f.unit.payments || {};
+      for (const sibYm of Object.keys(pmap)) {
+        if (sibYm === ym) continue;
+        const sib = pmap[sibYm];
+        if (!sib || typeof sib !== 'object') continue;
+        if (sib.paidVia !== 'stripe-advance') continue;
+        if (sib.stripeInvoiceId !== invoice.id) continue;
+        if (sib.status === 'paid') continue;  // уже paid — не трогаем
+        const sibHist = Array.isArray(sib.history) ? sib.history.slice() : [];
+        sibHist.push({
+          ts: new Date().toISOString(),
+          status: sib.status,
+          invoiceId: invoice.id,
+          replacedReason: 'webhook-advance-failed',
+        });
+        while (sibHist.length > 10) sibHist.shift();
+        pmap[sibYm] = {
+          status: 'late',
+          amount: sib.amount || 0,
+          paidVia: 'stripe-advance',
+          memo: sib.memo || `Advance invoice ${invoice.id} failed — see anchor month ${ym}`,
+          ...(sib.coversInvoiceMonths ? { coversInvoiceMonths: sib.coversInvoiceMonths } : {}),
+          ...(sib.sentBy ? { sentBy: sib.sentBy } : {}),
+          history: sibHist,
+          stripe: {
+            invoiceId: invoice.id,
+            hostedInvoiceUrl: invoice.hosted_invoice_url || null,
+            attemptCount: invoice.attempt_count || 1,
+            failedSibling: true,
+          },
+        };
+        siblingCount++;
+      }
+      if (siblingCount > 0) {
+        logger.warn(`[stripe] ✗ advance-failed: ${unitId} also flipped ${siblingCount} sibling month(s) to late via invoice ${invoice.id}`);
+      }
+    } catch (e) {
+      logger.warn(`[stripe] advance-failed sweep failed: ${e.message}`);
+    }
     // Surface a persistent "auto-charge failed" stamp on the unit itself
     // so the floor map + rent roll can render a red ! badge and
     // dashboards can count failures. Cleared when a subsequent invoice
@@ -2899,6 +3011,23 @@ exports.runAutoInvoices = onSchedule(
           // anyway).
           if (u.payments && u.payments[nextYm]
               && ['paid', 'free', 'waived'].includes(u.payments[nextYm].status)) {
+            skipped++; continue;
+          }
+          // Multi-month advance prepayment (FIXES_LOG Entry 30) — оператор
+          // запустил счёт на N месяцев вперёд через UI Create Invoice modal.
+          // Frontend стампит каждый покрытый месяц как
+          //   { status: 'open', stripeInvoiceId: <id>, paidVia: 'stripe-advance',
+          //     coversInvoiceMonths: [ym...] }
+          // Здесь cron'у НЕЛЬЗЯ создавать дубль-счёт для этого месяца —
+          // tenant его уже получил в общей multi-month invoice. Когда
+          // tenant заплатит, webhook flip'нёт всю группу coversInvoiceMonths
+          // в paid (см. обработчик invoice.paid ниже). Пока invoice ещё
+          // open — продолжаем skip'ать.
+          if (u.payments && u.payments[nextYm]
+              && u.payments[nextYm].status === 'open'
+              && u.payments[nextYm].stripeInvoiceId
+              && u.payments[nextYm].paidVia === 'stripe-advance') {
+            logger.info(`[auto-invoice] ${u.id}: ${nextYm} covered by advance invoice ${u.payments[nextYm].stripeInvoiceId}; skipping`);
             skipped++; continue;
           }
           // Lease must be active — don't invoice past leaseEnd

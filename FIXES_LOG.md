@@ -60,6 +60,59 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 30. Multi-month advance prepayment — anti-double-billing invariants (2026-05-21)
+
+- **Status:** active
+- **Branch / commit:** `claude/modest-curie-8a50ad`
+- **Area:** Invoicing / Stripe webhook / Auto-billing cron / state.payments schema
+- **Files:**
+  - `floor-map-editor.html` (ciSubmit stamping, `_ciBuildAllLines`, badge function, payment-history grid, confirm dialog)
+  - `functions/index.js` (`runAutoInvoices` skip-list, `handleInvoicePaid` sibling sweep, `handleInvoiceFailed` sibling sweep, `extraLineItems` item-type mapping)
+  - `FIXES_LOG.md`
+- **Functions:**
+  - `ciSubmit` — stamps every selected month with the same `stripeInvoiceId`
+  - `runAutoInvoices` cron — skips months with `status='open' && stripeInvoiceId && paidVia='stripe-advance'`
+  - `handleInvoicePaid` — after marking the anchor paid, sweeps `u.payments[*]` for matching `stripeInvoiceId + paidVia='stripe-advance'` and flips them all to `paid`
+  - `handleInvoiceFailed` — same sweep, flips siblings to `late`
+- **Bug it fixed:** Tenant wants to prepay 6 months in one Stripe invoice ($2,700 = 6×$450). Before this fix, only the **anchor** month was stamped in `state.payments`. When the next month rolled around, `runAutoInvoices` saw `u.payments[2026-07]` as undefined → created a duplicate $450 invoice. Tenant would have received 5 unwanted follow-up invoices despite having prepaid the entire period.
+- **Invariant — DO NOT BREAK:**
+  1. **Stamping at send time.** When `ciSubmit` fires with `selectedMonths.length >= 1` and `purpose === 'rent'`, EVERY entry in `selectedMonths` must be stamped with:
+     ```js
+     u.payments[ym] = {
+       status: 'open',
+       amount,
+       stripeInvoiceId,
+       paidVia: 'stripe-advance',
+       coversInvoiceMonths: [...selectedMonths],
+       advanceSentAt: ISO,
+       sentBy: operatorEmail,
+     }
+     ```
+     This includes single-month invoices (1 element in `selectedMonths`) — keeping the schema uniform lets the webhook sweep work for everything. The anchor (`ym === selectedMonths[0]`) additionally gets `_anchorMonth: true` so post-payment diagnostics can identify which line drove the rent-path on the backend.
+  2. **Don't overwrite paid/free/waived months.** Stamping must skip any `u.payments[ym]` that's already `paid`, `free`, or `waived` — otherwise a multi-month send that accidentally included an already-collected month would void that record.
+  3. **Cron skip-list.** `runAutoInvoices` must skip a month when **ALL** of these hold:
+     - `u.payments[nextYm].status === 'open'`
+     - `u.payments[nextYm].stripeInvoiceId` is truthy
+     - `u.payments[nextYm].paidVia === 'stripe-advance'`
+     Adding a fourth shortcut path? Make sure the underlying invoice isn't void — once we void a multi-month invoice, we expect cron to start re-issuing again, which the `handleInvoiceVoided` handler already enables (it clears `status` back to `pending` for the matched month, but ONLY the anchor — siblings stay 'open'; a follow-up sweep needed).
+  4. **Webhook sweep.** `handleInvoicePaid` must walk `f.unit.payments[*]` after stamping the anchor and flip every sibling where `paidVia === 'stripe-advance' && stripeInvoiceId === invoice.id` to `status='paid'`. Same for `handleInvoiceFailed` (flip to `late`). Without the sweep, advance months stay stuck `open` forever — Stripe paid us, but the rent grid lies.
+  5. **Visual labels.** Line items in the invoice modal show badge `RECURRING` for the anchor and `ADVANCE` (amber) for additional months. Payment-history grid cells show an amber `A` dot in the top-left for any month with `paidVia === 'stripe-advance'` — operator can distinguish "paid via prepayment bundle" from "paid month-by-month". Don't remove the dot — Tony specifically asked for it during the design review.
+  6. **Confirm-dialog warning.** Send confirmation must show a banner when `selectedMonths.length > 1` explaining that auto-billing will be paused for the covered period and that all months flip back to `late` on Stripe failure.
+- **Verification:**
+  1. Send a 6-month invoice for any tenant. Open DevTools console:
+     ```js
+     const u = state.buildings.flatMap(b=>b.floors).flatMap(f=>f.units).find(u=>u.id === '<suite>');
+     Object.keys(u.payments).filter(k=>u.payments[k].paidVia==='stripe-advance')
+     ```
+     Expected: 6 keys, all sharing the same `stripeInvoiceId`.
+  2. Trigger `runAutoInvoices` manually (Settings → Billing → Run now). Check Cloud Function logs: for each prepaid month, expect a log line `[auto-invoice] <suite>: <ym> covered by advance invoice <id>; skipping`.
+  3. After tenant pays in Stripe Dashboard: invoke `firebase functions:log --only stripeWebhook` and expect `[stripe] ✓ advance-paid: <suite> also flipped N sibling month(s) via invoice <id>`. Verify `u.payments[*].status === 'paid'` for all 6.
+  4. Negative path — force a card decline. Expect sibling sweep on payment_failed: all 6 flip to `late`, NOT stuck on `open`.
+- **Regression test:** none — relies on Stripe sandbox testing. The skip-list logic in `runAutoInvoices` is greppable: predeploy script in `scripts/check-invariants.sh` should add a `check_gate` line matching the `paidVia === 'stripe-advance'` check.
+- **Related PR / issue:** none (direct commit on `claude/modest-curie-8a50ad`)
+
+---
+
 ### 29. State bloat audit + self-healing payments slim — DO NOT use loose "empty" detection (2026-05-21)
 
 - **Status:** active
