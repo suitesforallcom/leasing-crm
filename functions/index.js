@@ -4733,14 +4733,36 @@ exports.disconnectBankAccount = onCall(
       detachError = e.message || String(e);
       logger.warn(`[bank-feed] disconnectBankAccount: Stripe detach failed (${detachError}) — proceeding to local cleanup`);
     }
+    let priorInstitution = null;
+    let priorLast4 = null;
     await mutateWorkspaceState((s) => {
       if (!Array.isArray(s.bankConnections)) return;
       const c = s.bankConnections.find(x => x.stripeFcAccountId === fcAccountId);
       if (c) {
+        priorInstitution = c.institutionName || null;
+        priorLast4 = c.accountLast4 || null;
         c.status = 'disconnected';
         c.disconnectedAt = new Date().toISOString();
       }
     });
+    // FIXES_LOG Entry 31 (post-mortem 2026-05-21 NUHS Suite 101): disconnect
+    // happened silently — no audit trail to forensically reconstruct «who/
+    // when». Operator (Tony) couldn't figure out why bank sync stopped 20
+    // days ago. Audit-log every disconnect with actor + reason metadata.
+    try {
+      await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+        ts: admin.firestore.FieldValue.serverTimestamp(),
+        actor: (req.auth?.token?.email || '').toLowerCase() || 'unknown',
+        action: 'bank.disconnect',
+        source: 'disconnectBankAccount',
+        fcAccountId,
+        institution: priorInstitution,
+        last4: priorLast4,
+        note: `Bank disconnected: ${priorInstitution || fcAccountId}${priorLast4 ? ' ····' + priorLast4 : ''}${detachError ? ` (Stripe detach error: ${detachError})` : ''}`,
+      });
+    } catch (auditErr) {
+      logger.warn(`[bank-feed] disconnect audit write failed: ${auditErr.message}`);
+    }
     return { detached, detachError };
   }
 );
@@ -4759,6 +4781,8 @@ exports.removeBankConnection = onCall(
     }
     let removed = false;
     let blockedActive = false;
+    let removedInstitution = null;
+    let removedLast4 = null;
     await mutateWorkspaceState((s) => {
       if (!Array.isArray(s.bankConnections)) return;
       const idx = s.bankConnections.findIndex(c => c.stripeFcAccountId === fcAccountId);
@@ -4767,6 +4791,8 @@ exports.removeBankConnection = onCall(
         blockedActive = true;
         return;
       }
+      removedInstitution = s.bankConnections[idx].institutionName || null;
+      removedLast4 = s.bankConnections[idx].accountLast4 || null;
       s.bankConnections.splice(idx, 1);
       removed = true;
     });
@@ -4775,6 +4801,25 @@ exports.removeBankConnection = onCall(
         'Account is still active — disconnect it first, then remove.');
     }
     logger.info(`[bank-feed] removeBankConnection: deleted record ${fcAccountId} (removed=${removed})`);
+    // FIXES_LOG Entry 31 — audit-log remove (parallel to disconnect). Без
+    // этой записи cron-watchdog (ниже) увидит orphan-транзакции но не сможет
+    // объяснить чем это вызвано — оператор/Drew/Ann ручками удалил запись.
+    if (removed) {
+      try {
+        await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+          ts: admin.firestore.FieldValue.serverTimestamp(),
+          actor: (req.auth?.token?.email || '').toLowerCase() || 'unknown',
+          action: 'bank.remove',
+          source: 'removeBankConnection',
+          fcAccountId,
+          institution: removedInstitution,
+          last4: removedLast4,
+          note: `Bank connection record removed: ${removedInstitution || fcAccountId}${removedLast4 ? ' ····' + removedLast4 : ''}. Cached transactions kept; bank sync will not resume until reconnected.`,
+        });
+      } catch (auditErr) {
+        logger.warn(`[bank-feed] remove audit write failed: ${auditErr.message}`);
+      }
+    }
     return { removed };
   }
 );
@@ -5142,7 +5187,68 @@ exports.bankFeedScheduledPoll = onSchedule(
   async () => {
     const state = await readWorkspaceState();
     const conns = (state.bankConnections || []).filter(c => c.status === 'active');
-    if (!conns.length) return;
+    if (!conns.length) {
+      // FIXES_LOG Entry 31 — watchdog для orphan-кэша. Tony 2026-05-21
+      // (NUHS Suite 101): bank sync застрял ~20 дней назад. Cron каждый
+      // час тихо видел 0 active connections и молча возвращался. Тут
+      // проверяем: если в кэше есть свежие (≤30 дней) транзакции под
+      // disconnected/removed аккаунтом — это значит operator случайно
+      // удалил активный канал и не заметил, sync не восстановится без
+      // ручного reconnect. Пишем критический audit alert.
+      //
+      // Throttle: не чаще раза в 24h на один и тот же набор orphan
+      // аккаунтов (иначе cron каждый час спамит alerts).
+      try {
+        const txnSnap = await db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`)
+          .orderBy('transactedAt', 'desc')
+          .limit(20)
+          .get();
+        if (txnSnap.empty) return;
+        const thirtyDaysAgoUnix = Math.floor(Date.now() / 1000) - 30 * 86400;
+        const orphanAccounts = new Set();
+        let newestTxnUnix = 0;
+        txnSnap.forEach(d => {
+          const data = d.data() || {};
+          const ts = +data.transactedAt || 0;
+          if (ts > newestTxnUnix) newestTxnUnix = ts;
+          if (ts < thirtyDaysAgoUnix) return;
+          const acc = data.stripeFcAccountId || data.accountId;
+          if (acc) orphanAccounts.add(acc);
+        });
+        if (orphanAccounts.size === 0) return;
+        // Уже алертили в последние 24h? Throttle.
+        const alertSnap = await db.collection(`workspaces/${WORKSPACE_ID}/audit`)
+          .where('action', '==', 'bank.sync.orphaned')
+          .orderBy('ts', 'desc')
+          .limit(1)
+          .get();
+        if (!alertSnap.empty) {
+          const last = alertSnap.docs[0].data();
+          const lastMs = last.ts?.toMillis ? last.ts.toMillis() : 0;
+          if (Date.now() - lastMs < 24 * 60 * 60 * 1000) {
+            logger.info(`[bank-feed-watchdog] orphan accounts detected (${orphanAccounts.size}) but already alerted <24h ago`);
+            return;
+          }
+        }
+        const newestDate = new Date(newestTxnUnix * 1000).toISOString().slice(0, 10);
+        const daysStale = Math.floor((Date.now() - newestTxnUnix * 1000) / (24 * 60 * 60 * 1000));
+        await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+          ts: admin.firestore.FieldValue.serverTimestamp(),
+          actor: 'system-watchdog',
+          action: 'bank.sync.orphaned',
+          source: 'bankFeedScheduledPoll',
+          severity: 'critical',
+          orphanAccounts: [...orphanAccounts],
+          newestCachedTxnDate: newestDate,
+          daysStale,
+          note: `Bank sync stopped: 0 active connections in state.bankConnections but cached transactions exist for ${orphanAccounts.size} account(s). Newest cached transaction: ${newestDate} (${daysStale} day${daysStale === 1 ? '' : 's'} ago). Operator must reconnect bank via Settings → Billing → Connect bank account. Connection records may have been removed manually (see bank.disconnect / bank.remove audit entries) or terminated by Stripe.`,
+        });
+        logger.warn(`[bank-feed-watchdog] ALERT: 0 active connections but ${orphanAccounts.size} orphan account(s) with recent transactions; audit entry written`);
+      } catch (e) {
+        logger.warn(`[bank-feed-watchdog] check failed: ${e.message}`);
+      }
+      return;
+    }
     const now = Date.now();
     const due = conns.filter(c => {
       const intervalH = +c.pollIntervalHours;
