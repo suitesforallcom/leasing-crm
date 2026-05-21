@@ -55,7 +55,7 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
     { id: "audit",        label: "Full audit log",icon: "signal",   count: u.id === "u1" ? 80 : null },
     { id: "documents",    label: "Documents",     icon: "doc",      count: docs.length },
     { id: "contracts",    label: "Contracts",     icon: "contract", count: contracts.length },
-    { id: "calls",        label: "Calls",         icon: "phone",    count: calls.length },
+    { id: "calls",        label: "Calls",         icon: "phone",    count: u._aircallConnected && Array.isArray(u._callActivity) ? u._callActivity.length : calls.length },
     { id: "emails",       label: "Emails",        icon: "mail",     count: emails.length },
     { id: "logins",       label: "Login history", icon: "login" },
     { id: "productivity", label: "Productivity",  icon: "trendUp" },
