@@ -263,6 +263,30 @@
   // Phase 14 — calendar events { email → [today's events] } written by
   // refreshCalendarEvents CF (polled every 5min). Drives MyDay Schedule.
   const calendarEventsByEmail = (st && typeof st.calendarEvents === 'object' && st.calendarEvents) ? st.calendarEvents : {};
+
+  // Phase 18 — Aircall calls { email → [{aircallId, ts, direction,
+  // durationSec, answerSec, status, fromNumber, toNumber, recordingUrl}] }
+  // written by pullAircallStats CF. Bucketed below into today/MTD/pickup/missed.
+  const callActivityByEmail = (st && typeof st.callActivity === 'object' && st.callActivity) ? st.callActivity : {};
+  function _callStatsFor(email) {
+    const arr = Array.isArray(callActivityByEmail[email]) ? callActivityByEmail[email] : [];
+    let callsToday = 0, callsMtd = 0;
+    let missedToday = 0;
+    const pickupSamples = [];  // answerSec for answered calls today
+    for (const c of arr) {
+      if (!c || !c.ts) continue;
+      if (c.ts >= startOfTodayMs) {
+        callsToday++;
+        if (c.status === 'missed') missedToday++;
+        if (typeof c.answerSec === 'number' && c.answerSec > 0) pickupSamples.push(c.answerSec);
+      }
+      if (c.ts >= monthStartMs) callsMtd++;
+    }
+    const pickupSec = pickupSamples.length
+      ? Math.round(pickupSamples.reduce((s, v) => s + v, 0) / pickupSamples.length)
+      : 0;
+    return { callsToday, callsMtd, missedToday, pickupSec, total: arr.length };
+  }
   function _streakFromHistory(email) {
     const arr = dailyHistoryByEmail[email];
     if (!Array.isArray(arr) || arr.length === 0) return 0;
@@ -708,11 +732,14 @@
       // отдельно (см. metricsFor → m.mtd).
       const realContracts = realStats.contractsToday;
       const realEmails    = realStats.emailsSentToday;  // sent + replies today
-      const realCalls     = realStats.callsToday;
+      // Phase 18 — calls теперь из Aircall (callActivity) если есть.
+      // Fallback на outreach trail (manual log entries) для backward-compat.
+      const _aircallStats = _callStatsFor(emailLower);
+      const realCalls     = _aircallStats.total > 0 ? _aircallStats.callsToday : realStats.callsToday;
       const realInvoices  = realStats.invoicesMtd;      // invoices reads MTD elsewhere
       const realPayments  = realStats.paymentsMtd;
-      const realActions   = realStats.actionsToday;
-      const hasAnyActivity = realStats.actionsMtd > 0;
+      const realActions   = realStats.actionsToday + (_aircallStats.total > 0 ? _aircallStats.callsToday : 0);
+      const hasAnyActivity = realStats.actionsMtd > 0 || _aircallStats.total > 0;
 
       // Phase 10 — Gmail thread stats per employee.
       // emailStatsByOwner buckets by owner email = ящик чьего watch'а событие.
@@ -843,10 +870,14 @@
         // center totals, etc.). Today values живут в u.emails / .calls /
         // .contracts / .actions выше.
         emailsMtd: realStats.emailsMtd,
-        callsMtd: realStats.callsMtd,
+        callsMtd: _aircallStats.total > 0 ? _aircallStats.callsMtd : realStats.callsMtd,
         contractsMtd: realStats.contractsMtd,
         contractsSignedMtd: realStats.contractsSignedMtd, // signed this month
-        actionsMtd: realStats.actionsMtd,
+        actionsMtd: realStats.actionsMtd + (_aircallStats.total > 0 ? _aircallStats.callsMtd : 0),
+        // Phase 18 — Aircall telephony stats (when integration is live).
+        _aircallConnected: _aircallStats.total > 0,
+        missedCalls: _aircallStats.missedToday,
+        callPickupSec: _aircallStats.pickupSec,
         // Phase 17 — Tours назначенные / проведённые. Источник —
         // HubSpot CRM (meetings + deal stages). Интеграция ещё не
         // подключена; пока заглушка 0 для всех real users. Когда

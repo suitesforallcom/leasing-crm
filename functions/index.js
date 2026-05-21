@@ -6106,3 +6106,10 @@ const _cal = require('./calendar-ingest');
 exports.refreshCalendarEvents = _cal.refreshCalendarEvents;
 exports.adminRefreshCalendar  = _cal.adminRefreshCalendar;
 
+// Phase 18 — Aircall polling ingest. Pulls calls every 5 min into
+// state.callActivity[email]. Requires AIRCALL_API_ID + AIRCALL_API_TOKEN
+// secrets (set via firebase functions:secrets:set).
+const _aircall = require('./aircall-ingest');
+exports.pullAircallStats = _aircall.pullAircallStats;
+exports.adminPullAircall = _aircall.adminPullAircall;
+

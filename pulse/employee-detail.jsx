@@ -211,10 +211,14 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
             hint={u._isReal
               ? "Sum of all actions for the selected day: emails sent + contracts + invoices + payments + notes. Calls excluded until telephony is connected. Today — live count; past days — from daily snapshot."
               : "Actions count (demo mock)."} />
-          {/* Phase 17 rev — Tony: «Убери с цифры с таргетом». Pure counts. */}
-          <Stat icon="phone"    label="Calls"           value={displayUser.calls} sub={isToday ? `pickup ${m.actuals.callPickupSec}s · ${m.actuals.missedCalls} missed` : ""}
+          {/* Phase 17 rev — Tony: «Убери с цифры с таргетом». Pure counts.
+              Phase 18 — Aircall connected: REAL telephony stats when
+              u._aircallConnected; otherwise MOCK pointer remains. */}
+          <Stat icon="phone"    label="Calls"           value={displayUser.calls} sub={isToday ? `pickup ${u._aircallConnected ? (u.callPickupSec || 0) : m.actuals.callPickupSec}s · ${u._aircallConnected ? (u.missedCalls || 0) : m.actuals.missedCalls} missed` : ""}
             hint={u._isReal
-              ? "Calls made today. MOCK — telephony integration not connected (needs Twilio / RingCentral / Aircall webhook). Will read from u.callRecords once wired."
+              ? (u._aircallConnected
+                  ? "Calls made today. REAL data from Aircall API (polled every 5 min). Counts inbound + outbound; sub-line shows average answer-time (pickup) + missed-inbound count. Tap row in Calls tab to play recording."
+                  : "Calls made today. MOCK — Aircall integration not connected yet (no calls in state.callActivity for this email). Will go live as soon as the pullAircallStats CF starts seeing this operator's calls.")
               : "Calls (demo mock)."} />
           <Stat icon="mail"     label="Emails sent"     value={displayUser.emails} sub={isToday && displayUser.emails > 0 ? `avg reply ${m.actuals.emailReplyMin}m` : ""}
             hint={u._isReal

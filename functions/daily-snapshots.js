@@ -76,6 +76,8 @@ async function _computeSnapshotsForDate(dateStr) {
     if (!per[e]) per[e] = {
       email: e, uid: '', sentEmails: 0, receivedEmails: 0, repliedEmails: 0,
       contracts: 0, hoursWorked: 0, score: 0, targetHit: false,
+      // Phase 18 — telephony stats from Aircall
+      calls: 0, callsAnswered: 0, callsMissed: 0, callPickupSec: 0,
     };
     return per[e];
   }
@@ -122,6 +124,28 @@ async function _computeSnapshotsForDate(dateStr) {
           b.contracts++;
         }
       }
+    }
+  }
+
+  // Phase 18 — Aircall calls per operator for this day
+  const callActivity = (state.callActivity && typeof state.callActivity === 'object') ? state.callActivity : {};
+  for (const [email, arr] of Object.entries(callActivity)) {
+    if (!Array.isArray(arr) || !arr.length) continue;
+    const b = _bucket(email);
+    if (!b) continue;
+    const pickupSamples = [];
+    for (const c of arr) {
+      if (!c || !c.ts) continue;
+      if (c.ts < dayStart || c.ts > dayEnd) continue;
+      b.calls++;
+      if (c.status === 'missed') b.callsMissed++;
+      else {
+        b.callsAnswered++;
+        if (typeof c.answerSec === 'number' && c.answerSec > 0) pickupSamples.push(c.answerSec);
+      }
+    }
+    if (pickupSamples.length) {
+      b.callPickupSec = Math.round(pickupSamples.reduce((s, v) => s + v, 0) / pickupSamples.length);
     }
   }
 
