@@ -80,10 +80,64 @@ async function _fetchUserMap() {
 }
 
 /**
+ * Phase 18 — Aircall в практике не назначает `user` на звонок если
+ * номер используется несколькими операторами (общий building-number)
+ * или если входящий звонок брошен (short_abandoned). Чтобы такие звонки
+ * не потерять, парсим `number.name`: если содержит имя оператора
+ * (full name из state.employees) — атрибутируем. Иначе SKIP (звонок
+ * остаётся orphan'ом).
+ *
+ * Загружаем employees один раз и строим словарь { lowerCaseFullName, ... }
+ * для substring-матчинга в _normalizeCall.
+ */
+async function _fetchEmployeeRoster() {
+  const stateRef = db().doc(STATE_PATH);
+  const snap = await stateRef.get();
+  if (!snap.exists) return [];
+  const doc = snap.data() || {};
+  const emps = (doc.state && Array.isArray(doc.state.employees)) ? doc.state.employees : [];
+  return emps
+    .filter(e => e && e.email && e.status !== 'terminated' && e.trackInPulse !== false)
+    .map(e => ({
+      email: e.email.toLowerCase(),
+      fullName: (e.fullName || '').toLowerCase().trim(),
+      // Тоже split на части для substring match (например, для «Ann»
+      // и «Noel» отдельно, на случай если number.name = «Ann Number»).
+      firstName: (e.fullName || '').split(/\s+/)[0]?.toLowerCase() || '',
+      lastName: (e.fullName || '').split(/\s+/).slice(-1)[0]?.toLowerCase() || '',
+    }));
+}
+
+/**
+ * Match number.name → operator email. Returns null if no confident match.
+ * Trade-off: lower false-positive rate > higher false-negative rate.
+ * Только substring match на firstName И lastName (оба должны присутствовать).
+ * «Ann Noel Number» → match Ann + Noel → Ann Noel's email.
+ * «Bay Vista Dr» → no name match → null (orphan).
+ */
+function _matchOperatorFromNumberName(numberName, roster) {
+  if (!numberName) return null;
+  const lower = String(numberName).toLowerCase();
+  for (const emp of roster) {
+    if (!emp.firstName || !emp.lastName) continue;
+    if (emp.firstName.length < 2) continue; // защита от too-short names
+    // Требуем оба имени в number.name — это надёжный сигнал
+    if (lower.includes(emp.firstName) && lower.includes(emp.lastName)) {
+      return emp.email;
+    }
+  }
+  return null;
+}
+
+/**
  * Normalize an Aircall call object → state schema.
  * Returns null for invalid records.
+ * Owner attribution priority:
+ *   1. c.user.email (Aircall explicitly assigned operator)
+ *   2. c.number.name parsed against employee roster (e.g. «Ann Noel Number»)
+ *   3. SKIP — orphan call (e.g. building-shared «Bay Vista Dr» number).
  */
-function _normalizeCall(c, userMap) {
+function _normalizeCall(c, userMap, employeeRoster) {
   if (!c || !c.id) return null;
   const startedSec = c.started_at || 0;
   if (!startedSec) return null;
@@ -97,8 +151,18 @@ function _normalizeCall(c, userMap) {
   if (c.missed_call_reason || (!answeredSec && c.direction === 'inbound')) status = 'missed';
   if (c.voicemail) status = 'voicemail';
 
-  const ownerEmail = c.user && c.user.id ? userMap.get(String(c.user.id)) : null;
-  if (!ownerEmail) return null;  // no operator → skip
+  // 1. Try explicit user assignment from Aircall
+  let ownerEmail = c.user && c.user.id ? userMap.get(String(c.user.id)) : null;
+  let attribution = 'aircall-user';
+  // 2. Fallback: parse number.name for operator full name
+  if (!ownerEmail && c.number && c.number.name) {
+    const matched = _matchOperatorFromNumberName(c.number.name, employeeRoster);
+    if (matched) {
+      ownerEmail = matched;
+      attribution = 'number-name-heuristic';
+    }
+  }
+  if (!ownerEmail) return null;  // 3. SKIP orphan
 
   return {
     aircallId: c.id,
@@ -110,7 +174,9 @@ function _normalizeCall(c, userMap) {
     status,
     fromNumber: c.raw_digits || c.from || '',
     toNumber: c.to || '',
+    numberName: c.number && c.number.name ? c.number.name : null,
     recordingUrl: c.recording || c.voicemail || null,
+    _attribution: attribution,  // для дебага в логе
   };
 }
 
@@ -118,24 +184,35 @@ function _normalizeCall(c, userMap) {
  * Walk Aircall /v1/calls from `fromSec` until either no more pages OR
  * we hit `maxCalls` (safety stop for very busy accounts).
  */
-async function _fetchCallsSince(fromSec, userMap, maxCalls = 5000) {
+async function _fetchCallsSince(fromSec, userMap, employeeRoster, maxCalls = 5000) {
   const out = [];
-  // Aircall calls endpoint accepts `from` (unix timestamp) + per_page + order.
+  let totalRaw = 0;
+  let skippedOrphan = 0;
+  const attributionStats = { 'aircall-user': 0, 'number-name-heuristic': 0 };
   let next = `/calls?from=${fromSec}&per_page=${PER_PAGE}&order=asc`;
   let pageCount = 0;
   while (next && out.length < maxCalls) {
     const data = await _aircallFetch(next);
     pageCount++;
     for (const c of (data.calls || [])) {
-      const norm = _normalizeCall(c, userMap);
-      if (norm) out.push(norm);
+      totalRaw++;
+      const norm = _normalizeCall(c, userMap, employeeRoster);
+      if (norm) {
+        attributionStats[norm._attribution] = (attributionStats[norm._attribution] || 0) + 1;
+        // drop debug field before returning
+        delete norm._attribution;
+        out.push(norm);
+      } else {
+        skippedOrphan++;
+      }
     }
     next = data.meta && data.meta.next_page_link
       ? data.meta.next_page_link.replace(AIRCALL_BASE, '')
       : null;
     if (next) await _sleep(REQ_PACE_MS);
   }
-  logger.info(`[aircall] fetched ${out.length} calls across ${pageCount} pages (from=${fromSec})`);
+  logger.info(`[aircall] fetched ${out.length}/${totalRaw} calls (${skippedOrphan} orphan) across ${pageCount} pages (from=${fromSec})`);
+  logger.info(`[aircall] attribution: ${JSON.stringify(attributionStats)}`);
   return out;
 }
 
@@ -200,8 +277,12 @@ async function _setLastSync(sec) {
  * Core ingest routine — used by both scheduled + admin-callable.
  */
 async function _runPull({ sinceSec, isBootstrap = false }) {
-  const userMap = await _fetchUserMap();
-  logger.info(`[aircall] user map size = ${userMap.size}`);
+  const [userMap, employeeRoster] = await Promise.all([
+    _fetchUserMap(),
+    _fetchEmployeeRoster(),
+  ]);
+  logger.info(`[aircall] user map size = ${userMap.size}, employee roster size = ${employeeRoster.length}`);
+  logger.info(`[aircall] roster names: ${employeeRoster.map(e => e.fullName).join(', ')}`);
 
   // For incremental: use lastSync. For bootstrap: explicit sinceSec.
   let fromSec = sinceSec;
@@ -216,7 +297,7 @@ async function _runPull({ sinceSec, isBootstrap = false }) {
     }
   }
 
-  const calls = await _fetchCallsSince(fromSec, userMap, isBootstrap ? 20000 : 2000);
+  const calls = await _fetchCallsSince(fromSec, userMap, employeeRoster, isBootstrap ? 20000 : 2000);
   const { written, byEmail } = await _writeCallsToState(calls);
 
   // Advance cursor to NOW (slightly conservative — we re-fetch with 5min overlap above)
@@ -230,6 +311,7 @@ async function _runPull({ sinceSec, isBootstrap = false }) {
     written,
     byEmail,
     userMapSize: userMap.size,
+    rosterSize: employeeRoster.length,
     nowSec,
   };
 }
