@@ -6,26 +6,33 @@
    action shortcuts, and a "what's easiest next" recommendation.
    ================================================================ */
 
-/* Same rule data as admin Bonus Rules page (active rules only) */
+/* Same rule data as admin Bonus Rules page (active rules only).
+   `mine` (earned this month per rule) и `nextStep` (suggestion text) до
+   wiring реального tracking держим как `0` / placeholder — иначе hero на
+   этой странице показывает фейковые $1,495 «earned», а Bonuses leaderboard
+   правильно показывает $0 (см. metricsFor → bonusMtd). Расхождение пугало
+   операторов. После того, как реальное per-rule отслеживание появится,
+   читай counts из metricsFor(me) и подставляй сюда.
+   Кэп: `mine: 0` — никаких фантомных earnings. */
 const EMP_RULES = [
-  { id: "ctr_signed",    cat: "action", icon: "contract",  name: "Sign a new contract",                amount: 100, mine: 6,  iconLabel: "Contracts",     howTo: "Get a tenant to sign a brand-new lease through DocuSign. The bonus triggers the moment the contract is fully countersigned.",                       cta: "Open contracts board", tip: "easy",   nextStep: "You have 2 contracts close to signing — push them today." },
-  { id: "ctr_renewed",   cat: "action", icon: "refresh",   name: "Renew an existing tenant",           amount: 50,  mine: 3,  iconLabel: "Renewals",      howTo: "Get an existing tenant to renew their lease before expiration. Bonus pays per renewal contract signed.",                                          cta: "View leases expiring", tip: "easy",   nextStep: "3 leases expire in the next 45 days — start the conversation." },
-  { id: "fb_review",     cat: "action", icon: "star",      name: "Get a Facebook 5★ review",          amount: 25,  mine: 2,  iconLabel: "FB reviews",    howTo: "Ask a happy tenant to leave a 5-star review on Facebook mentioning you or your center. Limit 4 per month per agent.",                            cta: "Send review request",  tip: "easy",   nextStep: "Tag Bluestone and ABC Medical — both rated 5/5 in NPS." },
-  { id: "google_review", cat: "action", icon: "globe",     name: "Get a Google 5★ review",            amount: 25,  mine: 1,  iconLabel: "Google reviews",howTo: "Same as Facebook but on Google Maps / Business profile. Stacks with FB bonus.",                                                                   cta: "Send review request",  tip: "easy",   nextStep: "Send Karen Liu the Google review link — she's enthusiastic." },
-  { id: "referral",      cat: "action", icon: "people",    name: "Get a tenant referral",              amount: 200, mine: 1,  iconLabel: "Referrals",     howTo: "An existing tenant refers a prospect who later signs a lease. The bonus is paid to the agent who manages the referring account.",                  cta: "Ask for referral",     tip: "high",   nextStep: "Bluestone Apparel owns 3 nearby businesses — perfect ask." },
-  { id: "multi_year",    cat: "action", icon: "cal",       name: "Sign a 24+ month contract",          amount: 50,  mine: 2,  iconLabel: "Long terms",    howTo: "When a signed contract is 24 months or longer. Stacks with the regular contract-signed bonus.",                                                   cta: "Edit contract terms",  tip: "easy",   nextStep: "ABC Medical wants 36 months — make sure the contract reflects." },
-  { id: "fast_first",    cat: "action", icon: "zap",       name: "Reply to a lead in under 5 min",     amount: 5,   mine: 18, iconLabel: "Fast replies", howTo: "Whenever a new inbound lead comes in during your work hours and you reply within 5 minutes. Small reward × many triggers = adds up.",                cta: "Enable mobile alerts", tip: "easy",   nextStep: "Turn on push notifications — you miss 30% of late-day leads." },
-  { id: "high_nps",      cat: "action", icon: "check",     name: "Earn an NPS 9–10 from a tenant",     amount: 20,  mine: 0,  iconLabel: "NPS",           howTo: "When a tenant scores you 9 or 10 on the quarterly survey. The agent named in the survey gets the bonus.",                                            cta: "View survey list",     tip: "medium", nextStep: "Quarterly NPS goes out Friday — make sure all your tenants get it." },
-  { id: "tour_close",    cat: "action", icon: "trendUp",   name: "Close a tour within 7 days",          amount: 30,  mine: 1,  iconLabel: "Fast closes",   howTo: "When a property tour converts to a signed contract within 7 days. Rewards moving deals through the pipeline quickly.",                              cta: "Schedule follow-up",   tip: "medium", nextStep: "Greentree toured Monday — follow up tomorrow to lock the bonus." },
+  { id: "ctr_signed",    cat: "action", icon: "contract",  name: "Sign a new contract",                amount: 100, mine: 0,  iconLabel: "Contracts",     howTo: "Get a tenant to sign a brand-new lease through DocuSign. The bonus triggers the moment the contract is fully countersigned.",                       cta: "Open contracts board", tip: "easy",   nextStep: "" },
+  { id: "ctr_renewed",   cat: "action", icon: "refresh",   name: "Renew an existing tenant",           amount: 50,  mine: 0,  iconLabel: "Renewals",      howTo: "Get an existing tenant to renew their lease before expiration. Bonus pays per renewal contract signed.",                                          cta: "View leases expiring", tip: "easy",   nextStep: "" },
+  { id: "fb_review",     cat: "action", icon: "star",      name: "Get a Facebook 5★ review",          amount: 25,  mine: 0,  iconLabel: "FB reviews",    howTo: "Ask a happy tenant to leave a 5-star review on Facebook mentioning you or your center. Limit 4 per month per agent.",                            cta: "Send review request",  tip: "easy",   nextStep: "" },
+  { id: "google_review", cat: "action", icon: "globe",     name: "Get a Google 5★ review",            amount: 25,  mine: 0,  iconLabel: "Google reviews",howTo: "Same as Facebook but on Google Maps / Business profile. Stacks with FB bonus.",                                                                   cta: "Send review request",  tip: "easy",   nextStep: "" },
+  { id: "referral",      cat: "action", icon: "people",    name: "Get a tenant referral",              amount: 200, mine: 0,  iconLabel: "Referrals",     howTo: "An existing tenant refers a prospect who later signs a lease. The bonus is paid to the agent who manages the referring account.",                  cta: "Ask for referral",     tip: "high",   nextStep: "" },
+  { id: "multi_year",    cat: "action", icon: "cal",       name: "Sign a 24+ month contract",          amount: 50,  mine: 0,  iconLabel: "Long terms",    howTo: "When a signed contract is 24 months or longer. Stacks with the regular contract-signed bonus.",                                                   cta: "Edit contract terms",  tip: "easy",   nextStep: "" },
+  { id: "fast_first",    cat: "action", icon: "zap",       name: "Reply to a lead in under 5 min",     amount: 5,   mine: 0,  iconLabel: "Fast replies", howTo: "Whenever a new inbound lead comes in during your work hours and you reply within 5 minutes. Small reward × many triggers = adds up.",                cta: "Enable mobile alerts", tip: "easy",   nextStep: "" },
+  { id: "high_nps",      cat: "action", icon: "check",     name: "Earn an NPS 9–10 from a tenant",     amount: 20,  mine: 0,  iconLabel: "NPS",           howTo: "When a tenant scores you 9 or 10 on the quarterly survey. The agent named in the survey gets the bonus.",                                            cta: "View survey list",     tip: "medium", nextStep: "" },
+  { id: "tour_close",    cat: "action", icon: "trendUp",   name: "Close a tour within 7 days",          amount: 30,  mine: 0,  iconLabel: "Fast closes",   howTo: "When a property tour converts to a signed contract within 7 days. Rewards moving deals through the pipeline quickly.",                              cta: "Schedule follow-up",   tip: "medium", nextStep: "" },
 
-  { id: "streak_5d",     cat: "streak", icon: "bolt",      name: "Hit all daily targets 5 days in a row",amount: 50,  mine: 2,  iconLabel: "5-day streaks", howTo: "Five consecutive workdays of hitting all your daily call/email/hours targets. Streak resets after one off-day.",                                   cta: "View today's quests",  tip: "medium", nextStep: "You're on a 3-day streak today — keep going for $50 Friday." },
-  { id: "gold_triple",   cat: "streak", icon: "sparkle",   name: "Hit Gold tier 3 months in a row",     amount: 300, mine: 0,  iconLabel: "Gold streaks",  howTo: "If you reach Gold tier three months back-to-back, a $300 super-bonus drops on the third payout.",                                                cta: "See bonus progress",   tip: "high",   nextStep: "May is your 1st Gold month so far — set up the streak." },
+  { id: "streak_5d",     cat: "streak", icon: "bolt",      name: "Hit all daily targets 5 days in a row",amount: 50,  mine: 0,  iconLabel: "5-day streaks", howTo: "Five consecutive workdays of hitting all your daily call/email/hours targets. Streak resets after one off-day.",                                   cta: "View today's quests",  tip: "medium", nextStep: "" },
+  { id: "gold_triple",   cat: "streak", icon: "sparkle",   name: "Hit Gold tier 3 months in a row",     amount: 300, mine: 0,  iconLabel: "Gold streaks",  howTo: "If you reach Gold tier three months back-to-back, a $300 super-bonus drops on the third payout.",                                                cta: "See bonus progress",   tip: "high",   nextStep: "" },
 
-  { id: "center_goal",   cat: "team",   icon: "building",  name: "Center hits its monthly goal",        amount: 100, mine: 1,  iconLabel: "Team bonus",    howTo: "When the whole center exceeds its monthly revenue target, every employee at that center earns this bonus.",                                       cta: "View center progress", tip: "team",   nextStep: "Downtown is 84% to goal — every contract helps the whole team." },
-  { id: "zero_missed",   cat: "team",   icon: "phone",     name: "Zero missed callbacks for a week",    amount: 30,  mine: 0,  iconLabel: "Weekly team",   howTo: "If your center has zero open missed callbacks for an entire workweek, everyone on the team earns it.",                                            cta: "Check open callbacks", tip: "team",   nextStep: "You have 1 missed callback open — clear it to keep the week clean." },
+  { id: "center_goal",   cat: "team",   icon: "building",  name: "Center hits its monthly goal",        amount: 100, mine: 0,  iconLabel: "Team bonus",    howTo: "When the whole center exceeds its monthly revenue target, every employee at that center earns this bonus.",                                       cta: "View center progress", tip: "team",   nextStep: "" },
+  { id: "zero_missed",   cat: "team",   icon: "phone",     name: "Zero missed callbacks for a week",    amount: 30,  mine: 0,  iconLabel: "Weekly team",   howTo: "If your center has zero open missed callbacks for an entire workweek, everyone on the team earns it.",                                            cta: "Check open callbacks", tip: "team",   nextStep: "" },
 
-  { id: "pto_used",      cat: "wellness", icon: "cal",     name: "Take 3+ PTO days this quarter",       amount: 50,  mine: 1,  iconLabel: "PTO bonus",     howTo: "Anti-burnout bonus. Take at least 3 days off per quarter to qualify. Pays at quarter close.",                                                       cta: "Request PTO",          tip: "easy",   nextStep: "You've used 1/3 PTO days this quarter — book that long weekend." },
-  { id: "ontime_logoff", cat: "wellness", icon: "clock",   name: "Log off by 6 PM 80% of the month",    amount: 25,  mine: 0,  iconLabel: "Healthy hours", howTo: "Pays at end of month when you log off by 6 PM at least 80% of workdays. Encourages sustainable work hours.",                                       cta: "View log-off times",   tip: "easy",   nextStep: "You logged off on time 14/16 days so far — keep it going." },
+  { id: "pto_used",      cat: "wellness", icon: "cal",     name: "Take 3+ PTO days this quarter",       amount: 50,  mine: 0,  iconLabel: "PTO bonus",     howTo: "Anti-burnout bonus. Take at least 3 days off per quarter to qualify. Pays at quarter close.",                                                       cta: "Request PTO",          tip: "easy",   nextStep: "" },
+  { id: "ontime_logoff", cat: "wellness", icon: "clock",   name: "Log off by 6 PM 80% of the month",    amount: 25,  mine: 0,  iconLabel: "Healthy hours", howTo: "Pays at end of month when you log off by 6 PM at least 80% of workdays. Encourages sustainable work hours.",                                       cta: "View log-off times",   tip: "easy",   nextStep: "" },
 ];
 
 const TIP_META = {
@@ -99,9 +106,13 @@ window.EarnPage = function EarnPage({ meId = "u1", onBack }) {
         <div className="row" style={{ flexWrap: "wrap", gap: 24 }}>
           <div style={{ flex: "1 1 240px" }}>
             <div className="muted" style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", marginBottom: 4 }}>You've earned this month</div>
-            <div className="num" style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-.025em", color: m.tier.color }}>${(earnedMtd + m.tier.amount).toLocaleString()}</div>
+            {/* Hero показывает m.bonusMtd — то же значение, что Bonuses
+                leaderboard. earnedMtd выше построен на placeholder `mine: 0`
+                в EMP_RULES; пока per-rule tracking не подключён, единый
+                источник истины — bonusMtd (tier base + extraFromContracts). */}
+            <div className="num" style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-.025em", color: m.tier.color }}>${(m.bonusMtd || 0).toLocaleString()}</div>
             <div className="muted" style={{ fontSize: 12.5, marginTop: 2 }}>
-              <b style={{ color: "var(--ink-2)" }}>${m.tier.amount.toLocaleString()}</b> {m.tier.label} tier base + <b style={{ color: "var(--ink-2)" }}>${earnedMtd.toLocaleString()}</b> from {EMP_RULES.filter(r => r.mine > 0).length} per-action rules
+              <b style={{ color: "var(--ink-2)" }}>${m.tier.amount.toLocaleString()}</b> {m.tier.label} tier base{(m.extraFromContracts || 0) > 0 ? <> + <b style={{ color: "var(--ink-2)" }}>${(m.extraFromContracts || 0).toLocaleString()}</b> from {m.mtd.contracts} contracts</> : null}
             </div>
           </div>
           <div style={{ flex: "1 1 200px", padding: 14, background: "rgba(255,255,255,.65)", borderRadius: 12 }}>
@@ -131,7 +142,8 @@ window.EarnPage = function EarnPage({ meId = "u1", onBack }) {
                 <div className="num" style={{ marginLeft: "auto", fontWeight: 800, fontSize: 18, color: "var(--success-ink)" }}>+${r.amount}</div>
               </div>
               <div style={{ fontWeight: 700, fontSize: 13 }}>{r.name}</div>
-              <div className="muted" style={{ fontSize: 11.5, marginTop: 4, lineHeight: 1.4 }}>{r.nextStep}</div>
+              {/* nextStep сейчас placeholder — пока tracking не подключён, показываем howTo как описание правила. */}
+              <div className="muted" style={{ fontSize: 11.5, marginTop: 4, lineHeight: 1.4 }}>{r.nextStep || r.howTo}</div>
               <button className="btn is-small" style={{ marginTop: 10, width: "100%" }} onClick={() => window.toast(r.cta + " — opening…")}>
                 {r.cta} <Icon name="arrowR" />
               </button>
@@ -160,7 +172,11 @@ window.EarnPage = function EarnPage({ meId = "u1", onBack }) {
                 <span className="cat-icon" style={{ background: meta.color }}><Icon name={meta.icon} /></span>
                 <h2 style={{ fontSize: 15, fontWeight: 700, margin: 0, letterSpacing: "-.01em" }}>{meta.label}</h2>
                 <div className="spacer" />
-                <span className="num" style={{ fontWeight: 700, color: meta.color }}>+${g.earned.toLocaleString()} earned</span>
+                {/* Прячем «+$0 earned» когда per-rule tracking ещё не подключён —
+                    иначе четыре блока заголовков один к другому повторяют $0. */}
+                {g.earned > 0 ? (
+                  <span className="num" style={{ fontWeight: 700, color: meta.color }}>+${g.earned.toLocaleString()} earned</span>
+                ) : null}
               </div>
               <div className="earn-grid">
                 {g.rules.map(r => <EarnRuleCard key={r.id} r={r} />)}
@@ -205,19 +221,27 @@ function EarnRuleCard({ r }) {
         <span className="muted" style={{ fontSize: 11.5 }}>per trigger</span>
       </div>
 
-      <div className="row" style={{ padding: "8px 10px", background: "var(--surface-2)", borderRadius: 8, fontSize: 12 }}>
-        <span className="muted">You earned:</span>
-        <span className="num" style={{ fontWeight: 700 }}>{r.mine}× <span className="muted">·</span> ${earned.toLocaleString()}</span>
-        <div className="spacer" />
-        <span style={{ fontSize: 10.5, color: "var(--muted)" }}>this month</span>
-      </div>
+      {/* Скрываем «You earned» строку когда per-rule tracking даёт 0 —
+          иначе оператор видит 15 одинаковых «0× · $0 this month» карточек
+          и думает, что страница сломана. */}
+      {r.mine > 0 && (
+        <div className="row" style={{ padding: "8px 10px", background: "var(--surface-2)", borderRadius: 8, fontSize: 12 }}>
+          <span className="muted">You earned:</span>
+          <span className="num" style={{ fontWeight: 700 }}>{r.mine}× <span className="muted">·</span> ${earned.toLocaleString()}</span>
+          <div className="spacer" />
+          <span style={{ fontSize: 10.5, color: "var(--muted)" }}>this month</span>
+        </div>
+      )}
 
       <div className="muted" style={{ fontSize: 12, marginTop: 8, lineHeight: 1.45 }}>{r.howTo}</div>
 
-      <div className="row" style={{ marginTop: 10, padding: "8px 10px", background: "var(--accent-soft)", borderRadius: 8, fontSize: 12, color: "var(--accent-ink)" }}>
-        <Icon name="sparkle" style={{ width: 12, height: 12, flexShrink: 0 }} />
-        <span style={{ flex: 1, fontWeight: 500 }}>{r.nextStep}</span>
-      </div>
+      {/* nextStep — placeholder, скрываем когда пусто (см. EMP_RULES). */}
+      {r.nextStep ? (
+        <div className="row" style={{ marginTop: 10, padding: "8px 10px", background: "var(--accent-soft)", borderRadius: 8, fontSize: 12, color: "var(--accent-ink)" }}>
+          <Icon name="sparkle" style={{ width: 12, height: 12, flexShrink: 0 }} />
+          <span style={{ flex: 1, fontWeight: 500 }}>{r.nextStep}</span>
+        </div>
+      ) : null}
 
       <button className="btn is-small" style={{ marginTop: 8, width: "100%" }} onClick={() => window.toast(r.cta + " — opening…")}>
         {r.cta} <Icon name="arrowR" />
