@@ -822,7 +822,10 @@ function AircallCallRow({ call }) {
       </td>
       <td className="mono muted" style={{ fontSize: 11 }}>{whenLabel}</td>
       <td>
-        {call.recordingUrl ? (
+        {/* Phase 18 rev — больше не храним recordingUrl в state (он истекает
+            через 57min). Bool флаг hasRecording (или legacy recordingUrl).
+            При клике fresh URL приходит через getAircallRecording CF. */}
+        {(call.hasRecording || call.recordingUrl) ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             {playing && audioUrl ? (
               <audio controls autoPlay src={audioUrl} onEnded={() => setPlaying(false)} style={{ height: 28 }} />

@@ -293,7 +293,11 @@ function _normalizeCall(c, userMap, numberToUserMap, employeeRoster, tenantsByPh
     fromNumber: c.raw_digits || c.from || '',
     toNumber: c.to || '',
     numberName: c.number && c.number.name ? c.number.name : null,
-    recordingUrl: c.recording || c.voicemail || null,
+    // Phase 18 — НЕ храним сам recording URL: S3 presigned expires в ~57min,
+    // мы всё равно тянем fresh URL через getAircallRecording on Play click.
+    // Хранение раздувало state на ~1.3KB на каждый recording. Только bool flag.
+    hasRecording: !!(c.recording || c.voicemail),
+    isVoicemail: !!c.voicemail,
     tenantMatch,
     tags,
     cost,
@@ -365,11 +369,20 @@ async function _writeCallsToState(calls) {
       written++;
       byEmail[email] = (byEmail[email] || 0) + 1;
     }
-    // Sort + cap each operator's array
+    // Sort + cap each operator's array. Also one-shot slim for legacy
+    // records: strip recordingUrl (now fetched on-demand), add hasRecording
+    // bool. Saves ~1.3KB per record with recording.
     for (const email of Object.keys(activity)) {
       activity[email].sort((a, b) => (b.ts || 0) - (a.ts || 0));
       if (activity[email].length > PER_EMAIL_CAP) {
         activity[email] = activity[email].slice(0, PER_EMAIL_CAP);
+      }
+      for (const rec of activity[email]) {
+        if (!rec) continue;
+        if (rec.recordingUrl !== undefined) {
+          rec.hasRecording = rec.hasRecording || !!rec.recordingUrl;
+          delete rec.recordingUrl;
+        }
       }
     }
     doc.state.callActivity = activity;

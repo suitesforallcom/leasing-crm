@@ -56,7 +56,12 @@ const PUBSUB_TOPIC = process.env.GMAIL_PUBSUB_TOPIC || 'gmail-push';
 const WORKSPACE_ID = 'default';
 
 // Лимит размера буфера unattached emails. Старые отрезаются (FIFO).
-const GMAIL_ACTIVITY_CAP = 5000;
+// Phase 18 — cap reduced from 5000 → 500. Tony's state hit 958KB
+// (96% of 1MB Firestore limit), gmailActivity was 220KB at 561 items.
+// 500 max × ~400 bytes = ~200KB ceiling. Combined со slimming записей
+// (subject truncated, messageIdHeader dropped) — реальный потолок ~150KB.
+const GMAIL_ACTIVITY_CAP = 500;
+const GMAIL_SUBJECT_TRIM = 120;
 
 // Root admin allowlist (синхронно с index.js — single source of truth там,
 // дублируем минимально, чтобы избежать циркулярного импорта).
@@ -439,16 +444,18 @@ async function _persistEmailRecords(userEmail, records) {
         });
         matchedAdded++;
       } else {
+        // Phase 18 — slim record. Дропнули messageIdHeader (не используется
+        // downstream — inReplyTo достаточно для thread reconstruction).
+        // Subject обрезаем до 120 chars (для UI subject preview хватает).
         workspaceState.gmailActivity.push({
           messageId: r.messageId,
-          messageIdHeader: r.messageIdHeader,
           ts: r.ts,
           direction: r.direction,
           owner: r.owner,
           from: r.from,
           to: r.to,
-          subject: r.subject,
-          inReplyTo: r.inReplyTo,
+          subject: (r.subject || '').slice(0, GMAIL_SUBJECT_TRIM),
+          inReplyTo: r.inReplyTo || null,
           threadId: r.threadId,
           source: 'gmail-api',
         });
@@ -459,6 +466,16 @@ async function _persistEmailRecords(userEmail, records) {
     // FIFO trim чтобы не раздуть state.
     if (workspaceState.gmailActivity.length > GMAIL_ACTIVITY_CAP) {
       workspaceState.gmailActivity = workspaceState.gmailActivity.slice(-GMAIL_ACTIVITY_CAP);
+    }
+    // Phase 18 — one-shot slimming pass for legacy records. Removes
+    // messageIdHeader (unused), trims subject to 120 chars. Idempotent —
+    // runs on every push, no-op for already-slim records.
+    for (const g of workspaceState.gmailActivity) {
+      if (!g) continue;
+      if (g.messageIdHeader !== undefined) delete g.messageIdHeader;
+      if (typeof g.subject === 'string' && g.subject.length > GMAIL_SUBJECT_TRIM) {
+        g.subject = g.subject.slice(0, GMAIL_SUBJECT_TRIM);
+      }
     }
 
     // Migration: если top-level doc.gmailActivity ещё содержит старые
