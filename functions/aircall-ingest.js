@@ -637,6 +637,43 @@ async function _pushTenantsToAircall(callerEmail) {
   return Object.assign({ ok: true, triggeredBy: callerEmail }, stats);
 }
 
+/* ============================================================
+ * Phase 18 — getAircallRecording: fetch FRESH S3 signed URL for
+ * a call recording on demand. Aircall recording URLs are time-
+ * limited (~57 min via X-Amz-Expires=3419), так что URL'ы хранящиеся
+ * в state.callActivity протухают через час после pull. Этот callable
+ * вызывается из Pulse UI при клике на ▶ Play и возвращает свежий URL.
+ *
+ * Permission: ROOT_ADMINS only (PII — call recordings).
+ * ============================================================ */
+exports.getAircallRecording = onCall(
+  {
+    secrets: [AIRCALL_API_ID, AIRCALL_API_TOKEN],
+    memory: '256MiB',
+    timeoutSeconds: 30,
+  },
+  async (request) => {
+    const callerEmail = (request.auth && request.auth.token && request.auth.token.email) || '';
+    if (!ROOT_ADMINS.includes(callerEmail.toLowerCase())) {
+      throw new HttpsError('permission-denied', 'Admin only');
+    }
+    const aircallId = request.data && request.data.aircallId;
+    if (!aircallId) throw new HttpsError('invalid-argument', 'aircallId required');
+    try {
+      const data = await _aircallFetch(`/calls/${aircallId}`);
+      const call = (data && data.call) || {};
+      return {
+        aircallId,
+        recordingUrl: call.recording || null,
+        voicemailUrl: call.voicemail || null,
+      };
+    } catch (e) {
+      logger.warn(`[aircall-recording] fetch failed for ${aircallId}: ${e.message}`);
+      throw new HttpsError('internal', e.message || 'Failed to fetch recording');
+    }
+  }
+);
+
 exports.syncTenantsToAircall = onCall(
   {
     secrets: [AIRCALL_API_ID, AIRCALL_API_TOKEN],

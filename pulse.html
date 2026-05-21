@@ -29,6 +29,10 @@
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
   <link rel="stylesheet" href="/pulse/styles.css" />
+  <!-- Phase 18 — Pulse Firebase bridge for on-demand CF calls
+       (getAircallRecording, etc.). Plain JS, no Babel. Lazy-loads
+       Firebase SDK from gstatic on first call. -->
+  <script src="/pulse/firebase-bridge.js?v=20260521a"></script>
 </head>
 <body>
   <div id="root">
@@ -71,7 +75,7 @@
   <script type="text/babel" src="/pulse/metrics.jsx?v=20260519b"></script>
   <script type="text/babel" src="/pulse/layout.jsx?v=20260519a"></script>
   <script type="text/babel" src="/pulse/overview.jsx?v=20260519b"></script>
-  <script type="text/babel" src="/pulse/employee-detail.jsx?v=20260521d"></script>
+  <script type="text/babel" src="/pulse/employee-detail.jsx?v=20260521e"></script>
   <script type="text/babel" src="/pulse/compare.jsx?v=20260520a"></script>
   <script type="text/babel" src="/pulse/bonuses.jsx"></script>
   <script type="text/babel" src="/pulse/bonus-rules.jsx"></script>

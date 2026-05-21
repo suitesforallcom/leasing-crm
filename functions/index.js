@@ -6113,4 +6113,5 @@ const _aircall = require('./aircall-ingest');
 exports.pullAircallStats = _aircall.pullAircallStats;
 exports.adminPullAircall = _aircall.adminPullAircall;
 exports.syncTenantsToAircall = _aircall.syncTenantsToAircall;
+exports.getAircallRecording = _aircall.getAircallRecording;
 

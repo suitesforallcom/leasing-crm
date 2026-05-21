@@ -734,6 +734,36 @@ function AircallCallsTab({ user, metrics }) {
 
 function AircallCallRow({ call }) {
   const [playing, setPlaying] = React.useState(false);
+  const [audioUrl, setAudioUrl] = React.useState(null);
+  const [loading, setLoading] = React.useState(false);
+  // Phase 18 — Aircall recording URLs — S3 presigned ~57min lifetime.
+  // На Play click тянем свежий URL через CF callable getAircallRecording
+  // (via /pulse/firebase-bridge.js). Cached URL ignored, чтобы не играть
+  // протухший link.
+  async function handlePlay() {
+    if (loading || playing) return;
+    setLoading(true);
+    try {
+      if (typeof window._pulseCallable !== 'function') {
+        window.toast && window.toast('Recording bridge not loaded — reload page', 'error');
+        return;
+      }
+      const result = await window._pulseCallable('getAircallRecording', { aircallId: call.aircallId });
+      const url = result && result.data && result.data.recordingUrl;
+      if (!url) {
+        window.toast && window.toast('Recording not available for this call', 'error');
+        return;
+      }
+      setAudioUrl(url);
+      setPlaying(true);
+    } catch (e) {
+      console.error('[recording] fetch failed:', e);
+      const msg = (e && e.message) || 'Could not load recording';
+      window.toast && window.toast('Recording: ' + msg, 'error');
+    } finally {
+      setLoading(false);
+    }
+  }
   const iconName = call.status === 'missed'
     ? 'phoneMiss'
     : call.direction === 'outbound' ? 'phoneOut' : 'phoneIn';
@@ -794,11 +824,11 @@ function AircallCallRow({ call }) {
       <td>
         {call.recordingUrl ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            {playing ? (
-              <audio controls autoPlay src={call.recordingUrl} onEnded={() => setPlaying(false)} style={{ height: 28 }} />
+            {playing && audioUrl ? (
+              <audio controls autoPlay src={audioUrl} onEnded={() => setPlaying(false)} style={{ height: 28 }} />
             ) : (
-              <button className="btn is-small" onClick={() => setPlaying(true)}>
-                <Icon name="play" /> Play
+              <button className="btn is-small" onClick={handlePlay} disabled={loading}>
+                <Icon name="play" /> {loading ? 'Loading…' : 'Play'}
               </button>
             )}
           </div>
