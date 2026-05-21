@@ -670,12 +670,17 @@ function AircallCallsTab({ user, metrics }) {
   const m = metrics;
   const calls = user._callActivity || [];
   const outgoing = calls.filter(c => c.direction === 'outbound').length;
-  const incoming = calls.filter(c => c.direction === 'inbound' && c.status !== 'missed').length;
+  const incomingAnswered = calls.filter(c => c.direction === 'inbound' && c.status !== 'missed').length;
   const missed   = calls.filter(c => c.status === 'missed').length;
   const answeredCalls = calls.filter(c => c.status !== 'missed');
-  const totalTalkSec = answeredCalls.reduce((s, c) => s + (c.talkSec || 0), 0);
-  const avgTalkSec = answeredCalls.length ? Math.round(totalTalkSec / answeredCalls.length) : 0;
-  const pickup = user.callPickupSec || 0;
+  const totalAnswered = answeredCalls.length;
+  // Phase 18 rev — fallback talkSec → durationSec для исторических записей
+  // (до того как мы начали писать talkSec отдельно).
+  const totalTalkSec = answeredCalls.reduce((s, c) => s + (c.talkSec || c.durationSec || 0), 0);
+  const avgTalkSec = totalAnswered ? Math.round(totalTalkSec / totalAnswered) : 0;
+  // Pickup avg from all answered calls where answerSec > 0 (не today-only).
+  const pickupSamples = answeredCalls.filter(c => typeof c.answerSec === 'number' && c.answerSec > 0).map(c => c.answerSec);
+  const avgPickup = pickupSamples.length ? Math.round(pickupSamples.reduce((s, v) => s + v, 0) / pickupSamples.length) : 0;
   const callbacksOwed = user.callbacksOwed || 0;
 
   return (
@@ -685,20 +690,20 @@ function AircallCallsTab({ user, metrics }) {
         <div className="row">
           <Icon name={callbacksOwed === 0 ? "check" : "warning"} style={{ color: callbacksOwed === 0 ? "var(--success-ink)" : "var(--warning-ink)" }} />
           <span style={{ fontWeight: 600, fontSize: 13 }}>
-            {outgoing} outgoing · {incoming} answered · {missed} missed
+            {totalAnswered} answered · {missed} missed
             {callbacksOwed > 0 && ` · ${callbacksOwed} callback${callbacksOwed > 1 ? 's' : ''} owed (7-day window)`}
             {avgTalkSec > 0 && ` · avg talk ${fmt.duration(avgTalkSec)}`}
-            {pickup > 0 && ` · avg pickup ${pickup}s`}
+            {avgPickup > 0 && ` · avg pickup ${avgPickup}s`}
           </span>
         </div>
       </div>
 
       <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(6, 1fr)", marginBottom: 18 }}>
         <KPILite label="Outgoing" value={outgoing} icon="phoneOut" color="var(--success)" />
-        <KPILite label="Incoming" value={incoming} icon="phoneIn"  color="var(--info)" />
+        <KPILite label="Incoming" value={incomingAnswered} icon="phoneIn"  color="var(--info)" />
         <KPILite label="Missed"   value={missed}   icon="phoneMiss" color={missed > 0 ? "var(--danger)" : "var(--muted-2)"} />
-        <KPILite label="Talk time avg" value={fmt.duration(avgTalkSec)} icon="clock" />
-        <KPILite label="Pickup speed" value={pickup + "s"} icon="signal" color={pickup > 0 && pickup < 30 ? "var(--success)" : "var(--warning)"} />
+        <KPILite label="Talk time avg" value={avgTalkSec ? fmt.duration(avgTalkSec) : "—"} icon="clock" />
+        <KPILite label="Pickup speed" value={avgPickup ? avgPickup + "s" : "—"} icon="signal" color={avgPickup > 0 && avgPickup < 30 ? "var(--success)" : "var(--warning)"} />
         <KPILite label="Callbacks owed" value={callbacksOwed} icon="warning" color={callbacksOwed > 0 ? "var(--danger)" : "var(--muted-2)"} tone={callbacksOwed > 0 ? "danger" : null} />
       </div>
 
