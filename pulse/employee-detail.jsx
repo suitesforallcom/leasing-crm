@@ -223,10 +223,12 @@ window.EmployeeDetail = function EmployeeDetail({ employeeId, tab, onTab, onOpen
           {/* Phase 17 rev — Tony: «Убери с цифры с таргетом». Pure counts.
               Phase 18 — Aircall connected: REAL telephony stats when
               u._aircallConnected; otherwise MOCK pointer remains. */}
-          <Stat icon="phone"    label="Calls"           value={displayUser.calls} sub={isToday ? `pickup ${u._aircallConnected ? (u.callPickupSec || 0) : m.actuals.callPickupSec}s · ${u._aircallConnected ? (u.missedCalls || 0) : m.actuals.missedCalls} missed` : ""}
+          <Stat icon="phone"    label="Calls"           value={displayUser.calls} sub={isToday ? (u._aircallConnected
+            ? `pickup ${u.callPickupSec || 0}s · talk avg ${(u.callTalkSec || 0) >= 60 ? Math.round((u.callTalkSec || 0) / 60) + 'm' : (u.callTalkSec || 0) + 's'} · ${u.missedCalls || 0} missed${u.callbacksOwed > 0 ? ' · ⚠ ' + u.callbacksOwed + ' callback' + (u.callbacksOwed > 1 ? 's' : '') + ' owed' : ''}`
+            : `pickup ${m.actuals.callPickupSec}s · ${m.actuals.missedCalls} missed`) : ""}
             hint={u._isReal
               ? (u._aircallConnected
-                  ? "Calls made today. REAL data from Aircall API (polled every 5 min). Counts inbound + outbound; sub-line shows average answer-time (pickup) + missed-inbound count. Tap row in Calls tab to play recording."
+                  ? "Calls made today. REAL data from Aircall API (polled every 5 min). Sub-line shows: average answer-time (pickup) + average talk time + missed-inbound count + callbacks owed (missed inbound without follow-up call within 7 days). Click row in Calls tab to play recording."
                   : "Calls made today. MOCK — Aircall integration not connected yet (no calls in state.callActivity for this email). Will go live as soon as the pullAircallStats CF starts seeing this operator's calls.")
               : "Calls (demo mock)."} />
           <Stat icon="mail"     label="Emails sent"     value={displayUser.emails} sub={isToday && displayUser.emails > 0 ? `avg reply ${m.actuals.emailReplyMin}m` : ""}
@@ -584,6 +586,13 @@ function ContractsTab({ events, onOpenEvent }) {
    ================================================================ */
 function CallsTab({ events, user, onOpenEvent, metrics }) {
   const m = metrics;
+
+  // Phase 18 — real Aircall mode if connected. Render from u._callActivity
+  // (sorted desc by ts) instead of legacy `events` array.
+  if (user._aircallConnected && Array.isArray(user._callActivity) && user._callActivity.length > 0) {
+    return <AircallCallsTab user={user} metrics={metrics} />;
+  }
+
   const outgoing = events.filter(e => e.type === "outgoing").length;
   const incoming = events.filter(e => e.type === "incoming").length;
   const missed   = events.filter(e => e.type === "missed").length;
@@ -595,7 +604,6 @@ function CallsTab({ events, user, onOpenEvent, metrics }) {
 
   return (
     <div>
-      {/* Plain-English summary banner */}
       {m && (
         <div className="card" style={{ padding: 14, marginBottom: 14, background: m.today.calls.hit && pickupOk && missed === 0 ? "var(--success-soft)" : missed > 1 ? "var(--danger-soft)" : "var(--warning-soft)", borderColor: "transparent" }}>
           <div className="row">
@@ -650,6 +658,150 @@ function CallsTab({ events, user, onOpenEvent, metrics }) {
         </div>
       )}
     </div>
+  );
+}
+
+/* ================================================================
+   Phase 18 — Real Aircall Calls tab. Renders from u._callActivity.
+   Shows audio player для записанных, tenant link если подобрался,
+   talk time vs pickup time split, tags chip.
+   ================================================================ */
+function AircallCallsTab({ user, metrics }) {
+  const m = metrics;
+  const calls = user._callActivity || [];
+  const outgoing = calls.filter(c => c.direction === 'outbound').length;
+  const incoming = calls.filter(c => c.direction === 'inbound' && c.status !== 'missed').length;
+  const missed   = calls.filter(c => c.status === 'missed').length;
+  const answeredCalls = calls.filter(c => c.status !== 'missed');
+  const totalTalkSec = answeredCalls.reduce((s, c) => s + (c.talkSec || 0), 0);
+  const avgTalkSec = answeredCalls.length ? Math.round(totalTalkSec / answeredCalls.length) : 0;
+  const pickup = user.callPickupSec || 0;
+  const callbacksOwed = user.callbacksOwed || 0;
+
+  return (
+    <div>
+      {/* Banner */}
+      <div className="card" style={{ padding: 14, marginBottom: 14, background: callbacksOwed === 0 && missed <= 1 ? "var(--success-soft)" : "var(--warning-soft)", borderColor: "transparent" }}>
+        <div className="row">
+          <Icon name={callbacksOwed === 0 ? "check" : "warning"} style={{ color: callbacksOwed === 0 ? "var(--success-ink)" : "var(--warning-ink)" }} />
+          <span style={{ fontWeight: 600, fontSize: 13 }}>
+            {outgoing} outgoing · {incoming} answered · {missed} missed
+            {callbacksOwed > 0 && ` · ${callbacksOwed} callback${callbacksOwed > 1 ? 's' : ''} owed (7-day window)`}
+            {avgTalkSec > 0 && ` · avg talk ${fmt.duration(avgTalkSec)}`}
+            {pickup > 0 && ` · avg pickup ${pickup}s`}
+          </span>
+        </div>
+      </div>
+
+      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(6, 1fr)", marginBottom: 18 }}>
+        <KPILite label="Outgoing" value={outgoing} icon="phoneOut" color="var(--success)" />
+        <KPILite label="Incoming" value={incoming} icon="phoneIn"  color="var(--info)" />
+        <KPILite label="Missed"   value={missed}   icon="phoneMiss" color={missed > 0 ? "var(--danger)" : "var(--muted-2)"} />
+        <KPILite label="Talk time avg" value={fmt.duration(avgTalkSec)} icon="clock" />
+        <KPILite label="Pickup speed" value={pickup + "s"} icon="signal" color={pickup > 0 && pickup < 30 ? "var(--success)" : "var(--warning)"} />
+        <KPILite label="Callbacks owed" value={callbacksOwed} icon="warning" color={callbacksOwed > 0 ? "var(--danger)" : "var(--muted-2)"} tone={callbacksOwed > 0 ? "danger" : null} />
+      </div>
+
+      {calls.length === 0 ? (
+        <div className="card"><Empty icon="phone" title="No calls yet">No calls in Aircall history yet.</Empty></div>
+      ) : (
+        <div className="card is-clean">
+          <table className="table">
+            <thead>
+              <tr><th></th><th>Contact</th><th>Duration</th><th>Status</th><th>When</th><th>Recording</th></tr>
+            </thead>
+            <tbody>
+              {calls.slice(0, 100).map(c => (
+                <AircallCallRow key={c.aircallId} call={c} />
+              ))}
+            </tbody>
+          </table>
+          {calls.length > 100 && (
+            <div className="muted" style={{ padding: "10px 16px", fontSize: 11.5, fontStyle: "italic", borderTop: "1px solid var(--border)" }}>
+              Showing 100 most recent of {calls.length} calls. CF caps history at 1000 per operator.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AircallCallRow({ call }) {
+  const [playing, setPlaying] = React.useState(false);
+  const iconName = call.status === 'missed'
+    ? 'phoneMiss'
+    : call.direction === 'outbound' ? 'phoneOut' : 'phoneIn';
+  const color = call.status === 'missed'
+    ? 'var(--danger)'
+    : call.direction === 'outbound' ? 'var(--success)' : 'var(--info)';
+  const d = new Date(call.ts);
+  const whenLabel = (function () {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const callDay = new Date(d); callDay.setHours(0, 0, 0, 0);
+    const diffDays = Math.floor((today.getTime() - callDay.getTime()) / 86400000);
+    const hh = String(d.getHours() % 12 || 12).padStart(1, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const ampm = d.getHours() >= 12 ? 'PM' : 'AM';
+    const time = `${hh}:${mm} ${ampm}`;
+    if (diffDays === 0) return time;
+    if (diffDays === 1) return `Yesterday ${time}`;
+    if (diffDays < 7) return `${d.toLocaleDateString('en-US', { weekday: 'short' })} ${time}`;
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' + time;
+  })();
+  const counterparty = call.direction === 'outbound' ? call.toNumber : call.fromNumber;
+
+  return (
+    <tr>
+      <td>
+        <span className="cat-icon sm" style={{ background: color }}><Icon name={iconName} /></span>
+      </td>
+      <td>
+        {call.tenantMatch ? (
+          <>
+            <div style={{ fontWeight: 600 }}>Suite {call.tenantMatch.suite} · {call.tenantMatch.tenantName}</div>
+            <div className="muted" style={{ fontSize: 11.5 }}>{counterparty || '—'}</div>
+          </>
+        ) : (
+          <>
+            <div style={{ fontWeight: 600 }}>{counterparty || '(unknown)'}</div>
+            <div className="muted" style={{ fontSize: 11.5 }}>{call.direction === 'outbound' ? 'outbound' : 'inbound'} · {call.numberName || ''}</div>
+          </>
+        )}
+        {Array.isArray(call.tags) && call.tags.length > 0 && (
+          <div className="row" style={{ marginTop: 4, gap: 4 }}>
+            {call.tags.slice(0, 3).map(t => (
+              <span key={t.id} className="chip is-small" style={{ background: (t.color || 'var(--surface-3)') + '33', color: 'var(--ink)', fontSize: 10 }}>{t.name}</span>
+            ))}
+          </div>
+        )}
+      </td>
+      <td className="mono" style={{ fontSize: 11.5 }}>
+        {call.status === 'missed' ? '—' : fmt.duration(call.talkSec || call.durationSec)}
+        {call.answerSec > 0 && <div className="muted" style={{ fontSize: 10 }}>+{call.answerSec}s wait</div>}
+      </td>
+      <td>
+        {call.status === 'missed' && <span className="chip is-danger" style={{ fontSize: 10.5 }}>missed</span>}
+        {call.status === 'voicemail' && <span className="chip is-warning" style={{ fontSize: 10.5 }}>voicemail</span>}
+        {call.status === 'answered' && <span className="chip is-success" style={{ fontSize: 10.5 }}>answered</span>}
+      </td>
+      <td className="mono muted" style={{ fontSize: 11 }}>{whenLabel}</td>
+      <td>
+        {call.recordingUrl ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            {playing ? (
+              <audio controls autoPlay src={call.recordingUrl} onEnded={() => setPlaying(false)} style={{ height: 28 }} />
+            ) : (
+              <button className="btn is-small" onClick={() => setPlaying(true)}>
+                <Icon name="play" /> Play
+              </button>
+            )}
+          </div>
+        ) : (
+          <span className="muted" style={{ fontSize: 10.5, fontStyle: 'italic' }}>—</span>
+        )}
+      </td>
+    </tr>
   );
 }
 

@@ -279,19 +279,60 @@
     let callsToday = 0, callsMtd = 0;
     let missedToday = 0;
     const pickupSamples = [];  // answerSec for answered calls today
+    const talkSamples = [];    // talkSec for answered calls today
+    let costToday = 0, costMtd = 0;
     for (const c of arr) {
       if (!c || !c.ts) continue;
       if (c.ts >= startOfTodayMs) {
         callsToday++;
         if (c.status === 'missed') missedToday++;
         if (typeof c.answerSec === 'number' && c.answerSec > 0) pickupSamples.push(c.answerSec);
+        if (typeof c.talkSec === 'number' && c.talkSec > 0) talkSamples.push(c.talkSec);
+        if (typeof c.cost === 'number') costToday += c.cost;
       }
-      if (c.ts >= monthStartMs) callsMtd++;
+      if (c.ts >= monthStartMs) {
+        callsMtd++;
+        if (typeof c.cost === 'number') costMtd += c.cost;
+      }
     }
     const pickupSec = pickupSamples.length
       ? Math.round(pickupSamples.reduce((s, v) => s + v, 0) / pickupSamples.length)
       : 0;
-    return { callsToday, callsMtd, missedToday, pickupSec, total: arr.length };
+    const talkSecAvg = talkSamples.length
+      ? Math.round(talkSamples.reduce((s, v) => s + v, 0) / talkSamples.length)
+      : 0;
+
+    // Phase 18 rev — «callbacks owed». Missed inbound с counterparty phone
+    // X где НЕТ subsequent outbound на тот же номер в течение 24ч после
+    // missed event. Лежит на совести оператора — нужно перезвонить.
+    // Computed over last 7 days only — older missed calls statute-of-limited.
+    const sevenDaysAgo = Date.now() - 7 * 86400 * 1000;
+    const owedSet = new Map(); // phoneLast10 → ts of missed inbound
+    for (const c of arr) {
+      if (!c || !c.ts || c.ts < sevenDaysAgo) continue;
+      if (c.direction !== 'inbound' || c.status !== 'missed') continue;
+      const phone = String(c.fromNumber || '').replace(/[^\d]/g, '').slice(-10);
+      if (phone.length === 10 && !owedSet.has(phone)) owedSet.set(phone, c.ts);
+    }
+    // Subtract: if later outbound to same phone exists, callback is satisfied
+    for (const c of arr) {
+      if (!c || !c.ts) continue;
+      if (c.direction !== 'outbound') continue;
+      const phone = String(c.toNumber || '').replace(/[^\d]/g, '').slice(-10);
+      if (phone.length !== 10) continue;
+      const missedTs = owedSet.get(phone);
+      if (missedTs && c.ts > missedTs) owedSet.delete(phone);
+    }
+    const callbacksOwed = owedSet.size;
+
+    return {
+      callsToday, callsMtd, missedToday,
+      pickupSec, talkSecAvg,
+      costToday: Math.round(costToday * 100) / 100,
+      costMtd: Math.round(costMtd * 100) / 100,
+      callbacksOwed,
+      total: arr.length,
+    };
   }
   function _streakFromHistory(email) {
     const arr = dailyHistoryByEmail[email];
@@ -884,10 +925,19 @@
         _aircallConnected: _aircallStats.total > 0,
         missedCalls: _aircallStats.missedToday,
         callPickupSec: _aircallStats.pickupSec,
+        // Phase 18 rev — additional metrics
+        callTalkSec: _aircallStats.talkSecAvg,           // avg talk time today
+        callCostToday: _aircallStats.costToday,
+        callCostMtd: _aircallStats.costMtd,
+        callbacksOwed: _aircallStats.callbacksOwed,      // missed inbound w/o follow-up in 7d
         // Phase 18 rev — Aircall phone numbers assigned to this operator.
         // Array of { id, name, digits, country }. UI renders каждый номер
         // как chip с digits + name в скобках.
         phoneNumbers: Array.isArray(aircallNumbersByEmail[emailLower]) ? aircallNumbersByEmail[emailLower] : [],
+        // Phase 18 rev — raw call activity array (sorted desc by ts) for
+        // employee-detail Calls tab. data-shim уже капает stats; полный
+        // список нужен UI render'у для audio player + tenant chip.
+        _callActivity: Array.isArray(callActivityByEmail[emailLower]) ? callActivityByEmail[emailLower].slice().sort((a, b) => (b.ts || 0) - (a.ts || 0)) : [],
         // Phase 17 — Tours назначенные / проведённые. Источник —
         // HubSpot CRM (meetings + deal stages). Интеграция ещё не
         // подключена; пока заглушка 0 для всех real users. Когда

@@ -150,32 +150,49 @@ async function _fetchNumberMaps() {
 }
 
 /**
- * Phase 18 — Aircall в практике не назначает `user` на звонок если
- * номер используется несколькими операторами (общий building-number)
- * или если входящий звонок брошен (short_abandoned). Чтобы такие звонки
- * не потерять, парсим `number.name`: если содержит имя оператора
- * (full name из state.employees) — атрибутируем. Иначе SKIP (звонок
- * остаётся orphan'ом).
- *
- * Загружаем employees один раз и строим словарь { lowerCaseFullName, ... }
- * для substring-матчинга в _normalizeCall.
+ * Phase 18 — load employee roster для number.name heuristic AND tenant
+ * map для caller-phone-to-tenant matching.
  */
 async function _fetchEmployeeRoster() {
   const stateRef = db().doc(STATE_PATH);
   const snap = await stateRef.get();
-  if (!snap.exists) return [];
+  if (!snap.exists) return { roster: [], tenantsByPhone: new Map() };
   const doc = snap.data() || {};
   const emps = (doc.state && Array.isArray(doc.state.employees)) ? doc.state.employees : [];
-  return emps
+  const roster = emps
     .filter(e => e && e.email && e.status !== 'terminated' && e.trackInPulse !== false)
     .map(e => ({
       email: e.email.toLowerCase(),
       fullName: (e.fullName || '').toLowerCase().trim(),
-      // Тоже split на части для substring match (например, для «Ann»
-      // и «Noel» отдельно, на случай если number.name = «Ann Number»).
       firstName: (e.fullName || '').split(/\s+/)[0]?.toLowerCase() || '',
       lastName: (e.fullName || '').split(/\s+/).slice(-1)[0]?.toLowerCase() || '',
     }));
+
+  // Phase 18 rev — build phone → tenant index. Walk buildings/floors/units;
+  // each unit has u.phone (tenant phone). Normalize phone (digits-only) for
+  // robust matching against c.raw_digits from Aircall.
+  const tenantsByPhone = new Map();
+  const buildings = (doc.state && Array.isArray(doc.state.buildings)) ? doc.state.buildings : [];
+  for (const b of buildings) {
+    for (const f of (b.floors || [])) {
+      for (const u of (f.units || [])) {
+        if (!u || !u.phone) continue;
+        const digits = String(u.phone).replace(/[^\d]/g, '');
+        if (digits.length < 7) continue;
+        // Store last-10-digits (US convention) for fuzzy match — handles
+        // «+1 312 871 8354» vs «3128718354» vs «(312) 871-8354» equally.
+        const key = digits.slice(-10);
+        tenantsByPhone.set(key, {
+          unitId: u.id,
+          suite: u.id,
+          tenantName: u.tenant || u.company || '(no tenant name)',
+          buildingId: b.id,
+          buildingName: b.name || b.address || '',
+        });
+      }
+    }
+  }
+  return { roster, tenantsByPhone };
 }
 
 /**
@@ -208,7 +225,7 @@ function _matchOperatorFromNumberName(numberName, roster) {
  *   3. c.number.name parsed against employee roster (substring match)
  *   4. SKIP — orphan call (no user, no number assignment, no name match)
  */
-function _normalizeCall(c, userMap, numberToUserMap, employeeRoster) {
+function _normalizeCall(c, userMap, numberToUserMap, employeeRoster, tenantsByPhone) {
   if (!c || !c.id) return null;
   const startedSec = c.started_at || 0;
   if (!startedSec) return null;
@@ -217,6 +234,9 @@ function _normalizeCall(c, userMap, numberToUserMap, employeeRoster) {
   const endedSec = c.ended_at || 0;
   const durationSec = c.duration || (endedSec && startedSec ? endedSec - startedSec : 0);
   const answerSec = answeredSec && startedSec ? answeredSec - startedSec : null;
+  // Phase 18 rev — talk time = ended - answered (real conversation duration).
+  // pickup/wait = answered - started.  total = duration.
+  const talkSec = (answeredSec && endedSec && endedSec > answeredSec) ? (endedSec - answeredSec) : 0;
 
   let status = 'answered';
   if (c.missed_call_reason || (!answeredSec && c.direction === 'inbound')) status = 'missed';
@@ -243,6 +263,24 @@ function _normalizeCall(c, userMap, numberToUserMap, employeeRoster) {
   }
   if (!ownerEmail) return null;  // 4. SKIP orphan
 
+  // Phase 18 rev — tenant match by counterparty phone.
+  // For inbound: c.raw_digits = caller. For outbound: c.to = called number.
+  const counterpartyRaw = c.direction === 'outbound'
+    ? (c.to || '')
+    : (c.raw_digits || c.from || '');
+  let tenantMatch = null;
+  if (counterpartyRaw && tenantsByPhone) {
+    const cpDigits = String(counterpartyRaw).replace(/[^\d]/g, '').slice(-10);
+    if (cpDigits.length === 10) {
+      const t = tenantsByPhone.get(cpDigits);
+      if (t) tenantMatch = t;
+    }
+  }
+
+  // Phase 18 rev — tags + cost from Aircall (если plan supports)
+  const tags = Array.isArray(c.tags) ? c.tags.map(t => ({ id: t.id, name: t.name, color: t.color })) : [];
+  const cost = c.cost != null ? +c.cost : 0;
+
   return {
     aircallId: c.id,
     ownerEmail,
@@ -250,12 +288,16 @@ function _normalizeCall(c, userMap, numberToUserMap, employeeRoster) {
     direction: c.direction === 'outbound' ? 'outbound' : 'inbound',
     durationSec,
     answerSec,
+    talkSec,
     status,
     fromNumber: c.raw_digits || c.from || '',
     toNumber: c.to || '',
     numberName: c.number && c.number.name ? c.number.name : null,
     recordingUrl: c.recording || c.voicemail || null,
-    _attribution: attribution,  // для дебага в логе
+    tenantMatch,
+    tags,
+    cost,
+    _attribution: attribution,
   };
 }
 
@@ -263,10 +305,11 @@ function _normalizeCall(c, userMap, numberToUserMap, employeeRoster) {
  * Walk Aircall /v1/calls from `fromSec` until either no more pages OR
  * we hit `maxCalls` (safety stop for very busy accounts).
  */
-async function _fetchCallsSince(fromSec, userMap, numberToUserMap, employeeRoster, maxCalls = 5000) {
+async function _fetchCallsSince(fromSec, userMap, numberToUserMap, employeeRoster, tenantsByPhone, maxCalls = 5000) {
   const out = [];
   let totalRaw = 0;
   let skippedOrphan = 0;
+  let tenantMatched = 0;
   const attributionStats = { 'aircall-user': 0, 'number-assignment': 0, 'number-name-heuristic': 0 };
   let next = `/calls?from=${fromSec}&per_page=${PER_PAGE}&order=asc`;
   let pageCount = 0;
@@ -275,9 +318,10 @@ async function _fetchCallsSince(fromSec, userMap, numberToUserMap, employeeRoste
     pageCount++;
     for (const c of (data.calls || [])) {
       totalRaw++;
-      const norm = _normalizeCall(c, userMap, numberToUserMap, employeeRoster);
+      const norm = _normalizeCall(c, userMap, numberToUserMap, employeeRoster, tenantsByPhone);
       if (norm) {
         attributionStats[norm._attribution] = (attributionStats[norm._attribution] || 0) + 1;
+        if (norm.tenantMatch) tenantMatched++;
         delete norm._attribution;
         out.push(norm);
       } else {
@@ -289,7 +333,7 @@ async function _fetchCallsSince(fromSec, userMap, numberToUserMap, employeeRoste
       : null;
     if (next) await _sleep(REQ_PACE_MS);
   }
-  logger.info(`[aircall] fetched ${out.length}/${totalRaw} calls (${skippedOrphan} orphan) across ${pageCount} pages (from=${fromSec})`);
+  logger.info(`[aircall] fetched ${out.length}/${totalRaw} calls (${skippedOrphan} orphan, ${tenantMatched} tenant-matched) across ${pageCount} pages (from=${fromSec})`);
   logger.info(`[aircall] attribution: ${JSON.stringify(attributionStats)}`);
   return out;
 }
@@ -355,13 +399,14 @@ async function _setLastSync(sec) {
  * Core ingest routine — used by both scheduled + admin-callable.
  */
 async function _runPull({ sinceSec, isBootstrap = false }) {
-  const [userMap, numberMaps, employeeRoster] = await Promise.all([
+  const [userMap, numberMaps, rosterData] = await Promise.all([
     _fetchUserMap(),
     _fetchNumberMaps(),
     _fetchEmployeeRoster(),
   ]);
   const { numberToUser: numberToUserMap, userToNumbers } = numberMaps;
-  logger.info(`[aircall] user map size = ${userMap.size}, number→user map size = ${numberToUserMap.size}, employee roster size = ${employeeRoster.length}`);
+  const { roster: employeeRoster, tenantsByPhone } = rosterData;
+  logger.info(`[aircall] user map size = ${userMap.size}, number→user map size = ${numberToUserMap.size}, employee roster size = ${employeeRoster.length}, tenant phone index size = ${tenantsByPhone.size}`);
   logger.info(`[aircall] roster names: ${employeeRoster.map(e => e.fullName).join(', ')}`);
   logger.info(`[aircall] number assignments: ${Array.from(numberToUserMap.entries()).map(([n, e]) => `${n}→${e}`).join(', ')}`);
 
@@ -394,7 +439,7 @@ async function _runPull({ sinceSec, isBootstrap = false }) {
     }
   }
 
-  const calls = await _fetchCallsSince(fromSec, userMap, numberToUserMap, employeeRoster, isBootstrap ? 20000 : 2000);
+  const calls = await _fetchCallsSince(fromSec, userMap, numberToUserMap, employeeRoster, tenantsByPhone, isBootstrap ? 20000 : 2000);
   const { written, byEmail } = await _writeCallsToState(calls);
 
   // Advance cursor to NOW (slightly conservative — we re-fetch with 5min overlap above)
@@ -449,5 +494,161 @@ exports.adminPullAircall = onCall(
     logger.info(`[aircall] admin bootstrap: ${daysBack} days back, from=${fromSec}`);
     const result = await _runPull({ sinceSec: fromSec, isBootstrap: true });
     return result;
+  }
+);
+
+/* ============================================================
+ * Phase 18 — push tenants to Aircall Contacts via API.
+ * When operator gets an incoming call from a known tenant phone,
+ * Aircall App (desktop/mobile) will display «Suite 305 · ABC Medical»
+ * instead of «(312) 871-8354» — significantly speeds up answer time
+ * and reduces wrong-call errors.
+ *
+ * Strategy:
+ *  - Walk state.buildings → all units with non-empty u.phone.
+ *  - For each, upsert into Aircall: search existing by phone digits
+ *    via GET /v1/contacts/search?phone_number=...; if found → update;
+ *    else POST /v1/contacts.
+ *  - Schema: { first_name: «Suite 305», last_name: tenant/company,
+ *              phone_numbers: [{ label: 'main', value: '+1...' }],
+ *              information: '...building name, address...' }
+ *  - Dedup: store mapping `tenant.aircallContactId` on the unit so
+ *    re-runs use PUT instead of re-creating.
+ *
+ * Rate limit: 60 req/min. With phone search + write, ~2 req/tenant.
+ * For 100 tenants ~ 3-4 min runtime. Cap at 500 tenants per run.
+ * ============================================================ */
+
+async function _pushTenantsToAircall(callerEmail) {
+  const stateRef = db().doc(STATE_PATH);
+  const snap = await stateRef.get();
+  if (!snap.exists) return { ok: false, error: 'state doc missing' };
+
+  const doc = snap.data() || {};
+  const state = doc.state || {};
+  const buildings = Array.isArray(state.buildings) ? state.buildings : [];
+
+  // Collect tenants with phone numbers
+  const tenants = [];
+  for (const b of buildings) {
+    for (const f of (b.floors || [])) {
+      for (const u of (f.units || [])) {
+        if (!u || !u.phone) continue;
+        const digits = String(u.phone).replace(/[^\d]/g, '');
+        if (digits.length < 10) continue;
+        // Normalize to E.164-ish: if 10 digits, prepend +1; else as-is.
+        const e164 = digits.length === 10 ? '+1' + digits : '+' + digits;
+        tenants.push({
+          unitId: u.id,
+          buildingId: b.id,
+          buildingName: b.name || b.address || b.id,
+          phone: e164,
+          phoneDigits: digits.slice(-10),
+          tenantName: u.tenant || u.company || '',
+          existingAircallId: u._aircallContactId || null,
+        });
+      }
+    }
+  }
+
+  if (!tenants.length) {
+    return { ok: true, total: 0, created: 0, updated: 0, errors: [] };
+  }
+
+  const MAX = 500;
+  const stats = { total: tenants.length, processed: 0, created: 0, updated: 0, skipped: 0, errors: [] };
+  // Track unit-level updates to push back into state at the end
+  const aircallIdByUnitId = {};
+
+  for (const t of tenants.slice(0, MAX)) {
+    try {
+      let aircallId = t.existingAircallId;
+      // If no cached id, search Aircall by phone digits.
+      if (!aircallId) {
+        const searchData = await _aircallFetch(`/contacts/search?phone_number=${encodeURIComponent(t.phone)}`);
+        const found = (searchData && Array.isArray(searchData.contacts)) ? searchData.contacts[0] : null;
+        if (found && found.id) aircallId = found.id;
+        await _sleep(REQ_PACE_MS);
+      }
+
+      const payload = {
+        first_name: 'Suite ' + (t.unitId || '?'),
+        last_name: t.tenantName || '',
+        information: t.buildingName ? `Building: ${t.buildingName}` : '',
+        phone_numbers: [{ label: 'main', value: t.phone }],
+      };
+
+      if (aircallId) {
+        // Update
+        await _aircallFetch(`/contacts/${aircallId}`, {
+          method: 'POST',  // Aircall uses POST for updates per their docs
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        stats.updated++;
+      } else {
+        // Create
+        const res = await _aircallFetch('/contacts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const created = (res && res.contact) || {};
+        if (created.id) aircallId = created.id;
+        stats.created++;
+      }
+
+      if (aircallId) {
+        aircallIdByUnitId[t.unitId] = aircallId;
+      }
+      stats.processed++;
+      await _sleep(REQ_PACE_MS);
+    } catch (err) {
+      stats.errors.push({ unitId: t.unitId, error: err.message || String(err) });
+      logger.warn(`[aircall-push] unit ${t.unitId} failed: ${err.message}`);
+    }
+  }
+
+  // Write back aircallContactId per unit in one transaction
+  if (Object.keys(aircallIdByUnitId).length > 0) {
+    try {
+      await db().runTransaction(async (tx) => {
+        const snap = await tx.get(stateRef);
+        const d = snap.exists ? (snap.data() || {}) : {};
+        const buildings = (d.state && Array.isArray(d.state.buildings)) ? d.state.buildings : [];
+        for (const b of buildings) {
+          for (const f of (b.floors || [])) {
+            for (const u of (f.units || [])) {
+              if (u && aircallIdByUnitId[u.id]) {
+                u._aircallContactId = aircallIdByUnitId[u.id];
+              }
+            }
+          }
+        }
+        d.state.buildings = buildings;
+        tx.set(stateRef, d, { merge: true });
+      });
+    } catch (e) {
+      logger.warn(`[aircall-push] state write-back failed: ${e.message}`);
+    }
+  }
+
+  logger.info(`[aircall-push] complete: ${JSON.stringify(stats)}`);
+  return Object.assign({ ok: true, triggeredBy: callerEmail }, stats);
+}
+
+exports.syncTenantsToAircall = onCall(
+  {
+    secrets: [AIRCALL_API_ID, AIRCALL_API_TOKEN],
+    memory: '1GiB',
+    timeoutSeconds: 540,
+  },
+  async (request) => {
+    const callerEmail = (request.auth && request.auth.token && request.auth.token.email) || '';
+    if (!ROOT_ADMINS.includes(callerEmail.toLowerCase())) {
+      throw new HttpsError('permission-denied', 'Admin only');
+    }
+    logger.info(`[aircall-push] triggered by ${callerEmail}`);
+    return await _pushTenantsToAircall(callerEmail);
   }
 );
