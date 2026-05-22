@@ -20,15 +20,23 @@ Active rules:
 
 Before editing any payment, finance, lease, invoice, balance, late-fee,
 deposit, Stripe, report, or floor-map logic, read [`FIXES_LOG.md`](FIXES_LOG.md)
-and preserve all listed invariants. If touching a listed file or function,
-mention the relevant `FIXES_LOG` entry number in the PR handoff so the
-reviewer can confirm the invariant is intact.
+**AND** [`FINANCIAL_INVARIANTS.md`](FINANCIAL_INVARIANTS.md) and preserve
+all listed invariants. If touching a listed file or function, mention the
+relevant `FIXES_LOG` entry number in the PR handoff so the reviewer can
+confirm the invariant is intact.
 
 `FIXES_LOG.md` is the single source of truth for prior fixes and regression
 risks. Each entry names the files, functions, and invariants a future change
 must not break, plus how to verify the invariant still holds. Entries are
 append-only — do not delete them; mark superseded entries with a pointer to
 the replacement.
+
+`FINANCIAL_INVARIANTS.md` (added 2026-05-21 after the phantom-transaction
+incident) is the architectural rulebook for everything that touches money
+— append-only ledger, idempotent ingestion, source-of-truth pointers,
+audit-trail mandates, reconciliation invariants, defensive UI patterns.
+Mirrors how industry-standard PMS/accounting software (Yardi, AppFolio,
+QuickBooks, Stripe) enforce correctness internally.
 
 ## 1. Safety
 - Always check `git status` before editing.

@@ -1101,6 +1101,104 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 30. Phantom bank transaction from orphan Stripe FC account (2026-05-21)
+
+- **Status:** active
+- **Branch / commit:** `claude/modest-curie-8a50ad` @ commits `eeb45f0`
+  (UI defense) + `f10c446` + `f8e4bca` (cleanup CF)
+- **Area:** financial integrity / bank reconciliation / Stripe Financial
+  Connections lifecycle
+- **Files:**
+  - `floor-map-editor.html` — `_bankDetectDuplicates`, `_bankDayBucket`,
+    `_bankDupDrillDown`; integration in `_mpmRenderBankSuggestions` and
+    `_txnBrowserBuildRow`/`_txnBrowserNormBank`
+  - `functions/index.js` — `cleanupOrphanBankTransactions` CF (~135 lines)
+  - `scripts/admin-firestore.js` (untracked local) — `bank-list-dups`,
+    `bank-list-orphan`, `bank-cleanup-orphan --confirm` mirror commands
+- **Functions:**
+  - Client: `_bankDetectDuplicates(txns)` → `{canonical, dups, dupCount}`;
+    `_bankDayBucket(unix)` → NY-TZ day-string; `_bankDupDrillDown(id)` →
+    side-by-side popover of dup-group candidates
+  - Server: `cleanupOrphanBankTransactions({dryRun, targetAccountIds?,
+    targetPrefix?})` — root-admin only; deletes orphans + writes
+    `bank.txn.orphan-cleanup` audit entries
+- **Bug it fixed:** Tony's Capital One mobile app showed ONE
+  `Customer Deposit` on 4/21 for $13,318.33, but the SuitesForAll
+  Payment Suggestions card showed **two** Customer Deposit rows for
+  the same amount — one on 4/20 and one on 4/21, both flagged
+  `+$0.33 over · unmatched`. If the operator clicked "Apply" on both
+  rows, the tenant's rent would have been double-credited (one
+  payment, two ledger entries).
+  Root cause: Stripe Financial Connections reconnect on 2026-05-22
+  ~00:48 UTC produced a **new** `fc_account_id`
+  (`fca_1TZhGc2nq2bZh3q6isyTrFJe`), which re-pulled history with
+  **new** transaction IDs. The disconnected account
+  (`fca_1TSrMQ2nq2bZh3q6bnokrr8y`) still had 515 documents in
+  `bankTransactions` — the server-side dedupe in
+  `_pullTransactionsForAccount` (functions/index.js:5050) is keyed
+  on `t.id`, so the same logical deposit under a new Stripe ID was
+  written as a separate document instead of being recognized as a
+  duplicate. Timezone display (`toLocaleDateString()` vs server
+  UTC-midnight stamp) made the two appear on different dates.
+- **Invariant — DO NOT BREAK:**
+  1. **`_bankDetectDuplicates` MUST run before rendering bank
+     suggestions** (`_mpmRenderBankSuggestions` and txn browser).
+     Without this last-line-of-defense, future reconnects, pending→
+     posted transitions, or CSV-overlap will re-introduce phantom
+     duplicates that the operator can double-apply.
+  2. **The fingerprint key is `(amount_cents, day-bucket-in-NY-TZ,
+     ±2 days)`** — NOT description (Stripe sometimes changes
+     description between pending/posted), NOT accountId (orphan
+     accounts have different IDs by definition).
+  3. **Canonical-row selection prefers `status='posted'` > newer
+     `transactedAt` > longer `id`.** This biases toward the live
+     account's view, which is what the operator expects.
+  4. **`cleanupOrphanBankTransactions` defaults to `dryRun:true` and
+     `targetPrefix:'fca_'`.** Never auto-delete `import:*` (CSV
+     imports) — that data is operator-supplied and may be unique.
+     Require explicit `targetAccountIds:[...]` whitelist for any
+     non-`fca_*` cleanup.
+  5. **Every deletion MUST write an audit entry to `workspaces/{ws}/
+     audit`** with action `bank.txn.orphan-cleanup`, the deleted
+     doc snapshot (accountId, amount, description, transactedAt,
+     status, matchState, seenAt), the actor email, and the reason.
+     Without the audit row a deletion is unrecoverable.
+  6. **Server-side dedupe in `_pullTransactionsForAccount` (the actual
+     root cause) is STILL keyed on `t.id` only.** This entry's fixes
+     are reactive (UI defense + cleanup CF) — the **server-side
+     fingerprint dedupe** (writing docs under a composite-fingerprint
+     doc-id instead of `t.id`) is Tier 2 work still pending. Until
+     then, the UI defense + orphan-cleanup CF is the only barrier.
+- **Verification:**
+  1. Open https://suitesforall.web.app, open Manual Payment modal on
+     any unit. Suggestions card renders — if any two bank txns share
+     a fingerprint, the row collapses and shows `⚠ N dups` chip.
+  2. Click the chip → drill-down popover lists all dup-candidates
+     with docId, accountId, transactedAt (NY TZ), status,
+     matchState, description. Audit entry `bank.txn.dup_review`
+     written to `workspaces/default/audit`.
+  3. Run dry-run cleanup: `stripeCallable('cleanupOrphanBankTransactions')({dryRun:true})`
+     → returns `{activeAccountIds, orphanAccountIds, wouldDelete,
+     wouldKeep, sampleOrphan}`. Verify `orphanAccountIds` is the
+     correct list (NO `import:*` entries by default).
+  4. Confirm with `targetAccountIds:['fca_<orphan>'], dryRun:false`
+     → deletes + writes audit. Re-run dry-run → orphan list empty.
+  5. Re-open the unit's Manual Payment modal — phantom rows are
+     gone from the suggestions card.
+- **Regression test:** none — verified via live browser + Firestore
+  query. Server-side `pollBankTransactions` does NOT re-create
+  orphan docs on subsequent polls (it queries by current `fcAccountId`
+  only).
+- **Related PR / issue:** none
+- **First production loss:** Tony / NUHS Suite 101 / 2026-05-22 ~01:10
+  UTC. Tony spotted the discrepancy visually before applying — no
+  double-credit occurred. Cleanup deleted 515 docs from
+  `fca_1TSrMQ2nq2bZh3q6bnokrr8y`; 767 kept (active account + CSV
+  imports). Audit trail: `workspaces/default/audit` with 515
+  `bank.txn.orphan-cleanup` entries.
+
+---
+
 ## Recommended porting order
 
 The two source branches do not currently conflict, but they touch the same
