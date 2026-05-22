@@ -268,11 +268,59 @@ A bank transaction may be auto-applied to `u.payments[ym]` if and only if:
    the bank amount (composite-fingerprint identity)
 5. That unit has at least one **unpaid month** within the active
    lease window
-6. The unit does NOT have `autoApplyDisabled === true`
-7. The global `state.settings.autoApplyEnabled` is not explicitly `false`
+6. **The matched ym ≥ current server month** (future-only gate — past
+   periods require operator approval; mirrors Yardi «Pending Cash
+   Application» queue, AppFolio «back-period matches» block, Buildium
+   «Apply to past period?» modal, MRI 4-tier confidence + T+0..T+30
+   window, Stripe ≤ 30d auto-match, QuickBooks period locks)
+7. The unit does NOT have `autoApplyDisabled === true`
+8. The global `state.settings.autoApplyEnabled` is not explicitly `false`
 
 If ANY of these fail → fall back to operator manual review
 (`matchState='suggested'` → operator clicks Apply in MPM).
+
+### Past-month bucketing (critical safety)
+When all criteria above pass EXCEPT criterion #6 (matched ym is in
+the past), the candidate is NOT silently skipped. Instead the bank
+txn doc gets:
+- `matchState: 'suggested'`
+- `matchSource: 'auto-apply-past-month-deferred'`
+- `matchedUnitId`, `matchedBuildingId`, `matchedFloorId`, `matchedYm`
+  (so MPM can route the operator's confirmation directly)
+- `suggestedRent`, `autoApplyEligibleAmount: true`
+- `autoApplyBlockedReason: 'past-month-needs-manual'`
+
+The MPM Payment Suggestions card renders these with a distinctive
+🔒 orange «Past month — approve manually» pill instead of the default
+★ suggested badge. One click → MPM opens with the bank txn pre-linked.
+
+### Source-distinguished icons (Yardi/AppFolio pattern)
+Every paid cell in the payments matrix shows ONE small emoji in the
+bottom-right corner indicating origin:
+- 🤖 **auto-applied** (`p.autoApplied === true`)
+- 📥 **bank-import** (CSV: `p.bankAccountId` starts with `'import:'`)
+- 💳 **stripe** (`p.paidVia` matches `^stripe`)
+- 👤 **manual** (everything else with `status='paid'`)
+
+This visual differentiation is industry-standard — operator can scan
+an entire month's ledger in one glance and spot any unexpected source
+mix (e.g. a unit that normally pays via 💳 Stripe suddenly showing 👤
+manual = potential issue).
+
+### Auto-applied history view
+Settings → Bank Connections (Bank Feed) → «🤖 Auto-applied history»
+panel lists the last 50 auto-apply events (newest first) with:
+- Time, Suite, Tenant, Month, Bank description
+- Amount + delta vs expected rent
+- View button (opens MPM)
+- Undo button (reverses single apply with one click)
+
+Read via `listAutoAppliedHistory` callable. The CF joins
+`payment.auto-applied` audit events with `payment.auto-applied.undo`
+events using **ts-comparison**: an apply is marked undone ONLY if an
+undo's timestamp > apply's timestamp. This correctly handles
+apply→undo→re-apply cycles (where blind bankTxnId-keyed joining would
+incorrectly mark the latest apply as undone).
 
 ### Auto-apply writes (atomic, transactional)
 ```

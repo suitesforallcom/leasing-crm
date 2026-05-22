@@ -1307,6 +1307,36 @@ to the replacement entry) if a fix is intentionally rewritten.
   pill visible alongside `🔗 Linked: $1,500.00 · 5/18/2026`.
   534 candidates scanned, 1 applied, 533 skipped (already paid,
   ambiguous, or no unpaid month).
+- **2026-05-22 follow-up — future-only restriction + UI polish.**
+  Per Tony's industry-research request (Yardi/AppFolio/Buildium/MRI/
+  Stripe/QuickBooks pattern), added invariants 11–14:
+  11. **Future-only auto-apply gate.** When the matched ym < current
+      server month, `_findAutoApplyCandidate` returns
+      `{eligible:false, reason:'past-month-needs-manual', candidate}`
+      instead of applying. Past-period auto-apply закрывает старый
+      долг без проверки и может скрыть chargeback / dispute /
+      неправильный billing — все industry-standard PMS требуют
+      manager approval для past period.
+  12. **Past-month candidates → 'suggested'.** Not silently skipped.
+      `_autoApplyAfterPoll` writes
+      `matchState='suggested' + matchSource='auto-apply-past-month-
+      deferred'` so the operator sees them in MPM Payment Suggestions
+      with «🔒 Past month — approve manually» pill. One click → MPM
+      → apply manually if appropriate.
+  13. **Source-distinguished icons in payments grid.** Each paid
+      cell shows ONE icon в правом нижнем углу: 🤖 auto-applied,
+      📥 bank-import (CSV), 💳 stripe, 👤 manual. Operator scans
+      ledger в один взгляд — Yardi/AppFolio pattern.
+  14. **Auto-applied history panel** в Settings → Bank Connections.
+      Listed apply events (newest-first) с Time / Suite / Tenant /
+      Month / Amount / Delta / View / Undo columns. Reversed events
+      shown faded with «↶ Undone» badge. Read via
+      `listAutoAppliedHistory` callable, joins audit events
+      `payment.auto-applied` + `payment.auto-applied.undo`. **Subtle
+      bug fix (commit `dcc0995`):** ts-comparison joins ensure an
+      apply event is marked undone ONLY if undo's ts > apply's ts.
+      Without this, apply→undo→re-apply cycles mark the latest apply
+      incorrectly undone.
 
 ---
 
