@@ -365,6 +365,23 @@ At the end of every task, include a "Rollback" block with:
 
 Every data table must satisfy: column sort + drag-to-reorder + per-column tooltip + visibility gear menu. Use `mountTablePrefs` + `attachTableSort` + `applyTableSort` + `ensureColumnsButton` helpers. Sort + reorder must be PURE UI — must not change row count or totals. CSV export must follow current view.
 
+### 15. Scroll-Reveal Sticky Header (Tony 2026-05-22)
+
+Top navigation / menu bars must follow the **scroll-reveal-on-up** pattern (Twitter / Linear / GitHub-mobile style):
+
+- **At top of page (scrollY < 10px):** menu always visible in natural position.
+- **Scrolling DOWN past ~80px:** menu slides off-screen via CSS `transform: translateY(-100%)` (frees vertical real estate for content).
+- **Scrolling UP (any direction reversal):** menu slides back into view and **sticks at the top** (position: sticky).
+- **Threshold against jitter:** delta < 8px ignored (trackpad micro-scrolls).
+- **Implementation:** CSS `position: sticky; top: 0; transition: transform 220ms` + JS scroll handler with `requestAnimationFrame` throttling + class toggle `.topbar-hidden` for translate-off.
+
+This is now the default for `.topbar` (main top bar). Apply the same pattern to any new top-level menu / nav strip / sticky toolbar that takes vertical space and isn't critical to keep on-screen during downward reading.
+
+**Anti-patterns** (do NOT use):
+- Always-fixed bar that covers content (eats permanent vertical space).
+- Hide-on-scroll-only without reveal-on-scroll-up (operator must scroll back to top to see menu again — slow).
+- No transition (jarring snap).
+
 ---
 
 ## Engineering principles (legacy — still in force)
