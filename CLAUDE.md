@@ -365,6 +365,46 @@ At the end of every task, include a "Rollback" block with:
 
 Every data table must satisfy: column sort + drag-to-reorder + per-column tooltip + visibility gear menu. Use `mountTablePrefs` + `attachTableSort` + `applyTableSort` + `ensureColumnsButton` helpers. Sort + reorder must be PURE UI — must not change row count or totals. CSV export must follow current view.
 
+### 16. Collections Applied Algorithm (Tony 2026-05-22)
+
+The primary «Collected · <Month>» KPI uses the **Collections Applied** algorithm — the same metric used by Yardi Voyager / AppFolio / Buildium / MRI / QuickBooks accrual mode. **DO NOT** confuse it with cash basis.
+
+**Formula:**
+```
+COLLECTED FOR <month> = SUM(payments) where:
+  • billing_ym == <month>
+  • status == 'paid'
+  • regardless of when actually received
+```
+
+- ✅ Includes prepayments (rent for May paid in April).
+- ✅ Includes late payments (rent for May paid in June).
+- ❌ EXCLUDES back-rent (rent for March paid in May — counts as collected for March).
+- ❌ EXCLUDES deposits / fees not tied to the same period.
+
+**Why this and not cash basis:**
+- Cash basis (sum of all payments with `p.date` in the month) inflates the period when back-rent is paid late, and undercounts the period when tenants prepay.
+- Operators ask «насколько собран рент за май» — they expect the collections-applied answer.
+- Stripe Dashboard / bank deposits give cash basis; the PMS layer normalizes back to billing period.
+
+**Collection rate:**
+```
+RATE = collectedForMonth / (collectedForMonth + outstanding)
+```
+This gives «% of May rent billed that's been collected so far». Outstanding excludes waived (status='free') months.
+
+**Secondary metric (for context):**
+The KPI's tooltip and subtitle show `cashReceivedInMonth` (sum of all paid where `_pnlMonthKey === month`) as a separate number. The diff between the two is explained inline:
+- `cashReceived > collectedForMonth` → back-rent received this month
+- `cashReceived < collectedForMonth` → this month's rent prepaid in prior period
+
+**Anti-patterns** (do NOT use):
+- Showing cash basis as the primary «Collected» KPI (operators get confused when back-rent inflates).
+- Showing only invoices created in the month (misses invoices created earlier but paid for this period).
+- Mixing waived months into the rate (artificially deflates).
+
+---
+
 ### 15. Scroll-Reveal Sticky Header (Tony 2026-05-22)
 
 Top navigation / menu bars must follow the **scroll-reveal-on-up** pattern (Twitter / Linear / GitHub-mobile style):
