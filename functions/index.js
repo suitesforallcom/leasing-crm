@@ -5953,21 +5953,40 @@ exports.listAutoAppliedHistory = onCall(
                   .orderBy('ts', 'desc').limit(limit).get()
         : Promise.resolve({ docs: [] }),
     ]);
-    // Map undo events by bankTxnId for quick lookup.
-    const undoneBy = {};
+    // Map undo events by bankTxnId. Multiple undos per bankTxnId
+    // могут существовать если cycle (apply → undo → re-apply → undo).
+    // Сохраняем ARRAY of undos, потом для каждого apply мэтчим самый
+    // ранний undo с ts > apply.ts.
+    const undoesByTxn = {};
     undosSnap.docs.forEach(d => {
       const u = d.data();
-      if (u.bankTxnId) {
-        undoneBy[u.bankTxnId] = {
-          undoneAt: u.ts && u.ts.toDate ? u.ts.toDate().toISOString() : null,
-          undoneBy: u.actor || null,
-        };
-      }
+      if (!u.bankTxnId) return;
+      const tsMs = u.ts && u.ts.toMillis ? u.ts.toMillis()
+                 : (u.ts && u.ts.toDate ? u.ts.toDate().getTime() : 0);
+      if (!undoesByTxn[u.bankTxnId]) undoesByTxn[u.bankTxnId] = [];
+      undoesByTxn[u.bankTxnId].push({
+        tsMs,
+        actor: u.actor || null,
+      });
     });
+    // Sort undos ascending для каждого bankTxnId (oldest first), чтобы
+    // легко найти "первый undo после данного apply".
+    Object.values(undoesByTxn).forEach(arr => arr.sort((a, b) => a.tsMs - b.tsMs));
+    let actuallyUndoneCount = 0;
     const items = appliesSnap.docs.map(d => {
       const e = d.data();
-      const ts = e.ts && e.ts.toDate ? e.ts.toDate().toISOString() : null;
-      const undo = e.bankTxnId ? undoneBy[e.bankTxnId] : null;
+      const tsMs = e.ts && e.ts.toMillis ? e.ts.toMillis()
+                 : (e.ts && e.ts.toDate ? e.ts.toDate().getTime() : 0);
+      const ts = tsMs ? new Date(tsMs).toISOString() : null;
+      // Find first undo with ts > this apply's ts. If found, this apply
+      // was undone. Если нет — apply ЖИВ (даже если есть undo, он мог
+      // быть для предыдущего apply того же bankTxnId).
+      let undo = null;
+      const undosForTxn = e.bankTxnId ? (undoesByTxn[e.bankTxnId] || []) : [];
+      for (const u of undosForTxn) {
+        if (u.tsMs > tsMs) { undo = u; break; }
+      }
+      if (undo) actuallyUndoneCount++;
       return {
         id: d.id,
         ts,
@@ -5982,11 +6001,11 @@ exports.listAutoAppliedHistory = onCall(
         deltaCents: e.deltaCents,
         rentCents: e.rentCents,
         undone: !!undo,
-        undoneAt: undo?.undoneAt || null,
-        undoneBy: undo?.undoneBy || null,
+        undoneAt: undo ? new Date(undo.tsMs).toISOString() : null,
+        undoneBy: undo?.actor || null,
       };
     });
-    return { items, count: items.length, totalUndone: Object.keys(undoneBy).length };
+    return { items, count: items.length, totalUndone: actuallyUndoneCount };
   }
 );
 
