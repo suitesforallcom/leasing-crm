@@ -5159,8 +5159,19 @@ exports.pollBankTransactions = onCall(
           transactionRefreshStatus: r.transactionRefreshStatus,
           transactionRefreshTriggered: r.transactionRefreshTriggered,
         });
-        results.push({ fcAccountId: c.stripeFcAccountId, ...r, error: null });
-        logger.info(`[bank-feed] poll ${c.stripeFcAccountId}: scanned=${r.scanned} written=${r.written} backfill=${isBackfill}${r.transactionRefreshTriggered ? ' (refresh-triggered)' : ''}`);
+        // Auto-apply (Tony 2026-05-21): после успешного pull проходим по
+        // suggested txns этого аккаунта и автоматически применяем те, что
+        // прошли strictness gate (exact-invoice + high confidence + no
+        // ambiguity). НЕ throw если auto-apply упал — это вторичный шаг,
+        // pull уже успешен и важнее.
+        let autoApply = { applied: 0, skipped: 0, candidates: 0 };
+        try {
+          autoApply = await _autoApplyAfterPoll(c.stripeFcAccountId);
+        } catch (autoErr) {
+          logger.error(`[auto-apply] ${c.stripeFcAccountId} failed:`, autoErr);
+        }
+        results.push({ fcAccountId: c.stripeFcAccountId, ...r, autoApply, error: null });
+        logger.info(`[bank-feed] poll ${c.stripeFcAccountId}: scanned=${r.scanned} written=${r.written} backfill=${isBackfill}${r.transactionRefreshTriggered ? ' (refresh-triggered)' : ''} | auto-apply: applied=${autoApply.applied} skipped=${autoApply.skipped}/${autoApply.candidates}`);
       } catch (err) {
         logger.error(`[bank-feed] poll ${c.stripeFcAccountId} failed:`, err);
         results.push({ fcAccountId: c.stripeFcAccountId, error: err.message || String(err) });
@@ -5556,6 +5567,242 @@ function _matchTransaction(state, txn) {
     suggestedRent: best.cand.contractRent,
   };
 }
+
+// =========================================================================
+// Auto-apply matched bank transactions to payments (Tony 2026-05-21)
+// =========================================================================
+// КРИТИЧЕСКАЯ ФИНАНСОВАЯ АВТОМАТИЗАЦИЯ. Когда matcher уверенно угадал
+// что транзакция X — рента для конкретного юнита, мы СРАЗУ применяем
+// её к u.payments[ym] без участия оператора.
+//
+// Tony's choices (2026-05-21):
+//   1. Strictness: STRICT — exact-invoice match only, +$1 cents tolerance
+//   2. Trigger:    после каждого pollBankTransactions (real-time)
+//   3. Ambiguity:  skip → manual review queue (suggested matchState)
+//   4. Notification: in-app badge + 🤖 chip + Sentry breadcrumb
+//
+// Invariants (FINANCIAL_INVARIANTS.md):
+//   - Idempotent: never overwrite already-paid u.payments[ym]
+//   - Atomic: единый transactional write на все applies в одном poll
+//   - Audit: каждый apply → workspaces/{ws}/audit с full snapshot
+//   - Reversible: u.payments[ym].autoApplied=true → client может undo
+//   - Variance gate: |bank - rent| > $1 → НЕ auto-apply (variance dialog)
+//   - Confidence gate: matcher's score < 90 ('high') → suggested only
+//   - Posted only: status='pending' → never auto-apply
+// =========================================================================
+
+// Tony's strictness: matcher должен дать (a) score ≥ 90 'high', (b)
+// exact invoice match (не close), (c) НЕ ambiguous (был unique-bonus).
+function _isAutoApplyEligible(matchResult, txn) {
+  if (!matchResult) return false;
+  if (matchResult.matchConfidence !== 'high') return false;
+  if (matchResult.matchPoints < 90) return false;
+  // Variance gate — Strict mode требует EXACT amount match (±$1 cents tolerance
+  // допускается, но breakdown должен содержать 'unpaidInvoiceExact', не 'Close').
+  const hasExact = (matchResult.matchBreakdown || []).some(b => b.label === 'unpaidInvoiceExact');
+  if (!hasExact) return false;
+  // Ambiguity gate — penalty был бы −30; uniqueBonus +20 — оба видимы.
+  const ambiguous = (matchResult.matchBreakdown || []).some(b => b.label === 'ambiguityPenalty');
+  if (ambiguous) return false;
+  // Posted only — never auto-apply pending (банк может откатить).
+  if ((txn.status || '').toLowerCase() !== 'posted') return false;
+  // Credit only (amount > 0).
+  if (+txn.amount <= 0) return false;
+  return true;
+}
+
+// Описание → метод платежа (server-side mirror of _mpmGuessMethodFromDesc).
+function _guessMethodFromDescServer(desc) {
+  const d = String(desc || '').toLowerCase();
+  if (d.includes('check')) return 'check';
+  if (d.includes('wire')) return 'wire';
+  if (d.includes('ach') || d.includes('transfer') || d.includes('zelle')
+      || d.includes('venmo') || d.includes('deposit')) return 'ach';
+  if (d.includes('stripe')) return 'stripe';
+  return 'other';
+}
+
+// Главный auto-apply: запускается после _pullTransactionsForAccount.
+// Читает свежепосажённые 'suggested' транзакции, фильтрует по
+// _isAutoApplyEligible, и атомарно применяет к u.payments + помечает
+// matchState='confirmed' + audit.
+async function _autoApplyAfterPoll(fcAccountId) {
+  // 1. Read 'suggested' transactions for this account.
+  const col = db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`);
+  const snap = await col
+    .where('accountId', '==', fcAccountId)
+    .where('matchState', '==', 'suggested')
+    .get();
+  if (snap.empty) return { applied: 0, skipped: 0, candidates: 0 };
+
+  // 2. Read state for matching + apply target.
+  const state = await readWorkspaceState();
+
+  // Global kill-switch (Tony может отключить через Settings).
+  // Default: enabled. Explicit `false` → bail.
+  if (state?.settings?.autoApplyEnabled === false) {
+    return { applied: 0, skipped: snap.size, candidates: snap.size, disabledGlobally: true };
+  }
+
+  // 3. Build apply list — re-match + filter.
+  const applies = [];
+  let skipped = 0;
+  for (const d of snap.docs) {
+    const txn = { id: d.id, ...d.data() };
+    const m = _matchTransaction(state, txn);
+    if (!_isAutoApplyEligible(m, txn)) { skipped++; continue; }
+    // Per-unit opt-out (если у unit есть autoApplyDisabled=true).
+    const b = (state.buildings || []).find(x => x.id === m.matchedBuildingId);
+    const f = b?.floors?.find(x => x.id === m.matchedFloorId);
+    const u = f?.units?.find(x => x.id === m.matchedUnitId);
+    if (!u) { skipped++; continue; }
+    if (u.autoApplyDisabled === true) { skipped++; continue; }
+    // Idempotency: skip if already paid.
+    const existing = u.payments?.[m.matchedYm];
+    if (existing && (existing.status === 'paid' || existing.bankTxnId === txn.id)) {
+      skipped++; continue;
+    }
+    applies.push({ docRef: d.ref, txn, match: m });
+  }
+
+  if (!applies.length) {
+    return { applied: 0, skipped, candidates: snap.size };
+  }
+
+  // 4. Atomic state mutation — write u.payments[ym] для всех applies.
+  // mutateWorkspaceState уже использует transaction, так что race-safe.
+  await mutateWorkspaceState((s) => {
+    for (const { txn, match } of applies) {
+      const b = (s.buildings || []).find(x => x.id === match.matchedBuildingId);
+      const f = b?.floors?.find(x => x.id === match.matchedFloorId);
+      const u = f?.units?.find(x => x.id === match.matchedUnitId);
+      if (!u) continue;
+      // Re-check idempotency in transaction (state may have changed since read).
+      const existing = u.payments?.[match.matchedYm];
+      if (existing && (existing.status === 'paid' || existing.bankTxnId === txn.id)) {
+        continue;
+      }
+      if (!u.payments) u.payments = {};
+      const amountDollars = (+txn.amount || 0) / 100;
+      const transactedDate = txn.transactedAt
+        ? new Date(txn.transactedAt * 1000).toISOString().slice(0, 10)
+        : new Date().toISOString().slice(0, 10);
+      u.payments[match.matchedYm] = {
+        status: 'paid',
+        amount: amountDollars,
+        paidVia: _guessMethodFromDescServer(txn.description),
+        paidReference: String(txn.description || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+        paidAt: transactedDate,
+        recordedBy: 'auto-match',
+        recordedAt: new Date().toISOString(),
+        bankTxnId: txn.id,
+        bankPaidAt: transactedDate,
+        bankAccountId: txn.accountId || null,
+        // Маркеры auto-apply — клиент покажет 🤖 chip + undo button.
+        autoApplied: true,
+        autoAppliedAt: new Date().toISOString(),
+        autoMatchScore: match.matchPoints,
+        autoMatchConfidence: match.matchConfidence,
+      };
+    }
+    // Weekly counter для UI badge «Auto-applied N this week».
+    if (!s.autoApplyStats) s.autoApplyStats = { totalApplied: 0, last7d: [] };
+    s.autoApplyStats.totalApplied = (s.autoApplyStats.totalApplied || 0) + applies.length;
+    s.autoApplyStats.last7d = s.autoApplyStats.last7d || [];
+    s.autoApplyStats.last7d.push({ at: new Date().toISOString(), count: applies.length });
+    // Prune entries older than 7 days.
+    const cutoff = Date.now() - 7 * 86400 * 1000;
+    s.autoApplyStats.last7d = s.autoApplyStats.last7d.filter(e => new Date(e.at).getTime() > cutoff);
+  });
+
+  // 5. Batch: mark bank txns confirmed + audit log (one entry per apply).
+  const auditCol = db.collection(`workspaces/${WORKSPACE_ID}/audit`);
+  const BATCH_SIZE = 100;
+  for (let i = 0; i < applies.length; i += BATCH_SIZE) {
+    const batch = db.batch();
+    const slice = applies.slice(i, i + BATCH_SIZE);
+    for (const { docRef, txn, match } of slice) {
+      batch.set(docRef, {
+        matchState: 'confirmed',
+        confirmedAt: admin.firestore.FieldValue.serverTimestamp(),
+        confirmedBy: 'auto-match',
+        autoApplied: true,
+        autoApplyTargetUnitId: match.matchedUnitId,
+        autoApplyTargetYm: match.matchedYm,
+      }, { merge: true });
+      batch.set(auditCol.doc(), {
+        action: 'payment.auto-applied',
+        ts: admin.firestore.FieldValue.serverTimestamp(),
+        actor: 'auto-match',
+        bankTxnId: txn.id,
+        bankAmount: txn.amount,
+        bankDescription: (txn.description || '').slice(0, 200),
+        bankAccountId: txn.accountId || null,
+        unitId: match.matchedUnitId,
+        buildingId: match.matchedBuildingId,
+        floorId: match.matchedFloorId,
+        ym: match.matchedYm,
+        matchScore: match.matchPoints,
+        matchConfidence: match.matchConfidence,
+        matchBreakdown: match.matchBreakdown || [],
+      });
+    }
+    await batch.commit();
+  }
+
+  logger.info(`[auto-apply] fcAccountId=${fcAccountId}: applied=${applies.length} skipped=${skipped} candidates=${snap.size}`);
+  return { applied: applies.length, skipped, candidates: snap.size };
+}
+
+// Operator manual undo — callable из клиента «↶ Undo auto-apply».
+// Откатывает u.payments[ym] → удаляет запись, ставит bank txn обратно
+// в 'suggested', пишет audit.
+exports.undoAutoAppliedPayment = onCall(
+  {timeoutSeconds: 30, memory: '256MiB'},
+  async (req) => {
+    const {email, role} = await requireEditor(req.auth);
+    const { buildingId, floorId, unitId, ym } = req.data || {};
+    if (!buildingId || !floorId || !unitId || !ym) {
+      throw new HttpsError('invalid-argument', 'buildingId+floorId+unitId+ym required');
+    }
+    let undone = false;
+    let bankTxnId = null;
+    await mutateWorkspaceState((s) => {
+      const b = (s.buildings || []).find(x => x.id === buildingId);
+      const f = b?.floors?.find(x => x.id === floorId);
+      const u = f?.units?.find(x => x.id === unitId);
+      if (!u) return;
+      const p = u.payments?.[ym];
+      if (!p) return;
+      if (!p.autoApplied) {
+        throw new HttpsError('failed-precondition', 'Payment was not auto-applied — use regular unmark instead');
+      }
+      bankTxnId = p.bankTxnId || null;
+      delete u.payments[ym];
+      undone = true;
+    });
+    if (undone && bankTxnId) {
+      // Bank txn → suggested (operator может re-match вручную).
+      const txnRef = db.doc(`workspaces/${WORKSPACE_ID}/bankTransactions/${bankTxnId}`);
+      await txnRef.set({
+        matchState: 'suggested',
+        confirmedAt: null,
+        confirmedBy: null,
+        autoApplied: false,
+      }, { merge: true });
+      // Audit.
+      await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+        action: 'payment.auto-applied.undo',
+        ts: admin.firestore.FieldValue.serverTimestamp(),
+        actor: email,
+        actorRole: role,
+        bankTxnId,
+        unitId, buildingId, floorId, ym,
+      });
+    }
+    return { undone, bankTxnId };
+  }
+);
 
 // Re-run the matcher across all unmatched/suggested transactions.
 // Called by the operator after editing tenants (e.g. fixing a typo
