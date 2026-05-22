@@ -5591,24 +5591,134 @@ function _matchTransaction(state, txn) {
 //   - Posted only: status='pending' → never auto-apply
 // =========================================================================
 
-// Tony's strictness: matcher должен дать (a) score ≥ 90 'high', (b)
-// exact invoice match (не close), (c) НЕ ambiguous (был unique-bonus).
+// Tony's Strict mode auto-apply gate (rewritten 2026-05-21 — matcher
+// threshold 60 is too strict for `Customer Deposit`-style txns that lack
+// tenant name in description; those score 45 and never become 'suggested'.
+// We do our own direct check based on first principles).
+//
+// Eligibility:
+//   1. txn.status === 'posted' (never pending)
+//   2. txn.amount > 0 (credits only)
+//   3. txn.matchState !== 'confirmed' (idempotency)
+//   4. Exactly ONE unit in the workspace has rent within ±$1 of bank amount
+//   5. That unit has at least one UNPAID month (status != 'paid')
+//   6. Per-unit autoApplyDisabled === false
+//
+// Returns: { eligible: bool, candidate: { unit, b, f, ym } | null, reason }
+const _AUTO_APPLY_TOLERANCE_CENTS = 100; // $1.00
+
+function _findAutoApplyCandidate(state, txn) {
+  if ((txn.status || '').toLowerCase() !== 'posted') {
+    return { eligible: false, reason: 'not-posted' };
+  }
+  if (+txn.amount <= 0) {
+    return { eligible: false, reason: 'not-credit' };
+  }
+  if (txn.matchState === 'confirmed' && txn.confirmedBy !== 'auto-match') {
+    // Operator manually linked it; don't touch.
+    return { eligible: false, reason: 'manually-linked' };
+  }
+  const targetCents = +txn.amount;
+  // Сборка кандидатов: для каждого юнита считаем effective rent (head
+  // лиза в multi-suite group). Допуск ±$1 cents.
+  const candidates = [];
+  for (const b of (state.buildings || [])) {
+    for (const f of (b.floors || [])) {
+      for (const u of (f.units || [])) {
+        if (u.status !== 'occupied') continue;
+        if (u.deletedAt) continue; // archived
+        if (u.groupId && u.groupRole !== 'primary') continue; // только head в группе
+        if (u.autoApplyDisabled === true) continue;
+        // Effective rent in cents (для group учитываем sum по members).
+        let rentDollars = (+u.contractRent) || (+u.rent) || 0;
+        if (u.groupId) {
+          // Sum по группе если head — используем _matcherCandidates-style logic.
+          const members = (state.buildings || []).flatMap(bb =>
+            (bb.floors || []).flatMap(ff =>
+              (ff.units || []).filter(uu => uu.groupId === u.groupId)
+            )
+          );
+          const sumC = members.reduce((s, m) => s + ((+m.contractRent) || 0), 0);
+          const sumR = members.reduce((s, m) => s + ((+m.rent) || 0), 0);
+          rentDollars = Math.max(rentDollars, sumC, sumR);
+        }
+        const rentCents = Math.round(rentDollars * 100);
+        if (rentCents <= 0) continue;
+        const delta = Math.abs(targetCents - rentCents);
+        if (delta > _AUTO_APPLY_TOLERANCE_CENTS) continue;
+        candidates.push({ u, b, f, rentCents, delta });
+      }
+    }
+  }
+  if (candidates.length === 0) {
+    return { eligible: false, reason: 'no-amount-match' };
+  }
+  if (candidates.length > 1) {
+    // Ambiguous — несколько unit'ов на ту же сумму. Tony's choice:
+    // skip → manual review queue.
+    return { eligible: false, reason: 'ambiguous', candidates: candidates.length };
+  }
+  const cand = candidates[0];
+  // Найти oldest unpaid month у этого юнита.
+  const ym = _findOldestUnpaidYm(cand.u, txn);
+  if (!ym) {
+    return { eligible: false, reason: 'no-unpaid-month' };
+  }
+  return {
+    eligible: true,
+    candidate: { u: cand.u, b: cand.b, f: cand.f, ym, rentCents: cand.rentCents, delta: cand.delta },
+  };
+}
+
+// Find oldest unpaid month for this unit, preferring months around the
+// bank txn date. Returns YYYY-MM string or null.
+function _findOldestUnpaidYm(u, txn) {
+  const txnDate = txn.transactedAt
+    ? new Date((+txn.transactedAt) * 1000)
+    : new Date();
+  // Зона поиска: 2 месяца до txnDate ... +1 месяц вперёд.
+  // Чаще всего рент платится в текущем или предыдущем месяце.
+  const leaseStartIso = u.leaseStart || u.signed || null;
+  const leaseStart = leaseStartIso ? new Date(leaseStartIso + 'T00:00:00') : null;
+  const leaseEnd = u.until ? new Date(u.until + 'T00:00:00') : null;
+  // Сначала смотрим txn-month, потом предыдущий, потом дальше назад.
+  // Сходим с того что bank-txn пришла за тот же или прошлый месяц.
+  const candidates = [];
+  for (let monthsBack = 0; monthsBack <= 6; monthsBack++) {
+    const d = new Date(txnDate.getFullYear(), txnDate.getMonth() - monthsBack, 1);
+    const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    candidates.push(ym);
+  }
+  // Также look one month forward (для прешплат).
+  const dF = new Date(txnDate.getFullYear(), txnDate.getMonth() + 1, 1);
+  candidates.unshift(`${dF.getFullYear()}-${String(dF.getMonth() + 1).padStart(2, '0')}`);
+  // Применяем фильтры lease window.
+  const payments = u.payments || {};
+  for (const ym of candidates) {
+    const p = payments[ym];
+    if (p && p.status === 'paid') continue;  // already paid → skip
+    if (p && p.status === 'free') continue;   // waived → skip
+    // В пределах lease window?
+    if (leaseStart) {
+      const ymDate = new Date(+ym.slice(0, 4), +ym.slice(5, 7) - 1, 1);
+      const leaseMonthStart = new Date(leaseStart.getFullYear(), leaseStart.getMonth(), 1);
+      if (ymDate < leaseMonthStart) continue;
+    }
+    if (leaseEnd) {
+      const ymDate = new Date(+ym.slice(0, 4), +ym.slice(5, 7) - 1, 1);
+      const leaseMonthEnd = new Date(leaseEnd.getFullYear(), leaseEnd.getMonth() + 1, 0); // last day of leaseEnd month
+      if (ymDate > leaseMonthEnd) continue;
+    }
+    return ym;
+  }
+  return null;
+}
+
+// Legacy wrapper: если кто-то вызывает старую сигнатуру с (matchResult, txn).
 function _isAutoApplyEligible(matchResult, txn) {
-  if (!matchResult) return false;
-  if (matchResult.matchConfidence !== 'high') return false;
-  if (matchResult.matchPoints < 90) return false;
-  // Variance gate — Strict mode требует EXACT amount match (±$1 cents tolerance
-  // допускается, но breakdown должен содержать 'unpaidInvoiceExact', не 'Close').
-  const hasExact = (matchResult.matchBreakdown || []).some(b => b.label === 'unpaidInvoiceExact');
-  if (!hasExact) return false;
-  // Ambiguity gate — penalty был бы −30; uniqueBonus +20 — оба видимы.
-  const ambiguous = (matchResult.matchBreakdown || []).some(b => b.label === 'ambiguityPenalty');
-  if (ambiguous) return false;
-  // Posted only — never auto-apply pending (банк может откатить).
-  if ((txn.status || '').toLowerCase() !== 'posted') return false;
-  // Credit only (amount > 0).
-  if (+txn.amount <= 0) return false;
-  return true;
+  // Не используется новой схемой — оставлено для совместимости/тестов.
+  // Возвращает false чтобы случайные вызовы не auto-apply'или.
+  return false;
 }
 
 // Описание → метод платежа (server-side mirror of _mpmGuessMethodFromDesc).
@@ -5627,11 +5737,14 @@ function _guessMethodFromDescServer(desc) {
 // _isAutoApplyEligible, и атомарно применяет к u.payments + помечает
 // matchState='confirmed' + audit.
 async function _autoApplyAfterPoll(fcAccountId) {
-  // 1. Read 'suggested' transactions for this account.
+  // 1. Read all unmatched + suggested transactions for this account.
+  // (Matcher threshold 60 is too strict for `Customer Deposit` style
+  // descriptions; we apply our own simpler «exact amount ±$1 + single
+  // candidate» rule directly.)
   const col = db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`);
   const snap = await col
     .where('accountId', '==', fcAccountId)
-    .where('matchState', '==', 'suggested')
+    .where('matchState', 'in', ['unmatched', 'suggested'])
     .get();
   if (snap.empty) return { applied: 0, skipped: 0, candidates: 0 };
 
@@ -5639,30 +5752,28 @@ async function _autoApplyAfterPoll(fcAccountId) {
   const state = await readWorkspaceState();
 
   // Global kill-switch (Tony может отключить через Settings).
-  // Default: enabled. Explicit `false` → bail.
   if (state?.settings?.autoApplyEnabled === false) {
     return { applied: 0, skipped: snap.size, candidates: snap.size, disabledGlobally: true };
   }
 
-  // 3. Build apply list — re-match + filter.
+  // 3. Build apply list using direct candidate-finder.
   const applies = [];
   let skipped = 0;
   for (const d of snap.docs) {
     const txn = { id: d.id, ...d.data() };
-    const m = _matchTransaction(state, txn);
-    if (!_isAutoApplyEligible(m, txn)) { skipped++; continue; }
-    // Per-unit opt-out (если у unit есть autoApplyDisabled=true).
-    const b = (state.buildings || []).find(x => x.id === m.matchedBuildingId);
-    const f = b?.floors?.find(x => x.id === m.matchedFloorId);
-    const u = f?.units?.find(x => x.id === m.matchedUnitId);
-    if (!u) { skipped++; continue; }
-    if (u.autoApplyDisabled === true) { skipped++; continue; }
-    // Idempotency: skip if already paid.
-    const existing = u.payments?.[m.matchedYm];
+    const check = _findAutoApplyCandidate(state, txn);
+    if (!check.eligible) { skipped++; continue; }
+    const c = check.candidate;
+    // Idempotency: skip if already paid (re-checked inside transaction too).
+    const existing = c.u.payments?.[c.ym];
     if (existing && (existing.status === 'paid' || existing.bankTxnId === txn.id)) {
       skipped++; continue;
     }
-    applies.push({ docRef: d.ref, txn, match: m });
+    applies.push({
+      docRef: d.ref,
+      txn,
+      candidate: c,
+    });
   }
 
   if (!applies.length) {
@@ -5670,15 +5781,15 @@ async function _autoApplyAfterPoll(fcAccountId) {
   }
 
   // 4. Atomic state mutation — write u.payments[ym] для всех applies.
-  // mutateWorkspaceState уже использует transaction, так что race-safe.
   await mutateWorkspaceState((s) => {
-    for (const { txn, match } of applies) {
-      const b = (s.buildings || []).find(x => x.id === match.matchedBuildingId);
-      const f = b?.floors?.find(x => x.id === match.matchedFloorId);
-      const u = f?.units?.find(x => x.id === match.matchedUnitId);
+    for (const { txn, candidate } of applies) {
+      // Re-resolve по id (ссылки могли инвалидироваться после read).
+      const b = (s.buildings || []).find(x => x.id === candidate.b.id);
+      const f = b?.floors?.find(x => x.id === candidate.f.id);
+      const u = f?.units?.find(x => x.id === candidate.u.id);
       if (!u) continue;
-      // Re-check idempotency in transaction (state may have changed since read).
-      const existing = u.payments?.[match.matchedYm];
+      // Re-check idempotency in transaction.
+      const existing = u.payments?.[candidate.ym];
       if (existing && (existing.status === 'paid' || existing.bankTxnId === txn.id)) {
         continue;
       }
@@ -5687,7 +5798,7 @@ async function _autoApplyAfterPoll(fcAccountId) {
       const transactedDate = txn.transactedAt
         ? new Date(txn.transactedAt * 1000).toISOString().slice(0, 10)
         : new Date().toISOString().slice(0, 10);
-      u.payments[match.matchedYm] = {
+      u.payments[candidate.ym] = {
         status: 'paid',
         amount: amountDollars,
         paidVia: _guessMethodFromDescServer(txn.description),
@@ -5701,8 +5812,8 @@ async function _autoApplyAfterPoll(fcAccountId) {
         // Маркеры auto-apply — клиент покажет 🤖 chip + undo button.
         autoApplied: true,
         autoAppliedAt: new Date().toISOString(),
-        autoMatchScore: match.matchPoints,
-        autoMatchConfidence: match.matchConfidence,
+        autoMatchDeltaCents: candidate.delta,
+        autoMatchRentCents: candidate.rentCents,
       };
     }
     // Weekly counter для UI badge «Auto-applied N this week».
@@ -5710,25 +5821,24 @@ async function _autoApplyAfterPoll(fcAccountId) {
     s.autoApplyStats.totalApplied = (s.autoApplyStats.totalApplied || 0) + applies.length;
     s.autoApplyStats.last7d = s.autoApplyStats.last7d || [];
     s.autoApplyStats.last7d.push({ at: new Date().toISOString(), count: applies.length });
-    // Prune entries older than 7 days.
     const cutoff = Date.now() - 7 * 86400 * 1000;
     s.autoApplyStats.last7d = s.autoApplyStats.last7d.filter(e => new Date(e.at).getTime() > cutoff);
   });
 
-  // 5. Batch: mark bank txns confirmed + audit log (one entry per apply).
+  // 5. Batch: mark bank txns confirmed + audit log.
   const auditCol = db.collection(`workspaces/${WORKSPACE_ID}/audit`);
   const BATCH_SIZE = 100;
   for (let i = 0; i < applies.length; i += BATCH_SIZE) {
     const batch = db.batch();
     const slice = applies.slice(i, i + BATCH_SIZE);
-    for (const { docRef, txn, match } of slice) {
+    for (const { docRef, txn, candidate } of slice) {
       batch.set(docRef, {
         matchState: 'confirmed',
         confirmedAt: admin.firestore.FieldValue.serverTimestamp(),
         confirmedBy: 'auto-match',
         autoApplied: true,
-        autoApplyTargetUnitId: match.matchedUnitId,
-        autoApplyTargetYm: match.matchedYm,
+        autoApplyTargetUnitId: candidate.u.id,
+        autoApplyTargetYm: candidate.ym,
       }, { merge: true });
       batch.set(auditCol.doc(), {
         action: 'payment.auto-applied',
@@ -5738,13 +5848,12 @@ async function _autoApplyAfterPoll(fcAccountId) {
         bankAmount: txn.amount,
         bankDescription: (txn.description || '').slice(0, 200),
         bankAccountId: txn.accountId || null,
-        unitId: match.matchedUnitId,
-        buildingId: match.matchedBuildingId,
-        floorId: match.matchedFloorId,
-        ym: match.matchedYm,
-        matchScore: match.matchPoints,
-        matchConfidence: match.matchConfidence,
-        matchBreakdown: match.matchBreakdown || [],
+        unitId: candidate.u.id,
+        buildingId: candidate.b.id,
+        floorId: candidate.f.id,
+        ym: candidate.ym,
+        deltaCents: candidate.delta,
+        rentCents: candidate.rentCents,
       });
     }
     await batch.commit();
