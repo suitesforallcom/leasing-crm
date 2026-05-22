@@ -5718,6 +5718,119 @@ exports.listBankTransactionsForUnit = onCall(
   }
 );
 
+// =========================================================================
+// Cleanup orphan bank transactions (Tony 2026-05-21 phantom incident)
+// =========================================================================
+// КРИТИЧЕСКАЯ ФИНАНСОВАЯ КОМАНДА. После reconnect'а банка (Stripe
+// Financial Connections выдает новый fc_account_id) backfill пуллит
+// историю депозитов с НОВЫМИ Stripe transaction IDs, но docs от
+// disconnected account остаются в `bankTransactions` — server-side
+// dedupe только по `t.id` не ловит их. Operator видит DOUBLE rows
+// одного реального депозита (Tony incident 2026-05-21: 4/20 + 4/21
+// для одного $13,318.33).
+//
+// Эта функция удаляет ВСЕ docs из `bankTransactions` чьи accountId
+// нет в state.bankConnections.active. Каждое удаление пишет audit
+// entry в workspaces/{ws}/audit с полным snapshot'ом удалённого doc'а
+// чтобы можно было recover'ить если что.
+//
+// Inputs:
+//   dryRun: bool (default true) — если true, ничего не удаляет, только
+//     возвращает список того что бы удалилось.
+// Output:
+//   { activeAccountIds, orphanAccountIds, deleted, kept, sampleOrphan }
+// =========================================================================
+exports.cleanupOrphanBankTransactions = onCall(
+  {timeoutSeconds: 300, memory: '512MiB'},
+  async (req) => {
+    const {role, email} = await requireEditor(req.auth);
+    // Только root-admin может делать financial cleanup.
+    if (!await _isRootAdmin(email)) {
+      throw new HttpsError('permission-denied', 'Root admin only — financial cleanup is destructive');
+    }
+    const dryRun = req.data?.dryRun !== false;  // default true (safety)
+
+    // 1. Resolve active accountIds from state.
+    const state = await readWorkspaceState();
+    const activeAccountIds = new Set(
+      (state.bankConnections || [])
+        .filter(c => c.status === 'active' && c.stripeFcAccountId)
+        .map(c => c.stripeFcAccountId)
+    );
+
+    // 2. Scan all bankTransactions.
+    const col = db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`);
+    const snap = await col.get();
+    const orphanDocs = [];
+    const orphanAccountIds = new Set();
+    let kept = 0;
+    snap.forEach(d => {
+      const t = d.data();
+      const acct = t.accountId || null;
+      if (!acct || activeAccountIds.has(acct)) {
+        kept++;
+      } else {
+        orphanDocs.push({ docId: d.id, ...t });
+        orphanAccountIds.add(acct);
+      }
+    });
+
+    if (dryRun) {
+      return {
+        dryRun: true,
+        activeAccountIds: Array.from(activeAccountIds),
+        orphanAccountIds: Array.from(orphanAccountIds),
+        wouldDelete: orphanDocs.length,
+        wouldKeep: kept,
+        sampleOrphan: orphanDocs.slice(0, 3).map(t => ({
+          docId: t.docId, accountId: t.accountId, amount: t.amount,
+          description: (t.description || '').slice(0, 60),
+          transactedAt: t.transactedAt,
+        })),
+      };
+    }
+
+    // 3. Actually delete + audit. Batched by 100 (Firestore cap 500).
+    const auditCol = db.collection(`workspaces/${WORKSPACE_ID}/audit`);
+    let deleted = 0;
+    const BATCH_SIZE = 100;
+    for (let i = 0; i < orphanDocs.length; i += BATCH_SIZE) {
+      const batch = db.batch();
+      const slice = orphanDocs.slice(i, i + BATCH_SIZE);
+      for (const t of slice) {
+        batch.delete(col.doc(t.docId));
+        batch.set(auditCol.doc(), {
+          action: 'bank.txn.orphan-cleanup',
+          ts: admin.firestore.FieldValue.serverTimestamp(),
+          actor: email,
+          actorRole: role,
+          deletedDocId: t.docId,
+          deletedDoc: {
+            accountId: t.accountId || null,
+            amount: t.amount || null,
+            description: (t.description || '').slice(0, 200),
+            transactedAt: t.transactedAt || null,
+            status: t.status || null,
+            matchState: t.matchState || null,
+            seenAt: t.seenAt || null,
+          },
+          reason: 'accountId not in state.bankConnections.active (orphan after Stripe FC reconnect)',
+        });
+      }
+      await batch.commit();
+      deleted += slice.length;
+    }
+
+    return {
+      dryRun: false,
+      activeAccountIds: Array.from(activeAccountIds),
+      orphanAccountIds: Array.from(orphanAccountIds),
+      deleted,
+      kept,
+    };
+  }
+);
+
 // Operator-supplied bank statements (CSV / XLSX / OFX / QFX / QBO).
 // Used when Stripe Financial Connections + the bank only expose ~90 days
 // of history but the operator needs older months (Capital One typically
