@@ -5749,6 +5749,21 @@ exports.cleanupOrphanBankTransactions = onCall(
       throw new HttpsError('permission-denied', 'Root admin only — financial cleanup is destructive');
     }
     const dryRun = req.data?.dryRun !== false;  // default true (safety)
+    // Targeting:
+    //   targetAccountIds: string[] — если задан, удаляем ТОЛЬКО эти
+    //     accountId'ы (точный whitelist). Это самый безопасный режим —
+    //     оператор явно указывает что нукать. Используется в обычном
+    //     workflow.
+    //   targetPrefix: string — fallback (например 'fca_'), удаляет все
+    //     accountId'ы не в active которые начинаются с этого префикса.
+    //     ВАЖНО: 'import:*' (CSV) НИКОГДА не удаляются автоматически —
+    //     это операторская data, не Stripe FC orphans.
+    const targetAccountIds = Array.isArray(req.data?.targetAccountIds)
+      ? req.data.targetAccountIds.filter(Boolean)
+      : null;
+    const targetPrefix = typeof req.data?.targetPrefix === 'string'
+      ? req.data.targetPrefix
+      : 'fca_';  // безопасный default — только Stripe FC
 
     // 1. Resolve active accountIds from state.
     const state = await readWorkspaceState();
@@ -5769,10 +5784,18 @@ exports.cleanupOrphanBankTransactions = onCall(
       const acct = t.accountId || null;
       if (!acct || activeAccountIds.has(acct)) {
         kept++;
-      } else {
-        orphanDocs.push({ docId: d.id, ...t });
-        orphanAccountIds.add(acct);
+        return;
       }
+      // Безопасность: либо whitelist режим, либо prefix-режим.
+      // Whitelist выигрывает если задан (operator явно указал что нукать).
+      const matchesWhitelist = targetAccountIds && targetAccountIds.includes(acct);
+      const matchesPrefix = !targetAccountIds && targetPrefix && acct.startsWith(targetPrefix);
+      if (!matchesWhitelist && !matchesPrefix) {
+        kept++;
+        return;
+      }
+      orphanDocs.push({ docId: d.id, ...t });
+      orphanAccountIds.add(acct);
     });
 
     if (dryRun) {
