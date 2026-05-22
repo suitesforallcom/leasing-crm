@@ -258,7 +258,7 @@ chance to catch an issue before they apply.
 **The system may apply payments to `u.payments[ym]` automatically after a
 bank-feed poll, but ONLY when the match is overwhelmingly unambiguous.**
 
-### Auto-apply criteria (Strict mode — Tony's default 2026-05-21)
+### Auto-apply criteria (Strict mode — Tony's default 2026-05-22)
 A bank transaction may be auto-applied to `u.payments[ym]` if and only if:
 
 1. `txn.status === 'posted'` (never pending — bank may reverse pending)
@@ -268,31 +268,46 @@ A bank transaction may be auto-applied to `u.payments[ym]` if and only if:
    the bank amount (composite-fingerprint identity)
 5. That unit has at least one **unpaid month** within the active
    lease window
-6. **The matched ym ≥ current server month** (future-only gate — past
-   periods require operator approval; mirrors Yardi «Pending Cash
-   Application» queue, AppFolio «back-period matches» block, Buildium
-   «Apply to past period?» modal, MRI 4-tier confidence + T+0..T+30
-   window, Stripe ≤ 30d auto-match, QuickBooks period locks)
-7. The unit does NOT have `autoApplyDisabled === true`
-8. The global `state.settings.autoApplyEnabled` is not explicitly `false`
+6. **The matched ym EQUALS current server month** (current-month-only
+   gate — past + future both require operator approval; mirrors Yardi
+   «Pending Cash Application» queue, AppFolio prepayment-review,
+   Buildium «Apply to past period?» modal, MRI T+0 only auto-apply,
+   Stripe ≤ 30d auto-match, QuickBooks period locks)
+7. **Payment-method consistency:** if the unit has ≥60% of recent
+   payments via one method family (Stripe vs bank), the incoming
+   bank-txn must match that family. A bank deposit cannot auto-apply
+   to a Stripe-history tenant (and vice versa). Caught the
+   Lex-Wagner-style case where a generic «Customer Deposit» could
+   match by amount alone but belonged to a different tenant.
+8. The unit does NOT have `autoApplyDisabled === true`
+9. The global `state.settings.autoApplyEnabled` is not explicitly `false`
 
 If ANY of these fail → fall back to operator manual review
 (`matchState='suggested'` → operator clicks Apply in MPM).
 
-### Past-month bucketing (critical safety)
-When all criteria above pass EXCEPT criterion #6 (matched ym is in
-the past), the candidate is NOT silently skipped. Instead the bank
-txn doc gets:
+### Deferred-suggestion bucketing (critical safety)
+When all criteria above pass EXCEPT one of the safety gates (#6 ym
+window or #7 method consistency), the candidate is NOT silently
+skipped. Instead the bank txn doc gets routed to one of three
+deferred buckets, each with a distinctive pill in the MPM Payment
+Suggestions card:
+
+| Reason | matchSource | Pill | Color |
+|---|---|---|---|
+| ym < current month | `auto-apply-past-month-deferred` | 🔒 Past month — approve manually | Orange |
+| ym > current month | `auto-apply-future-month-deferred` | 📅 Future month — approve manually | Purple/Indigo |
+| Method family mismatch | `auto-apply-method-mismatch-deferred` | 🔀 Method mismatch — usually X | Pink/Fuchsia |
+
+All deferred docs carry:
 - `matchState: 'suggested'`
-- `matchSource: 'auto-apply-past-month-deferred'`
 - `matchedUnitId`, `matchedBuildingId`, `matchedFloorId`, `matchedYm`
   (so MPM can route the operator's confirmation directly)
 - `suggestedRent`, `autoApplyEligibleAmount: true`
-- `autoApplyBlockedReason: 'past-month-needs-manual'`
+- `autoApplyBlockedReason: '<reason>'`
+- For method-mismatch: `primaryMethod`, `incomingMethod`
 
-The MPM Payment Suggestions card renders these with a distinctive
-🔒 orange «Past month — approve manually» pill instead of the default
-★ suggested badge. One click → MPM opens with the bank txn pre-linked.
+One click on «✓ Use this» → MPM opens with the bank txn pre-linked
+for operator approval.
 
 ### Source-distinguished icons (Yardi/AppFolio pattern)
 Every paid cell in the payments matrix shows ONE small emoji in the

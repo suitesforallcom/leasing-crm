@@ -1337,6 +1337,43 @@ to the replacement entry) if a fix is intentionally rewritten.
       apply event is marked undone ONLY if undo's ts > apply's ts.
       Without this, apply→undo→re-apply cycles mark the latest apply
       incorrectly undone.
+- **2026-05-22 evening — current-month-only + method-consistency + verbose tooltip.**
+  Lex Wagner Suite 433 incident: cron auto-applied a $1,500 ACH bank
+  deposit to his June 2026 rent, but Lex always pays via Stripe / credit
+  card. The deposit belonged to another tenant. Tony's three new rules:
+  15. **Current-month-only (no future prepayment auto-apply).** When
+      `ym > currentYm`, `_findAutoApplyCandidate` returns
+      `{eligible:false, reason:'future-month-needs-manual', candidate}`.
+      Mirrors AppFolio's «advance payment review» + Buildium's «Apply
+      to past period?» modal (extended to prepayments). Future-month
+      candidates go to deferred bucket with `matchSource='auto-apply-
+      future-month-deferred'` so the MPM Payment Suggestions card
+      shows «📅 Future month — approve manually» purple pill.
+  16. **Payment-method consistency.** `_unitPrimaryPaymentMethod(u)`
+      analyzes last 12 paid records (excluding backfill + auto-applied
+      to avoid feedback loop). If ≥60% share a method family
+      (`stripe` vs `bank`), that's the primary. When the incoming
+      bank-txn's family differs from the unit's primary, candidate
+      goes to `matchSource='auto-apply-method-mismatch-deferred'`
+      with «🔀 Method mismatch — usually <X>» pink pill. Catches the
+      Lex-Wagner-style case where a $1,500 bank deposit could match
+      multiple tenants by amount but only one of them actually pays
+      via ACH.
+  17. **Verbose tooltip method labels.** Previously the tooltip on a
+      paid cell showed `Method: Paid` (fallback when paidVia was
+      unrecognized), which was useless. Now: full dictionary with
+      emoji prefix (🧾 Check, 🏦 Bank transfer / ACH, 🏦 Wire transfer,
+      💵 Cash, 💳 Stripe / Credit card, 💳 Stripe (linked), 💳 Stripe
+      (advance / multi-month), 📜 Backfilled (migration), ❔ Other,
+      ❔ Method not recorded). Auto-applied entries get
+      `🤖 Auto-applied · ` prefix so operator immediately knows the
+      source. Catches data-quality issues — operator can see at a
+      glance which payments lack a recorded method.
+  18. **State badge moved to amount-row.** Previously the deferred
+      reason badges (🔒 / 📅 / 🔀) rendered after description in
+      `mpm-bf-row-meta`, but ellipsis truncation hid them. Moved to
+      `mpm-bf-row-amt` (top row) next to the amount. Always visible
+      regardless of description length.
 
 ---
 
