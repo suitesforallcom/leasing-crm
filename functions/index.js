@@ -5664,10 +5664,37 @@ function _findAutoApplyCandidate(state, txn) {
   if (!ym) {
     return { eligible: false, reason: 'no-unpaid-month' };
   }
+  // FUTURE-ONLY GATE (Tony 2026-05-21 — mirrors Yardi/AppFolio/Buildium):
+  // Auto-apply ТОЛЬКО для current + future months. Past month matches
+  // возвращаются как 'suggested' с полным контекстом, чтобы оператор
+  // явно одобрил вручную через MPM. Это критическое финансовое правило:
+  //   - past-period auto-apply закрывает старый долг без проверки,
+  //     может скрыть реальные финансовые проблемы (chargeback, dispute,
+  //     неправильный билинг)
+  //   - в indust-standard PMS системах past-period всегда требует
+  //     manager approval (Yardi: "Pending Cash Application" queue;
+  //     AppFolio: blocked unless globally enabled; Buildium: explicit
+  //     "Apply to past period?" modal; QuickBooks: period lock).
+  const currentYm = _serverCurrentYm();
+  if (ym < currentYm) {
+    return {
+      eligible: false,
+      reason: 'past-month-needs-manual',
+      candidate: { u: cand.u, b: cand.b, f: cand.f, ym, rentCents: cand.rentCents, delta: cand.delta },
+    };
+  }
   return {
     eligible: true,
     candidate: { u: cand.u, b: cand.b, f: cand.f, ym, rentCents: cand.rentCents, delta: cand.delta },
   };
+}
+
+// Текущий месяц в формате YYYY-MM (server UTC). Используется как нижняя
+// граница для auto-apply: всё что < currentYm = past и требует ручного
+// одобрения.
+function _serverCurrentYm() {
+  const d = new Date();
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
 }
 
 // Find oldest unpaid month for this unit, preferring months around the
@@ -5756,12 +5783,20 @@ async function _autoApplyAfterPoll(fcAccountId) {
     return { applied: 0, skipped: snap.size, candidates: snap.size, disabledGlobally: true };
   }
 
-  // 3. Build apply list using direct candidate-finder.
+  // 3. Build apply list + past-month suggestion list.
   const applies = [];
+  const pastMonthSuggestions = [];  // not-applied, but flagged for operator review
   let skipped = 0;
   for (const d of snap.docs) {
     const txn = { id: d.id, ...d.data() };
     const check = _findAutoApplyCandidate(state, txn);
+    // Past-month случай: ОДОБРЕНИЕ оператора нужно — пишем 'suggested'
+    // с полным контекстом, чтобы MPM Payment Suggestions card показала
+    // его с лейблом «🔒 Past month — confirm manually».
+    if (!check.eligible && check.reason === 'past-month-needs-manual' && check.candidate) {
+      pastMonthSuggestions.push({ docRef: d.ref, txn, candidate: check.candidate });
+      continue;
+    }
     if (!check.eligible) { skipped++; continue; }
     const c = check.candidate;
     // Idempotency: skip if already paid (re-checked inside transaction too).
@@ -5776,8 +5811,40 @@ async function _autoApplyAfterPoll(fcAccountId) {
     });
   }
 
+  // 3a. Past-month suggestions: write matchState='suggested' with target
+  // metadata so the operator can quickly confirm via MPM. Никаких u.payments
+  // мутаций здесь — только метаданные на bank-txn doc.
+  if (pastMonthSuggestions.length) {
+    const SUGGEST_BATCH = 100;
+    for (let i = 0; i < pastMonthSuggestions.length; i += SUGGEST_BATCH) {
+      const batch = db.batch();
+      const slice = pastMonthSuggestions.slice(i, i + SUGGEST_BATCH);
+      for (const { docRef, candidate } of slice) {
+        batch.set(docRef, {
+          matchState: 'suggested',
+          matchedTenantId: candidate.u.id,
+          matchedUnitId: candidate.u.id,
+          matchedBuildingId: candidate.b.id,
+          matchedFloorId: candidate.f.id,
+          matchedYm: candidate.ym,
+          matchSource: 'auto-apply-past-month-deferred',
+          suggestedRent: candidate.rentCents / 100,
+          autoApplyEligibleAmount: true,
+          autoApplyBlockedReason: 'past-month-needs-manual',
+        }, { merge: true });
+      }
+      await batch.commit();
+    }
+    logger.info(`[auto-apply] fcAccountId=${fcAccountId}: ${pastMonthSuggestions.length} past-month suggestions written for manual review`);
+  }
+
   if (!applies.length) {
-    return { applied: 0, skipped, candidates: snap.size };
+    return {
+      applied: 0,
+      skipped,
+      candidates: snap.size,
+      pastMonthSuggested: pastMonthSuggestions.length,
+    };
   }
 
   // 4. Atomic state mutation — write u.payments[ym] для всех applies.
@@ -5859,9 +5926,69 @@ async function _autoApplyAfterPoll(fcAccountId) {
     await batch.commit();
   }
 
-  logger.info(`[auto-apply] fcAccountId=${fcAccountId}: applied=${applies.length} skipped=${skipped} candidates=${snap.size}`);
-  return { applied: applies.length, skipped, candidates: snap.size };
+  logger.info(`[auto-apply] fcAccountId=${fcAccountId}: applied=${applies.length} skipped=${skipped} pastMonthSuggested=${pastMonthSuggestions.length} candidates=${snap.size}`);
+  return {
+    applied: applies.length,
+    skipped,
+    pastMonthSuggested: pastMonthSuggestions.length,
+    candidates: snap.size,
+  };
 }
+
+// Read auto-applied history from audit log for UI panel.
+// Returns events sorted newest-first, with full context for each.
+exports.listAutoAppliedHistory = onCall(
+  {timeoutSeconds: 30, memory: '256MiB'},
+  async (req) => {
+    await requireEditor(req.auth);
+    const limit = Math.min(+req.data?.limit || 50, 500);
+    const includeUndone = req.data?.includeUndone !== false; // default true
+    const auditCol = db.collection(`workspaces/${WORKSPACE_ID}/audit`);
+    // Two queries: applies + undos. Join client-side.
+    const [appliesSnap, undosSnap] = await Promise.all([
+      auditCol.where('action', '==', 'payment.auto-applied')
+              .orderBy('ts', 'desc').limit(limit).get(),
+      includeUndone
+        ? auditCol.where('action', '==', 'payment.auto-applied.undo')
+                  .orderBy('ts', 'desc').limit(limit).get()
+        : Promise.resolve({ docs: [] }),
+    ]);
+    // Map undo events by bankTxnId for quick lookup.
+    const undoneBy = {};
+    undosSnap.docs.forEach(d => {
+      const u = d.data();
+      if (u.bankTxnId) {
+        undoneBy[u.bankTxnId] = {
+          undoneAt: u.ts && u.ts.toDate ? u.ts.toDate().toISOString() : null,
+          undoneBy: u.actor || null,
+        };
+      }
+    });
+    const items = appliesSnap.docs.map(d => {
+      const e = d.data();
+      const ts = e.ts && e.ts.toDate ? e.ts.toDate().toISOString() : null;
+      const undo = e.bankTxnId ? undoneBy[e.bankTxnId] : null;
+      return {
+        id: d.id,
+        ts,
+        unitId: e.unitId,
+        buildingId: e.buildingId,
+        floorId: e.floorId,
+        ym: e.ym,
+        bankTxnId: e.bankTxnId,
+        bankAmount: e.bankAmount,
+        bankDescription: e.bankDescription,
+        bankAccountId: e.bankAccountId,
+        deltaCents: e.deltaCents,
+        rentCents: e.rentCents,
+        undone: !!undo,
+        undoneAt: undo?.undoneAt || null,
+        undoneBy: undo?.undoneBy || null,
+      };
+    });
+    return { items, count: items.length, totalUndone: Object.keys(undoneBy).length };
+  }
+);
 
 // Operator manual undo — callable из клиента «↶ Undo auto-apply».
 // Откатывает u.payments[ym] → удаляет запись, ставит bank txn обратно
