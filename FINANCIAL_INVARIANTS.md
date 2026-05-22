@@ -253,6 +253,96 @@ chance to catch an issue before they apply.
 
 ---
 
+## XI. Automated reconciliation — high-trust gates
+
+**The system may apply payments to `u.payments[ym]` automatically after a
+bank-feed poll, but ONLY when the match is overwhelmingly unambiguous.**
+
+### Auto-apply criteria (Strict mode — Tony's default 2026-05-21)
+A bank transaction may be auto-applied to `u.payments[ym]` if and only if:
+
+1. `txn.status === 'posted'` (never pending — bank may reverse pending)
+2. `txn.amount > 0` (credits only, never debits)
+3. The transaction is not already linked to another payment
+4. **Exactly one** unit in the workspace has rent within ±$1.00 of
+   the bank amount (composite-fingerprint identity)
+5. That unit has at least one **unpaid month** within the active
+   lease window
+6. The unit does NOT have `autoApplyDisabled === true`
+7. The global `state.settings.autoApplyEnabled` is not explicitly `false`
+
+If ANY of these fail → fall back to operator manual review
+(`matchState='suggested'` → operator clicks Apply in MPM).
+
+### Auto-apply writes (atomic, transactional)
+```
+u.payments[ym] = {
+  status: 'paid',
+  amount: <bank.amount / 100>,
+  paidVia: <_guessMethodFromDescServer(desc)>,    // 'ach' / 'check' / etc.
+  paidReference: <bank.description, 80 chars>,
+  paidAt: <bank.transactedAt as YYYY-MM-DD>,
+  recordedBy: 'auto-match',
+  recordedAt: <ISO timestamp>,
+  bankTxnId: <bank.id>,
+  bankPaidAt: <bank.transactedAt as YYYY-MM-DD>,
+  bankAccountId: <bank.accountId>,
+  autoApplied: true,                              // ← REVERSIBILITY MARKER
+  autoAppliedAt: <ISO timestamp>,
+  autoMatchDeltaCents: <|bank.amount - rent.cents|>,
+  autoMatchRentCents: <expected rent in cents>,
+}
+```
+
+### Reversibility (mandatory)
+- Every auto-applied payment carries `autoApplied: true`.
+- The operator MUST be able to undo via a one-click button in the MPM
+  modal (`_mpmUndoAutoApplied` → `undoAutoAppliedPayment` callable CF).
+- Undo writes audit `payment.auto-applied.undo` and returns the bank
+  txn to `matchState='suggested'` so the operator can manually re-link.
+- An auto-applied payment that the operator subsequently edits manually
+  (changes amount, method, reference) MUST clear the `autoApplied` flag
+  — once human-touched, it is operator-authoritative, not auto-attributed.
+
+### Audit invariant (cannot be skipped)
+Every auto-apply writes to `workspaces/{ws}/audit`:
+- `action: 'payment.auto-applied'`
+- `actor: 'auto-match'`
+- `bankTxnId, bankAmount, bankDescription, bankAccountId`
+- `unitId, buildingId, floorId, ym`
+- `deltaCents, rentCents`
+
+Every undo writes:
+- `action: 'payment.auto-applied.undo'`
+- `actor: <operator email>, actorRole: <role>`
+- `bankTxnId, unitId, ym`
+
+### What auto-apply NEVER does
+- **Never** raise or change `u.contractRent`. Rent changes are the
+  variance dialog's job (FIXES_LOG #29).
+- **Never** create one-time fees, refunds, or credit-balance entries.
+  Those are all explicitly operator-confirmed.
+- **Never** auto-apply CSV-imported transactions (no
+  `import:*` accountIds — operator already chose what to import).
+- **Never** auto-apply if any of `u.payments[ym]` exists with status
+  already `'paid'`, `'free'`, or has `bankTxnId === txn.id` (idempotency).
+- **Never** auto-apply for an archived unit (`u.deletedAt` set).
+- **Never** auto-apply for a satellite suite (`u.groupId && u.groupRole
+  !== 'primary'`) — only the head of a multi-suite lease can be the
+  target.
+
+### Why we use direct candidate-finder, not the matcher
+The existing `_matchTransaction` scoring system gates at 60 points. For
+bank descriptions without a tenant name (e.g. `Customer Deposit`,
+`Mobile Deposit`, `ACH Credit`), even an exact-amount, single-candidate
+match scores ~45 points and never reaches `matchState='suggested'`. So
+auto-apply has its own direct check (`_findAutoApplyCandidate`) that
+relies on three facts only: posted, credit, single rent-match. The
+matcher's score remains useful for the operator-facing suggestions
+panel but is not authoritative for auto-apply decisions.
+
+---
+
 ## Reference: the 2026-05-21 phantom incident
 
 - See [FIXES_LOG.md](FIXES_LOG.md) Entry 30 for the full timeline.

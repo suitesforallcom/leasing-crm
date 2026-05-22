@@ -1199,6 +1199,117 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 31. Auto-apply matched bank transactions to payments (2026-05-21)
+
+- **Status:** active
+- **Branch / commit:** `claude/modest-curie-8a50ad` @ commits `1ea15e6`
+  (initial CF + UI) + `790e000` (direct candidate-finder fix)
+- **Area:** financial automation / bank reconciliation / payments
+  ingestion
+- **Files:**
+  - `functions/index.js` — `_findAutoApplyCandidate(state, txn)`,
+    `_findOldestUnpaidYm(u, txn)`, `_autoApplyAfterPoll(fcAccountId)`,
+    new callable `undoAutoAppliedPayment`
+  - `floor-map-editor.html` — payment cell `🤖` chip CSS
+    (`.ph-cell.auto-applied` + `.ph-cell-auto-dot`), `cells.push`
+    propagation of `autoApplied` flag, MPM header «Auto-applied · Undo»
+    pill in `_mpmRenderLinkedPill`, client wrapper `_mpmUndoAutoApplied`
+- **Functions:**
+  - Server: `_findAutoApplyCandidate(state, txn) → {eligible, candidate,
+    reason}` — direct «exact rent ±$1 + single candidate + has unpaid
+    month» check (bypasses matcher's 60-point threshold which is too
+    strict for `Customer Deposit`-style descriptions).
+  - Server: `_autoApplyAfterPoll(fcAccountId)` — called from
+    `pollBankTransactions` after each account's pull. Scans
+    `matchState in ['unmatched','suggested']`, applies eligible.
+    Returns `{applied, skipped, candidates}`.
+  - Server: `undoAutoAppliedPayment` callable — operator reverses an
+    auto-apply via the MPM «↶ Undo» button.
+  - Client: `_mpmUndoAutoApplied()` — calls undo CF, closes modal,
+    re-renders unit detail.
+- **Bug it fixed:** Tony asked «как мне теперь сделать чтобы следующий
+  транзакция потянулась автоматически и применялось автоматически. Без
+  моего участия». Before this entry, every bank-feed match required
+  the operator to open the Manual Payment modal, find the suggestion,
+  and click Apply. For a portfolio with dozens of monthly deposits,
+  that was 30+ clicks/month of routine reconciliation.
+- **Invariant — DO NOT BREAK:**
+  1. **Strict mode by default** — Tony's choice (2026-05-21). Only
+     auto-apply when bank amount is within ±$1.00 of expected rent
+     AND there is **exactly one** candidate unit at that amount. Any
+     ambiguity (2+ units with the same rent) → skip to manual review,
+     never guess.
+  2. **Posted only.** `txn.status !== 'posted'` → skip. Pending bank
+     transactions can be reversed by the bank; auto-applying them
+     creates phantom payments.
+  3. **Credits only.** `txn.amount <= 0` → skip. Debits / refunds /
+     chargebacks need operator review.
+  4. **Idempotency double-checked.** Inside `mutateWorkspaceState`'s
+     Firestore transaction, re-check `u.payments[ym]?.status === 'paid'
+     || u.payments[ym]?.bankTxnId === txn.id` and skip. Without the
+     second check, a race between two simultaneous polls could double-
+     apply.
+  5. **Per-unit opt-out** via `u.autoApplyDisabled === true`. Some
+     tenants (irregular payment patterns, manual reconciliation only)
+     must be excluded.
+  6. **Global kill-switch** via `state.settings.autoApplyEnabled ===
+     false`. Operator can pause all auto-apply if they suspect a bug.
+  7. **Lease window respected.** `_findOldestUnpaidYm` filters
+     candidate months to those within `u.leaseStart` … `u.until`.
+     Auto-applying for a pre-lease or post-lease month creates a
+     phantom liability.
+  8. **Audit on EVERY apply** — `workspaces/{ws}/audit` entry with
+     action `payment.auto-applied`, full match-decision snapshot
+     (bankTxnId, amount, description, accountId, unitId, ym,
+     deltaCents, rentCents). And **on every undo** — action
+     `payment.auto-applied.undo`. Without the audit trail, an operator
+     cannot answer «why was this month auto-paid» two weeks later.
+  9. **Reversible.** `u.payments[ym].autoApplied === true` is the
+     marker that lets the client render the «↶ Undo» button and the
+     CF accept the undo (rejects with `failed-precondition` otherwise).
+     Once an operator manually edits an auto-applied payment, the flag
+     should NOT carry over — the new state is operator-authoritative.
+ 10. **Auto-apply does NOT raise rent.** When bank amount > rent by
+     ≥ $1, the variance dialog (FIXES_LOG #29) must handle it via
+     operator approval. Auto-apply silently ignores variance > $1.
+     The two systems are complementary: auto-apply for routine on-
+     amount matches; variance dialog for amount mismatches.
+- **Verification:**
+  1. Pull a bank-feed transaction via `pollBankTransactions` — auto-
+     apply runs inline. Return value includes `autoApply: {applied,
+     skipped, candidates}`.
+  2. Reload the app. Open the affected unit's tenant drawer. Open
+     Manual Payment modal for the matched month. Header pill shows
+     «🤖 Auto-applied · ↶ Undo» AND «🔗 Linked: $X · YY/YY/YYYY».
+  3. Click ↶ Undo → confirm → MPM closes → reload → MPM for the same
+     month shows EMPTY form (payment removed) AND bank txn is back to
+     `matchState='suggested'` in the suggestions card.
+  4. Verify audit log: `workspaces/{ws}/audit` has entries with
+     `action='payment.auto-applied'` (apply) and
+     `action='payment.auto-applied.undo'` (revert), both with full
+     context (unitId, ym, bankTxnId, deltaCents, rentCents).
+  5. Edge case — global kill-switch: set
+     `state.settings.autoApplyEnabled = false`, run
+     `pollBankTransactions`, verify `autoApply.disabledGlobally =
+     true` and 0 applied.
+  6. Edge case — ambiguity: two units with identical rent + matching
+     bank deposit → `_findAutoApplyCandidate` returns
+     `{eligible: false, reason: 'ambiguous', candidates: 2}`. Skipped,
+     manual review needed.
+- **Regression test:** none — manual UI verification only. Future:
+  add Playwright spec that fakes a bank txn, runs poll, asserts the
+  unit's June payment is marked auto-applied + chip visible.
+- **Related PR / issue:** none
+- **First production validation:** Tony / Suite 433 (Lex Wagner) /
+  2026-05-22 02:31 UTC. Auto-applied $1,500 ACH deposit (`fctxn_1TZhGy2nq2bZh3q6OnTtui8m`,
+  delta = 0¢) to `u.payments['2026-06']` without operator
+  intervention. Verified in MPM modal: `🤖 Auto-applied · ↶ Undo`
+  pill visible alongside `🔗 Linked: $1,500.00 · 5/18/2026`.
+  534 candidates scanned, 1 applied, 533 skipped (already paid,
+  ambiguous, or no unpaid month).
+
+---
+
 ## Recommended porting order
 
 The two source branches do not currently conflict, but they touch the same
