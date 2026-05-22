@@ -5664,17 +5664,22 @@ function _findAutoApplyCandidate(state, txn) {
   if (!ym) {
     return { eligible: false, reason: 'no-unpaid-month' };
   }
-  // FUTURE-ONLY GATE (Tony 2026-05-21 — mirrors Yardi/AppFolio/Buildium):
-  // Auto-apply ТОЛЬКО для current + future months. Past month matches
-  // возвращаются как 'suggested' с полным контекстом, чтобы оператор
-  // явно одобрил вручную через MPM. Это критическое финансовое правило:
-  //   - past-period auto-apply закрывает старый долг без проверки,
-  //     может скрыть реальные финансовые проблемы (chargeback, dispute,
-  //     неправильный билинг)
-  //   - в indust-standard PMS системах past-period всегда требует
-  //     manager approval (Yardi: "Pending Cash Application" queue;
-  //     AppFolio: blocked unless globally enabled; Buildium: explicit
-  //     "Apply to past period?" modal; QuickBooks: period lock).
+  // CURRENT-MONTH-ONLY GATE (Tony 2026-05-22 — строжe чем future-allowed):
+  //   - ym < currentYm  → past, требует manual approval
+  //   - ym > currentYm  → future, тоже требует manual approval (Tony's
+  //                       rule: «не применяй автоматом наперед если
+  //                       месяц еще не начался»)
+  //   - ym === currentYm → eligible (subject to остальные gates)
+  //
+  // Mirror industry standard:
+  //   Yardi: «Pending Cash Application» queue для past
+  //   AppFolio: «back-period matches» off + «advance payment review»
+  //   Buildium: explicit modal для past AND prepayment
+  //   MRI: T+0 only auto-apply (strict)
+  //
+  // Prepayment-period (future) auto-apply закрывает рент за месяц,
+  // которого ещё не было — оператор может не знать что tenant решил
+  // прокатить полгода вперёд, или это ошибка ввода. Operator-confirm.
   const currentYm = _serverCurrentYm();
   if (ym < currentYm) {
     return {
@@ -5683,6 +5688,37 @@ function _findAutoApplyCandidate(state, txn) {
       candidate: { u: cand.u, b: cand.b, f: cand.f, ym, rentCents: cand.rentCents, delta: cand.delta },
     };
   }
+  if (ym > currentYm) {
+    return {
+      eligible: false,
+      reason: 'future-month-needs-manual',
+      candidate: { u: cand.u, b: cand.b, f: cand.f, ym, rentCents: cand.rentCents, delta: cand.delta },
+    };
+  }
+
+  // PAYMENT METHOD CONSISTENCY (Tony 2026-05-22 — «обращай внимание на
+  // тот как были оплачены предыдущие платежи каким способом»). Tenant
+  // history определяет primary payment method. Bank-feed deposit
+  // = ACH; если unit обычно платит через Stripe/credit card, это
+  // mismatch — НЕ применяй автоматом, оператору решать.
+  //
+  // Lex Wagner Suite 433 case: всегда платит через Stripe, но cron
+  // нашёл $1500 ACH deposit и применил его. Это была ошибка — этот
+  // депозит принадлежит другому tenant'у. Method consistency предотвратит.
+  const primary = _unitPrimaryPaymentMethod(cand.u);
+  const incomingMethod = _guessMethodFromDescServer(txn.description);
+  if (primary && primary !== 'unknown' && _methodFamily(primary) !== _methodFamily(incomingMethod)) {
+    return {
+      eligible: false,
+      reason: 'method-mismatch',
+      candidate: {
+        u: cand.u, b: cand.b, f: cand.f, ym, rentCents: cand.rentCents, delta: cand.delta,
+        primaryMethod: primary,
+        incomingMethod,
+      },
+    };
+  }
+
   return {
     eligible: true,
     candidate: { u: cand.u, b: cand.b, f: cand.f, ym, rentCents: cand.rentCents, delta: cand.delta },
@@ -5691,10 +5727,55 @@ function _findAutoApplyCandidate(state, txn) {
 
 // Текущий месяц в формате YYYY-MM (server UTC). Используется как нижняя
 // граница для auto-apply: всё что < currentYm = past и требует ручного
-// одобрения.
+// одобрения; всё что > currentYm = future и тоже требует ручного.
 function _serverCurrentYm() {
   const d = new Date();
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+// Группируем методы по family — для consistency check'a. Stripe-family
+// covers stripe/stripe-link/stripe-advance (all credit-card flows).
+// Bank-family — ach/wire/check/cash (все деньги ушли через банк/наличку).
+// Other → other.
+function _methodFamily(m) {
+  const s = String(m || '').toLowerCase();
+  if (s.startsWith('stripe')) return 'stripe';
+  if (['ach', 'wire', 'check', 'cash'].includes(s)) return 'bank';
+  return 'other';
+}
+
+// Определяет primary payment method для unit по history. Берём последние
+// 12 ym-keyed payment records со статусом 'paid', исключаем backfill +
+// migration entries (они не дают сигнала про реальный operator habit).
+// Возвращает most-common method family ('stripe' | 'bank') или 'unknown'.
+// Если есть < 2 записей с явным методом — 'unknown' (без сигнала, не
+// блокируем auto-apply).
+function _unitPrimaryPaymentMethod(u) {
+  if (!u || !u.payments) return 'unknown';
+  const payments = Object.entries(u.payments)
+    .filter(([k, p]) => /^\d{4}-\d{2}$/.test(k) && p && p.status === 'paid')
+    .filter(([, p]) => {
+      const m = String(p.paidMethod || p.paidVia || '').toLowerCase();
+      // Skip migration backfills (no real-payment signal) и auto-applies
+      // (избегаем feedback loop где cron сам себе подтверждает 'bank').
+      if (m === 'backfill') return false;
+      if (p.autoApplied === true) return false;
+      return !!m;
+    })
+    .sort((a, b) => b[0].localeCompare(a[0]))  // newest-first
+    .slice(0, 12);
+  if (payments.length < 2) return 'unknown';
+  // Count families.
+  const counts = { stripe: 0, bank: 0, other: 0 };
+  for (const [, p] of payments) {
+    const fam = _methodFamily(p.paidMethod || p.paidVia);
+    counts[fam] = (counts[fam] || 0) + 1;
+  }
+  // Most frequent family WINS если он составляет ≥60% от выборки.
+  const total = payments.length;
+  const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  if (sorted[0][1] / total >= 0.6) return sorted[0][0];
+  return 'unknown';
 }
 
 // Find oldest unpaid month for this unit, preferring months around the
@@ -5783,59 +5864,68 @@ async function _autoApplyAfterPoll(fcAccountId) {
     return { applied: 0, skipped: snap.size, candidates: snap.size, disabledGlobally: true };
   }
 
-  // 3. Build apply list + past-month suggestion list.
+  // 3. Build apply list + deferred-suggestion lists (по reason'у).
   const applies = [];
-  const pastMonthSuggestions = [];  // not-applied, but flagged for operator review
+  const deferred = {
+    'past-month-needs-manual':   [],
+    'future-month-needs-manual': [],
+    'method-mismatch':           [],
+  };
   let skipped = 0;
   for (const d of snap.docs) {
     const txn = { id: d.id, ...d.data() };
     const check = _findAutoApplyCandidate(state, txn);
-    // Past-month случай: ОДОБРЕНИЕ оператора нужно — пишем 'suggested'
-    // с полным контекстом, чтобы MPM Payment Suggestions card показала
-    // его с лейблом «🔒 Past month — confirm manually».
-    if (!check.eligible && check.reason === 'past-month-needs-manual' && check.candidate) {
-      pastMonthSuggestions.push({ docRef: d.ref, txn, candidate: check.candidate });
+    if (!check.eligible && deferred[check.reason] && check.candidate) {
+      deferred[check.reason].push({ docRef: d.ref, txn, candidate: check.candidate });
       continue;
     }
     if (!check.eligible) { skipped++; continue; }
     const c = check.candidate;
-    // Idempotency: skip if already paid (re-checked inside transaction too).
+    // Idempotency: skip if already paid.
     const existing = c.u.payments?.[c.ym];
     if (existing && (existing.status === 'paid' || existing.bankTxnId === txn.id)) {
       skipped++; continue;
     }
-    applies.push({
-      docRef: d.ref,
-      txn,
-      candidate: c,
-    });
+    applies.push({ docRef: d.ref, txn, candidate: c });
   }
 
-  // 3a. Past-month suggestions: write matchState='suggested' with target
-  // metadata so the operator can quickly confirm via MPM. Никаких u.payments
-  // мутаций здесь — только метаданные на bank-txn doc.
-  if (pastMonthSuggestions.length) {
+  // 3a. Deferred suggestions: write matchState='suggested' with target
+  // metadata + specific matchSource reason, чтобы MPM Payment Suggestions
+  // card отрисовал правильный label (🔒 past / 📅 future / 🔀 method-mismatch).
+  const deferredCounts = { 'past-month-needs-manual': 0, 'future-month-needs-manual': 0, 'method-mismatch': 0 };
+  for (const reason of Object.keys(deferred)) {
+    const list = deferred[reason];
+    if (!list.length) continue;
+    deferredCounts[reason] = list.length;
+    const matchSource = reason === 'past-month-needs-manual'   ? 'auto-apply-past-month-deferred'
+                       : reason === 'future-month-needs-manual' ? 'auto-apply-future-month-deferred'
+                       :                                          'auto-apply-method-mismatch-deferred';
     const SUGGEST_BATCH = 100;
-    for (let i = 0; i < pastMonthSuggestions.length; i += SUGGEST_BATCH) {
+    for (let i = 0; i < list.length; i += SUGGEST_BATCH) {
       const batch = db.batch();
-      const slice = pastMonthSuggestions.slice(i, i + SUGGEST_BATCH);
+      const slice = list.slice(i, i + SUGGEST_BATCH);
       for (const { docRef, candidate } of slice) {
-        batch.set(docRef, {
+        const writeFields = {
           matchState: 'suggested',
           matchedTenantId: candidate.u.id,
           matchedUnitId: candidate.u.id,
           matchedBuildingId: candidate.b.id,
           matchedFloorId: candidate.f.id,
           matchedYm: candidate.ym,
-          matchSource: 'auto-apply-past-month-deferred',
+          matchSource,
           suggestedRent: candidate.rentCents / 100,
           autoApplyEligibleAmount: true,
-          autoApplyBlockedReason: 'past-month-needs-manual',
-        }, { merge: true });
+          autoApplyBlockedReason: reason,
+        };
+        if (reason === 'method-mismatch' && candidate.primaryMethod) {
+          writeFields.primaryMethod = candidate.primaryMethod;
+          writeFields.incomingMethod = candidate.incomingMethod;
+        }
+        batch.set(docRef, writeFields, { merge: true });
       }
       await batch.commit();
     }
-    logger.info(`[auto-apply] fcAccountId=${fcAccountId}: ${pastMonthSuggestions.length} past-month suggestions written for manual review`);
+    logger.info(`[auto-apply] fcAccountId=${fcAccountId}: ${list.length} ${reason} suggestions written for manual review`);
   }
 
   if (!applies.length) {
@@ -5843,7 +5933,9 @@ async function _autoApplyAfterPoll(fcAccountId) {
       applied: 0,
       skipped,
       candidates: snap.size,
-      pastMonthSuggested: pastMonthSuggestions.length,
+      pastMonthSuggested: deferredCounts['past-month-needs-manual'],
+      futureMonthSuggested: deferredCounts['future-month-needs-manual'],
+      methodMismatchSuggested: deferredCounts['method-mismatch'],
     };
   }
 
@@ -5926,12 +6018,14 @@ async function _autoApplyAfterPoll(fcAccountId) {
     await batch.commit();
   }
 
-  logger.info(`[auto-apply] fcAccountId=${fcAccountId}: applied=${applies.length} skipped=${skipped} pastMonthSuggested=${pastMonthSuggestions.length} candidates=${snap.size}`);
+  logger.info(`[auto-apply] fcAccountId=${fcAccountId}: applied=${applies.length} skipped=${skipped} past=${deferredCounts['past-month-needs-manual']} future=${deferredCounts['future-month-needs-manual']} methodMismatch=${deferredCounts['method-mismatch']} candidates=${snap.size}`);
   return {
     applied: applies.length,
     skipped,
-    pastMonthSuggested: pastMonthSuggestions.length,
     candidates: snap.size,
+    pastMonthSuggested: deferredCounts['past-month-needs-manual'],
+    futureMonthSuggested: deferredCounts['future-month-needs-manual'],
+    methodMismatchSuggested: deferredCounts['method-mismatch'],
   };
 }
 
