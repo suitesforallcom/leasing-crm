@@ -6030,7 +6030,11 @@ async function _autoApplyAfterPoll(fcAccountId) {
 }
 
 // Read auto-applied history from audit log for UI panel.
-// Returns events sorted newest-first, with full context for each.
+// Returns:
+//   - applied: список applied events (newest-first), each with undone status
+//   - pending: список deferred candidates из bankTransactions, которые
+//              cron нашёл but blocked by safety gates (past/future/method).
+//              Оператор может одобрить их вручную через MPM.
 exports.listAutoAppliedHistory = onCall(
   {timeoutSeconds: 30, memory: '256MiB'},
   async (req) => {
@@ -6038,15 +6042,50 @@ exports.listAutoAppliedHistory = onCall(
     const limit = Math.min(+req.data?.limit || 50, 500);
     const includeUndone = req.data?.includeUndone !== false; // default true
     const auditCol = db.collection(`workspaces/${WORKSPACE_ID}/audit`);
-    // Two queries: applies + undos. Join client-side.
-    const [appliesSnap, undosSnap] = await Promise.all([
+    const bankCol = db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`);
+    // Three queries: applies + undos + pending. Pending — это deferred
+    // candidates from auto-apply where matchSource starts with 'auto-
+    // apply-' AND matchState='suggested'. Получаем все 'suggested' и
+    // фильтруем in-memory (matchSource is not indexed; small set OK).
+    const [appliesSnap, undosSnap, suggestedSnap] = await Promise.all([
       auditCol.where('action', '==', 'payment.auto-applied')
               .orderBy('ts', 'desc').limit(limit).get(),
       includeUndone
         ? auditCol.where('action', '==', 'payment.auto-applied.undo')
                   .orderBy('ts', 'desc').limit(limit).get()
         : Promise.resolve({ docs: [] }),
+      bankCol.where('matchState', '==', 'suggested').get(),
     ]);
+    // Pending — filter to auto-apply deferred only.
+    const pending = [];
+    suggestedSnap.forEach(d => {
+      const t = d.data();
+      if (!t.matchSource || !String(t.matchSource).startsWith('auto-apply-')) return;
+      pending.push({
+        id: d.id,
+        bankTxnId: d.id,
+        bankAmount: t.amount,
+        bankDescription: t.description || '',
+        bankAccountId: t.accountId || null,
+        transactedAt: t.transactedAt
+          ? new Date(t.transactedAt * 1000).toISOString()
+          : null,
+        unitId: t.matchedUnitId || null,
+        buildingId: t.matchedBuildingId || null,
+        floorId: t.matchedFloorId || null,
+        ym: t.matchedYm || null,
+        matchSource: t.matchSource,
+        autoApplyBlockedReason: t.autoApplyBlockedReason || null,
+        primaryMethod: t.primaryMethod || null,
+        incomingMethod: t.incomingMethod || null,
+      });
+    });
+    // Sort pending: newest transactedAt first.
+    pending.sort((a, z) => {
+      const at = a.transactedAt ? new Date(a.transactedAt).getTime() : 0;
+      const zt = z.transactedAt ? new Date(z.transactedAt).getTime() : 0;
+      return zt - at;
+    });
     // Map undo events by bankTxnId. Multiple undos per bankTxnId
     // могут существовать если cycle (apply → undo → re-apply → undo).
     // Сохраняем ARRAY of undos, потом для каждого apply мэтчим самый
@@ -6099,7 +6138,13 @@ exports.listAutoAppliedHistory = onCall(
         undoneBy: undo?.actor || null,
       };
     });
-    return { items, count: items.length, totalUndone: actuallyUndoneCount };
+    return {
+      items,
+      count: items.length,
+      totalUndone: actuallyUndoneCount,
+      pending,
+      pendingCount: pending.length,
+    };
   }
 );
 
