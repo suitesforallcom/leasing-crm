@@ -55,8 +55,12 @@ async function _hsFetch(token, path) {
   return res.json();
 }
 
+// Sleep helper for throttling.
+function _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
 // Paginate through a HubSpot list endpoint until exhausted or maxPages.
-async function _hsPaginate(token, basePath, {limit = 100, maxPages = 20, query = {}} = {}) {
+// Throttles between pages (150ms) to stay under the 15K req / 5s limit.
+async function _hsPaginate(token, basePath, {limit = 100, maxPages = 20, query = {}, throttleMs = 150} = {}) {
   const all = [];
   let after = null;
   for (let page = 0; page < maxPages; page++) {
@@ -69,6 +73,7 @@ async function _hsPaginate(token, basePath, {limit = 100, maxPages = 20, query =
     const next = data.paging?.next?.after;
     if (!next) break;
     after = next;
+    if (throttleMs > 0) await _sleep(throttleMs);
   }
   return all;
 }
@@ -235,12 +240,15 @@ async function _runSync({fullSync = false} = {}) {
   // Incremental: only events modified in last 24h. Full sync: all data.
   const sinceMs = fullSync ? null : (Date.now() - 24 * 60 * 60 * 1000);
   const t0 = Date.now();
-  const [owners, pipelines, deals, meetings] = await Promise.all([
-    _fetchOwners(token),
-    _fetchPipelines(token),
-    _fetchDeals(token, { sinceMs }),
-    _fetchMeetings(token, { sinceMs }),
-  ]);
+  // Sequential — Promise.all hammered the rate-limit (15K req/5s per
+  // service is generous but 4 parallel paginated loops collide).
+  const owners = await _fetchOwners(token);
+  await _sleep(200);
+  const pipelines = await _fetchPipelines(token);
+  await _sleep(200);
+  const deals = await _fetchDeals(token, { sinceMs });
+  await _sleep(200);
+  const meetings = await _fetchMeetings(token, { sinceMs });
   const aggregates = _buildAggregates(owners, pipelines, deals, meetings);
 
   // If incremental — merge into existing state.hubspotData rather than overwrite.
