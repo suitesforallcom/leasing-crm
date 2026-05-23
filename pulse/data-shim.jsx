@@ -29,48 +29,61 @@
   'use strict';
 
   // ---------- Phase 19: HubSpot data fetch + helpers ----------
-  // CF hubspotGetData returns the full hubspotData document. Cache on
-  // window so other modules + re-render passes don't refetch. Fetched
-  // once on shim init + on storage event (state-refresh).
-  window._hsDataCache = window._hsDataCache || null;
-  window._hsFetchPromise = window._hsFetchPromise || null;
-  function _hsFetch() {
-    if (window._hsDataCache) return Promise.resolve(window._hsDataCache);
-    if (window._hsFetchPromise) return window._hsFetchPromise;
+  // Strategy: data lives in /workspaces/{wid}/data/hubspot (Firestore,
+  // ~100s of KB). Pulse's IIFE runs sync at script load — we can't await
+  // a CF call before the per-user mapping. Solution: localStorage cache.
+  //   • If localStorage has hubspotData < 1h old → use it sync.
+  //   • Always kick off background CF refresh; on success, save to
+  //     localStorage + trigger soft reload if the cached data was stale.
+  //   • First-ever load: no cache, mapping uses 0s; CF fetch caches
+  //     → reload picks up real numbers on second view.
+  const HS_LS_KEY = 'sfa_hubspot_data_v1';
+  const HS_TTL_MS = 60 * 60 * 1000; // 1h
+  window._hsDataCache = null;
+
+  // Sync load from localStorage.
+  try {
+    const raw = localStorage.getItem(HS_LS_KEY);
+    if (raw) {
+      const wrap = JSON.parse(raw);
+      if (wrap && wrap.cachedAt && (Date.now() - wrap.cachedAt) < HS_TTL_MS && wrap.data) {
+        window._hsDataCache = wrap.data;
+        console.info('[pulse-shim] HubSpot data hit (localStorage cache age ' + Math.round((Date.now() - wrap.cachedAt) / 60000) + 'm)');
+      }
+    }
+  } catch (e) { /* corrupt cache — ignore */ }
+
+  // Async refresh, fire-and-forget.
+  function _hsRefresh() {
     if (typeof window._pulseCallable !== 'function') return Promise.resolve(null);
-    window._hsFetchPromise = window._pulseCallable('hubspotGetData', {})
+    return window._pulseCallable('hubspotGetData', {})
       .then(res => {
         const d = (res && res.data && res.data.hubspotData) || null;
+        if (!d) return null;
+        try {
+          localStorage.setItem(HS_LS_KEY, JSON.stringify({ cachedAt: Date.now(), data: d }));
+        } catch (e) { /* localStorage full — give up silently */ }
+        const wasEmpty = !window._hsDataCache;
         window._hsDataCache = d;
-        window._hsFetchPromise = null;
-        if (d) console.info('[pulse-shim] HubSpot data loaded — owners:' + Object.keys(d.owners||{}).length + ', deals across owners:' + Object.values(d.dealsByOwner||{}).reduce((s, a) => s + a.length, 0));
+        console.info('[pulse-shim] HubSpot data refreshed (counts:' + JSON.stringify(d.counts) + ')');
+        // If cache was empty during first mapping pass → soft reload
+        // ONCE so Pulse re-renders with real tour counts.
+        if (wasEmpty) {
+          try {
+            if (!sessionStorage.getItem('hs_reloaded_for_data_v1')) {
+              sessionStorage.setItem('hs_reloaded_for_data_v1', '1');
+              setTimeout(function () { location.reload(); }, 1500);
+            }
+          } catch (e) {}
+        }
         return d;
       })
       .catch(err => {
-        console.warn('[pulse-shim] HubSpot fetch failed:', err.message);
-        window._hsFetchPromise = null;
+        console.warn('[pulse-shim] HubSpot refresh failed:', err.message);
         return null;
       });
-    return window._hsFetchPromise;
   }
-  // Kick off fetch as early as possible (independent of data-shim run).
-  // First call happens here at script load; result lands by the time the
-  // shim's main run() executes (Babel compile takes 5-15s, fetch ~1s).
-  _hsFetch().then(function (d) {
-    if (!d) return;
-    // If the data-shim already mapped with 0 tours (data wasn't cached
-    // at mapping time), trigger a one-time soft reload to pick up the
-    // values. sessionStorage flag prevents reload loops within a tab.
-    try {
-      if (!sessionStorage.getItem('hs_data_loaded_v1')) {
-        sessionStorage.setItem('hs_data_loaded_v1', '1');
-        setTimeout(function () {
-          console.info('[pulse-shim] HubSpot data arrived after first map — reloading once');
-          location.reload();
-        }, 800);
-      }
-    } catch (e) { /* sessionStorage blocked — skip */ }
-  });
+  _hsRefresh();
 
   // Helpers used in the per-user mapper below.
   function _hsThisYm() {
