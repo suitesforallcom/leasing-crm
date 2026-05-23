@@ -176,6 +176,36 @@ async function _fetchMeetings(token, {sinceMs = null} = {}) {
 }
 
 // =========================================================================
+// Contacts — pulled to support cross-system linking. Floor-map prospects
+// store an email; we want to show «this prospect is in HubSpot, owned by
+// <manager>» on the prospect card. Only pulled on fullSync (heavy).
+// Returns map email → { id, firstname, lastname, ownerId, lifecycleStage }.
+// =========================================================================
+async function _fetchContacts(token, {maxPages = 60} = {}) {
+  // Minimal props — we just need email → owner mapping. Names + stage are
+  // resolved via owners map lookup on the client to keep this doc small
+  // enough for the 1MB Firestore cap (5000 contacts × 50 bytes ≈ 250 KB).
+  const props = 'email,hubspot_owner_id,lifecyclestage';
+  const raw = await _hsPaginate(token, `/crm/v3/objects/contacts?properties=${props}`, {limit: 100, maxPages, throttleMs: 200});
+  const byEmail = {};
+  for (const c of raw) {
+    const p = c.properties || {};
+    const email = (p.email || '').toLowerCase().trim();
+    if (!email) continue;
+    byEmail[email] = {
+      // Compact array form — [contactId, ownerId, lifecycleStage]. The
+      // helper in data-shim destructures back into {id, ownerId, stage}.
+      // Saves ~30 bytes per contact vs object form (no key strings) =
+      // ~150 KB at 5000 contacts.
+      i: String(c.id),
+      o: p.hubspot_owner_id ? String(p.hubspot_owner_id) : null,
+      s: p.lifecyclestage || null,
+    };
+  }
+  return byEmail;
+}
+
+// =========================================================================
 // Build per-owner aggregates ready for UI consumption.
 // =========================================================================
 function _buildAggregates(owners, pipelines, deals, meetings) {
@@ -216,6 +246,18 @@ function _buildAggregates(owners, pipelines, deals, meetings) {
         /\bappointment\b.*\b(scheduled|booked)\b/.test(lbl) ||
         // «Tour» followed by nothing else (a stage just called «Tour»)
         /^tour$/.test(lbl);
+      // Qualified — deal/contact engaged but pre-tour. Critical to split out
+      // because for telemarketing pipelines (Tony's «Buyers pipeline») the
+      // «Buyer qualification» stage is the largest cohort that's NOT just
+      // raw leads. Excludes «not interested» / «wrong area» / no-answer
+      // outcomes (those stay in inquiry).
+      const isQualified =
+        // «Buyer qualification», «Qualified», «Qualified to buy» (HubSpot default)
+        /\bqualif(ied|y|ication)\b/.test(lbl) ||
+        // «Call answered - interested», «Responded to text/email», «Engaged»
+        /\b(call answered.*interested|responded to|engaged|interested|warm)\b/.test(lbl) ||
+        // «Decision maker bought-in» pre-presentation (HubSpot default)
+        /\b(presentation|proposal) (sent|pending)\b/.test(lbl);
       const isPastTour =
         // «Was on tour», «tour done», «toured», «showed», «showing complete»
         /\bwas on tour\b|\btour(ed| done| complete|s? complete)\b|\bshow(ed|ing complete|n)\b/.test(lbl) ||
@@ -238,6 +280,9 @@ function _buildAggregates(owners, pipelines, deals, meetings) {
         label: s.label,
         isScheduledTour,
         isPastTour,
+        // Qualified — explicitly set ONLY if not also tour/signed. Tour/signed
+        // stages outrank qualified in the funnel so we don't double-bucket.
+        isQualified: isQualified && !isScheduledTour && !isPastTour,
         // SIGNED = HubSpot's «isWon» metadata OR label matches signed patterns
         isSigned: won || isSignedByLabel,
         // LOST = closed but not won — excluded from funnel entirely
@@ -321,26 +366,33 @@ function _buildStageDiagnostics(stageMeta, dealsByStage) {
       stageDealCounts[stageId] = (stageDealCounts[stageId] || 0) + n;
     }
   }
+  // Include EVERY stage in the meta, even those with 0 deals — so the
+  // operator can see «Contract stage exists but is empty» (signed leases
+  // are tracked elsewhere) instead of silently omitting it. The empty=true
+  // flag lets the UI dim them in a «Configured but unused» section.
   const out = [];
   for (const [stageId, m] of Object.entries(stageMeta || {})) {
     const count = stageDealCounts[stageId] || 0;
-    if (count === 0) continue;  // skip stages with zero observed deals
     let bucket = 'inquiry';
-    if (m.isScheduledTour) bucket = 'scheduledTour';
-    else if (m.isPastTour) bucket = 'pastTour';
-    else if (m.isSigned) bucket = 'signed';
-    else if (m.isLost) bucket = 'lost';
+    if (m.isSigned)             bucket = 'signed';
+    else if (m.isPastTour)      bucket = 'pastTour';
+    else if (m.isScheduledTour) bucket = 'scheduledTour';
+    else if (m.isQualified)     bucket = 'qualified';
+    else if (m.isLost)          bucket = 'lost';
     out.push({
       stageId,
       label: m.label,
       bucket,
       deals: count,
+      empty: count === 0,
       isWon: !!m.isWon,
       isClosed: !!m.isClosed,
     });
   }
-  const bucketOrder = { signed: 0, pastTour: 1, scheduledTour: 2, inquiry: 3, lost: 4 };
+  const bucketOrder = { signed: 0, pastTour: 1, scheduledTour: 2, qualified: 3, inquiry: 4, lost: 5 };
   out.sort((a, b) => {
+    // empty stages always sort after populated ones in the same bucket
+    if (a.empty !== b.empty) return a.empty ? 1 : -1;
     const d = bucketOrder[a.bucket] - bucketOrder[b.bucket];
     return d !== 0 ? d : (b.deals - a.deals);
   });
@@ -367,6 +419,20 @@ async function _runSync({fullSync = false} = {}) {
   const deals = await _fetchDeals(token, { sinceMs });
   await _sleep(200);
   const meetings = await _fetchMeetings(token, { sinceMs });
+  // Contacts — only on fullSync to limit API hits (60 paginated pages
+  // = up to 6000 contacts, ~15s of wall-clock time at 200ms throttle).
+  // Floor-map uses these for prospect→HubSpot deal-owner attribution.
+  let contactByEmail = null;
+  if (fullSync) {
+    await _sleep(200);
+    try {
+      contactByEmail = await _fetchContacts(token);
+      logger.info(`[hubspot-sync] fetched ${Object.keys(contactByEmail).length} contacts`);
+    } catch (e) {
+      logger.warn(`[hubspot-sync] contacts fetch failed (non-fatal): ${e.message}`);
+      contactByEmail = {};
+    }
+  }
   const aggregates = _buildAggregates(owners, pipelines, deals, meetings);
 
   // Store HubSpot data in a SEPARATE Firestore doc, not merged into the
@@ -387,6 +453,10 @@ async function _runSync({fullSync = false} = {}) {
     dealsByStage: { ...(prevHs.dealsByStage || {}), ...aggregates.dealsByStage },
     stageMeta: aggregates.stageMeta || prevHs.stageMeta || {},
   };
+  // Contacts — fullSync replaces, incremental keeps previous (we don't
+  // re-fetch contacts on incremental). Falls back to {} so the UI helper
+  // never throws on lookup.
+  merged.contactByEmail = (fullSync && contactByEmail) ? contactByEmail : (prevHs.contactByEmail || {});
   // Stage diagnostics — computed from merged dealsByStage + stageMeta so
   // the counts reflect every pipeline stage we've seen, not just deals
   // modified in the last 24h.
@@ -419,6 +489,7 @@ async function _runSync({fullSync = false} = {}) {
       deals: deals.length,
       meetings: meetings.length,
       tourMeetings: meetings.filter(m => m.isTour).length,
+      contacts: Object.keys(merged.contactByEmail || {}).length,
     },
   };
 

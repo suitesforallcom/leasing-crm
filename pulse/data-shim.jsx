@@ -103,6 +103,25 @@
     const m = sbm[email] || {};
     return m[_hsThisYm()] || 0;
   };
+  // Phase 19 rev — contact lookup. Used by floor-map prospect cards to
+  // show «In HubSpot · owned by <manager>» badge. Returns null when no
+  // match or when contacts haven't been synced yet.
+  // contactByEmail entries use compact array-ish form: { i, o, s }
+  //   i = contactId, o = ownerId, s = lifecycleStage
+  window._hsContactForEmail = function (email) {
+    if (!window._hsDataCache || !email) return null;
+    const e = String(email).toLowerCase().trim();
+    const c = (window._hsDataCache.contactByEmail || {})[e];
+    if (!c) return null;
+    const owner = c.o ? (window._hsDataCache.owners || {})[c.o] : null;
+    return {
+      contactId: c.i,
+      ownerId: c.o || null,
+      ownerEmail: owner ? owner.email : null,
+      ownerName: owner ? owner.name : null,
+      lifecycleStage: c.s || null,
+    };
+  };
 
 
   // ---------- Utilities ----------
@@ -450,6 +469,40 @@
     }
     return { mostEmails, mostContracts, highestScore, mostEmailsWhen, mostContractsWhen, highestScoreWhen };
   }
+
+  // Phase 19 rev — local «signs» this month (cross-system reference).
+  // Counts units whose leaseStart falls in current month (= new leases
+  // executed this month). HubSpot funnel often shows 0 signed because
+  // operators don't move deals to the «Contract» stage — but our state
+  // knows about real lease executions. Expose as window._localSigns so
+  // HubspotInsights can show «Actual signs (from leases): N» next to
+  // the misleading «HubSpot signed: 0».
+  window._localSignsThisMonth = (function () {
+    const thisYm = _hsThisYm();
+    let total = 0;
+    const recent = []; // sample for tooltip — up to 5 unit names
+    try {
+      for (const b of buildings) {
+        for (const f of (b.floors || [])) {
+          for (const u of (f.units || [])) {
+            if (!u || !u.leaseStart) continue;
+            // leaseStart is ISO 'YYYY-MM-DD'. Slice 0..7 == YM.
+            if (String(u.leaseStart).slice(0, 7) === thisYm) {
+              total++;
+              if (recent.length < 5) {
+                recent.push({
+                  unitId: u.id,
+                  tenant: (u.tenant || u.company || '').trim() || '(unnamed)',
+                  leaseStart: u.leaseStart,
+                });
+              }
+            }
+          }
+        }
+      }
+    } catch (e) { console.warn('[pulse-shim] local-signs walk failed:', e); }
+    return { count: total, sample: recent, ym: thisYm };
+  })();
 
   // Phase 11d — tenant email → unit lookup. Used by EmailsTab to tag
   // each row as «Tenant · Suite N» (with unit link) vs «New contact».

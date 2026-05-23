@@ -476,9 +476,10 @@ function HubspotInsights({ users }) {
   ownerStats.sort((a, b) => (b.toursThis - a.toursThis) || (b.signs - a.signs));
 
   // Funnel: aggregate across all owners using dealsByStage + stageMeta.
-  // Counts of deals currently sitting in each stage class.
+  // Counts of deals currently sitting in each stage class. Order of
+  // precedence: signed → pastTour → scheduledTour → qualified → inquiry.
   const stageMeta = hs.stageMeta || {};
-  const funnel = { inquiry: 0, scheduledTour: 0, pastTour: 0, signed: 0 };
+  const funnel = { inquiry: 0, qualified: 0, scheduledTour: 0, pastTour: 0, signed: 0 };
   for (const stageMap of Object.values(hs.dealsByStage || {})) {
     for (const [stageId, count] of Object.entries(stageMap)) {
       const m = stageMeta[stageId];
@@ -486,23 +487,30 @@ function HubspotInsights({ users }) {
       if (m.isSigned)             funnel.signed += count;
       else if (m.isPastTour)      funnel.pastTour += count;
       else if (m.isScheduledTour) funnel.scheduledTour += count;
+      else if (m.isQualified)     funnel.qualified += count;
       else if (m.isLost)          { /* lost is excluded from funnel */ }
       else                        funnel.inquiry += count;
     }
   }
-  const funnelTotal = funnel.inquiry + funnel.scheduledTour + funnel.pastTour + funnel.signed;
-  // Stage diagnostics from CF — array of { stageId, label, bucket, deals, isWon }
-  // Used for the "stage breakdown" collapsible at the bottom and the
-  // "no signs detected" warning. Falsy means CF hasn't synced the new
-  // hubspot-sync.js code yet.
+  const funnelTotal = funnel.inquiry + funnel.qualified + funnel.scheduledTour + funnel.pastTour + funnel.signed;
+  // Stage diagnostics from CF — array of { stageId, label, bucket, deals, isWon, empty }
+  // Buckets now include 'qualified' (Sprint 4) and stages with empty=true
+  // (Sprint 4) are kept in the list so we can show the «Configured but
+  // empty» section — gives the operator a clear picture of unused stages.
   const stageDiag = hs.stageDiagnostics || [];
-  const diagByBucket = { signed: [], pastTour: [], scheduledTour: [], inquiry: [], lost: [] };
+  const diagByBucket = { signed: [], pastTour: [], scheduledTour: [], qualified: [], inquiry: [], lost: [] };
   for (const d of stageDiag) {
     if (diagByBucket[d.bucket]) diagByBucket[d.bucket].push(d);
   }
-  // Warning: looks like the pipeline isn't classifying signed deals
-  // correctly. Show a hint to Tony so he can rename stages or report.
+  // Local cross-system signs from floor-map state (Sprint 4 Item 1).
+  // Real lease executions this month — what HubSpot SHOULD see if
+  // operators moved deals to «Contract». Surfaces the gap explicitly.
+  const localSigns = window._localSignsThisMonth || { count: 0, sample: [], ym: '' };
+  // Warning: HubSpot funnel says 0 signed BUT local state says we have
+  // actual lease executions. This means operators don't update HubSpot
+  // when leases close in SuitesForAll. Show a more specific warning.
   const shouldWarnNoSigns = funnelTotal >= 10 && funnel.signed === 0;
+  const shouldWarnGap = shouldWarnNoSigns && localSigns.count > 0;
 
   // Pipeline forecasting — naive historical conv rate.
   const totalToursLast3 = ownerStats.reduce((s, o) => s + (o.sparkline[3] + o.sparkline[4] + o.sparkline[5]), 0) || 1;
@@ -552,11 +560,21 @@ function HubspotInsights({ users }) {
         </a>
       </div>
 
-      {/* Warning banner — pipeline stages don't seem to include signed/won.
-          Likely a custom HubSpot pipeline with unusual stage names.
-          Tony can open the diagnostics collapsible below to see what's
-          actually being captured and rename stages in HubSpot if needed. */}
-      {shouldWarnNoSigns && (
+      {/* Warning banner — two flavors:
+          (a) HubSpot says 0 signed AND we have actual local leases → call
+              out the data gap. Operators close in SuitesForAll but don't
+              update HubSpot.
+          (b) HubSpot says 0 signed AND no local leases either → general
+              «pipeline stages aren't classified» warning. */}
+      {shouldWarnGap ? (
+        <div style={{
+          padding: "8px 12px", marginBottom: 12, borderRadius: 6,
+          background: "rgba(239,68,68,.10)", borderLeft: "3px solid #dc2626",
+          fontSize: 12, color: "var(--ink)",
+        }}>
+          <strong>HubSpot ↔ SuitesForAll sync gap:</strong> HubSpot pipeline shows <strong>0 signed</strong> deals, but {localSigns.count} lease{localSigns.count === 1 ? " was" : "s were"} executed in your floor-map this month. Either move closed deals to the «Contract» stage in HubSpot, or treat the «Actual signs» card (right) as the truth. Forecast uses local lease counts where present.
+        </div>
+      ) : shouldWarnNoSigns ? (
         <div style={{
           padding: "8px 12px", marginBottom: 12, borderRadius: 6,
           background: "rgba(245,158,11,.10)", borderLeft: "3px solid #d97706",
@@ -564,18 +582,19 @@ function HubspotInsights({ users }) {
         }}>
           <strong>No "signed" deals detected in the pipeline.</strong> Your HubSpot pipeline stages don't match standard closed-won patterns. Open <em>Stage breakdown</em> below to see what's classified where, or rename a stage in HubSpot to include "Contract", "Signed", "Won", or "Active Lease".
         </div>
-      )}
+      ) : null}
 
-      {/* 3-column grid: Funnel + Forecast + Alerts */}
+      {/* 3-column grid: Funnel + Actual signs / Forecast + Alerts */}
       <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1.2fr", gap: 14, marginBottom: 14 }}>
         {/* Conversion Funnel */}
         <div>
           <div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 6 }}>Conversion funnel · all owners</div>
           {[
-            { l: "Inquiry / other", n: funnel.inquiry, c: "#6b7280" },
-            { l: "Tour scheduled", n: funnel.scheduledTour, c: "#3b82f6" },
-            { l: "Tour done", n: funnel.pastTour, c: "#a16207" },
-            { l: "Signed / contract", n: funnel.signed, c: "#16a34a" },
+            { l: "Inquiry / other", n: funnel.inquiry,       c: "#6b7280" },
+            { l: "Qualified",       n: funnel.qualified,     c: "#0891b2" },
+            { l: "Tour scheduled",  n: funnel.scheduledTour, c: "#3b82f6" },
+            { l: "Tour done",       n: funnel.pastTour,      c: "#a16207" },
+            { l: "Signed / contract", n: funnel.signed,      c: "#16a34a" },
           ].map((row, i) => {
             const pct = funnelTotal > 0 ? Math.round((row.n / funnelTotal) * 100) : 0;
             return (
@@ -590,13 +609,33 @@ function HubspotInsights({ users }) {
           })}
         </div>
 
-        {/* Forecast */}
-        <div style={{ padding: "8px 12px", background: "var(--surface-2)", borderRadius: 8 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>Forecast · next 30d</div>
-          <div style={{ fontSize: 26, fontWeight: 800, color: "var(--success-ink)" }}>{expectedSigns30d}</div>
-          <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 8 }}>expected signings</div>
-          <div style={{ fontSize: 10.5, color: "var(--muted)" }}>
-            {activeTourPipeline} active tours × {historicalConvPct}% historical conv
+        {/* Actual signs + Forecast — split card.
+            Top: REAL signs from local floor-map leases this month (the
+            number that matters; HubSpot funnel often lies).
+            Bottom: Pipeline forecast based on active tours × historical
+            conversion. */}
+        <div style={{ padding: "10px 12px", background: "var(--surface-2)", borderRadius: 8, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "var(--success-ink)", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>
+              Actual signs · {localSigns.ym}
+            </div>
+            <div style={{ fontSize: 26, fontWeight: 800, color: "var(--success-ink)" }}>{localSigns.count}</div>
+            <div style={{ fontSize: 10.5, color: "var(--muted)" }}>
+              from floor-map leases (HubSpot says {funnel.signed})
+            </div>
+            {localSigns.sample.length > 0 && (
+              <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
+                {localSigns.sample.slice(0, 3).map(s => `Suite ${s.unitId}`).join(" · ")}
+                {localSigns.sample.length > 3 ? " · …" : ""}
+              </div>
+            )}
+          </div>
+          <div style={{ borderTop: "1px dashed var(--border)", paddingTop: 8 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>Forecast · next 30d</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: "var(--ink)" }}>{expectedSigns30d}</div>
+            <div style={{ fontSize: 10, color: "var(--muted)" }}>
+              {activeTourPipeline} active tours × {historicalConvPct}% conv
+            </div>
           </div>
         </div>
 
@@ -674,18 +713,27 @@ function HubspotInsights({ users }) {
               { key: "signed", label: "Signed / contract", color: "#16a34a" },
               { key: "pastTour", label: "Tour done", color: "#a16207" },
               { key: "scheduledTour", label: "Tour scheduled", color: "#3b82f6" },
+              { key: "qualified", label: "Qualified", color: "#0891b2" },
               { key: "inquiry", label: "Inquiry / other", color: "#6b7280" },
               { key: "lost", label: "Lost / disqualified (excluded from funnel)", color: "#9ca3af" },
             ].map(b => {
-              const rows = diagByBucket[b.key];
-              if (!rows || rows.length === 0) return null;
+              const rows = diagByBucket[b.key] || [];
+              const populated = rows.filter(r => !r.empty);
+              const empties = rows.filter(r => r.empty);
+              if (populated.length === 0 && empties.length === 0) return null;
+              const populatedDeals = populated.reduce((s, r) => s + r.deals, 0);
               return (
                 <div key={b.key} style={{ marginBottom: 8 }}>
                   <div style={{ fontWeight: 700, color: b.color, fontSize: 11.5, marginBottom: 4 }}>
-                    {b.label} · {rows.reduce((s, r) => s + r.deals, 0)} deals
+                    {b.label} · {populatedDeals} deal{populatedDeals === 1 ? "" : "s"}
+                    {empties.length > 0 && (
+                      <span style={{ fontWeight: 500, color: "var(--muted)", marginLeft: 6 }}>
+                        ({empties.length} stage{empties.length === 1 ? "" : "s"} configured but empty)
+                      </span>
+                    )}
                   </div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {rows.map(r => (
+                    {populated.map(r => (
                       <span key={r.stageId} style={{
                         padding: "3px 7px", borderRadius: 4, background: "var(--surface)",
                         border: "1px solid var(--border)", fontSize: 11.5, color: "var(--ink)",
@@ -694,13 +742,23 @@ function HubspotInsights({ users }) {
                         {r.isWon && <span style={{ marginLeft: 4 }}>★</span>}
                       </span>
                     ))}
+                    {empties.map(r => (
+                      <span key={r.stageId} style={{
+                        padding: "3px 7px", borderRadius: 4, background: "transparent",
+                        border: "1px dashed var(--border)", fontSize: 11.5, color: "var(--muted)",
+                        fontStyle: "italic",
+                      }} title="No deals are currently in this stage. Operators may close deals elsewhere (e.g. SuitesForAll) and never move them here.">
+                        {r.label} <span className="mono" style={{ marginLeft: 4 }}>0</span>
+                        {r.isWon && <span style={{ marginLeft: 4 }}>★</span>}
+                      </span>
+                    ))}
                   </div>
                 </div>
               );
             })}
             <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8, paddingTop: 8, borderTop: "1px dashed var(--border)" }}>
-              ★ = HubSpot's "Won" flag. Stages with this flag count as signed regardless of name.
-              To reclassify, rename the stage in HubSpot or ping engineering to extend the detection regex.
+              ★ = HubSpot's "Won" flag · dashed = configured but no deals.
+              To reclassify a stage, rename it in HubSpot or ping engineering to extend the detection regex.
             </div>
           </div>
         </details>
