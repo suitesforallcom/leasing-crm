@@ -251,11 +251,15 @@ async function _runSync({fullSync = false} = {}) {
   const meetings = await _fetchMeetings(token, { sinceMs });
   const aggregates = _buildAggregates(owners, pipelines, deals, meetings);
 
-  // If incremental — merge into existing state.hubspotData rather than overwrite.
-  const stateRef = db.doc(`workspaces/${WORKSPACE_ID}/data/state`);
-  const existing = (await stateRef.get()).data() || {};
-  const state = existing.state || {};
-  const prevHs = state.hubspotData || {};
+  // Store HubSpot data in a SEPARATE Firestore doc, not merged into the
+  // main state doc. Reason: Firestore has a 1MB per-doc cap, and the
+  // main state is already at hundreds of KB. Bundling thousands of deals
+  // + meetings into state blew the cap (1.1MB) on the very first sync.
+  // Separate doc → independent size budget. Pulse data-shim reads it
+  // alongside state.
+  const hsRef = db.doc(`workspaces/${WORKSPACE_ID}/data/hubspot`);
+  const prevDoc = (await hsRef.get()).data() || {};
+  const prevHs = prevDoc.hubspotData || {};
 
   const merged = fullSync ? aggregates : {
     dealsByOwner: { ...(prevHs.dealsByOwner || {}), ...aggregates.dealsByOwner },
@@ -263,6 +267,20 @@ async function _runSync({fullSync = false} = {}) {
     toursByMonth: _mergeToursByMonth(prevHs.toursByMonth || {}, aggregates.toursByMonth),
     dealsByStage: { ...(prevHs.dealsByStage || {}), ...aggregates.dealsByStage },
   };
+
+  // Trim deals + meetings to last 90 per owner to stay under 1MB. Tours
+  // counts (toursByMonth) preserve the aggregates even for trimmed data.
+  const TRIM = 90;
+  for (const email of Object.keys(merged.dealsByOwner)) {
+    merged.dealsByOwner[email] = merged.dealsByOwner[email]
+      .sort((a, b) => String(b.lastMod || '').localeCompare(a.lastMod || ''))
+      .slice(0, TRIM);
+  }
+  for (const email of Object.keys(merged.meetingsByOwner)) {
+    merged.meetingsByOwner[email] = merged.meetingsByOwner[email]
+      .sort((a, b) => String(b.ts || '').localeCompare(a.ts || ''))
+      .slice(0, TRIM);
+  }
 
   const hubspotData = {
     syncedAt: new Date().toISOString(),
@@ -280,12 +298,11 @@ async function _runSync({fullSync = false} = {}) {
     },
   };
 
-  await stateRef.set({
-    state: { ...state, hubspotData },
-    _rev: (state._rev || 0) + 1,
+  await hsRef.set({
+    hubspotData,
     _updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     _updatedBy: fullSync ? 'hubspot-sync-full' : 'hubspot-sync',
-  }, { merge: true });
+  });
 
   // Audit row so Activity log shows the sync ran.
   try {
