@@ -82,9 +82,16 @@ async function _hsPaginate(token, basePath, {limit = 100, maxPages = 20, query =
 // Owners — id → {email, name, archived}.
 // =========================================================================
 async function _fetchOwners(token) {
-  const raw = await _hsPaginate(token, '/crm/v3/owners', {limit: 100, maxPages: 5});
+  // Fetch BOTH active and archived owners. Deals from years past often
+  // have an hubspot_owner_id pointing to an archived (offboarded) sales
+  // rep — without including them in the owners map, we'd skip 90%+ of
+  // historical deals (they'd be «orphaned») and the funnel would show
+  // only deals from currently-active reps.
+  const active = await _hsPaginate(token, '/crm/v3/owners?archived=false', {limit: 100, maxPages: 5});
+  await _sleep(150);
+  const archived = await _hsPaginate(token, '/crm/v3/owners?archived=true', {limit: 100, maxPages: 5});
   const byId = {};
-  for (const o of raw) {
+  for (const o of [...active, ...archived]) {
     if (!o || !o.id) continue;
     byId[String(o.id)] = {
       id: String(o.id),
@@ -310,8 +317,10 @@ function _buildAggregates(owners, pipelines, deals, meetings) {
   const ownerEmail = (id) => (owners[id] && owners[id].email) || null;
 
   for (const d of deals) {
-    const email = ownerEmail(d.ownerId);
-    if (!email) continue;
+    // Bucket key — owner email if known, otherwise '_unowned' so the
+    // funnel still sees the deal. Previous behavior («continue») silently
+    // dropped 90%+ of historical deals (archived-owner deals) on fullSync.
+    const email = ownerEmail(d.ownerId) || '_unowned';
     if (!dealsByOwner[email]) dealsByOwner[email] = [];
     const meta = stageMeta[d.stage] || {};
     dealsByOwner[email].push({ ...d, stageLabel: meta.label || d.stage });
