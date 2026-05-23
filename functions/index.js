@@ -7143,6 +7143,12 @@ const _snap = require('./daily-snapshots');
 exports.runDailySnapshot = _snap.runDailySnapshot;
 exports.adminRunSnapshot = _snap.adminRunSnapshot;
 
+// Phase 19 — HubSpot CRM sync (owners, deals, meetings/tours).
+// Pulls into state.hubspotData for per-manager analytics in Pulse.
+const _hs = require('./hubspot-sync');
+exports.hubspotSync = _hs.hubspotSync;
+exports.hubspotSyncNow = _hs.hubspotSyncNow;
+
 // Phase 14 — Google Calendar polling. Requires operator to add
 // `https://www.googleapis.com/auth/calendar.events.readonly` scope to
 // the existing Domain-Wide Delegation entry in Workspace Admin Console.
