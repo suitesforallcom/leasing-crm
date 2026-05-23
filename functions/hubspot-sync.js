@@ -249,15 +249,24 @@ function _buildAggregates(owners, pipelines, deals, meetings) {
       // Qualified — deal/contact engaged but pre-tour. Critical to split out
       // because for telemarketing pipelines (Tony's «Buyers pipeline») the
       // «Buyer qualification» stage is the largest cohort that's NOT just
-      // raw leads. Excludes «not interested» / «wrong area» / no-answer
-      // outcomes (those stay in inquiry).
-      const isQualified =
+      // raw leads. Excludes negative outcomes («not interested», «wrong
+      // area», no-answer, didn't request) which stay in inquiry.
+      //
+      // Two-pass: first reject NEGATIVE labels, THEN match positive ones.
+      // Order matters because raw match against /\binterested\b/ would
+      // also accept «Call answered - not interested».
+      const isNegativeOutcome =
+        /\b(not interested|not.?qualif|disqual|unqual|wrong.?area|wrong.?number|no.?answer|did.?n'?t request|didn'?t request|not.?responsive|dead|cold|ghosted|spam|junk)\b/.test(lbl);
+      const isQualified = !isNegativeOutcome && (
         // «Buyer qualification», «Qualified», «Qualified to buy» (HubSpot default)
         /\bqualif(ied|y|ication)\b/.test(lbl) ||
-        // «Call answered - interested», «Responded to text/email», «Engaged»
-        /\b(call answered.*interested|responded to|engaged|interested|warm)\b/.test(lbl) ||
+        // «Call answered - interested», «Engaged», «Warm lead», bare «Interested»
+        /\b(interested|warm|engaged|hot.?lead|nurturing)\b/.test(lbl) ||
+        // «Responded to text/email» — engagement signal (MQL-tier)
+        /\bresponded to\b/.test(lbl) ||
         // «Decision maker bought-in» pre-presentation (HubSpot default)
-        /\b(presentation|proposal) (sent|pending)\b/.test(lbl);
+        /\b(presentation|proposal) (sent|pending)\b/.test(lbl)
+      );
       const isPastTour =
         // «Was on tour», «tour done», «toured», «showed», «showing complete»
         /\bwas on tour\b|\btour(ed| done| complete|s? complete)\b|\bshow(ed|ing complete|n)\b/.test(lbl) ||
