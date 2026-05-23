@@ -28,6 +28,70 @@
 (function () {
   'use strict';
 
+  // ---------- Phase 19: HubSpot data fetch + helpers ----------
+  // CF hubspotGetData returns the full hubspotData document. Cache on
+  // window so other modules + re-render passes don't refetch. Fetched
+  // once on shim init + on storage event (state-refresh).
+  window._hsDataCache = window._hsDataCache || null;
+  window._hsFetchPromise = window._hsFetchPromise || null;
+  function _hsFetch() {
+    if (window._hsDataCache) return Promise.resolve(window._hsDataCache);
+    if (window._hsFetchPromise) return window._hsFetchPromise;
+    if (typeof window._pulseCallable !== 'function') return Promise.resolve(null);
+    window._hsFetchPromise = window._pulseCallable('hubspotGetData', {})
+      .then(res => {
+        const d = (res && res.data && res.data.hubspotData) || null;
+        window._hsDataCache = d;
+        window._hsFetchPromise = null;
+        if (d) console.info('[pulse-shim] HubSpot data loaded — owners:' + Object.keys(d.owners||{}).length + ', deals across owners:' + Object.values(d.dealsByOwner||{}).reduce((s, a) => s + a.length, 0));
+        return d;
+      })
+      .catch(err => {
+        console.warn('[pulse-shim] HubSpot fetch failed:', err.message);
+        window._hsFetchPromise = null;
+        return null;
+      });
+    return window._hsFetchPromise;
+  }
+  // Kick off fetch as early as possible (independent of data-shim run).
+  // First call happens here at script load; result lands by the time the
+  // shim's main run() executes (Babel compile takes 5-15s, fetch ~1s).
+  _hsFetch().then(function (d) {
+    if (!d) return;
+    // If the data-shim already mapped with 0 tours (data wasn't cached
+    // at mapping time), trigger a one-time soft reload to pick up the
+    // values. sessionStorage flag prevents reload loops within a tab.
+    try {
+      if (!sessionStorage.getItem('hs_data_loaded_v1')) {
+        sessionStorage.setItem('hs_data_loaded_v1', '1');
+        setTimeout(function () {
+          console.info('[pulse-shim] HubSpot data arrived after first map — reloading once');
+          location.reload();
+        }, 800);
+      }
+    } catch (e) { /* sessionStorage blocked — skip */ }
+  });
+
+  // Helpers used in the per-user mapper below.
+  function _hsThisYm() {
+    const d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  }
+  window._hsToursForEmail = function (email, kind) {
+    if (!window._hsDataCache || !email) return 0;
+    const tbm = window._hsDataCache.toursByMonth || {};
+    const m = tbm[email] || {};
+    const cur = m[_hsThisYm()] || {};
+    return cur[kind] || 0;
+  };
+  window._hsSignsForEmail = function (email) {
+    if (!window._hsDataCache || !email) return 0;
+    const sbm = window._hsDataCache.signsByMonth || {};
+    const m = sbm[email] || {};
+    return m[_hsThisYm()] || 0;
+  };
+
+
   // ---------- Utilities ----------
   function hashStr(s) {
     let h = 0;
@@ -938,13 +1002,19 @@
         // employee-detail Calls tab. data-shim уже капает stats; полный
         // список нужен UI render'у для audio player + tenant chip.
         _callActivity: Array.isArray(callActivityByEmail[emailLower]) ? callActivityByEmail[emailLower].slice().sort((a, b) => (b.ts || 0) - (a.ts || 0)) : [],
-        // Phase 17 — Tours назначенные / проведённые. Источник —
-        // HubSpot CRM (meetings + deal stages). Интеграция ещё не
-        // подключена; пока заглушка 0 для всех real users. Когда
-        // HubSpot wired up, fill from hubspotMeetingsByEmail map.
-        toursScheduled: 0,
-        toursCompleted: 0,
-        _toursMock: true, // флаг для UI — показать «pending HubSpot».
+        // Phase 19 — Tours scheduled / conducted из HubSpot. CF
+        // hubspotSync (every 30min) пишет данные в /workspaces/{wid}/
+        // data/hubspot; data-shim читает их через _hsDataCache (см.
+        // верх файла) и наполняет per-email из toursByMonth (sum за
+        // текущий месяц). Если данные не загружены — fallback на 0 +
+        // _toursMock=true (UI покажет «pending HubSpot»).
+        toursScheduled: _hsToursForEmail(emailLower, 'scheduled'),
+        toursCompleted: _hsToursForEmail(emailLower, 'conducted'),
+        _toursMock: !window._hsDataCache,
+        // Bonus — total signs from HubSpot (signed deals for the month).
+        hubspotSignsThisMonth: _hsSignsForEmail(emailLower),
+        // Tour-stage deal count для conversion metrics.
+        hubspotPipelineDeals: (window._hsDataCache?.dealsByOwner?.[emailLower] || []).length,
         score: scoreFinal,
         prev: 0, // historical previous-period score requires daily snapshots (Phase 15)
         unusual: realActions === 0 && status !== 'offline',

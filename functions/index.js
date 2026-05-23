@@ -7148,6 +7148,7 @@ exports.adminRunSnapshot = _snap.adminRunSnapshot;
 const _hs = require('./hubspot-sync');
 exports.hubspotSync = _hs.hubspotSync;
 exports.hubspotSyncNow = _hs.hubspotSyncNow;
+exports.hubspotGetData = _hs.hubspotGetData;
 
 // Phase 14 — Google Calendar polling. Requires operator to add
 // `https://www.googleapis.com/auth/calendar.events.readonly` scope to

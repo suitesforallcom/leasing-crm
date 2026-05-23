@@ -411,3 +411,20 @@ exports.hubspotSyncNow = onCall(
     return { ok: true, counts };
   }
 );
+
+// =========================================================================
+// Read — any authed user can fetch hubspotData. Used by Pulse data-shim
+// to populate toursScheduled/toursCompleted per manager without bundling
+// the doc into the main state (which would blow the 1MB Firestore cap).
+// =========================================================================
+exports.hubspotGetData = onCall(
+  { timeoutSeconds: 30 },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError('unauthenticated', 'Sign in required');
+    }
+    const snap = await db.doc(`workspaces/${WORKSPACE_ID}/data/hubspot`).get();
+    if (!snap.exists) return { hubspotData: null };
+    return { hubspotData: snap.data().hubspotData || null };
+  }
+);
