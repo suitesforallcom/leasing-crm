@@ -183,16 +183,36 @@ function _buildAggregates(owners, pipelines, deals, meetings) {
   // meetingsByOwner: email → [meeting]
   // toursByMonth: email → ym → { scheduled, conducted }
   // dealsByStage: email → stageId → count
+  // signsByMonth: email → ym → count (deals in won/contract stage)
   const dealsByOwner = {};
   const meetingsByOwner = {};
   const toursByMonth = {};
   const dealsByStage = {};
+  const signsByMonth = {};
 
   // Stage label lookup — combine across all pipelines.
   const stageLabels = {};
+  const stageMeta = {};  // id → { isScheduledTour, isPastTour, isSigned, label }
   for (const p of Object.values(pipelines)) {
-    for (const s of p.stages) stageLabels[s.id] = { label: s.label, pipeline: p.id };
+    for (const s of p.stages) {
+      stageLabels[s.id] = { label: s.label, pipeline: p.id };
+      const lbl = (s.label || '').toLowerCase();
+      stageMeta[s.id] = {
+        label: s.label,
+        // «Scheduled a tour», «booked tour», «tour scheduled»
+        isScheduledTour: /\b(scheduled|booked|book)\b.*\btour\b|\btour\b.*\b(scheduled|booked)\b/.test(lbl),
+        // «Was on tour», «tour done», «toured», «showed»
+        isPastTour: /\bwas on tour\b|\btour(ed| done)\b|\bshowed\b|\bshowing complete\b/.test(lbl),
+        // «Contract», «closed won», «signed», «lease signed»
+        isSigned: /\bcontract\b|\bclosed.?won\b|\bsigned\b|\blease.?signed\b/.test(lbl),
+      };
+    }
   }
+  // Any stage that matches tour heuristic counts as «tour activity».
+  const isTourStage = (stageId) => {
+    const m = stageMeta[stageId];
+    return !!(m && (m.isScheduledTour || m.isPastTour));
+  };
 
   const ownerEmail = (id) => (owners[id] && owners[id].email) || null;
 
@@ -200,13 +220,35 @@ function _buildAggregates(owners, pipelines, deals, meetings) {
     const email = ownerEmail(d.ownerId);
     if (!email) continue;
     if (!dealsByOwner[email]) dealsByOwner[email] = [];
-    const stageLabel = stageLabels[d.stage]?.label || d.stage;
-    dealsByOwner[email].push({ ...d, stageLabel });
+    const meta = stageMeta[d.stage] || {};
+    dealsByOwner[email].push({ ...d, stageLabel: meta.label || d.stage });
 
     if (!dealsByStage[email]) dealsByStage[email] = {};
     dealsByStage[email][d.stage] = (dealsByStage[email][d.stage] || 0) + 1;
+
+    // Tours per month — by createdAt for scheduledTour stage, lastMod
+    // for pastTour stage. Best proxy without stage-history pull.
+    if (isTourStage(d.stage)) {
+      const tourDate = meta.isPastTour ? (d.lastMod || d.createdAt) : (d.createdAt || d.lastMod);
+      if (tourDate) {
+        const ym = String(tourDate).slice(0, 7);
+        if (!toursByMonth[email]) toursByMonth[email] = {};
+        if (!toursByMonth[email][ym]) toursByMonth[email][ym] = { scheduled: 0, conducted: 0 };
+        toursByMonth[email][ym].scheduled++;
+        if (meta.isPastTour) toursByMonth[email][ym].conducted++;
+      }
+    }
+
+    // Signs per month — deals that reached signed stage.
+    if (meta.isSigned && (d.closedAt || d.lastMod)) {
+      const ym = String(d.closedAt || d.lastMod).slice(0, 7);
+      if (!signsByMonth[email]) signsByMonth[email] = {};
+      signsByMonth[email][ym] = (signsByMonth[email][ym] || 0) + 1;
+    }
   }
 
+  // Meetings — augment with title-based tour detection (catches the
+  // «Tour - <name>» pattern even if deal isn't linked to a tour stage).
   for (const m of meetings) {
     const email = ownerEmail(m.ownerId);
     if (!email) continue;
@@ -218,7 +260,6 @@ function _buildAggregates(owners, pipelines, deals, meetings) {
       if (!toursByMonth[email]) toursByMonth[email] = {};
       if (!toursByMonth[email][ym]) toursByMonth[email][ym] = { scheduled: 0, conducted: 0 };
       toursByMonth[email][ym].scheduled++;
-      // «conducted» heuristic: outcome explicitly set OR ts in past.
       const tsMs = new Date(m.ts).getTime();
       if (m.outcome || (tsMs && tsMs < Date.now())) {
         toursByMonth[email][ym].conducted++;
@@ -226,7 +267,7 @@ function _buildAggregates(owners, pipelines, deals, meetings) {
     }
   }
 
-  return { dealsByOwner, meetingsByOwner, toursByMonth, dealsByStage };
+  return { dealsByOwner, meetingsByOwner, toursByMonth, dealsByStage, signsByMonth, stageMeta };
 }
 
 // =========================================================================
@@ -265,7 +306,9 @@ async function _runSync({fullSync = false} = {}) {
     dealsByOwner: { ...(prevHs.dealsByOwner || {}), ...aggregates.dealsByOwner },
     meetingsByOwner: { ...(prevHs.meetingsByOwner || {}), ...aggregates.meetingsByOwner },
     toursByMonth: _mergeToursByMonth(prevHs.toursByMonth || {}, aggregates.toursByMonth),
+    signsByMonth: _mergeToursByMonth(prevHs.signsByMonth || {}, aggregates.signsByMonth || {}),
     dealsByStage: { ...(prevHs.dealsByStage || {}), ...aggregates.dealsByStage },
+    stageMeta: aggregates.stageMeta || prevHs.stageMeta || {},
   };
 
   // Trim deals + meetings to last 90 per owner to stay under 1MB. Tours
