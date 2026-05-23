@@ -3195,6 +3195,22 @@ exports.runAutoInvoices = onSchedule(
             u.stripe.lastInvoiceYm = nextYm;
             sent++;
             logger.info(`[auto-invoice] sent to ${u.email} (${u.id}) · $${rent} · ${nextYm}`);
+            // Audit (Tony 2026-05-23 Phase 2): per-invoice trail so the Unit
+            // Activity tab shows «Auto-invoice sent» events alongside manual
+            // sends. Fire-and-forget — never block the cron if audit fails.
+            try {
+              await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+                action: 'invoice.auto-sent',
+                ts: Date.now(),
+                buildingId: b.id, floorId: f.id, unitId: u.id,
+                invoiceId: inv.id, ym: nextYm,
+                amount: rent,
+                actor: 'system:auto-billing-cron',
+                note: `Auto-invoice sent for ${nextYm} · $${rent}`,
+              });
+            } catch (auditErr) {
+              logger.warn(`[auto-invoice] audit-write failed for ${u.id}: ${auditErr.message}`);
+            }
           } catch (err) {
             failed++;
             logger.error(`[auto-invoice] ${u.id} failed:`, err.message || err);
@@ -3619,6 +3635,22 @@ async function _runAutoLateFeesHandler(opts) {
             u.stripe.lateFeeSent[o.ym] = inv.id;
             sent++;
             logger.info(`[auto-late-fee] sent to ${u.email} (${u.id}/${o.ym}) · $${o.fee.toFixed(2)} · ${inv.id}`);
+            // Audit per-fee assessed (Tony Phase 2). Unit Activity tab will
+            // show «Late fee assessed» events with amount + ym + invoiceId.
+            try {
+              await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+                action: 'late-fee.assessed',
+                ts: Date.now(),
+                buildingId: b.id, floorId: f.id, unitId: u.id,
+                invoiceId: inv.id, ym: o.ym,
+                amount: o.fee, baseAmount: o.base,
+                feeType: cfg.type, feeAmount: cfg.amount,
+                actor: 'system:auto-late-fee-cron',
+                note: `Late fee assessed for ${o.ym}: $${o.fee.toFixed(2)} (base $${o.base})`,
+              });
+            } catch (auditErr) {
+              logger.warn(`[auto-late-fee] audit-write failed for ${u.id}/${o.ym}: ${auditErr.message}`);
+            }
           } catch (err) {
             failed++;
             logger.error(`[auto-late-fee] ${u.id}/${o.ym} failed:`, err.message || err);
