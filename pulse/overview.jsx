@@ -483,13 +483,26 @@ function HubspotInsights({ users }) {
     for (const [stageId, count] of Object.entries(stageMap)) {
       const m = stageMeta[stageId];
       if (!m) continue;
-      if (m.isScheduledTour) funnel.scheduledTour += count;
-      else if (m.isPastTour) funnel.pastTour += count;
-      else if (m.isSigned)   funnel.signed += count;
-      else                   funnel.inquiry += count;
+      if (m.isSigned)             funnel.signed += count;
+      else if (m.isPastTour)      funnel.pastTour += count;
+      else if (m.isScheduledTour) funnel.scheduledTour += count;
+      else if (m.isLost)          { /* lost is excluded from funnel */ }
+      else                        funnel.inquiry += count;
     }
   }
   const funnelTotal = funnel.inquiry + funnel.scheduledTour + funnel.pastTour + funnel.signed;
+  // Stage diagnostics from CF — array of { stageId, label, bucket, deals, isWon }
+  // Used for the "stage breakdown" collapsible at the bottom and the
+  // "no signs detected" warning. Falsy means CF hasn't synced the new
+  // hubspot-sync.js code yet.
+  const stageDiag = hs.stageDiagnostics || [];
+  const diagByBucket = { signed: [], pastTour: [], scheduledTour: [], inquiry: [], lost: [] };
+  for (const d of stageDiag) {
+    if (diagByBucket[d.bucket]) diagByBucket[d.bucket].push(d);
+  }
+  // Warning: looks like the pipeline isn't classifying signed deals
+  // correctly. Show a hint to Tony so he can rename stages or report.
+  const shouldWarnNoSigns = funnelTotal >= 10 && funnel.signed === 0;
 
   // Pipeline forecasting — naive historical conv rate.
   const totalToursLast3 = ownerStats.reduce((s, o) => s + (o.sparkline[3] + o.sparkline[4] + o.sparkline[5]), 0) || 1;
@@ -538,6 +551,20 @@ function HubspotInsights({ users }) {
           Open in HubSpot ↗
         </a>
       </div>
+
+      {/* Warning banner — pipeline stages don't seem to include signed/won.
+          Likely a custom HubSpot pipeline with unusual stage names.
+          Tony can open the diagnostics collapsible below to see what's
+          actually being captured and rename stages in HubSpot if needed. */}
+      {shouldWarnNoSigns && (
+        <div style={{
+          padding: "8px 12px", marginBottom: 12, borderRadius: 6,
+          background: "rgba(245,158,11,.10)", borderLeft: "3px solid #d97706",
+          fontSize: 12, color: "var(--ink)",
+        }}>
+          <strong>No "signed" deals detected in the pipeline.</strong> Your HubSpot pipeline stages don't match standard closed-won patterns. Open <em>Stage breakdown</em> below to see what's classified where, or rename a stage in HubSpot to include "Contract", "Signed", "Won", or "Active Lease".
+        </div>
+      )}
 
       {/* 3-column grid: Funnel + Forecast + Alerts */}
       <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1.2fr", gap: 14, marginBottom: 14 }}>
@@ -631,6 +658,53 @@ function HubspotInsights({ users }) {
           </div>
         ))}
       </div>
+
+      {/* Stage breakdown — collapsible. Shows EVERY pipeline stage seen
+          (with at least 1 deal) grouped by detected bucket. Lets Tony
+          eyeball which stages aren't classified as expected and either
+          rename them in HubSpot or report it back so we can extend the
+          regex in functions/hubspot-sync.js. */}
+      {stageDiag.length > 0 && (
+        <details style={{ marginTop: 14, fontSize: 12 }}>
+          <summary style={{ cursor: "pointer", color: "var(--muted)", padding: "6px 0", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em" }}>
+            🔎 Stage breakdown · how funnel was classified ({stageDiag.length} stages with deals)
+          </summary>
+          <div style={{ marginTop: 8, padding: "8px 10px", background: "var(--surface-2)", borderRadius: 6 }}>
+            {[
+              { key: "signed", label: "Signed / contract", color: "#16a34a" },
+              { key: "pastTour", label: "Tour done", color: "#a16207" },
+              { key: "scheduledTour", label: "Tour scheduled", color: "#3b82f6" },
+              { key: "inquiry", label: "Inquiry / other", color: "#6b7280" },
+              { key: "lost", label: "Lost / disqualified (excluded from funnel)", color: "#9ca3af" },
+            ].map(b => {
+              const rows = diagByBucket[b.key];
+              if (!rows || rows.length === 0) return null;
+              return (
+                <div key={b.key} style={{ marginBottom: 8 }}>
+                  <div style={{ fontWeight: 700, color: b.color, fontSize: 11.5, marginBottom: 4 }}>
+                    {b.label} · {rows.reduce((s, r) => s + r.deals, 0)} deals
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {rows.map(r => (
+                      <span key={r.stageId} style={{
+                        padding: "3px 7px", borderRadius: 4, background: "var(--surface)",
+                        border: "1px solid var(--border)", fontSize: 11.5, color: "var(--ink)",
+                      }} title={r.isWon ? "Marked as Won by HubSpot" : (r.isClosed ? "Marked as Closed by HubSpot" : "")}>
+                        {r.label} <span className="mono" style={{ color: "var(--muted)", marginLeft: 4 }}>{r.deals}</span>
+                        {r.isWon && <span style={{ marginLeft: 4 }}>★</span>}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8, paddingTop: 8, borderTop: "1px dashed var(--border)" }}>
+              ★ = HubSpot's "Won" flag. Stages with this flag count as signed regardless of name.
+              To reclassify, rename the stage in HubSpot or ping engineering to extend the detection regex.
+            </div>
+          </div>
+        </details>
+      )}
     </div>
   );
 }

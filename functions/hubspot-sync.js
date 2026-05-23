@@ -191,20 +191,59 @@ function _buildAggregates(owners, pipelines, deals, meetings) {
   const signsByMonth = {};
 
   // Stage label lookup — combine across all pipelines.
+  // Detection strategy (in priority order):
+  //   1. Pipeline metadata: isWon === true → isSigned (HubSpot's ground truth)
+  //   2. isClosed && !isWon → isLost (excluded from funnel)
+  //   3. Label regex — broad patterns covering leasing/sales vocabularies
+  // We rerun regex even when metadata says won, so isSigned is always set
+  // when EITHER the label matches OR HubSpot marked the stage won.
   const stageLabels = {};
-  const stageMeta = {};  // id → { isScheduledTour, isPastTour, isSigned, label }
+  const stageMeta = {};  // id → { isScheduledTour, isPastTour, isSigned, isLost, label }
   for (const p of Object.values(pipelines)) {
     for (const s of p.stages) {
       stageLabels[s.id] = { label: s.label, pipeline: p.id };
       const lbl = (s.label || '').toLowerCase();
+      // ВНИМАНИЕ: регэксы расширены 2026-05-23 — раньше детектились только
+      // буквальные «contract / closed-won / signed», что для кастомных
+      // pipelines типа «Active Lease», «Moved In», «Executed» давало 0
+      // подписей в воронке. Теперь покрываем стандартные шаблоны HubSpot
+      // CRM + типичные leasing-pipeline стадии.
+      const isScheduledTour =
+        // «Scheduled a tour», «booked tour», «tour scheduled», «book tour»
+        /\b(scheduled|booked|book|booking|set up|set|arrange|arranged)\b.*\btour\b/.test(lbl) ||
+        /\btour\b.*\b(scheduled|booked|set|pending|upcoming)\b/.test(lbl) ||
+        // «Appointment scheduled» (default HubSpot stage) → counts as tour
+        /\bappointment\b.*\b(scheduled|booked)\b/.test(lbl) ||
+        // «Tour» followed by nothing else (a stage just called «Tour»)
+        /^tour$/.test(lbl);
+      const isPastTour =
+        // «Was on tour», «tour done», «toured», «showed», «showing complete»
+        /\bwas on tour\b|\btour(ed| done| complete|s? complete)\b|\bshow(ed|ing complete|n)\b/.test(lbl) ||
+        // «Toured», «Post-tour», «Tour follow-up», «After tour»
+        /\b(post|after)\b.*\btour\b|\btour\b.*\b(follow.?up|completed|finished)\b/.test(lbl) ||
+        // «Decision maker bought-in» (HubSpot default — post-presentation)
+        /\bdecision\b.*\b(maker|bought)\b/.test(lbl) ||
+        // «Presentation scheduled / done» → treat as past-tour for office leasing
+        /\bpresentation\b/.test(lbl);
+      // ground-truth from HubSpot pipeline metadata
+      const won = !!(s.metadata && s.metadata.probability === '1.0');
+      const closed = !!(s.metadata && s.metadata.isClosed === 'true');
+      const isSignedByLabel =
+        // «Contract», «closed won», «signed», «lease signed», «executed»
+        /\b(contract|closed.?won|signed|sign(ing|ed)?|lease.?(signed|active|executed)|executed|moved.?in|active.?(lease|tenant)|tenant|won)\b/.test(lbl) ||
+        // «Application accepted/approved», «Approved», «Move-in scheduled»
+        /\b(application|app)\b.*\b(approved|accepted|signed)\b/.test(lbl) ||
+        /\bmove.?in\b/.test(lbl);
       stageMeta[s.id] = {
         label: s.label,
-        // «Scheduled a tour», «booked tour», «tour scheduled»
-        isScheduledTour: /\b(scheduled|booked|book)\b.*\btour\b|\btour\b.*\b(scheduled|booked)\b/.test(lbl),
-        // «Was on tour», «tour done», «toured», «showed»
-        isPastTour: /\bwas on tour\b|\btour(ed| done)\b|\bshowed\b|\bshowing complete\b/.test(lbl),
-        // «Contract», «closed won», «signed», «lease signed»
-        isSigned: /\bcontract\b|\bclosed.?won\b|\bsigned\b|\blease.?signed\b/.test(lbl),
+        isScheduledTour,
+        isPastTour,
+        // SIGNED = HubSpot's «isWon» metadata OR label matches signed patterns
+        isSigned: won || isSignedByLabel,
+        // LOST = closed but not won — excluded from funnel entirely
+        isLost: closed && !won && /\b(lost|disqual|unqual|dead|ghosted|no.?response|not.?interested)\b/.test(lbl),
+        isWon: won,
+        isClosed: closed,
       };
     }
   }
@@ -270,6 +309,44 @@ function _buildAggregates(owners, pipelines, deals, meetings) {
   return { dealsByOwner, meetingsByOwner, toursByMonth, dealsByStage, signsByMonth, stageMeta };
 }
 
+// Compute stage diagnostics from the (potentially merged) dealsByStage +
+// stageMeta. Used to show «which stage labels landed in which bucket» as
+// a tooltip in the Pulse UI so we can debug «why is the signed count 0».
+// Called AFTER incremental merge so the deal counts reflect the full
+// known pipeline state, not just the 24h delta.
+function _buildStageDiagnostics(stageMeta, dealsByStage) {
+  const stageDealCounts = {};  // stageId → total deals across owners
+  for (const stageMap of Object.values(dealsByStage || {})) {
+    for (const [stageId, n] of Object.entries(stageMap)) {
+      stageDealCounts[stageId] = (stageDealCounts[stageId] || 0) + n;
+    }
+  }
+  const out = [];
+  for (const [stageId, m] of Object.entries(stageMeta || {})) {
+    const count = stageDealCounts[stageId] || 0;
+    if (count === 0) continue;  // skip stages with zero observed deals
+    let bucket = 'inquiry';
+    if (m.isScheduledTour) bucket = 'scheduledTour';
+    else if (m.isPastTour) bucket = 'pastTour';
+    else if (m.isSigned) bucket = 'signed';
+    else if (m.isLost) bucket = 'lost';
+    out.push({
+      stageId,
+      label: m.label,
+      bucket,
+      deals: count,
+      isWon: !!m.isWon,
+      isClosed: !!m.isClosed,
+    });
+  }
+  const bucketOrder = { signed: 0, pastTour: 1, scheduledTour: 2, inquiry: 3, lost: 4 };
+  out.sort((a, b) => {
+    const d = bucketOrder[a.bucket] - bucketOrder[b.bucket];
+    return d !== 0 ? d : (b.deals - a.deals);
+  });
+  return out;
+}
+
 // =========================================================================
 // Main sync — orchestrate fetch + aggregate + write.
 // =========================================================================
@@ -310,6 +387,10 @@ async function _runSync({fullSync = false} = {}) {
     dealsByStage: { ...(prevHs.dealsByStage || {}), ...aggregates.dealsByStage },
     stageMeta: aggregates.stageMeta || prevHs.stageMeta || {},
   };
+  // Stage diagnostics — computed from merged dealsByStage + stageMeta so
+  // the counts reflect every pipeline stage we've seen, not just deals
+  // modified in the last 24h.
+  merged.stageDiagnostics = _buildStageDiagnostics(merged.stageMeta, merged.dealsByStage);
 
   // Trim deals + meetings to last 90 per owner to stay under 1MB. Tours
   // counts (toursByMonth) preserve the aggregates even for trimmed data.
