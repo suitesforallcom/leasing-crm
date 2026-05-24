@@ -60,6 +60,40 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 31. HubSpot sync — funnel/qualified/owner detection invariants (2026-05-24)
+
+- **Status:** active
+- **Branch / commit:** `claude/modest-curie-8a50ad` (commits `a9cc8c3`, `6e4b9a9`, `78b1f75`, `3139657` + this entry)
+- **Area:** HubSpot integration / Pulse Activity Center / Funnel analytics
+- **Files:**
+  - `functions/hubspot-sync.js` (`_buildAggregates`, `_fetchOwners`, `_fetchDeals`, `_fetchMeetings`, `_runSync`, `_buildStageDiagnostics`)
+  - `pulse/overview.jsx` (HubspotInsights panel)
+  - `pulse/data-shim.jsx` (HubSpot cache helpers)
+  - `floor-map-editor.html` (`_hsContactLookup`, `_renderProspectCard` HubSpot owner chip)
+- **Functions / invariants:**
+  - `_fetchOwners` — MUST fetch BOTH active and archived owners (two API calls: `?archived=false`, `?archived=true`, merged). Without archived owners, 90%+ of historical deals' `hubspot_owner_id` points to an unknown owner and the deal gets silently dropped.
+  - `_buildAggregates` — orphan deals (no resolvable owner email) MUST be bucketed under the sentinel key `'_unowned'`, NOT skipped via `continue`. Funnel sums `dealsByStage` across ALL email keys (including `_unowned`) so the total reflects every deal in the fetched window.
+  - `_runSync` — deals + meetings MUST always be fetched in full (`sinceMs: null`), regardless of `fullSync` flag. The merge of `dealsByStage` is a shallow per-email spread (`{...prev[email], ...new[email]}`) which REPLACES the per-owner stage map, not extends it — so an incremental sync that only sees last-24h deals would WIPE the accumulated pipeline state on merge, leaving the funnel showing 2 deals instead of 2000. Contacts STAY gated behind `fullSync` (they're heavy: ~3K contacts = ~30 API calls + 200ms throttle; ownership rarely changes).
+  - Qualified-stage detection — two-pass: FIRST reject negative outcome labels (`/\bnot interested|wrong area|wrong number|no answer|didn't request|...|ghosted|spam\b/`), THEN match positive qualified patterns (`/\bqualif|interested|warm|engaged|responded to|presentation sent\b/`). Single-pass would match `interested` inside `not interested` and inflate Qualified by ~25%.
+  - Signed-stage detection — uses HubSpot pipeline metadata `probability === '1.0'` (isWon) as ground truth, OR label regex. Either signal flips `isSigned: true`.
+  - `_buildStageDiagnostics` — includes ALL stages from `stageMeta` (including stages with 0 deals); UI flags `empty: true` and renders as dashed-border chip so the operator can spot configured-but-unused stages (e.g. «Contract» stage exists but operators never move deals there because signing happens in SuitesForAll).
+  - `contactByEmail` map — compact form `{i, o, s}` (contactId, ownerId, lifecycleStage). DON'T expand to object-with-full-keys: 5K contacts × ~30 byte savings per entry = ~150 KB headroom under Firestore's 1MB doc cap.
+- **Bug it fixed:**
+  1. **Regex too narrow.** Original `isSigned` regex `/\b(contract|closed.?won|signed|lease.?signed)\b/` missed «Closed Won» / «Active Lease» / «Moved In» / «Executed» — Tony's pipeline labels and HubSpot defaults. Funnel showed 0 signed even when stages were named correctly. **Fix:** broadened regex + added isWon metadata fallback.
+  2. **Qualified bucket misclassification.** «Call answered - not interested» (194 deals) matched the `interested` regex and landed in Qualified, inflating that bucket from 557 → 749 and undercounting Inquiry. **Fix:** two-pass detection (negative outcomes first).
+  3. **Archived-owner deals silently dropped.** `_fetchOwners` only returned active owners → 90% of historical deals had `hubspot_owner_id` pointing to an offboarded rep → `_buildAggregates` skipped them with `if (!email) continue`. After fullSync, funnel showed 89 deals instead of 2000. **Fix:** fetch BOTH active+archived owners AND bucket truly-unowned deals under `'_unowned'` instead of dropping.
+  4. **Incremental sync wiped pipeline state.** Scheduled hubspotSync (every 30 min) fetched only last-24h deals (`sinceMs = 24h`), then `_buildAggregates` produced `dealsByStage[email] = { stageX: 2 }`, then merge `{...prev[email], ...new[email]}` REPLACED the full pipeline counts. Within 30 minutes of a fullSync, funnel collapsed to ~2 deals. **Fix:** always fetch all deals/meetings, gate only contacts behind fullSync.
+- **Verification:**
+  1. Trigger fullSync from a logged-in browser: `await window.stripeCallable('hubspotSyncNow')({fullSync: true})`. Expected counts: `{contacts: ~3000, deals: 2000, meetings: 8, owners: 15, pipelines: 3}` — note `owners >= 15` confirms archived owners are included.
+  2. After a normal scheduled sync (wait 30 min), refresh Pulse and check funnel totals: `funnel.inquiry + funnel.qualified + funnel.scheduledTour + funnel.pastTour + funnel.signed` MUST stay close to total deal count (currently ~2000). Drop below ~500 = scheduled-sync regression.
+  3. In Pulse console: `(() => { const dbs = window._hsDataCache.dealsByStage; let total=0; for (const m of Object.values(dbs)) for (const n of Object.values(m)) total += n; return total; })()` — expect ~2000.
+  4. Stage breakdown collapsible MUST list both populated stages (solid chips) AND configured-but-empty stages (dashed chips). Currently expect 26 populated + 9 empty.
+  5. Floor-map prospect card with email matching a HubSpot contact MUST render the orange `prospect-contact-hubspot` chip (`🎯 <ownerFirstName>`). Test by calling `window._renderProspectCard(p, u, b, f, false)` on any prospect whose email appears in `_hsDataCache.contactByEmail` — output HTML MUST contain `prospect-contact-hubspot`.
+- **Regression test:** none — relies on live HubSpot data and a logged-in Pulse session. The detection regexes are greppable: predeploy `scripts/check-invariants.sh` could add a check that `functions/hubspot-sync.js` contains the negative-outcome guard (`isNegativeOutcome`) and the orphan bucket (`'_unowned'`) but is not currently gated.
+- **Related PR / issue:** none (direct commits on `claude/modest-curie-8a50ad`)
+
+---
+
 ### 30. Multi-month advance prepayment — anti-double-billing invariants (2026-05-21)
 
 - **Status:** active

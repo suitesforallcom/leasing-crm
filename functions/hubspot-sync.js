@@ -425,8 +425,19 @@ async function _runSync({fullSync = false} = {}) {
   if (!token) {
     throw new Error('HUBSPOT_TOKEN secret not bound — check function deployment');
   }
-  // Incremental: only events modified in last 24h. Full sync: all data.
-  const sinceMs = fullSync ? null : (Date.now() - 24 * 60 * 60 * 1000);
+  // 2026-05-24 fix — incremental sinceMs filter was breaking the funnel.
+  // _buildAggregates emits dealsByStage as { email: { stageId: count } },
+  // and _runSync's merge is a SHALLOW object spread per email:
+  //   { ...prev[email], ...new[email] }
+  // which REPLACES the per-email stage counts with whatever fresh data
+  // saw in the last 24h. Result: after every 30-min scheduled sync the
+  // funnel showed just the last 24h of deal activity (~2 deals) instead
+  // of the full pipeline state (~2000 deals).
+  //
+  // Fix: always pull ALL deals + meetings, every sync. They're light
+  // (deals: 2000 paginated = 20 API calls, ~3s; meetings: <100 = 1 call).
+  // Contacts STAY gated behind fullSync since they're heavy (~2871 = 30
+  // calls + 200ms throttle = ~6s and they rarely change ownership).
   const t0 = Date.now();
   // Sequential — Promise.all hammered the rate-limit (15K req/5s per
   // service is generous but 4 parallel paginated loops collide).
@@ -434,9 +445,12 @@ async function _runSync({fullSync = false} = {}) {
   await _sleep(200);
   const pipelines = await _fetchPipelines(token);
   await _sleep(200);
-  const deals = await _fetchDeals(token, { sinceMs });
+  const deals = await _fetchDeals(token, { sinceMs: null });
   await _sleep(200);
-  const meetings = await _fetchMeetings(token, { sinceMs });
+  const meetings = await _fetchMeetings(token, { sinceMs: null });
+  // Kept for legacy logging / contacts gating; previously also fed the
+  // deals/meetings filter (no longer).
+  const sinceMs = fullSync ? null : (Date.now() - 24 * 60 * 60 * 1000);
   // Contacts — only on fullSync to limit API hits (60 paginated pages
   // = up to 6000 contacts, ~15s of wall-clock time at 200ms throttle).
   // Floor-map uses these for prospect→HubSpot deal-owner attribution.
