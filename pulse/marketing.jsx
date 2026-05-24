@@ -346,14 +346,43 @@ function SpendSection({ rows, totals }) {
   function makeJoinedRow(sourceKey, friendlyLabel, channelMatcher) {
     const src = sources[sourceKey];
     if (!src) return null;
-    // Aggregate daily → window totals. Falls back to src.totals if
-    // daily breakdown isn't present (legacy v1 ingest format).
+    // Aggregate daily → window totals. Three shapes supported:
+    //   1. Google Ads — src.daily = [{id, date, cost, ...}] (flat array)
+    //   2. Meta Ads  — src.accounts = [{id, name, daily: [...]}] (nested per acct)
+    //   3. Legacy v1 — src.totals only (no breakdown), show as-is
     let cost = 0, clicks = 0, impressions = 0, conversions = 0;
     let dailyRowsInWindow = 0;
+    let accountBreakdown = null; // for Meta drilldown
     const daily = Array.isArray(src.daily) ? src.daily : null;
-    if (daily && daily.length > 0) {
+    const accounts = Array.isArray(src.accounts) ? src.accounts : null;
+    if (accounts && accounts.length > 0) {
+      // Multi-account (Meta). Sum across all accounts' daily rows in window.
+      accountBreakdown = [];
+      for (const a of accounts) {
+        let aCost = 0, aClicks = 0, aImpr = 0, aConv = 0, aRows = 0;
+        if (Array.isArray(a.daily)) {
+          for (const d of a.daily) {
+            if (d.date >= windowStart && d.date <= windowEnd) {
+              aCost += d.cost || 0;
+              aClicks += d.clicks || 0;
+              aImpr += d.impressions || 0;
+              aConv += d.conversions || 0;
+              aRows++;
+            }
+          }
+        }
+        accountBreakdown.push({
+          id: a.id, name: a.name, currency: a.currency,
+          statusDesc: a.statusDesc, isRestricted: a.isRestricted,
+          cost: aCost, clicks: aClicks, impressions: aImpr, conversions: aConv,
+          dailyRowsInWindow: aRows, error: a.error || null,
+        });
+        cost += aCost; clicks += aClicks; impressions += aImpr; conversions += aConv;
+        dailyRowsInWindow += aRows;
+      }
+    } else if (daily && daily.length > 0) {
+      // Flat daily (Google Ads). Inclusive on both bounds.
       for (const d of daily) {
-        // Inclusive on both bounds (YYYY-MM-DD strings sort lexicographically).
         if (d.date >= windowStart && d.date <= windowEnd) {
           cost += d.cost || 0;
           clicks += d.clicks || 0;
@@ -392,8 +421,11 @@ function SpendSection({ rows, totals }) {
       label: friendlyLabel,
       campaigns: src.campaigns || [],
       campaignCount: src.campaignCount || (src.campaigns || []).length,
-      hasDaily: !!daily,
+      hasDaily: !!daily || !!accounts,
       dailyRowsInWindow,
+      accountBreakdown,                 // Meta only: per-account totals
+      accountCount: accounts ? accounts.length : null,
+      discoveredAccountCount: src.discoveredAccountCount || null,
       cost,
       clicks,
       impressions,
@@ -523,34 +555,9 @@ function SpendSection({ rows, totals }) {
           <HeaderTip label="Last sync" hint="When the spend data was last ingested. Google Ads Script runs hourly and POSTs to /marketingIngest. Fresh data appears here ~1 minute after the script run." />
         </div>
       </div>
-      {spendRows.map(r => {
-        const tsLabel = fmtIngestTs(r.ingestedAt);
-        const tsTooltip = r.ingestedAt
-          ? `Exact: ${new Date(r.ingestedAt).toLocaleString()}\nData window per script: last ${(spendRows[0]?.dateRange?.start || "?")} → ${(spendRows[0]?.dateRange?.end || "?")}`
-          : "";
-        return (
-          <div key={r.sourceKey} style={{ display: "grid", gridTemplateColumns: "1.4fr 90px 90px 90px 90px 90px 90px 140px", gap: 8, padding: "10px 14px", borderBottom: "1px solid var(--border)", alignItems: "center", fontSize: 12.5 }}>
-            <div>
-              <div style={{ fontWeight: 700 }}>{r.label}</div>
-              <div style={{ fontSize: 10.5, color: "var(--muted)" }}>
-                {r.campaignCount} campaigns · acct {r.accountId || "—"}
-                {r.hasDaily && r.dailyRowsInWindow > 0 && (
-                  <span style={{ marginLeft: 6 }} title="Number of daily rows pulled in the selected window">· {r.dailyRowsInWindow} daily rows</span>
-                )}
-              </div>
-            </div>
-            <div className="mono" style={{ textAlign: "right", fontWeight: 700 }} title={r.cost > 0 ? `$${r.cost.toFixed(2)} over ${windowLabel}` : "No spend in window"}>${r.cost.toFixed(0)}</div>
-            <div className="mono" style={{ textAlign: "right" }}>{r.clicks.toLocaleString()}</div>
-            <div className="mono" style={{ textAlign: "right", color: r.leads > 0 ? "var(--ink)" : "var(--muted)" }}>{r.leads.toLocaleString()}</div>
-            <div className="mono" style={{ textAlign: "right", fontWeight: 700, color: r.cpl > 0 ? "var(--ink)" : "var(--muted)" }} title={r.cpl > 0 ? `$${r.cost.toFixed(2)} ÷ ${r.leads} leads = $${r.cpl.toFixed(2)} per lead` : ""}>{r.cpl > 0 ? "$" + r.cpl.toFixed(0) : "—"}</div>
-            <div className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>{r.cpc > 0 ? "$" + r.cpc.toFixed(2) : "—"}</div>
-            <div className="mono" style={{ textAlign: "right", fontWeight: 700, color: r.cac > 0 ? "var(--success-ink)" : "var(--muted)" }}>{r.cac > 0 ? "$" + r.cac.toFixed(0) : "—"}</div>
-            <div style={{ textAlign: "right", fontSize: 11, color: "var(--muted)" }} title={tsTooltip}>
-              {tsLabel}
-            </div>
-          </div>
-        );
-      })}
+      {spendRows.map(r => (
+        <SpendRow key={r.sourceKey} r={r} windowLabel={windowLabel} fmtIngestTs={fmtIngestTs} />
+      ))}
       {/* Per-campaign drilldown — collapsible */}
       {spendRows.some(r => r.campaigns.length > 0) && (
         <details style={{ padding: "10px 14px", fontSize: 12 }}>
@@ -672,6 +679,105 @@ function ChannelRow({ row, totalLeads }) {
   );
 }
 
+// One source row in SpendSection. For Meta (multi-account), supports
+// click-to-expand per-account breakdown.
+function SpendRow({ r, windowLabel, fmtIngestTs }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const tsLabel = fmtIngestTs(r.ingestedAt);
+  const tsTooltip = r.ingestedAt
+    ? `Exact: ${new Date(r.ingestedAt).toLocaleString()}\nData window per script: last ${(r.dateRange?.start || "?")} → ${(r.dateRange?.end || "?")}`
+    : "";
+  const hasAccounts = Array.isArray(r.accountBreakdown) && r.accountBreakdown.length > 0;
+  return (
+    <>
+      <div
+        style={{
+          display: "grid", gridTemplateColumns: "1.4fr 90px 90px 90px 90px 90px 90px 140px",
+          gap: 8, padding: "10px 14px", borderBottom: hasAccounts && expanded ? "none" : "1px solid var(--border)",
+          alignItems: "center", fontSize: 12.5,
+          cursor: hasAccounts ? "pointer" : "default",
+          background: hasAccounts && expanded ? "var(--surface-2)" : "transparent",
+        }}
+        onClick={() => hasAccounts && setExpanded(e => !e)}
+        title={hasAccounts ? "Click to expand per-account breakdown" : ""}
+      >
+        <div>
+          <div style={{ fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
+            {hasAccounts && (
+              <span style={{ fontSize: 10, color: "var(--muted)", width: 10 }}>
+                {expanded ? "▾" : "▸"}
+              </span>
+            )}
+            {r.label}
+          </div>
+          <div style={{ fontSize: 10.5, color: "var(--muted)" }}>
+            {hasAccounts ? (
+              <>
+                {r.accountCount} {r.accountCount === 1 ? "account" : "accounts"}
+                {r.discoveredAccountCount && r.discoveredAccountCount !== r.accountCount && (
+                  <span title="Total accounts discovered vs accounts enabled in Settings"> of {r.discoveredAccountCount}</span>
+                )}
+              </>
+            ) : (
+              <>{r.campaignCount} campaigns · acct {r.accountId || "—"}</>
+            )}
+            {r.hasDaily && r.dailyRowsInWindow > 0 && (
+              <span style={{ marginLeft: 6 }} title="Number of daily rows in the selected window">· {r.dailyRowsInWindow} daily rows</span>
+            )}
+          </div>
+        </div>
+        <div className="mono" style={{ textAlign: "right", fontWeight: 700 }} title={r.cost > 0 ? `$${r.cost.toFixed(2)} over ${windowLabel}` : "No spend in window"}>${r.cost.toFixed(0)}</div>
+        <div className="mono" style={{ textAlign: "right" }}>{r.clicks.toLocaleString()}</div>
+        <div className="mono" style={{ textAlign: "right", color: r.leads > 0 ? "var(--ink)" : "var(--muted)" }}>{r.leads.toLocaleString()}</div>
+        <div className="mono" style={{ textAlign: "right", fontWeight: 700, color: r.cpl > 0 ? "var(--ink)" : "var(--muted)" }} title={r.cpl > 0 ? `$${r.cost.toFixed(2)} ÷ ${r.leads} leads = $${r.cpl.toFixed(2)} per lead` : ""}>{r.cpl > 0 ? "$" + r.cpl.toFixed(0) : "—"}</div>
+        <div className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>{r.cpc > 0 ? "$" + r.cpc.toFixed(2) : "—"}</div>
+        <div className="mono" style={{ textAlign: "right", fontWeight: 700, color: r.cac > 0 ? "var(--success-ink)" : "var(--muted)" }}>{r.cac > 0 ? "$" + r.cac.toFixed(0) : "—"}</div>
+        <div style={{ textAlign: "right", fontSize: 11, color: "var(--muted)" }} title={tsTooltip}>
+          {tsLabel}
+        </div>
+      </div>
+      {/* Per-account drilldown when Meta row is expanded */}
+      {hasAccounts && expanded && (
+        <div style={{ background: "var(--surface-2)", borderBottom: "1px solid var(--border)", padding: "0 14px 10px 28px" }}>
+          <div style={{ fontSize: 10.5, color: "var(--muted)", padding: "0 0 6px 0", textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700 }}>
+            Per-account breakdown · sorted by spend
+          </div>
+          {[...r.accountBreakdown].sort((a, b) => b.cost - a.cost).map(a => (
+            <div key={a.id} style={{ display: "grid", gridTemplateColumns: "1.4fr 90px 90px 90px 90px 90px 90px 140px", gap: 8, padding: "6px 0", fontSize: 12, color: a.isRestricted ? "var(--muted)" : "var(--ink)", alignItems: "center", borderTop: "1px dashed var(--border)" }}>
+              <div>
+                <div style={{ fontWeight: 600 }}>
+                  {a.name}
+                  {a.isRestricted && (
+                    <span style={{ marginLeft: 6, fontSize: 10, padding: "1px 6px", borderRadius: 3, background: "rgba(239,68,68,.10)", color: "#9a3412", fontWeight: 600 }} title={"Status: " + (a.statusDesc || "Restricted")}>
+                      Restricted
+                    </span>
+                  )}
+                  {a.error && !a.isRestricted && (
+                    <span style={{ marginLeft: 6, fontSize: 10, color: "var(--danger-ink)" }} title={a.error}>⚠ error</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 10, color: "var(--muted)", fontFamily: "var(--font-mono)" }}>
+                  {a.id}{a.currency && a.currency !== "USD" ? ` · ${a.currency}` : ""}{a.dailyRowsInWindow > 0 ? ` · ${a.dailyRowsInWindow} daily rows` : ""}
+                </div>
+              </div>
+              <div className="mono" style={{ textAlign: "right", fontWeight: 600 }}>${a.cost.toFixed(0)}</div>
+              <div className="mono" style={{ textAlign: "right" }}>{a.clicks.toLocaleString()}</div>
+              <div className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>—</div>
+              <div className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>—</div>
+              <div className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>{a.clicks > 0 ? "$" + (a.cost / a.clicks).toFixed(2) : "—"}</div>
+              <div className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>—</div>
+              <div className="mono" style={{ textAlign: "right", fontSize: 10.5, color: "var(--muted)" }}>{a.conversions > 0 ? a.conversions + " conv" : ""}</div>
+            </div>
+          ))}
+          <div style={{ fontSize: 10.5, color: "var(--muted)", paddingTop: 8, fontStyle: "italic" }}>
+            «—» in CPL/CAC means leads aren't attributable per-account (HubSpot doesn't split PAID_SOCIAL by ad account). Toggle which accounts to include in <button onClick={(e) => { e.stopPropagation(); /* hook into settings */ }} style={{ background: "transparent", border: "none", color: "var(--accent-ink)", cursor: "pointer", textDecoration: "underline", padding: 0, font: "inherit" }}>Marketing Settings</button>.
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function IntegrationsStatus() {
   // Live status — derive from window._mkDataCache. Any source that has
   // POSTed within the last 2h shows «🟢 Connected». Stale > 2h shows
@@ -732,30 +838,202 @@ function IntegrationsStatus() {
       {integrations.map(it => {
         const s = badgeStyle[it.status] || badgeStyle['not-connected'];
         return (
-          <div key={it.key} style={{
-            display: 'grid', gridTemplateColumns: '1.5fr 1fr 2fr auto', gap: 12,
-            padding: '12px 14px', borderBottom: '1px solid var(--border)', alignItems: 'center',
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ fontSize: 18 }}>{it.icon}</span>
-              <span style={{ fontWeight: 600, fontSize: 13 }}>{it.name}</span>
+          <React.Fragment key={it.key}>
+            <div style={{
+              display: 'grid', gridTemplateColumns: '1.5fr 1fr 2fr auto', gap: 12,
+              padding: '12px 14px', borderBottom: '1px solid var(--border)', alignItems: 'center',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 18 }}>{it.icon}</span>
+                <span style={{ fontWeight: 600, fontSize: 13 }}>{it.name}</span>
+              </div>
+              <div>
+                <span style={{
+                  padding: '3px 10px', borderRadius: 999, fontSize: 11, fontWeight: 600,
+                  background: s.bg, color: s.fg, whiteSpace: 'nowrap',
+                }}>{s.label}</span>
+              </div>
+              <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>{it.hint}</div>
+              <a href={it.docsUrl} target="_blank" rel="noopener" className="btn is-small is-ghost" style={{ textDecoration: 'none', whiteSpace: 'nowrap' }}>
+                Docs ↗
+              </a>
             </div>
-            <div>
-              <span style={{
-                padding: '3px 10px', borderRadius: 999, fontSize: 11, fontWeight: 600,
-                background: s.bg, color: s.fg, whiteSpace: 'nowrap',
-              }}>{s.label}</span>
-            </div>
-            <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>{it.hint}</div>
-            <a href={it.docsUrl} target="_blank" rel="noopener" className="btn is-small is-ghost" style={{ textDecoration: 'none', whiteSpace: 'nowrap' }}>
-              Docs ↗
-            </a>
-          </div>
+            {/* Meta: inline Settings panel for per-account toggle */}
+            {it.key === 'meta' && <MetaAccountSettings />}
+          </React.Fragment>
         );
       })}
       <div style={{ padding: '10px 14px', fontSize: 11, color: 'var(--muted)', background: 'var(--surface-2)' }}>
         Integration credentials live in Firebase Secret Manager (not visible in this UI). To set up: ping engineering with «Marketing setup &lt;platform&gt;» — operator gets a guided checklist.
       </div>
+    </div>
+  );
+}
+
+/* ===================================================================
+   MetaAccountSettings — inline panel under the Meta integration row.
+   Renders the list of all DISCOVERED Meta ad accounts (auto-fetched
+   by meta-ads-sync CF) with checkboxes to enable/disable each, plus
+   a per-account text note (e.g. «Tampa office», «Sallyann's account»).
+   Saves via metaSettingsSet callable.
+
+   Visible only if discovery has run at least once (window._mkDataCache
+   has metaDiscoveredAccounts populated). Otherwise shows a hint to
+   wait for the next hourly sync OR trigger a manual sync.
+   =================================================================== */
+function MetaAccountSettings() {
+  const mk = window._mkDataCache;
+  const discovered = mk?.metaDiscoveredAccounts || [];
+  const settings = mk?.settings || {};
+  const initialEnabled = Array.isArray(settings.metaAdAccountIds)
+    ? new Set(settings.metaAdAccountIds.map(s => String(s)))
+    : null; // null = «all discovered enabled» default
+  const initialNotes = settings.metaAccountNotes || {};
+
+  const [open, setOpen] = React.useState(false);
+  const [enabled, setEnabled] = React.useState(initialEnabled);
+  const [notes, setNotes] = React.useState(initialNotes);
+  const [saving, setSaving] = React.useState(false);
+  const [saveMsg, setSaveMsg] = React.useState(null);
+
+  function isEnabled(id) {
+    if (!enabled) return true; // null = all enabled
+    return enabled.has(String(id));
+  }
+  function toggle(id) {
+    setEnabled(prev => {
+      const next = new Set(prev || discovered.map(a => String(a.id)));
+      const s = String(id);
+      if (next.has(s)) next.delete(s); else next.add(s);
+      return next;
+    });
+  }
+
+  async function save() {
+    if (typeof window._pulseCallable !== 'function') {
+      setSaveMsg({ kind: 'err', text: 'Firebase bridge not ready' });
+      return;
+    }
+    setSaving(true);
+    setSaveMsg(null);
+    try {
+      const ids = enabled ? Array.from(enabled) : discovered.map(a => String(a.id));
+      const res = await window._pulseCallable('metaSettingsSet', {
+        metaAdAccountIds: ids,
+        metaAccountNotes: notes,
+      });
+      setSaveMsg({ kind: 'ok', text: 'Saved · ' + (res?.data?.count || ids.length) + ' accounts enabled. Next sync within 1 hour.' });
+    } catch (e) {
+      const msg = String(e?.message || e || '');
+      setSaveMsg({ kind: 'err', text: /permission-denied|Root admin/.test(msg)
+        ? 'Permission denied — Pulse bridge runs anonymously. Open Floor map → console: window.stripeCallable(\'metaSettingsSet\')({...})'
+        : 'Save failed: ' + msg.slice(0, 200) });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={{ padding: '8px 14px 14px 38px', borderBottom: '1px solid var(--border)', background: 'var(--surface-2)' }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          background: 'transparent', border: 'none', cursor: 'pointer',
+          color: 'var(--ink-2)', fontSize: 11.5, fontWeight: 600,
+          padding: 0, display: 'inline-flex', alignItems: 'center', gap: 4,
+        }}
+      >
+        <span>{open ? '▾' : '▸'}</span>
+        Ad account settings · {discovered.length} discovered
+        {settings.metaAdAccountIds && (
+          <span style={{ color: 'var(--muted)', fontWeight: 500 }}>
+            · {settings.metaAdAccountIds.length} enabled
+          </span>
+        )}
+      </button>
+      {open && discovered.length === 0 && (
+        <div style={{ marginTop: 8, fontSize: 11.5, color: 'var(--muted)' }}>
+          No Meta ad accounts discovered yet. Wait for the next hourly sync OR trigger a manual sync (Floor map console:{' '}
+          <code style={{ background: 'var(--surface)', padding: '2px 5px', borderRadius: 3 }}>
+            await window.stripeCallable('metaAdsSyncNow')({})
+          </code>
+          ). Required: <code>META_ACCESS_TOKEN</code> secret set in Firebase.
+        </div>
+      )}
+      {open && discovered.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
+            Toggle which accounts to include in marketing analytics. Notes are visible only here (per-account labels for which manager runs them, which office they advertise, etc.).
+          </div>
+          <div style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '30px 1fr 100px 90px 1.5fr', gap: 8, padding: '8px 10px', background: 'var(--surface)', fontSize: 10.5, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>
+              <div></div>
+              <div>Account</div>
+              <div>Currency</div>
+              <div>Status</div>
+              <div>Note (your label)</div>
+            </div>
+            {discovered.map(a => {
+              const on = isEnabled(a.id);
+              return (
+                <div key={a.id} style={{ display: 'grid', gridTemplateColumns: '30px 1fr 100px 90px 1.5fr', gap: 8, padding: '8px 10px', borderTop: '1px solid var(--border)', alignItems: 'center', fontSize: 12, background: on ? 'var(--surface)' : 'transparent', opacity: on ? 1 : 0.65 }}>
+                  <input type="checkbox" checked={on} onChange={() => toggle(a.id)} style={{ cursor: 'pointer' }} />
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 600 }}>{a.name}</div>
+                    <div style={{ fontSize: 10, color: 'var(--muted)', fontFamily: 'var(--font-mono)' }}>{a.id}</div>
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--muted)' }}>{a.currency}</div>
+                  <div>
+                    <span style={{
+                      padding: '2px 6px', borderRadius: 3, fontSize: 10, fontWeight: 600,
+                      background: a.isRestricted ? 'rgba(239,68,68,.10)' : 'rgba(34,197,94,.10)',
+                      color: a.isRestricted ? '#9a3412' : '#166534',
+                    }} title={a.disableReason || ''}>
+                      {a.isRestricted ? '⚠ ' + a.statusDesc : '🟢 ' + a.statusDesc}
+                    </span>
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="e.g. Tampa office · Ann"
+                    value={notes[a.id] || ''}
+                    onChange={e => setNotes(n => ({ ...n, [a.id]: e.target.value }))}
+                    style={{
+                      padding: '4px 8px', fontSize: 11.5,
+                      border: '1px solid var(--border)', borderRadius: 4,
+                      background: 'var(--surface)', color: 'var(--ink)', width: '100%',
+                    }}
+                  />
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 }}>
+            <button
+              onClick={save}
+              disabled={saving}
+              style={{
+                padding: '6px 14px', fontSize: 12, fontWeight: 600,
+                border: 'none', borderRadius: 5, cursor: saving ? 'wait' : 'pointer',
+                background: 'var(--accent)', color: 'white',
+                opacity: saving ? 0.6 : 1,
+              }}
+            >
+              {saving ? 'Saving…' : 'Save settings'}
+            </button>
+            <button
+              onClick={() => { setEnabled(null); setNotes(initialNotes); }}
+              style={{ padding: '6px 14px', fontSize: 12, fontWeight: 500, border: '1px solid var(--border)', borderRadius: 5, cursor: 'pointer', background: 'transparent', color: 'var(--ink-2)' }}
+            >
+              Enable all
+            </button>
+            {saveMsg && (
+              <span style={{ fontSize: 11.5, color: saveMsg.kind === 'ok' ? 'var(--success-ink)' : 'var(--danger-ink)' }}>
+                {saveMsg.text}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
