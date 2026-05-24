@@ -17,7 +17,23 @@ Format:
 - 📌 **Wire `_unitProrationCredit` into invoice generation paths.** Helper exists (commit `68b7687`) and computes the per-month credit fraction from waiver records. Downstream codepaths (runAutoInvoices, manual invoice creation, Stripe sync, A/R Aging calc) still bill full rent — operator's «June 12 spillover should pro-rate June invoice» NOT yet automatic. Pending audit-pass to find all rent-calc callsites and apply `× (1 - credit)` consistently.
 - 📌 **Investment Analysis sub-tabs not visually verified.** Hold / Sensitivity / Compare / AI sub-tab markup exists (`_investBuild*HTML`) but operator only saw Overview during today's testing. AI tab uses rule-based heuristics (no LLM) — should work but unconfirmed by operator.
 - 📌 **Stripe duplicate void.** Wilbur Brown Jr's $104 duplicate invoice (`in_1TUVW22nq2bZh3q6XdFAu7Wp`) — operator never confirmed void from earlier session. Carried over from 2026-05-09 work.
-- 📌 **Firebase auth re-needed for deploy.** Tony's Firebase CLI credentials expired during the 2026-05-12 autonomous run. Five commits (`63f4727`..`a1240fc`) were committed locally + pushed to GitHub but not deployed to `https://suitesforall.web.app`. To recover: `firebase login --reauth`, then `bash scripts/stamp-release.sh && firebase deploy --only hosting`. After deploy, resolve Sentry `SUITESFORALL-6/7/8/A` (fixed by `a1240fc`).
+- 📌 **Firebase auth re-needed for deploy (recurring).** Credentials expired again during the 2026-05-24 HubSpot work. Commit `c7606cb` (always-fetch-all-deals fix) is committed + pushed to GitHub but NOT yet on `https://suitesforall.web.app`. Without this deploy, the HubSpot funnel will collapse to ~2 deals after every 30-min scheduled sync. Recovery: `firebase login --reauth && bash scripts/stamp-release.sh && firebase deploy --only hosting,functions:hubspotSync,functions:hubspotSyncNow,functions:hubspotGetData`. Also re-trigger fullSync afterwards via Pulse devtools: `await window.stripeCallable('hubspotSyncNow')({fullSync: true})`. Previously: same issue on 2026-05-12 (commits `63f4727`..`a1240fc`) was deployed once Tony re-authed.
+
+---
+
+## 2026-05-23 → 2026-05-24
+
+### HubSpot Insights panel — Sprint 4 + bug-fix chain
+
+Per «делай все вместе» the panel got four enhancements + four detection bugs surfaced and got fixed. See FIXES_LOG Entry 31 for full invariants.
+
+- 🆕 `a9cc8c3` HubSpot funnel detection: broaden regex + use isWon metadata + add diagnostics (closes the «funnel.signed = 0 even though some stages match» class of bugs; adds `stageDiagnostics` for UI debug).
+- 🆕 `6e4b9a9` Sprint 4: qualified bucket / empty stages / cross-system signs / floor-map prospect linking. Five-row funnel; `Actual signs · YYYY-MM: N` card from `state.buildings → units leaseStart`; 🎯 owner chip on prospect cards (compact contactByEmail in Firestore, ~250 KB / 2871 contacts).
+- 🔧 `78b1f75` Fix: «Call answered - not interested» (194 deals) was wrongly classified Qualified because raw `/\binterested\b/` regex matched. Two-pass detection: reject negative outcomes FIRST.
+- 🔧 `3139657` Fix: _fetchOwners only returned active owners → 90%+ of historical deals had no resolvable owner email → `_buildAggregates` skipped them. Funnel showed 89 deals instead of 2000 after fullSync. Fetch BOTH active+archived; bucket truly-unowned under `'_unowned'`.
+- 🔧 `c7606cb` Fix: incremental sync (every 30 min) ran with `sinceMs = 24h`, then shallow-merged `dealsByStage[email]`, WIPING the accumulated pipeline state. Funnel collapsed from 2000 → 2 within 30 min of fullSync. Always fetch all deals/meetings (contacts still gated behind fullSync). FIXES_LOG Entry 31 added.
+
+📌 Open: Firebase CLI auth expired during the 2026-05-24 deploy — `c7606cb` is committed + pushed but NOT yet on `https://suitesforall.web.app`. Recovery: `firebase login --reauth && bash scripts/stamp-release.sh && firebase deploy --only hosting,functions:hubspotSync,functions:hubspotSyncNow,functions:hubspotGetData`. Until then, scheduled sync may still wipe the funnel every 30 min.
 
 ---
 
