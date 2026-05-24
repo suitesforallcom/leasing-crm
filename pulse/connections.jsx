@@ -302,6 +302,15 @@ function MetaAccountList({ discovered, initialEnabled, initialNotes }) {
   const [notes, setNotes] = React.useState(initialNotes);
   const [saving, setSaving] = React.useState(false);
   const [msg, setMsg] = React.useState(null);
+  // 2026-05-24 Tony: список аккаунтов занимает почти весь экран — по
+  // умолчанию свёрнут, разворачивается кликом. Состояние запоминаем в
+  // localStorage чтобы каждый раз не разворачивать вручную.
+  const [expanded, setExpanded] = React.useState(() => {
+    try { return localStorage.getItem('pulse_meta_accts_expanded') === '1'; } catch (e) { return false; }
+  });
+  React.useEffect(() => {
+    try { localStorage.setItem('pulse_meta_accts_expanded', expanded ? '1' : '0'); } catch (e) {}
+  }, [expanded]);
 
   // 2026-05-24 — per-account synced-spend lookup. The CF stores
   // accountsJson[].totals.cost per account; if the row is missing or
@@ -317,6 +326,13 @@ function MetaAccountList({ discovered, initialEnabled, initialNotes }) {
     if (!enabled) return true; // null = all enabled by default
     return enabled.has(String(id));
   }
+  // Считаем сколько реально включено — null = все, иначе размер Set.
+  const enabledCount = enabled ? enabled.size : discovered.length;
+  const enabledWithSpend = discovered.filter(a => {
+    if (!isEnabled(a.id)) return false;
+    const s = syncedById[String(a.id)];
+    return (s?.totals?.cost || 0) > 0;
+  }).length;
   function toggle(id) {
     setEnabled(prev => {
       const next = new Set(prev || discovered.map(a => String(a.id)));
@@ -338,9 +354,34 @@ function MetaAccountList({ discovered, initialEnabled, initialNotes }) {
 
   return (
     <div style={{ padding: '12px 16px', background: 'white' }}>
-      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8 }}>
-        Ad accounts ({discovered.length} discovered)
-      </div>
+      {/* Collapsible header — click to expand/collapse the full table.
+          Shows: «X of Y enabled · Z with spend», + chevron icon. */}
+      <button
+        type="button"
+        onClick={() => setExpanded(e => !e)}
+        style={{
+          width: '100%', display: 'flex', alignItems: 'center', gap: 10,
+          padding: '8px 10px', borderRadius: 6,
+          border: '1px solid var(--border)',
+          background: expanded ? 'var(--surface-2)' : 'var(--surface)',
+          cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
+          marginBottom: expanded ? 8 : 0,
+        }}
+      >
+        <span style={{ fontSize: 14, color: 'var(--muted)', transition: 'transform .15s', display: 'inline-block', transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)' }}>▸</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink)', textTransform: 'uppercase', letterSpacing: '.05em' }}>
+          Ad accounts
+        </span>
+        <span style={{ fontSize: 11.5, color: 'var(--muted)', marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span><b style={{ color: 'var(--ink)' }}>{enabledCount}</b> of {discovered.length} enabled</span>
+          {enabledWithSpend > 0 && (
+            <span style={{ color: '#166534' }}>· <b>{enabledWithSpend}</b> with spend</span>
+          )}
+          <span style={{ color: 'var(--muted)', fontSize: 10.5 }}>{expanded ? 'click to hide' : 'click to manage'}</span>
+        </span>
+      </button>
+      {expanded && (
+      <React.Fragment>
       <div style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
         <div style={{ display: 'grid', gridTemplateColumns: '30px 1.4fr 70px 100px 90px 1.5fr', gap: 8, padding: '8px 10px', background: 'var(--surface-2)', fontSize: 10.5, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>
           <div></div>
@@ -422,6 +463,13 @@ function MetaAccountList({ discovered, initialEnabled, initialNotes }) {
         <ActionBtn onClick={() => { setEnabled(null); }}>Enable all</ActionBtn>
         {msg && <SaveMsg msg={msg} inline />}
       </div>
+      </React.Fragment>
+      )}
+      {/* When collapsed, show the latest save msg inline so the user
+          gets feedback without needing to expand the table. */}
+      {!expanded && msg && (
+        <div style={{ marginTop: 8 }}><SaveMsg msg={msg} inline /></div>
+      )}
     </div>
   );
 }
