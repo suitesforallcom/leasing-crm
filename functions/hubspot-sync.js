@@ -190,16 +190,24 @@ async function _fetchMeetings(token, {sinceMs = null} = {}) {
 // =========================================================================
 async function _fetchContacts(token, {maxPages = 60} = {}) {
   // Compact fields — keep entry footprint small to stay under Firestore's
-  // 1MB doc cap. At ~3K contacts × ~120 bytes = ~360 KB. Plus deals (~150
-  // KB) + meetings + owners + pipelines + diagnostics — total stays well
-  // below the cap.
+  // 1MB doc cap. At ~3K contacts × ~150 bytes = ~450 KB (after Marketing
+  // Phase 1 expansion). Heavy maps are JSON-stringified before write
+  // (schemaVersion: 2) so index-entries cap stays well under 40K.
   //   i = contactId
   //   o = hubspot_owner_id (lookup owners map for name/email)
   //   s = lifecyclestage (lead / mql / sql / opportunity / customer / ...)
   //   n = «firstname lastname» trimmed (or null if both blank)
   //   p = phone (raw, may include country code or be null)
   //   c = createdate ISO (truncated to 'YYYY-MM-DD' to save bytes)
-  const props = 'email,firstname,lastname,phone,createdate,hubspot_owner_id,lifecyclestage';
+  //   src = original analytics source category — one of: ORGANIC_SEARCH,
+  //         PAID_SEARCH, DIRECT_TRAFFIC, REFERRALS, SOCIAL_MEDIA,
+  //         PAID_SOCIAL, EMAIL_MARKETING, OTHER_CAMPAIGNS, OFFLINE, OTHER
+  //   srcD = source data 1 — concrete platform within the category, e.g.
+  //         «google» / «facebook» / «tiktok» / «linkedin» / «direct» /
+  //         «(referral domain)» / etc.
+  // Marketing Phase 1 (channel mix dashboard) reads src + srcD to bucket
+  // contacts by acquisition channel without touching ad-platform APIs.
+  const props = 'email,firstname,lastname,phone,createdate,hubspot_owner_id,lifecyclestage,hs_analytics_source,hs_analytics_source_data_1';
   const raw = await _hsPaginate(token, `/crm/v3/objects/contacts?properties=${props}`, {limit: 100, maxPages, throttleMs: 200});
   const byEmail = {};
   for (const c of raw) {
@@ -215,6 +223,8 @@ async function _fetchContacts(token, {maxPages = 60} = {}) {
       n: name,
       p: p.phone || null,
       c: created,
+      src: p.hs_analytics_source || null,
+      srcD: p.hs_analytics_source_data_1 || null,
     };
   }
   return byEmail;

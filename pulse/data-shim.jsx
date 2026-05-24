@@ -123,6 +123,8 @@
       name: c.n || null,
       phone: c.p || null,
       createDate: c.c || null,
+      sourceCategory: c.src || null,  // PAID_SEARCH, PAID_SOCIAL, ORGANIC_SEARCH, ...
+      sourcePlatform: c.srcD || null, // google, facebook, tiktok, ...
     };
   };
 

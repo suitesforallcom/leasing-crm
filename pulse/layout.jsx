@@ -34,6 +34,7 @@ window.Sidebar = function Sidebar({ view, onNav, role }) {
           <NavItem id="centers"  view={view} onNav={onNav} icon="building" label="Centers" count={DATA.CENTERS.length} />
           <NavItem id="compare"  view={view} onNav={onNav} icon="compare"  label="Compare" />
           <NavItem id="hubspot"  view={view} onNav={onNav} icon="globe"    label="HubSpot" />
+          <NavItem id="marketing" view={view} onNav={onNav} icon="trendUp" label="Marketing" />
           <NavItem id="bonuses"  view={view} onNav={onNav} icon="star"     label="Bonuses" />
           <NavItem id="bonusrules" view={view} onNav={onNav} icon="settings" label="Bonus rules" />
           <NavItem id="alerts"   view={view} onNav={onNav} icon="warning"  label="Unusual" count={unusual || null} />
@@ -89,7 +90,7 @@ window.Topbar = function Topbar({ view, employeeId, onNav, role, onRoleChange, m
 
   const titleMap = {
     overview: "Activity",  people: "People",   compare: "Compare",
-    hubspot: "HubSpot",
+    hubspot: "HubSpot",  marketing: "Marketing",
     bonuses: "Bonuses",    bonusrules: "Bonus rules",
     alerts: "Alerts",   centers: "Centers",
     myday: "My Day",       myjourney: "My Journey",   earn: "How to earn",

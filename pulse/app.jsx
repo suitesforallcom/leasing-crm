@@ -1,4 +1,4 @@
-/* global React, ReactDOM, Sidebar, Topbar, MobileMenu, OverviewPage, EmployeeDetail, ComparePage, AlertsPage, PeoplePage, BonusesPage, BonusRulesPage, CentersPage, HubspotPage, MyDayPage, MyJourneyPage, EarnPage, EventDrawer, FilterDrawer, MessageDrawer, QuickActionDrawer, CommandPalette, NotificationPanel, KudosDrawer, useTweaks, TweaksPanel, TweakRadio, TweakToggle, TweakSection */
+/* global React, ReactDOM, Sidebar, Topbar, MobileMenu, OverviewPage, EmployeeDetail, ComparePage, AlertsPage, PeoplePage, BonusesPage, BonusRulesPage, CentersPage, HubspotPage, MarketingPage, MyDayPage, MyJourneyPage, EarnPage, EventDrawer, FilterDrawer, MessageDrawer, QuickActionDrawer, CommandPalette, NotificationPanel, KudosDrawer, useTweaks, TweaksPanel, TweakRadio, TweakToggle, TweakSection */
 
 /* ================================================================
    App root — view routing + global form/drawer state
@@ -199,6 +199,9 @@ function App() {
         )}
         {view === "hubspot" && role === "owner" && (
           <HubspotPage centerFilter={centerFilter} />
+        )}
+        {view === "marketing" && role === "owner" && (
+          <MarketingPage />
         )}
         {view === "bonuses" && role === "owner" && (
           <BonusesPage onOpenEmployee={openEmployee} />
