@@ -14,7 +14,7 @@ window.MyDayPage = function MyDayPage({ meId = "u1", role = "employee", onNav, o
   // только Marketing spend dashboard + быстрые ссылки. Employee-режим
   // остаётся как раньше.
   if (role === "owner") {
-    return <OwnerDay onNav={onNav} />;
+    return <OwnerDay onNav={onNav} onOpenEmployee={onOpenEmployee} />;
   }
   const me = DATA.USERS.find(u => u && u.id === meId);
   // Phase 17 rev — guard against undefined me (no real users / stale meId
@@ -550,19 +550,16 @@ window.MyDayPage = function MyDayPage({ meId = "u1", role = "employee", onNav, o
    3. Никакого growth-tree / fruits / leaderboard / quests —
       это employee-мотивация, не owner-инструменты
    ================================================================ */
-function OwnerDay({ onNav }) {
+function OwnerDay({ onNav, onOpenEmployee }) {
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
   const today = new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
 
-  // Quick jumps to admin sections — saves a click from the sidebar.
-  // Marketing / Connections are most-used per Tony 2026-05-24 sessions.
-  const jumps = [
-    { id: "marketing",   label: "Marketing",   icon: "trendUp", desc: "Spend, CPL, channel mix" },
-    { id: "overview",    label: "Activity",    icon: "activity", desc: "Live employee + call activity" },
-    { id: "hubspot",     label: "HubSpot",     icon: "globe",   desc: "Contacts, deals, pipelines" },
-    { id: "connections", label: "Connections", icon: "settings", desc: "Manage all integrations" },
-  ];
+  // Real-only users по умолчанию (demo seed скрываем для owner — Tony
+  // видит только реальных операторов). Если real users нет — fallback
+  // на всех (чтобы пустая таблица не пугала на чистом workspace).
+  const realUsers = (DATA.USERS || []).filter(u => u && u._isReal);
+  const tableUsers = realUsers.length > 0 ? realUsers : (DATA.USERS || []);
 
   return (
     <div className="page">
@@ -571,7 +568,7 @@ function OwnerDay({ onNav }) {
         <div>
           <div className="muted" style={{ fontSize: 11.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".08em" }}>{today}</div>
           <h1 className="title">{greeting}, Tony</h1>
-          <div className="subtitle">Owner dashboard · marketing performance today</div>
+          <div className="subtitle">Owner dashboard · marketing + team activity today</div>
         </div>
       </div>
 
@@ -586,29 +583,26 @@ function OwnerDay({ onNav }) {
         </div>
       )}
 
-      {/* Quick-jump grid — большие кнопки в основные разделы */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginTop: 18 }}>
-        {jumps.map(j => (
-          <button
-            key={j.id}
-            className="card"
-            onClick={() => onNav && onNav(j.id)}
-            style={{
-              padding: 16, textAlign: "left", cursor: "pointer",
-              border: "1px solid var(--border)", background: "var(--surface)",
-              fontFamily: "inherit",
-              transition: "transform .12s, border-color .12s",
-            }}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--accent)"; e.currentTarget.style.transform = "translateY(-1px)"; }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.transform = ""; }}
-          >
-            <div className="row" style={{ marginBottom: 6 }}>
-              <span className="cat-icon" style={{ background: "var(--accent)" }}><Icon name={j.icon} /></span>
-              <div style={{ fontWeight: 700, fontSize: 14 }}>{j.label}</div>
-            </div>
-            <div className="muted" style={{ fontSize: 12 }}>{j.desc}</div>
-          </button>
-        ))}
+      {/* Team activity table — компактная sortable таблица сотрудников.
+          Колонки и period настраиваются (Tony: «выбирать за какой период
+          времени статистика»). Дубликат компонента с People page. */}
+      <div style={{ marginTop: 18, marginBottom: 8 }}>
+        <div className="row" style={{ marginBottom: 8 }}>
+          <Icon name="people" style={{ color: "var(--muted)" }} />
+          <div style={{ fontWeight: 700, fontSize: 13 }}>Team activity</div>
+          <span className="muted" style={{ fontSize: 11.5 }}>· click any row to open profile</span>
+        </div>
+        {typeof window.EmployeeActivityTable === "function" ? (
+          <window.EmployeeActivityTable
+            users={tableUsers}
+            onOpenEmployee={onOpenEmployee}
+            storageKey="pulse_myday_owner_table"
+          />
+        ) : (
+          <div className="card is-clean" style={{ padding: 14, fontSize: 12, color: "var(--muted)" }}>
+            Team-activity module not loaded. Reload (cmd+shift+R).
+          </div>
+        )}
       </div>
     </div>
   );

@@ -158,33 +158,285 @@ window.PeoplePage = function PeoplePage({ onOpenEmployee }) {
           ))}
         </div>
       ) : (
-        <div className="card is-clean">
-          <table className="table">
-            <thead>
-              <tr><th>Name</th><th>Role</th><th>Status</th><th>Login</th><th>Actions</th><th>Calls</th><th>Emails</th><th>Score</th></tr>
-            </thead>
-            <tbody>
-              {users.map(u => (
-                <tr key={u.id} className="is-clickable" onClick={() => onOpenEmployee(u.id)}>
-                  <td><div className="row"><Avatar user={u} size="sm" /><span style={{ fontWeight: 600 }}>{u.name}</span></div></td>
-                  <td>{DATA.ROLES[u.role].label}</td>
-                  <td>
-                    <span className={"chip is-" + (u.status === "online" ? "success" : u.status === "idle" ? "warning" : "")}>
-                      <span className="dot" style={{ background: u.status === "online" ? "var(--success)" : u.status === "idle" ? "var(--warning)" : "var(--muted-2)" }} />
-                      {u.status}
-                    </span>
-                  </td>
-                  <td className="mono">{u.login || "—"}</td>
-                  <td className="num">{u.actions}</td>
-                  <td className="num">{u.calls}</td>
-                  <td className="num">{u.emails}</td>
-                  <td className="num" style={{ fontWeight: 700 }}>{u.score || "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <window.EmployeeActivityTable users={users} onOpenEmployee={onOpenEmployee} storageKey="pulse_people_table" />
       )}
     </div>
   );
 };
+
+/* ================================================================
+   EmployeeActivityTable — 2026-05-24 Tony.
+   Компактная sortable таблица с column toggle + period selector.
+   Используется на People page (table view) и на My Day owner view.
+
+   Требования Tony:
+     • Убрать Role + Status колонки (status = dot на avatar'е)
+     • Sort по любой колонке (click header)
+     • Toggle колонок через ⚙ menu, persisted в localStorage
+     • Period selector: Today / MTD
+     • Колонки: Tours, Emails, Calls, Actions, Login, Logout, Score
+     • Компактнее People-таблицы (мельче padding + меньше chip'ов)
+
+   Props:
+     users         — массив для отображения (pre-filtered внешним кодом)
+     onOpenEmployee(id) — клик по row
+     storageKey    — уникальный ключ для localStorage (cols + sort + period)
+   ================================================================ */
+window.EmployeeActivityTable = function EmployeeActivityTable({ users, onOpenEmployee, storageKey = "pulse_emp_activity_table" }) {
+  // --- Available columns. `getValue(u, period)` возвращает «raw» число
+  //     для sort'а. `render(u, period)` отдаёт JSX. period = 'today' | 'mtd'.
+  const COLS = React.useMemo(() => ([
+    {
+      key: "name", label: "Name", align: "left", required: true,
+      getValue: u => (u.name || "").toLowerCase(),
+      render: (u) => (
+        <div className="row" style={{ gap: 8 }}>
+          <Avatar user={u} size="sm" />
+          <span style={{ fontWeight: 600, fontSize: 12.5 }}>{u.name}</span>
+        </div>
+      ),
+    },
+    {
+      key: "tours", label: "Tours", align: "right",
+      getValue: u => (u.toursScheduled || 0) + (u.toursCompleted || 0),
+      render: (u) => {
+        const v = (u.toursScheduled || 0) + (u.toursCompleted || 0);
+        return <span className="mono num" style={{ fontWeight: v > 0 ? 600 : 400, color: v > 0 ? "var(--ink)" : "var(--muted-2)" }}>{v || "—"}</span>;
+      },
+    },
+    {
+      key: "emails", label: "Emails", align: "right",
+      getValue: (u, p) => p === "mtd" ? (u.emailsMtd || 0) : (u.emails || 0),
+      render: (u, p) => {
+        const v = p === "mtd" ? (u.emailsMtd || 0) : (u.emails || 0);
+        return <span className="mono num" style={{ fontWeight: v > 0 ? 600 : 400, color: v > 0 ? "var(--ink)" : "var(--muted-2)" }}>{v || "—"}</span>;
+      },
+    },
+    {
+      key: "calls", label: "Calls", align: "right",
+      getValue: (u, p) => p === "mtd" ? (u.callsMtd || 0) : (u.calls || 0),
+      render: (u, p) => {
+        const v = p === "mtd" ? (u.callsMtd || 0) : (u.calls || 0);
+        return <span className="mono num" style={{ fontWeight: v > 0 ? 600 : 400, color: v > 0 ? "var(--ink)" : "var(--muted-2)" }}>{v || "—"}</span>;
+      },
+    },
+    {
+      key: "actions", label: "Actions", align: "right",
+      getValue: (u, p) => p === "mtd" ? (u.actionsMtd || 0) : (u.actions || 0),
+      render: (u, p) => {
+        const v = p === "mtd" ? (u.actionsMtd || 0) : (u.actions || 0);
+        return <span className="mono num" style={{ fontWeight: v > 0 ? 600 : 400, color: v > 0 ? "var(--ink)" : "var(--muted-2)" }}>{v || "—"}</span>;
+      },
+    },
+    {
+      key: "contracts", label: "Contracts", align: "right",
+      getValue: (u, p) => p === "mtd" ? (u.contractsMtd || 0) : (u.contracts || 0),
+      render: (u, p) => {
+        const v = p === "mtd" ? (u.contractsMtd || 0) : (u.contracts || 0);
+        return <span className="mono num" style={{ fontWeight: v > 0 ? 700 : 400, color: v > 0 ? "var(--success-ink)" : "var(--muted-2)" }}>{v || "—"}</span>;
+      },
+    },
+    {
+      key: "login", label: "Login", align: "right",
+      getValue: u => u.login ? _parseTimeForSort(u.login) : -1,
+      render: (u) => <span className="mono" style={{ fontSize: 11.5, color: u.login ? "var(--ink)" : "var(--muted-2)" }}>{u.login || "—"}</span>,
+    },
+    {
+      key: "logout", label: "Logout", align: "right",
+      getValue: u => u.logout ? _parseTimeForSort(u.logout) : (u.status === "online" || u.status === "idle" ? 9999 : -1),
+      render: (u) => {
+        if (u.status === "online" || u.status === "idle") {
+          return <span style={{ fontSize: 11, color: "var(--success-ink)", fontWeight: 600 }}>still in</span>;
+        }
+        return <span className="mono" style={{ fontSize: 11.5, color: u.logout ? "var(--ink)" : "var(--muted-2)" }}>{u.logout || "—"}</span>;
+      },
+    },
+    {
+      key: "score", label: "Score", align: "right",
+      getValue: u => u.score || 0,
+      render: (u) => <span className="num" style={{ fontWeight: 700, fontSize: 13, color: (u.score || 0) >= 80 ? "var(--success-ink)" : (u.score || 0) >= 50 ? "var(--ink)" : "var(--muted)" }}>{u.score || "—"}</span>,
+    },
+  ]), []);
+
+  const DEFAULT_VISIBLE = ["name", "tours", "emails", "calls", "login", "logout", "score"];
+
+  // --- State: visible columns, sort, period — все persisted в localStorage.
+  const [visibleCols, setVisibleCols] = React.useState(() => {
+    try {
+      const raw = localStorage.getItem(storageKey + "_cols");
+      const arr = raw ? JSON.parse(raw) : null;
+      return Array.isArray(arr) && arr.length > 0 ? arr : DEFAULT_VISIBLE;
+    } catch (e) { return DEFAULT_VISIBLE; }
+  });
+  const [sort, setSort] = React.useState(() => {
+    try {
+      const raw = localStorage.getItem(storageKey + "_sort");
+      const v = raw ? JSON.parse(raw) : null;
+      return v && v.key ? v : { key: "score", dir: "desc" };
+    } catch (e) { return { key: "score", dir: "desc" }; }
+  });
+  const [period, setPeriod] = React.useState(() => {
+    try { return localStorage.getItem(storageKey + "_period") || "today"; } catch (e) { return "today"; }
+  });
+  const [colMenuOpen, setColMenuOpen] = React.useState(false);
+
+  React.useEffect(() => { try { localStorage.setItem(storageKey + "_cols", JSON.stringify(visibleCols)); } catch (e) {} }, [visibleCols, storageKey]);
+  React.useEffect(() => { try { localStorage.setItem(storageKey + "_sort", JSON.stringify(sort)); } catch (e) {} }, [sort, storageKey]);
+  React.useEffect(() => { try { localStorage.setItem(storageKey + "_period", period); } catch (e) {} }, [period, storageKey]);
+
+  // Close col menu on outside-click
+  React.useEffect(() => {
+    if (!colMenuOpen) return;
+    const h = () => setColMenuOpen(false);
+    setTimeout(() => document.addEventListener("click", h, { once: true }), 0);
+    return () => document.removeEventListener("click", h);
+  }, [colMenuOpen]);
+
+  // --- Sort helper. Click on column header toggles dir (asc → desc → asc).
+  function onHeaderClick(key) {
+    setSort(s => s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "desc" });
+  }
+  function toggleCol(key) {
+    setVisibleCols(prev => {
+      if (prev.includes(key)) {
+        if (prev.length <= 2) return prev; // нельзя оставить меньше двух
+        return prev.filter(k => k !== key);
+      }
+      return [...prev, key];
+    });
+  }
+
+  // --- Sort + filter to visible cols
+  const sortCol = COLS.find(c => c.key === sort.key) || COLS[0];
+  const sortedUsers = React.useMemo(() => {
+    const arr = users.slice();
+    arr.sort((a, b) => {
+      const va = sortCol.getValue(a, period);
+      const vb = sortCol.getValue(b, period);
+      let cmp = 0;
+      if (typeof va === "number" && typeof vb === "number") cmp = va - vb;
+      else cmp = String(va).localeCompare(String(vb));
+      return sort.dir === "asc" ? cmp : -cmp;
+    });
+    return arr;
+  }, [users, sort, period, sortCol]);
+
+  // Filter cols to visible (preserve COLS order, not state-order)
+  const cols = COLS.filter(c => visibleCols.includes(c.key) || c.required);
+
+  // Status dot helper — color по status; рисуется внутри Avatar в наших
+  // Pulse styles, но если такого нет — добавим точку справа от avatar.
+  function statusDot(status) {
+    const color = status === "online" ? "var(--success)" : status === "idle" ? "var(--warning)" : "var(--muted-2)";
+    return <span style={{ width: 7, height: 7, borderRadius: "50%", background: color, display: "inline-block", marginRight: 4 }} />;
+  }
+
+  return (
+    <div className="card is-clean" style={{ overflow: "hidden" }}>
+      {/* Toolbar — period selector + column toggle */}
+      <div className="row" style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)", background: "var(--surface-2)", gap: 8 }}>
+        <div className="f-segment" style={{ fontSize: 11.5 }}>
+          {[["today", "Today"], ["mtd", "MTD"]].map(([k, l]) => (
+            <button key={k} className={period === k ? "is-active" : ""} onClick={() => setPeriod(k)}>{l}</button>
+          ))}
+        </div>
+        <span className="muted" style={{ fontSize: 11.5 }}>{sortedUsers.length} {sortedUsers.length === 1 ? "person" : "people"}</span>
+        <div className="spacer" />
+        <div style={{ position: "relative" }} onClick={e => e.stopPropagation()}>
+          <button className="btn is-small" onClick={() => setColMenuOpen(o => !o)} title="Show/hide columns">
+            <Icon name="settings" /> Columns
+          </button>
+          {colMenuOpen && (
+            <div style={{
+              position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 50,
+              background: "var(--surface)", border: "1px solid var(--border)",
+              borderRadius: 8, padding: 6, minWidth: 180,
+              boxShadow: "0 6px 24px rgba(0,0,0,0.12)",
+            }}>
+              <div style={{ padding: "6px 10px", fontSize: 10.5, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".06em" }}>Show columns</div>
+              {COLS.map(c => (
+                <label key={c.key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 10px", cursor: c.required ? "default" : "pointer", opacity: c.required ? 0.6 : 1, fontSize: 12, borderRadius: 5 }}
+                       onMouseEnter={e => !c.required && (e.currentTarget.style.background = "var(--surface-2)")}
+                       onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
+                  <input type="checkbox" checked={visibleCols.includes(c.key) || c.required} disabled={c.required} onChange={() => toggleCol(c.key)} />
+                  {c.label}
+                  {c.required && <span style={{ marginLeft: "auto", fontSize: 9.5, color: "var(--muted-2)" }}>required</span>}
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Table */}
+      <table className="table" style={{ fontSize: 12.5 }}>
+        <thead>
+          <tr>
+            {cols.map(c => (
+              <th key={c.key}
+                  style={{ textAlign: c.align, cursor: "pointer", userSelect: "none", padding: "8px 10px", fontSize: 10.5, fontWeight: 700, letterSpacing: ".05em" }}
+                  onClick={() => onHeaderClick(c.key)}
+                  title={"Sort by " + c.label}>
+                {c.label}
+                {sort.key === c.key && (
+                  <span style={{ marginLeft: 4, fontSize: 9, color: "var(--accent)" }}>
+                    {sort.dir === "asc" ? "▲" : "▼"}
+                  </span>
+                )}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {sortedUsers.map(u => (
+            <tr key={u.id} className="is-clickable" onClick={() => onOpenEmployee && onOpenEmployee(u.id)} style={{ cursor: "pointer" }}>
+              {cols.map(c => {
+                if (c.key === "name") {
+                  // Special-case: status dot inline before name
+                  return (
+                    <td key={c.key} style={{ padding: "6px 10px" }}>
+                      <div className="row" style={{ gap: 6 }}>
+                        {statusDot(u.status)}
+                        <Avatar user={u} size="sm" />
+                        <span style={{ fontWeight: 600 }}>{u.name}</span>
+                      </div>
+                    </td>
+                  );
+                }
+                return (
+                  <td key={c.key} style={{ textAlign: c.align, padding: "6px 10px" }}>
+                    {c.render(u, period)}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+          {sortedUsers.length === 0 && (
+            <tr><td colSpan={cols.length} style={{ padding: 24, textAlign: "center", color: "var(--muted)", fontSize: 12 }}>No employees match the current filter.</td></tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
+// Helper — convert «8:51 AM» / «9:48 PM» / «Yesterday 4:10 PM» → minutes since midnight (sort).
+// Day-prefixed strings (Yesterday/Mon/etc.) sorted before today by subtracting big offsets.
+function _parseTimeForSort(s) {
+  if (!s) return -1;
+  let offset = 0;
+  // Strip day prefix
+  const prefixMatch = /^(yesterday|mon|tue|wed|thu|fri|sat|sun|[a-z]{3}\s+\d+,?)\s+/i.exec(s);
+  if (prefixMatch) {
+    offset = -10000; // pushes to bottom on desc sort
+    s = s.slice(prefixMatch[0].length);
+  }
+  const m = /(\d{1,2}):(\d{2})\s*(AM|PM)?/i.exec(s);
+  if (!m) return offset;
+  let h = parseInt(m[1], 10);
+  const mm = parseInt(m[2], 10);
+  const ap = (m[3] || "").toUpperCase();
+  if (ap === "PM" && h < 12) h += 12;
+  if (ap === "AM" && h === 12) h = 0;
+  return offset + h * 60 + mm;
+}
