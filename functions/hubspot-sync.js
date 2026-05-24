@@ -483,7 +483,12 @@ async function _runSync({fullSync = false} = {}) {
   // alongside state.
   const hsRef = db.doc(`workspaces/${WORKSPACE_ID}/data/hubspot`);
   const prevDoc = (await hsRef.get()).data() || {};
-  const prevHs = prevDoc.hubspotData || {};
+  const prevHsRaw = prevDoc.hubspotData || {};
+  // Inflate the v2-serialized heavy keys back into objects so the merge
+  // logic below sees the rich shape. v1 docs (with raw objects) still
+  // work — _expandHubspotData is a no-op when the *Json siblings are
+  // absent.
+  const prevHs = _expandHubspotData(prevHsRaw);
 
   const merged = fullSync ? aggregates : {
     dealsByOwner: { ...(prevHs.dealsByOwner || {}), ...aggregates.dealsByOwner },
@@ -516,13 +521,41 @@ async function _runSync({fullSync = false} = {}) {
       .slice(0, TRIM);
   }
 
+  // Firestore caps each document at 40,000 index entries (every field +
+  // nested field is auto-indexed). contactByEmail alone has ~3K entries
+  // with 6 sub-fields each = 18K entries before we even count deals/
+  // tours/etc. Hit «INDEX_ENTRIES_COUNT_LIMIT_EXCEEDED» on first write
+  // with the expanded contact fields. Fix: serialize heavy nested maps
+  // into JSON strings. Firestore indexes a string as ONE entry regardless
+  // of length. Drawback: can't query server-side, but we always read the
+  // whole doc anyway (Pulse data-shim grabs it via hubspotGetData).
+  const heavyKeys = [
+    'contactByEmail',
+    'dealsByOwner',
+    'meetingsByOwner',
+    'toursByMonth',
+    'signsByMonth',
+    'dealsByStage',
+    'stageMeta',
+    'stageDiagnostics',
+  ];
+  const serialized = {};
+  for (const k of heavyKeys) {
+    if (merged[k] !== undefined) {
+      // Always stringify, even when empty — keeps the read-side parser
+      // path uniform (it expects a string at these keys).
+      serialized[k + 'Json'] = JSON.stringify(merged[k]);
+    }
+  }
+
   const hubspotData = {
     syncedAt: new Date().toISOString(),
     syncedFromMs: sinceMs,
     syncDurationMs: Date.now() - t0,
-    owners,
-    pipelines,
-    ...merged,
+    schemaVersion: 2, // v2 — heavy maps moved to *Json siblings
+    owners,            // small: ~15 entries
+    pipelines,         // small: 3 pipelines with stage arrays
+    ...serialized,     // contactByEmailJson, dealsByOwnerJson, etc.
     counts: {
       owners: Object.keys(owners).length,
       pipelines: Object.keys(pipelines).length,
@@ -553,6 +586,33 @@ async function _runSync({fullSync = false} = {}) {
   }
 
   return hubspotData.counts;
+}
+
+// _expandHubspotData — inverse of the v2 write-side serialization. Reads
+// foo / fooJson siblings and returns a unified shape with raw objects so
+// callers (Pulse data-shim, merge logic) don't need to know about the
+// JSON-string trick. v1 docs (without *Json siblings) pass through.
+function _expandHubspotData(hs) {
+  if (!hs || typeof hs !== 'object') return hs;
+  const heavyKeys = [
+    'contactByEmail', 'dealsByOwner', 'meetingsByOwner',
+    'toursByMonth', 'signsByMonth', 'dealsByStage',
+    'stageMeta', 'stageDiagnostics',
+  ];
+  const out = { ...hs };
+  for (const k of heavyKeys) {
+    const jsonKey = k + 'Json';
+    if (hs[jsonKey] !== undefined) {
+      try {
+        out[k] = JSON.parse(hs[jsonKey]);
+      } catch (e) {
+        logger.warn(`[hubspot-sync] failed to parse ${jsonKey}: ${e.message}`);
+        out[k] = {};
+      }
+      delete out[jsonKey];
+    }
+  }
+  return out;
 }
 
 function _mergeToursByMonth(prev, fresh) {
@@ -621,6 +681,7 @@ exports.hubspotGetData = onCall(
     // if no sfa_v5_state in localStorage).
     const snap = await db.doc(`workspaces/${WORKSPACE_ID}/data/hubspot`).get();
     if (!snap.exists) return { hubspotData: null };
-    return { hubspotData: snap.data().hubspotData || null };
+    const raw = snap.data().hubspotData || null;
+    return { hubspotData: _expandHubspotData(raw) };
   }
 );
