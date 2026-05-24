@@ -212,13 +212,61 @@ window.MarketingPage = function MarketingPage() {
   );
 };
 
-// Tooltip helper — shows ⓘ icon, hovering reveals the explanation.
-// Native HTML title attribute (works everywhere, no extra CSS / JS).
+// Custom React tooltip — shows instantly on hover (native title attribute
+// has a 1-2s delay and renders inconsistently). Positioned absolute below
+// the trigger, dark background, fades in. Wraps the label + ? icon.
 function HeaderTip({ label, hint }) {
+  const [open, setOpen] = React.useState(false);
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 3, cursor: "help" }} title={hint}>
+    <span
+      style={{ position: "relative", display: "inline-flex", alignItems: "center", gap: 3, cursor: "help" }}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
       {label}
-      <span style={{ fontSize: 9, color: "var(--muted-2)", border: "1px solid var(--muted-2)", borderRadius: "50%", width: 11, height: 11, display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 700 }}>?</span>
+      <span style={{
+        fontSize: 9, color: "var(--muted-2)",
+        border: "1px solid var(--muted-2)", borderRadius: "50%",
+        width: 12, height: 12,
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        fontWeight: 700,
+        background: open ? "var(--muted-2)" : "transparent",
+        color: open ? "white" : "var(--muted-2)",
+      }}>?</span>
+      {open && (
+        <span
+          style={{
+            position: "absolute",
+            top: "calc(100% + 6px)",
+            right: 0,
+            zIndex: 50,
+            background: "#1f2937",
+            color: "#f9fafb",
+            padding: "8px 11px",
+            borderRadius: 6,
+            fontSize: 11.5,
+            fontWeight: 500,
+            letterSpacing: "normal",
+            textTransform: "none",
+            lineHeight: 1.4,
+            width: 280,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+            pointerEvents: "none",
+            whiteSpace: "normal",
+            textAlign: "left",
+          }}
+        >
+          {hint}
+          {/* Little arrow pointing up */}
+          <span style={{
+            position: "absolute", top: -5, right: 14,
+            width: 0, height: 0,
+            borderLeft: "5px solid transparent",
+            borderRight: "5px solid transparent",
+            borderBottom: "5px solid #1f2937",
+          }} />
+        </span>
+      )}
     </span>
   );
 }
@@ -231,7 +279,17 @@ function SpendSection({ rows, totals }) {
   // Date-range selector — applies to the daily-granular spend data
   // (Google Ads Script pulls 90d; older incoming sources still work
   // on aggregate fallback). State scoped to this section.
-  const [windowKind, setWindowKind] = React.useState("30d");  // '7d' / '30d' / '90d' / 'mtd'
+  // windowKind: '7d' / '30d' / '90d' / 'mtd' / 'custom'
+  const [windowKind, setWindowKind] = React.useState("30d");
+  // Custom range — only used when windowKind === 'custom'. Defaults
+  // to last 14 days so the inputs aren't empty when first opened.
+  const _today = new Date();
+  const _twoWksAgo = new Date(_today.getTime() - 14 * 86400 * 1000);
+  function fmtYmd(d) {
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  }
+  const [customStart, setCustomStart] = React.useState(fmtYmd(_twoWksAgo));
+  const [customEnd, setCustomEnd] = React.useState(fmtYmd(_today));
   // «Site leads only» — exclude OFFLINE + INTEGRATION sources from the
   // leads count used in CPL. Tony: «учитывать только заявки через сайт».
   // PAID_SEARCH already implies web (ad click → landing page), so we
@@ -256,20 +314,27 @@ function SpendSection({ rows, totals }) {
     );
   }
 
-  // Date-range cutoff for daily aggregation. Returns YYYY-MM-DD start
-  // string. End is always today (we don't filter future).
-  function windowStartDate(kind) {
-    const d = new Date();
-    if (kind === "mtd") return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-01";
+  // Date-range cutoffs for daily aggregation. Returns {start,end} YYYY-MM-DD
+  // strings (end inclusive). 'custom' uses the user-picked dates.
+  function windowRange(kind) {
+    const today = new Date();
+    const todayYmd = fmtYmd(today);
+    if (kind === "custom") {
+      return { start: customStart, end: customEnd };
+    }
+    if (kind === "mtd") {
+      return { start: today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0") + "-01", end: todayYmd };
+    }
     const days = kind === "7d" ? 7 : kind === "90d" ? 90 : 30;
-    const back = new Date(d.getTime() - (days - 1) * 86400 * 1000);
-    return back.getFullYear() + "-" + String(back.getMonth() + 1).padStart(2, "0") + "-" + String(back.getDate()).padStart(2, "0");
+    const back = new Date(today.getTime() - (days - 1) * 86400 * 1000);
+    return { start: fmtYmd(back), end: todayYmd };
   }
-  const windowStart = windowStartDate(windowKind);
+  const { start: windowStart, end: windowEnd } = windowRange(windowKind);
   const windowLabel = windowKind === "7d" ? "Last 7 days"
                     : windowKind === "30d" ? "Last 30 days"
                     : windowKind === "90d" ? "Last 90 days"
-                    : "Month to date";
+                    : windowKind === "mtd" ? "Month to date"
+                    : "Custom range";
 
   // Map our channel groups → ingest source keys. PAID_SEARCH + google →
   // 'google-ads' bucket; PAID_SOCIAL + facebook/instagram → 'meta'; etc.
@@ -288,7 +353,8 @@ function SpendSection({ rows, totals }) {
     const daily = Array.isArray(src.daily) ? src.daily : null;
     if (daily && daily.length > 0) {
       for (const d of daily) {
-        if (d.date >= windowStart) {
+        // Inclusive on both bounds (YYYY-MM-DD strings sort lexicographically).
+        if (d.date >= windowStart && d.date <= windowEnd) {
           cost += d.cost || 0;
           clicks += d.clicks || 0;
           impressions += d.impressions || 0;
@@ -377,16 +443,48 @@ function SpendSection({ rows, totals }) {
           </span>
           <div className="spacer" />
           <span style={{ fontSize: 11, color: "var(--muted)" }}>
-            Window: {windowLabel} · ${totalSpend.toFixed(2)} spend · {totalClicks.toLocaleString()} clicks
+            Window: {windowLabel}
+            {windowKind === "custom" && ` (${windowStart} → ${windowEnd})`}
+            {` · $${totalSpend.toFixed(2)} spend · ${totalClicks.toLocaleString()} clicks`}
           </span>
         </div>
         {/* Date-range selector + Site-leads-only toggle */}
         <div className="row" style={{ marginTop: 8, gap: 10, flexWrap: "wrap" }}>
           <div className="f-segment">
-            {[["7d", "7d"], ["30d", "30d"], ["90d", "90d"], ["mtd", "MTD"]].map(([k, l]) => (
+            {[["7d", "7d"], ["30d", "30d"], ["90d", "90d"], ["mtd", "MTD"], ["custom", "Custom"]].map(([k, l]) => (
               <button key={k} className={windowKind === k ? "is-active" : ""} onClick={() => setWindowKind(k)}>{l}</button>
             ))}
           </div>
+          {windowKind === "custom" && (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+              <input
+                type="date"
+                value={customStart}
+                max={customEnd}
+                onChange={e => setCustomStart(e.target.value)}
+                style={{
+                  padding: "5px 8px", fontSize: 12,
+                  border: "1px solid var(--border)", borderRadius: 4,
+                  background: "var(--surface)", color: "var(--ink)",
+                }}
+                title="Start date (inclusive)"
+              />
+              <span style={{ color: "var(--muted)" }}>→</span>
+              <input
+                type="date"
+                value={customEnd}
+                min={customStart}
+                max={fmtYmd(new Date())}
+                onChange={e => setCustomEnd(e.target.value)}
+                style={{
+                  padding: "5px 8px", fontSize: 12,
+                  border: "1px solid var(--border)", borderRadius: 4,
+                  background: "var(--surface)", color: "var(--ink)",
+                }}
+                title="End date (inclusive)"
+              />
+            </div>
+          )}
           <label
             style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "var(--muted)", cursor: "pointer" }}
             title="When ON: leads count includes only HubSpot contacts attributed to this ad channel that came through the website (i.e. paid-search/paid-social form fills on suitesforall.com). Offline-tracked calls and walk-ins are excluded. When OFF: all HubSpot contacts from this channel."
