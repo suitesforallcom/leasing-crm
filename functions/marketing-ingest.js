@@ -95,7 +95,16 @@ exports.marketingIngest = onRequest(
         logger.warn(`[marketing-ingest] ${source}: ${campaigns.length} campaigns, trimming to ${MAX_CAMPAIGNS_PER_SOURCE}`);
       }
 
-      // Trim + sanitize campaign records (drop unknown fields, coerce types)
+      // Trim + sanitize campaign records (drop unknown fields, coerce types).
+      // Two shapes are accepted:
+      //   1. AGGREGATE (legacy v1) — campaigns[].cost/clicks/etc already
+      //      rolled up over the window. No daily breakdown.
+      //   2. DAILY (v2, Pulse-Marketing-2026-05-24) — campaigns[] is just
+      //      {id,name,status} meta; daily[] has {id,date,cost,clicks,...}
+      //      rows per-campaign-per-day. Pulse aggregates client-side
+      //      across whatever date range the operator selects.
+      // v2 is detected by presence of body.daily[]. Both shapes write to
+      // the same Firestore doc — the read-side helper figures it out.
       const trimmed = campaigns.slice(0, MAX_CAMPAIGNS_PER_SOURCE).map(c => ({
         id: String(c.id || ''),
         name: String(c.name || '(unnamed)'),
@@ -107,11 +116,27 @@ exports.marketingIngest = onRequest(
         ctr: Number(c.ctr) || 0,
         avgCpc: Number(c.avgCpc) || 0,
       }));
+      // Daily rows (v2). No cap — 30 campaigns × 90 days = 2700 rows
+      // serialized ≈ 200 KB, well under Firestore 1MB doc cap with
+      // JSON-string trick below.
+      const daily = Array.isArray(body.daily) ? body.daily.map(d => ({
+        id: String(d.id || ''),
+        date: String(d.date || ''),
+        cost: Number(d.cost) || 0,
+        clicks: Number(d.clicks) || 0,
+        impressions: Number(d.impressions) || 0,
+        conversions: Number(d.conversions) || 0,
+      })) : [];
       const totals = body.totals && typeof body.totals === 'object' ? {
         cost: Number(body.totals.cost) || 0,
         clicks: Number(body.totals.clicks) || 0,
         impressions: Number(body.totals.impressions) || 0,
         conversions: Number(body.totals.conversions) || 0,
+      } : daily.length > 0 ? {
+        cost: daily.reduce((s, d) => s + d.cost, 0),
+        clicks: daily.reduce((s, d) => s + d.clicks, 0),
+        impressions: daily.reduce((s, d) => s + d.impressions, 0),
+        conversions: daily.reduce((s, d) => s + d.conversions, 0),
       } : {
         cost: trimmed.reduce((s, c) => s + c.cost, 0),
         clicks: trimmed.reduce((s, c) => s + c.clicks, 0),
@@ -126,14 +151,17 @@ exports.marketingIngest = onRequest(
         fetchedAt: body.fetchedAt || ingestedAt,
         ingestedAt,
         dateRange: body.dateRange || null,
+        daysBack: Number(body.daysBack) || null,
         totals,
-        // Serialize campaigns to JSON string to stay under Firestore's
-        // 40K index-entries cap (same trick as hubspot doc — see Entry 31
-        // in FIXES_LOG). At 200 campaigns × 9 fields = 1800 entries; we'd
-        // survive uncompressed, but stringifying lets us comfortably fit
-        // multiple sources in one doc.
+        // Serialize campaigns + daily to JSON strings to stay under
+        // Firestore's 40K index-entries cap (same trick as hubspot doc
+        // — see FIXES_LOG Entry 31). campaignsJson = meta only (~200
+        // entries × few fields = small), dailyJson = per-day breakdown
+        // (2700 rows × 6 fields ≈ 200 KB stringified = 1 index entry).
         campaignsJson: JSON.stringify(trimmed),
         campaignCount: trimmed.length,
+        dailyJson: daily.length > 0 ? JSON.stringify(daily) : null,
+        dailyRowCount: daily.length,
       };
 
       // Merge-write into the marketing doc, scoped to the specific source.
@@ -187,19 +215,24 @@ exports.marketingGetData = require('firebase-functions/v2/https').onCall(
     if (!snap.exists) return { marketingData: null };
     const raw = snap.data();
     const sources = raw.sources || {};
-    // Inflate campaignsJson back into objects for client consumption
+    // Inflate campaignsJson + dailyJson back into objects for client
+    // consumption. Both fields are JSON-stringified server-side to avoid
+    // Firestore's index-entries cap.
     const inflated = {};
     for (const [key, payload] of Object.entries(sources)) {
-      if (payload && payload.campaignsJson) {
-        try {
-          inflated[key] = { ...payload, campaigns: JSON.parse(payload.campaignsJson) };
-          delete inflated[key].campaignsJson;
-        } catch (e) {
-          inflated[key] = { ...payload, campaigns: [], _parseError: e.message };
-        }
-      } else {
-        inflated[key] = payload;
+      if (!payload) { inflated[key] = payload; continue; }
+      const out = { ...payload };
+      if (payload.campaignsJson) {
+        try { out.campaigns = JSON.parse(payload.campaignsJson); }
+        catch (e) { out.campaigns = []; out._parseError = e.message; }
+        delete out.campaignsJson;
       }
+      if (payload.dailyJson) {
+        try { out.daily = JSON.parse(payload.dailyJson); }
+        catch (e) { out.daily = []; out._dailyParseError = e.message; }
+        delete out.dailyJson;
+      }
+      inflated[key] = out;
     }
     return {
       marketingData: {

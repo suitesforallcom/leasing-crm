@@ -212,10 +212,38 @@ window.MarketingPage = function MarketingPage() {
   );
 };
 
+// Tooltip helper — shows ⓘ icon, hovering reveals the explanation.
+// Native HTML title attribute (works everywhere, no extra CSS / JS).
+function HeaderTip({ label, hint }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 3, cursor: "help" }} title={hint}>
+      {label}
+      <span style={{ fontSize: 9, color: "var(--muted-2)", border: "1px solid var(--muted-2)", borderRadius: "50%", width: 11, height: 11, display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 700 }}>?</span>
+    </span>
+  );
+}
+
 function SpendSection({ rows, totals }) {
   const mk = window._mkDataCache;
   const sources = (mk && mk.sources) || {};
   const sourceKeys = Object.keys(sources);
+
+  // Date-range selector — applies to the daily-granular spend data
+  // (Google Ads Script pulls 90d; older incoming sources still work
+  // on aggregate fallback). State scoped to this section.
+  const [windowKind, setWindowKind] = React.useState("30d");  // '7d' / '30d' / '90d' / 'mtd'
+  // «Site leads only» — exclude OFFLINE + INTEGRATION sources from the
+  // leads count used in CPL. Tony: «учитывать только заявки через сайт».
+  // PAID_SEARCH already implies web (ad click → landing page), so we
+  // count all HubSpot contacts from that channel that aren't tagged
+  // OFFLINE. Toggle persists in localStorage.
+  const [siteLeadsOnly, setSiteLeadsOnly] = React.useState(() => {
+    try { return localStorage.getItem("pulse_marketing_site_leads_only") !== "false"; }
+    catch (e) { return true; }
+  });
+  React.useEffect(() => {
+    try { localStorage.setItem("pulse_marketing_site_leads_only", siteLeadsOnly ? "true" : "false"); } catch (e) {}
+  }, [siteLeadsOnly]);
 
   if (sourceKeys.length === 0) {
     return (
@@ -228,6 +256,21 @@ function SpendSection({ rows, totals }) {
     );
   }
 
+  // Date-range cutoff for daily aggregation. Returns YYYY-MM-DD start
+  // string. End is always today (we don't filter future).
+  function windowStartDate(kind) {
+    const d = new Date();
+    if (kind === "mtd") return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-01";
+    const days = kind === "7d" ? 7 : kind === "90d" ? 90 : 30;
+    const back = new Date(d.getTime() - (days - 1) * 86400 * 1000);
+    return back.getFullYear() + "-" + String(back.getMonth() + 1).padStart(2, "0") + "-" + String(back.getDate()).padStart(2, "0");
+  }
+  const windowStart = windowStartDate(windowKind);
+  const windowLabel = windowKind === "7d" ? "Last 7 days"
+                    : windowKind === "30d" ? "Last 30 days"
+                    : windowKind === "90d" ? "Last 90 days"
+                    : "Month to date";
+
   // Map our channel groups → ingest source keys. PAID_SEARCH + google →
   // 'google-ads' bucket; PAID_SOCIAL + facebook/instagram → 'meta'; etc.
   // For each ingested source, compute cost / leads (joined from HubSpot
@@ -238,11 +281,40 @@ function SpendSection({ rows, totals }) {
   function makeJoinedRow(sourceKey, friendlyLabel, channelMatcher) {
     const src = sources[sourceKey];
     if (!src) return null;
+    // Aggregate daily → window totals. Falls back to src.totals if
+    // daily breakdown isn't present (legacy v1 ingest format).
+    let cost = 0, clicks = 0, impressions = 0, conversions = 0;
+    let dailyRowsInWindow = 0;
+    const daily = Array.isArray(src.daily) ? src.daily : null;
+    if (daily && daily.length > 0) {
+      for (const d of daily) {
+        if (d.date >= windowStart) {
+          cost += d.cost || 0;
+          clicks += d.clicks || 0;
+          impressions += d.impressions || 0;
+          conversions += d.conversions || 0;
+          dailyRowsInWindow++;
+        }
+      }
+    } else if (src.totals) {
+      // No daily granularity — show aggregate as-is regardless of window
+      cost = Number(src.totals.cost) || 0;
+      clicks = Number(src.totals.clicks) || 0;
+      impressions = Number(src.totals.impressions) || 0;
+      conversions = Number(src.totals.conversions) || 0;
+    }
     const matchedChannel = channelMatcher();
-    const cost = (src.totals && Number(src.totals.cost)) || 0;
-    const clicks = (src.totals && Number(src.totals.clicks)) || 0;
-    const conversions = (src.totals && Number(src.totals.conversions)) || 0;
-    const leads = matchedChannel ? matchedChannel.leads : 0;
+    // Leads counted toward CPL. When siteLeadsOnly is ON we exclude
+    // OFFLINE-group contacts (phone calls, walk-ins) since they didn't
+    // come through the website ad funnel — only website form submissions
+    // count. PAID_SEARCH and PAID_SOCIAL contacts are always website-
+    // driven (ad click → landing page → form fill), so this is a no-op
+    // for them. But it matters when channel labels span sub-categories
+    // — e.g. «Other Campaign» that may include both online + offline.
+    let leads = matchedChannel ? matchedChannel.leads : 0;
+    if (siteLeadsOnly && matchedChannel && matchedChannel.group === "offline") {
+      leads = 0;
+    }
     const tours = matchedChannel ? matchedChannel.opportunity : 0;
     const customers = matchedChannel ? matchedChannel.customer : 0;
     const cpl = leads > 0 ? cost / leads : 0;
@@ -254,8 +326,11 @@ function SpendSection({ rows, totals }) {
       label: friendlyLabel,
       campaigns: src.campaigns || [],
       campaignCount: src.campaignCount || (src.campaigns || []).length,
+      hasDaily: !!daily,
+      dailyRowsInWindow,
       cost,
       clicks,
+      impressions,
       conversions,
       leads,
       tours,
@@ -281,6 +356,17 @@ function SpendSection({ rows, totals }) {
   const totalClicks = spendRows.reduce((s, r) => s + r.clicks, 0);
   const sourceCount = sourceKeys.length;
 
+  // Format ingestedAt as concrete date + time (May 24, 2:21 PM) instead
+  // of relative «4m ago». Tony's request — better for audit clarity.
+  function fmtIngestTs(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "—";
+    const date = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    const time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+    return date + " · " + time;
+  }
+
   return (
     <div className="card is-clean" style={{ marginBottom: 18, padding: 0, overflow: "hidden", borderLeft: "3px solid #16a34a" }}>
       <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
@@ -291,36 +377,78 @@ function SpendSection({ rows, totals }) {
           </span>
           <div className="spacer" />
           <span style={{ fontSize: 11, color: "var(--muted)" }}>
-            Total spend ${totalSpend.toFixed(2)} · {totalClicks.toLocaleString()} clicks
+            Window: {windowLabel} · ${totalSpend.toFixed(2)} spend · {totalClicks.toLocaleString()} clicks
           </span>
         </div>
+        {/* Date-range selector + Site-leads-only toggle */}
+        <div className="row" style={{ marginTop: 8, gap: 10, flexWrap: "wrap" }}>
+          <div className="f-segment">
+            {[["7d", "7d"], ["30d", "30d"], ["90d", "90d"], ["mtd", "MTD"]].map(([k, l]) => (
+              <button key={k} className={windowKind === k ? "is-active" : ""} onClick={() => setWindowKind(k)}>{l}</button>
+            ))}
+          </div>
+          <label
+            style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "var(--muted)", cursor: "pointer" }}
+            title="When ON: leads count includes only HubSpot contacts attributed to this ad channel that came through the website (i.e. paid-search/paid-social form fills on suitesforall.com). Offline-tracked calls and walk-ins are excluded. When OFF: all HubSpot contacts from this channel."
+          >
+            <input
+              type="checkbox"
+              checked={siteLeadsOnly}
+              onChange={e => setSiteLeadsOnly(e.target.checked)}
+              style={{ cursor: "pointer" }}
+            />
+            Site leads only (exclude offline/phone-only)
+          </label>
+        </div>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 90px 90px 90px 90px 90px 90px 120px", gap: 8, padding: "10px 14px", borderBottom: "1px solid var(--border)", background: "var(--surface-2)", fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 90px 90px 90px 90px 90px 90px 140px", gap: 8, padding: "10px 14px", borderBottom: "1px solid var(--border)", background: "var(--surface-2)", fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>
         <div>Source</div>
-        <div style={{ textAlign: "right" }}>Spend</div>
-        <div style={{ textAlign: "right" }}>Clicks</div>
-        <div style={{ textAlign: "right" }}>Leads</div>
-        <div style={{ textAlign: "right" }}>CPL</div>
-        <div style={{ textAlign: "right" }}>CPC</div>
-        <div style={{ textAlign: "right" }}>CAC</div>
-        <div style={{ textAlign: "right" }}>Last sync</div>
+        <div style={{ textAlign: "right" }}>
+          <HeaderTip label="Spend" hint={`Total ad spend over the selected window (${windowLabel}). Pulled from the ad platform's reported cost (Google Ads: metrics.cost_micros / 1M).`} />
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <HeaderTip label="Clicks" hint={`Total clicks on ads over ${windowLabel}. From the ad platform.`} />
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <HeaderTip label="Leads" hint={`HubSpot contacts attributed to this acquisition channel (paid-search/paid-social) with createDate in the global page window (top-right selector). ${siteLeadsOnly ? "Site-only mode: excludes OFFLINE source." : "All-source mode: includes phone-only / walk-in leads tagged to the channel."}`} />
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <HeaderTip label="CPL" hint="Cost Per Lead = Spend ÷ Leads. Lower is better. The leads count depends on the 'Site leads only' toggle." />
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <HeaderTip label="CPC" hint="Cost Per Click = Spend ÷ Clicks. Channel-level average over the window. Useful for benchmarking ad-platform efficiency before funnel quality matters." />
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <HeaderTip label="CAC" hint="Customer Acquisition Cost = Spend ÷ Customers. Customer = HubSpot contact at lifecycle stage 'customer' or higher. '—' when no customer-stage contacts in window (your pipeline doesn't currently mark stage = customer)." />
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <HeaderTip label="Last sync" hint="When the spend data was last ingested. Google Ads Script runs hourly and POSTs to /marketingIngest. Fresh data appears here ~1 minute after the script run." />
+        </div>
       </div>
       {spendRows.map(r => {
-        const lastSyncMin = r.ingestedAt ? Math.round((Date.now() - new Date(r.ingestedAt).getTime()) / 60000) : null;
+        const tsLabel = fmtIngestTs(r.ingestedAt);
+        const tsTooltip = r.ingestedAt
+          ? `Exact: ${new Date(r.ingestedAt).toLocaleString()}\nData window per script: last ${(spendRows[0]?.dateRange?.start || "?")} → ${(spendRows[0]?.dateRange?.end || "?")}`
+          : "";
         return (
-          <div key={r.sourceKey} style={{ display: "grid", gridTemplateColumns: "1.4fr 90px 90px 90px 90px 90px 90px 120px", gap: 8, padding: "10px 14px", borderBottom: "1px solid var(--border)", alignItems: "center", fontSize: 12.5 }}>
+          <div key={r.sourceKey} style={{ display: "grid", gridTemplateColumns: "1.4fr 90px 90px 90px 90px 90px 90px 140px", gap: 8, padding: "10px 14px", borderBottom: "1px solid var(--border)", alignItems: "center", fontSize: 12.5 }}>
             <div>
               <div style={{ fontWeight: 700 }}>{r.label}</div>
-              <div style={{ fontSize: 10.5, color: "var(--muted)" }}>{r.campaignCount} campaigns · acct {r.accountId || "—"}</div>
+              <div style={{ fontSize: 10.5, color: "var(--muted)" }}>
+                {r.campaignCount} campaigns · acct {r.accountId || "—"}
+                {r.hasDaily && r.dailyRowsInWindow > 0 && (
+                  <span style={{ marginLeft: 6 }} title="Number of daily rows pulled in the selected window">· {r.dailyRowsInWindow} daily rows</span>
+                )}
+              </div>
             </div>
-            <div className="mono" style={{ textAlign: "right", fontWeight: 700 }}>${r.cost.toFixed(0)}</div>
+            <div className="mono" style={{ textAlign: "right", fontWeight: 700 }} title={r.cost > 0 ? `$${r.cost.toFixed(2)} over ${windowLabel}` : "No spend in window"}>${r.cost.toFixed(0)}</div>
             <div className="mono" style={{ textAlign: "right" }}>{r.clicks.toLocaleString()}</div>
             <div className="mono" style={{ textAlign: "right", color: r.leads > 0 ? "var(--ink)" : "var(--muted)" }}>{r.leads.toLocaleString()}</div>
-            <div className="mono" style={{ textAlign: "right", fontWeight: 700, color: r.cpl > 0 ? "var(--ink)" : "var(--muted)" }}>{r.cpl > 0 ? "$" + r.cpl.toFixed(0) : "—"}</div>
+            <div className="mono" style={{ textAlign: "right", fontWeight: 700, color: r.cpl > 0 ? "var(--ink)" : "var(--muted)" }} title={r.cpl > 0 ? `$${r.cost.toFixed(2)} ÷ ${r.leads} leads = $${r.cpl.toFixed(2)} per lead` : ""}>{r.cpl > 0 ? "$" + r.cpl.toFixed(0) : "—"}</div>
             <div className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>{r.cpc > 0 ? "$" + r.cpc.toFixed(2) : "—"}</div>
             <div className="mono" style={{ textAlign: "right", fontWeight: 700, color: r.cac > 0 ? "var(--success-ink)" : "var(--muted)" }}>{r.cac > 0 ? "$" + r.cac.toFixed(0) : "—"}</div>
-            <div style={{ textAlign: "right", fontSize: 10.5, color: "var(--muted)" }}>
-              {lastSyncMin !== null ? (lastSyncMin < 60 ? lastSyncMin + "m ago" : Math.round(lastSyncMin / 60) + "h ago") : "—"}
+            <div style={{ textAlign: "right", fontSize: 11, color: "var(--muted)" }} title={tsTooltip}>
+              {tsLabel}
             </div>
           </div>
         );

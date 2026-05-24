@@ -47,8 +47,11 @@ var INGEST_URL = 'https://us-central1-suitesforall.cloudfunctions.net/marketingI
 // engineering to update both ends.
 var SHARED_SECRET = 'fb0e31f26cb8e1c08f02e51c7f2a2bb69017ed0cecbd9cac1818e7a870af204d';
 
-// How many days back to pull. 30 covers month-to-date views for ops.
-var DAYS_BACK = 30;
+// How many days back to pull. 90 gives the Marketing page enough history
+// for «Last 7d / 30d / 90d / Custom range» selectors without re-running
+// the script. Daily-granular data (segments.date in GAQL below) lets
+// Pulse aggregate to any window client-side.
+var DAYS_BACK = 90;
 
 // ============ SCRIPT ============
 
@@ -60,26 +63,32 @@ function main() {
 
   Logger.log('Pulse spend ingest — fetching ' + startDate + ' to ' + endDate);
 
-  // GAQL — campaign-level rollup over the window. Currency = account default
-  // (USD for SuitesForAll). Cost is in micros (1 unit = 1/1,000,000 USD)
-  // and we convert below.
+  // GAQL — daily per-campaign rows over the 90-day window. segments.date
+  // splits each campaign into 1 row per day, which Pulse aggregates
+  // client-side to support arbitrary date-range selectors (7d, 30d, 90d,
+  // custom). Cost is in micros (1 unit = 1/1,000,000 USD) → convert below.
   var query =
     'SELECT ' +
       'campaign.id, ' +
       'campaign.name, ' +
       'campaign.status, ' +
+      'segments.date, ' +
       'metrics.cost_micros, ' +
       'metrics.clicks, ' +
       'metrics.impressions, ' +
-      'metrics.conversions, ' +
-      'metrics.ctr, ' +
-      'metrics.average_cpc ' +
+      'metrics.conversions ' +
     'FROM campaign ' +
     'WHERE segments.date BETWEEN "' + startDate + '" AND "' + endDate + '"';
 
   var report = AdsApp.report(query);
   var rows = report.rows();
-  var campaigns = [];
+  // daily — flat list of per-campaign-per-day rows. Pulse filters by date
+  // window before aggregating. With 30 campaigns × 90 days = 2700 rows
+  // (~210 KB serialized) — well under Firestore 1MB cap.
+  var daily = [];
+  // campaignsMeta — name + status lookup, indexed by id, since segments
+  // duplicate name/status across days.
+  var campaignsMeta = {};
   var totals = { cost: 0, clicks: 0, impressions: 0, conversions: 0 };
 
   while (rows.hasNext()) {
@@ -89,18 +98,21 @@ function main() {
     var clicks = Number(r['metrics.clicks']) || 0;
     var impressions = Number(r['metrics.impressions']) || 0;
     var conversions = Number(r['metrics.conversions']) || 0;
-    var ctr = Number(r['metrics.ctr']) || 0;
-    var avgCpcMicros = Number(r['metrics.average_cpc']) || 0;
-    campaigns.push({
-      id: String(r['campaign.id'] || ''),
-      name: String(r['campaign.name'] || '(unnamed)'),
-      status: String(r['campaign.status'] || ''),
+    var id = String(r['campaign.id'] || '');
+    if (!campaignsMeta[id]) {
+      campaignsMeta[id] = {
+        id: id,
+        name: String(r['campaign.name'] || '(unnamed)'),
+        status: String(r['campaign.status'] || ''),
+      };
+    }
+    daily.push({
+      id: id,
+      date: String(r['segments.date'] || ''),
       cost: cost,
       clicks: clicks,
       impressions: impressions,
       conversions: conversions,
-      ctr: ctr,
-      avgCpc: avgCpcMicros / 1000000,
     });
     totals.cost += cost;
     totals.clicks += clicks;
@@ -108,19 +120,31 @@ function main() {
     totals.conversions += conversions;
   }
 
-  Logger.log('  Aggregated ' + campaigns.length + ' campaigns');
-  Logger.log('  Totals: $' + totals.cost.toFixed(2) + ' / ' + totals.clicks +
-             ' clicks / ' + totals.impressions + ' impressions / ' +
-             totals.conversions + ' conversions');
+  Logger.log('  ' + daily.length + ' daily rows across ' +
+             Object.keys(campaignsMeta).length + ' campaigns');
+  Logger.log('  Totals (' + DAYS_BACK + 'd): $' + totals.cost.toFixed(2) +
+             ' / ' + totals.clicks + ' clicks / ' + totals.impressions +
+             ' impressions / ' + totals.conversions + ' conversions');
 
   var customerId = AdsApp.currentAccount().getCustomerId();
+
+  // Build campaigns array (compact meta only, daily breakdown separately)
+  // so the marketingIngest CF's existing «trim to 200 campaigns» logic
+  // keeps working — we don't actually trim daily rows since they're not
+  // user-facing 1-by-1.
+  var campaigns = [];
+  for (var cid in campaignsMeta) {
+    if (campaignsMeta.hasOwnProperty(cid)) campaigns.push(campaignsMeta[cid]);
+  }
 
   var payload = {
     source: 'google-ads',
     accountId: customerId,
     fetchedAt: new Date().toISOString(),
     dateRange: { start: startDate, end: endDate },
-    campaigns: campaigns,
+    daysBack: DAYS_BACK,
+    campaigns: campaigns,    // [{id, name, status}]
+    daily: daily,            // [{id, date, cost, clicks, impressions, conversions}]
     totals: totals,
   };
 
