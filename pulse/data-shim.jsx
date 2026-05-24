@@ -106,8 +106,8 @@
   // Phase 19 rev — contact lookup. Used by floor-map prospect cards to
   // show «In HubSpot · owned by <manager>» badge. Returns null when no
   // match or when contacts haven't been synced yet.
-  // contactByEmail entries use compact array-ish form: { i, o, s }
-  //   i = contactId, o = ownerId, s = lifecycleStage
+  // contactByEmail entries use compact form: { i, o, s, n, p, c }
+  //   i=contactId, o=ownerId, s=lifecycleStage, n=name, p=phone, c=createdate
   window._hsContactForEmail = function (email) {
     if (!window._hsDataCache || !email) return null;
     const e = String(email).toLowerCase().trim();
@@ -120,6 +120,9 @@
       ownerEmail: owner ? owner.email : null,
       ownerName: owner ? owner.name : null,
       lifecycleStage: c.s || null,
+      name: c.n || null,
+      phone: c.p || null,
+      createDate: c.c || null,
     };
   };
 

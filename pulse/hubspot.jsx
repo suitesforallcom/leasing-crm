@@ -27,6 +27,39 @@ window.HubspotPage = function HubspotPage({ centerFilter }) {
   const users = [...(window.DATA?.USERS || [])];
   void centerFilter; // reserved for future per-center HubSpot views
 
+  // «Sync now» button state — operator can force a fullSync from this
+  // page instead of opening floor-map devtools. Bridges to the Pulse
+  // callable. Hides the «no auth» path because Pulse bridge is anonymous;
+  // we route through hubspotGetData (anonymous-allowed) for a low-priv
+  // trigger... actually NO — fullSync requires admin. We attempt the
+  // call; on permission-denied, surface a hint to open floor-map.
+  const [syncing, setSyncing] = React.useState(false);
+  const [syncMsg, setSyncMsg] = React.useState(null);
+  async function triggerSync() {
+    if (typeof window._pulseCallable !== 'function') {
+      setSyncMsg({ kind: 'err', text: 'Firebase bridge not ready — reload the page.' });
+      return;
+    }
+    setSyncing(true);
+    setSyncMsg(null);
+    try {
+      const res = await window._pulseCallable('hubspotSyncNow', { fullSync: true });
+      const c = res?.data?.counts || {};
+      setSyncMsg({ kind: 'ok', text: `Synced ${c.deals || 0} deals · ${c.contacts || 0} contacts · ${c.owners || 0} owners. Reload to see fresh data.` });
+      // Bust the localStorage cache so next reload pulls fresh.
+      try { localStorage.removeItem('sfa_hubspot_data_v1'); } catch (e) {}
+    } catch (e) {
+      const msg = String(e?.message || e || '');
+      if (/permission-denied|Root admin/.test(msg)) {
+        setSyncMsg({ kind: 'err', text: 'Permission denied — Pulse bridge runs anonymously. Open Floor map (bottom-left), then in devtools console: window.stripeCallable(\'hubspotSyncNow\')({fullSync:true})' });
+      } else {
+        setSyncMsg({ kind: 'err', text: 'Sync failed: ' + msg.slice(0, 200) });
+      }
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   return (
     <div className="page">
       {/* Page header — title + last-sync subtitle. HubspotInsights body
@@ -39,9 +72,30 @@ window.HubspotPage = function HubspotPage({ centerFilter }) {
             <span>Pipeline analytics from HubSpot CRM, cross-referenced with SuitesForAll leases</span>
           </div>
         </div>
+        <div className="row">
+          <button className="btn" onClick={triggerSync} disabled={syncing}>
+            <Icon name="refresh" /> {syncing ? 'Syncing…' : 'Sync now'}
+          </button>
+          <button className="btn" onClick={() => location.reload()}>
+            <Icon name="refresh" /> Reload
+          </button>
+        </div>
       </div>
 
+      {syncMsg && (
+        <div style={{
+          padding: '8px 12px', marginBottom: 14, borderRadius: 6, fontSize: 12,
+          background: syncMsg.kind === 'ok' ? 'rgba(34,197,94,.10)' : 'rgba(239,68,68,.10)',
+          borderLeft: '3px solid ' + (syncMsg.kind === 'ok' ? '#16a34a' : '#dc2626'),
+          color: 'var(--ink)',
+        }}>
+          {syncMsg.text}
+        </div>
+      )}
+
       <HubspotInsights users={users} />
+
+      <ContactsTable />
     </div>
   );
 };
@@ -383,6 +437,372 @@ function HubspotInsights({ users }) {
           </div>
         </details>
       )}
+    </div>
+  );
+}
+
+/* =================================================================
+   ContactsTable — HubSpot-style contacts list (Tony 2026-05-24)
+   Mirrors the «All contacts» view in HubSpot CRM: Name / Create Date /
+   Phone / Email / Owner / Lifecycle stage. Reads window._hsDataCache.
+   contactByEmail (compact form i/o/s/n/p/c) joined with owners map.
+
+   Features:
+     • Search (filters name + email + phone, lowercase contains)
+     • Sortable columns (click header to toggle asc/desc)
+     • Pagination (50 per page; lazy «Load more» button)
+     • Click row → open contact in HubSpot (na2.hubspot.com)
+     • Export CSV (current filtered view)
+   Performance note: 3K rows render fine without virtualization since
+   we paginate. If contact count grows past ~10K, swap pagination for
+   a virtual scroller (e.g. react-window).
+   ================================================================= */
+function ContactsTable() {
+  const hs = window._hsDataCache;
+  const [query, setQuery] = React.useState('');
+  const [sortKey, setSortKey] = React.useState('createDate');
+  const [sortDir, setSortDir] = React.useState('desc');
+  const [ownerFilter, setOwnerFilter] = React.useState('all');
+  const [stageFilter, setStageFilter] = React.useState('all');
+  const [pageSize, setPageSize] = React.useState(50);
+
+  // Build flat row list ONCE (memo-ish via useMemo would be cleaner but
+  // re-renders only fire on state change — and we're already cheap).
+  const allRows = React.useMemo(() => {
+    if (!hs?.contactByEmail) return [];
+    const owners = hs.owners || {};
+    const out = [];
+    for (const [email, c] of Object.entries(hs.contactByEmail)) {
+      const owner = c.o ? owners[c.o] : null;
+      out.push({
+        email,
+        name: c.n || email.split('@')[0],
+        phone: c.p || null,
+        createDate: c.c || null,
+        ownerId: c.o || null,
+        ownerName: owner ? owner.name : null,
+        ownerArchived: owner ? owner.archived : false,
+        lifecycleStage: c.s || null,
+        contactId: c.i,
+      });
+    }
+    return out;
+  }, [hs]);
+
+  // Derive owner + stage option lists for filter chips
+  const ownerOptions = React.useMemo(() => {
+    const m = new Map();
+    for (const r of allRows) {
+      if (r.ownerId && !m.has(r.ownerId)) m.set(r.ownerId, r.ownerName || '(no name)');
+    }
+    return Array.from(m.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+  }, [allRows]);
+  const stageOptions = React.useMemo(() => {
+    const s = new Set();
+    for (const r of allRows) {
+      if (r.lifecycleStage) s.add(r.lifecycleStage);
+    }
+    return Array.from(s).sort();
+  }, [allRows]);
+
+  // Filter + search
+  const filtered = React.useMemo(() => {
+    let rows = allRows;
+    if (ownerFilter !== 'all') {
+      rows = rows.filter(r => (ownerFilter === '_unowned' ? !r.ownerId : r.ownerId === ownerFilter));
+    }
+    if (stageFilter !== 'all') {
+      rows = rows.filter(r => (stageFilter === '_none' ? !r.lifecycleStage : r.lifecycleStage === stageFilter));
+    }
+    if (query.trim()) {
+      const q = query.trim().toLowerCase();
+      rows = rows.filter(r =>
+        (r.name && r.name.toLowerCase().includes(q)) ||
+        (r.email && r.email.toLowerCase().includes(q)) ||
+        (r.phone && r.phone.toLowerCase().includes(q))
+      );
+    }
+    return rows;
+  }, [allRows, query, ownerFilter, stageFilter]);
+
+  // Sort
+  const sorted = React.useMemo(() => {
+    const rows = [...filtered];
+    const dir = sortDir === 'asc' ? 1 : -1;
+    rows.sort((a, b) => {
+      const va = a[sortKey] || '';
+      const vb = b[sortKey] || '';
+      if (va === vb) return 0;
+      if (!va) return 1; // nulls last regardless of direction
+      if (!vb) return -1;
+      return va < vb ? -dir : dir;
+    });
+    return rows;
+  }, [filtered, sortKey, sortDir]);
+
+  function flipSort(key) {
+    if (sortKey === key) {
+      setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortDir(key === 'createDate' ? 'desc' : 'asc');
+    }
+  }
+
+  function exportCsv() {
+    const header = ['Name', 'Create Date', 'Phone Number', 'Email', 'Owner', 'Lifecycle stage'];
+    const lines = [header.join(',')];
+    for (const r of sorted) {
+      const cells = [
+        r.name || '',
+        r.createDate || '',
+        r.phone || '',
+        r.email || '',
+        r.ownerName || '',
+        r.lifecycleStage || '',
+      ].map(v => {
+        const s = String(v).replace(/"/g, '""');
+        return /[",\n]/.test(s) ? `"${s}"` : s;
+      });
+      lines.push(cells.join(','));
+    }
+    const csv = lines.join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `hubspot-contacts-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  const visible = sorted.slice(0, pageSize);
+  const hubspotBase = 'https://app-na2.hubspot.com/contacts/243651196';
+
+  if (!hs?.contactByEmail || allRows.length === 0) {
+    return (
+      <div className="card is-clean" style={{ marginTop: 18, padding: 16 }}>
+        <div style={{ fontSize: 13, color: 'var(--muted)' }}>
+          No HubSpot contacts in cache yet. Run «Sync now» above (full sync pulls all contacts), then reload.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card is-clean" style={{ marginTop: 18, padding: 0, overflow: 'hidden' }}>
+      {/* Toolbar — search + filters + export */}
+      <div className="row" style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', gap: 8, flexWrap: 'wrap' }}>
+        <div style={{ position: 'relative', flex: '1 1 260px', minWidth: 200 }}>
+          <Icon name="search" style={{ position: 'absolute', left: 10, top: 10, width: 14, height: 14, color: 'var(--muted)' }} />
+          <input
+            type="text"
+            placeholder="Search name, email, phone…"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            style={{
+              width: '100%', padding: '8px 12px 8px 32px', fontSize: 13,
+              borderRadius: 999, border: '1px solid var(--border)',
+              background: 'var(--surface)', color: 'var(--ink)',
+            }}
+          />
+        </div>
+        <select
+          value={ownerFilter}
+          onChange={e => setOwnerFilter(e.target.value)}
+          style={{
+            padding: '7px 10px', fontSize: 12, borderRadius: 6,
+            border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--ink)',
+          }}
+          title="Filter by HubSpot owner"
+        >
+          <option value="all">All owners</option>
+          <option value="_unowned">— No owner —</option>
+          {ownerOptions.map(([id, name]) => (
+            <option key={id} value={id}>{name}</option>
+          ))}
+        </select>
+        <select
+          value={stageFilter}
+          onChange={e => setStageFilter(e.target.value)}
+          style={{
+            padding: '7px 10px', fontSize: 12, borderRadius: 6,
+            border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--ink)',
+          }}
+          title="Filter by lifecycle stage"
+        >
+          <option value="all">All stages</option>
+          <option value="_none">— No stage —</option>
+          {stageOptions.map(s => (
+            <option key={s} value={s}>{s}</option>
+          ))}
+        </select>
+        <div className="spacer" />
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+          {sorted.length.toLocaleString()} {sorted.length === 1 ? 'contact' : 'contacts'}
+          {sorted.length !== allRows.length ? ` of ${allRows.length.toLocaleString()}` : ''}
+        </span>
+        <button className="btn is-small" onClick={exportCsv} title="Export current view to CSV">
+          <Icon name="download" /> Export
+        </button>
+      </div>
+
+      {/* Table — header + body. Fixed grid template so columns align. */}
+      <div style={{ overflowX: 'auto' }}>
+        <div style={{ minWidth: 920 }}>
+          {/* Header row */}
+          <ContactsHeaderRow sortKey={sortKey} sortDir={sortDir} flipSort={flipSort} />
+          {/* Body */}
+          {visible.map((r) => (
+            <ContactsRow key={r.email} row={r} hubspotBase={hubspotBase} />
+          ))}
+        </div>
+      </div>
+
+      {/* Footer — load more / page info */}
+      <div className="row" style={{ padding: '10px 14px', borderTop: '1px solid var(--border)', gap: 8, justifyContent: 'center' }}>
+        {visible.length < sorted.length ? (
+          <button className="btn is-small" onClick={() => setPageSize(n => n + 50)}>
+            Load 50 more · {visible.length.toLocaleString()} of {sorted.length.toLocaleString()} shown
+          </button>
+        ) : (
+          <span style={{ fontSize: 11, color: 'var(--muted)' }}>
+            {sorted.length === 0 ? 'No matches' : `All ${sorted.length} contacts shown`}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ContactsHeaderRow({ sortKey, sortDir, flipSort }) {
+  const cells = [
+    { key: 'name',           label: 'Name',           sortable: true },
+    { key: 'createDate',     label: 'Create Date',    sortable: true },
+    { key: 'phone',          label: 'Phone Number',   sortable: true },
+    { key: 'email',          label: 'Email',          sortable: true },
+    { key: 'ownerName',      label: 'Owner',          sortable: true },
+    { key: 'lifecycleStage', label: 'Stage',          sortable: true },
+  ];
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: '1.4fr 1fr 1fr 1.5fr 1fr 0.9fr',
+      gap: 8, padding: '10px 14px',
+      borderBottom: '1px solid var(--border)',
+      background: 'var(--surface-2)',
+      fontSize: 11, fontWeight: 700, color: 'var(--muted)',
+      textTransform: 'uppercase', letterSpacing: '.04em',
+    }}>
+      {cells.map(c => (
+        <button
+          key={c.key}
+          onClick={() => c.sortable && flipSort(c.key)}
+          style={{
+            background: 'transparent', border: 'none', padding: 0, cursor: c.sortable ? 'pointer' : 'default',
+            textAlign: 'left', color: sortKey === c.key ? 'var(--ink)' : 'var(--muted)',
+            fontSize: 'inherit', fontWeight: 'inherit', textTransform: 'inherit', letterSpacing: 'inherit',
+            display: 'flex', alignItems: 'center', gap: 4,
+          }}
+          title={c.sortable ? `Sort by ${c.label}` : ''}
+        >
+          {c.label}
+          {sortKey === c.key && (
+            <span style={{ fontSize: 9 }}>{sortDir === 'asc' ? '▲' : '▼'}</span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ContactsRow({ row, hubspotBase }) {
+  const r = row;
+  const initials = (r.name || r.email)
+    .split(/[\s@.]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map(s => s[0]?.toUpperCase())
+    .join('') || '?';
+  // Lifecycle stage chip color
+  const stageColors = {
+    subscriber:    { bg: '#f1f5f9', fg: '#475569' },
+    lead:          { bg: '#dbeafe', fg: '#1e40af' },
+    marketingqualifiedlead: { bg: '#fde68a', fg: '#92400e' },
+    salesqualifiedlead:     { bg: '#fed7aa', fg: '#9a3412' },
+    opportunity:   { bg: '#fbcfe8', fg: '#9d174d' },
+    customer:      { bg: '#dcfce7', fg: '#166534' },
+    evangelist:    { bg: '#ede9fe', fg: '#5b21b6' },
+    other:         { bg: '#f1f5f9', fg: '#475569' },
+  };
+  const stageStyle = stageColors[r.lifecycleStage] || stageColors.other;
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: '1.4fr 1fr 1fr 1.5fr 1fr 0.9fr',
+        gap: 8, padding: '10px 14px',
+        borderBottom: '1px solid var(--border)',
+        fontSize: 12.5, alignItems: 'center',
+      }}
+    >
+      {/* Name + avatar */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+        <span style={{
+          width: 26, height: 26, borderRadius: '50%',
+          background: 'var(--surface-2)', color: 'var(--ink-2)',
+          fontSize: 11, fontWeight: 700,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          flexShrink: 0,
+        }}>{initials}</span>
+        <a
+          href={`${hubspotBase}/contact/${encodeURIComponent(r.contactId)}`}
+          target="_blank" rel="noopener"
+          style={{
+            color: 'var(--accent-ink)', fontWeight: 600, textDecoration: 'none',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}
+          title={r.name || r.email}
+        >
+          {r.name || r.email.split('@')[0]}
+        </a>
+      </div>
+      {/* Create Date */}
+      <div style={{ color: 'var(--muted)' }}>{r.createDate || '—'}</div>
+      {/* Phone */}
+      <div>
+        {r.phone ? (
+          <a href={`tel:${r.phone}`} style={{ color: 'var(--accent-ink)', textDecoration: 'none' }}>{r.phone}</a>
+        ) : (
+          <span style={{ color: 'var(--muted)' }}>—</span>
+        )}
+      </div>
+      {/* Email */}
+      <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <a href={`mailto:${r.email}`} style={{ color: 'var(--accent-ink)', textDecoration: 'none' }} title={r.email}>
+          {r.email}
+        </a>
+      </div>
+      {/* Owner */}
+      <div style={{ color: r.ownerName ? 'var(--ink-2)' : 'var(--muted)' }}>
+        {r.ownerName || '—'}
+        {r.ownerArchived && r.ownerName && (
+          <span style={{ marginLeft: 4, fontSize: 9, color: 'var(--muted)' }} title="Owner is archived in HubSpot">(archived)</span>
+        )}
+      </div>
+      {/* Lifecycle stage */}
+      <div>
+        {r.lifecycleStage ? (
+          <span style={{
+            padding: '2px 8px', borderRadius: 999, fontSize: 11, fontWeight: 600,
+            background: stageStyle.bg, color: stageStyle.fg,
+          }}>{r.lifecycleStage}</span>
+        ) : (
+          <span style={{ color: 'var(--muted)', fontSize: 11 }}>—</span>
+        )}
+      </div>
     </div>
   );
 }

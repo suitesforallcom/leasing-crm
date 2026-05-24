@@ -189,24 +189,32 @@ async function _fetchMeetings(token, {sinceMs = null} = {}) {
 // Returns map email → { id, firstname, lastname, ownerId, lifecycleStage }.
 // =========================================================================
 async function _fetchContacts(token, {maxPages = 60} = {}) {
-  // Minimal props — we just need email → owner mapping. Names + stage are
-  // resolved via owners map lookup on the client to keep this doc small
-  // enough for the 1MB Firestore cap (5000 contacts × 50 bytes ≈ 250 KB).
-  const props = 'email,hubspot_owner_id,lifecyclestage';
+  // Compact fields — keep entry footprint small to stay under Firestore's
+  // 1MB doc cap. At ~3K contacts × ~120 bytes = ~360 KB. Plus deals (~150
+  // KB) + meetings + owners + pipelines + diagnostics — total stays well
+  // below the cap.
+  //   i = contactId
+  //   o = hubspot_owner_id (lookup owners map for name/email)
+  //   s = lifecyclestage (lead / mql / sql / opportunity / customer / ...)
+  //   n = «firstname lastname» trimmed (or null if both blank)
+  //   p = phone (raw, may include country code or be null)
+  //   c = createdate ISO (truncated to 'YYYY-MM-DD' to save bytes)
+  const props = 'email,firstname,lastname,phone,createdate,hubspot_owner_id,lifecyclestage';
   const raw = await _hsPaginate(token, `/crm/v3/objects/contacts?properties=${props}`, {limit: 100, maxPages, throttleMs: 200});
   const byEmail = {};
   for (const c of raw) {
     const p = c.properties || {};
     const email = (p.email || '').toLowerCase().trim();
     if (!email) continue;
+    const name = [p.firstname, p.lastname].filter(Boolean).join(' ').trim() || null;
+    const created = p.createdate ? String(p.createdate).slice(0, 10) : null;
     byEmail[email] = {
-      // Compact array form — [contactId, ownerId, lifecycleStage]. The
-      // helper in data-shim destructures back into {id, ownerId, stage}.
-      // Saves ~30 bytes per contact vs object form (no key strings) =
-      // ~150 KB at 5000 contacts.
       i: String(c.id),
       o: p.hubspot_owner_id ? String(p.hubspot_owner_id) : null,
       s: p.lifecyclestage || null,
+      n: name,
+      p: p.phone || null,
+      c: created,
     };
   }
   return byEmail;
