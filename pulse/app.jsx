@@ -14,8 +14,21 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
 function App() {
   const [tweaks, setTweak] = useTweaks(TWEAK_DEFAULTS);
 
-  /* Routing */
-  const [view, setView] = React.useState("overview");
+  /* Routing — initialize from URL hash so floor-map's
+     «Manage in Pulse» buttons can deep-link directly into Connections /
+     Marketing / HubSpot. Format: #view=connections (full list of views
+     mirrors the nav() switch below). */
+  const [view, setView] = React.useState(() => {
+    try {
+      const m = (window.location.hash || '').match(/view=([a-z]+)/i);
+      if (m && m[1]) {
+        const v = m[1].toLowerCase();
+        const allowed = ['overview','people','centers','employee','compare','hubspot','marketing','connections','bonuses','bonusrules','alerts','myday','myjourney','earn'];
+        if (allowed.includes(v)) return v;
+      }
+    } catch (e) {}
+    return "overview";
+  });
   const [employeeId, setEmployeeId] = React.useState(null);
   const [employeeTab, setEmployeeTab] = React.useState("performance");
   const [compareInit, setCompareInit] = React.useState(null);
