@@ -164,6 +164,8 @@ function App() {
         {view === "myday" && (
           <MyDayPage
             meId={meId}
+            role={role}
+            onNav={nav}
             onOpenEmployee={(id) => openEmployee(id)}
             onOpenQuickAction={() => setQuickOpen(true)}
             onOpenJourney={() => setView("myjourney")}

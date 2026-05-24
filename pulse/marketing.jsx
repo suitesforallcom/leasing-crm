@@ -274,6 +274,46 @@ function HeaderTip({ label, hint }) {
   );
 }
 
+// Standalone wrapper — computes rows + totals from HubSpot cache and
+// renders just SpendSection. Used by My Day owner view so Tony sees
+// the «Ad spend × HubSpot conversions» table at the top of his day.
+window.SpendSectionStandalone = function SpendSectionStandalone() {
+  const hs = window._hsDataCache;
+  if (!hs || !hs.contactByEmail) {
+    return (
+      <div className="card is-clean" style={{ padding: 14, fontSize: 12, color: "var(--muted)" }}>
+        Loading HubSpot data… (open «HubSpot» page once if this persists).
+      </div>
+    );
+  }
+  const allContacts = Object.entries(hs.contactByEmail);
+  const buckets = new Map();
+  function getBucket(label, group) {
+    if (!buckets.has(label)) buckets.set(label, { label, group, leads: 0, qualified: 0, opportunity: 0, customer: 0 });
+    return buckets.get(label);
+  }
+  for (const [, c] of allContacts) {
+    const ch = classifyChannel(c.src, c.srcD);
+    const lvl = stageLevel(c.s);
+    const b = getBucket(ch.label, ch.group);
+    b.leads++;
+    if (lvl >= 2) b.qualified++;
+    if (lvl >= 4) b.opportunity++;
+    if (lvl >= 5) b.customer++;
+  }
+  const rows = Array.from(buckets.values()).sort((a, b) => {
+    const ga = GROUP_ORDER[a.group] || 99;
+    const gb = GROUP_ORDER[b.group] || 99;
+    if (ga !== gb) return ga - gb;
+    return b.leads - a.leads;
+  });
+  const totals = rows.reduce((t, r) => ({
+    leads: t.leads + r.leads, qualified: t.qualified + r.qualified,
+    opportunity: t.opportunity + r.opportunity, customer: t.customer + r.customer,
+  }), { leads: 0, qualified: 0, opportunity: 0, customer: 0 });
+  return <SpendSection rows={rows} totals={totals} />;
+};
+
 function SpendSection({ rows, totals }) {
   const mk = window._mkDataCache;
   const sources = (mk && mk.sources) || {};
@@ -293,18 +333,22 @@ function SpendSection({ rows, totals }) {
   }
   const [customStart, setCustomStart] = React.useState(fmtYmd(_twoWksAgo));
   const [customEnd, setCustomEnd] = React.useState(fmtYmd(_today));
-  // «Site leads only» — exclude OFFLINE + INTEGRATION sources from the
-  // leads count used in CPL. Tony: «учитывать только заявки через сайт».
-  // PAID_SEARCH already implies web (ad click → landing page), so we
-  // count all HubSpot contacts from that channel that aren't tagged
-  // OFFLINE. Toggle persists in localStorage.
-  const [siteLeadsOnly, setSiteLeadsOnly] = React.useState(() => {
-    try { return localStorage.getItem("pulse_marketing_site_leads_only") !== "false"; }
-    catch (e) { return true; }
+  // «Quality leads only (MQL+)» — Tony 2026-05-24: CPL у Meta был $4
+  // потому что считались ВСЕ HubSpot контакты с source=Facebook
+  // (включая мусор от Facebook Lead Ads). Реалистичный CPL надо
+  // строить на quality-leads — контакты которые прошли первичную
+  // фильтрацию и помечены lifecycle stage = marketingqualifiedlead
+  // или выше (MQL / SQL / opportunity / customer). Включаем по
+  // умолчанию ON. Toggle сохраняется в localStorage.
+  const [qualityLeadsOnly, setQualityLeadsOnly] = React.useState(() => {
+    try {
+      const v = localStorage.getItem("pulse_marketing_quality_leads_only");
+      return v === null ? true : v === "true";
+    } catch (e) { return true; }
   });
   React.useEffect(() => {
-    try { localStorage.setItem("pulse_marketing_site_leads_only", siteLeadsOnly ? "true" : "false"); } catch (e) {}
-  }, [siteLeadsOnly]);
+    try { localStorage.setItem("pulse_marketing_quality_leads_only", qualityLeadsOnly ? "true" : "false"); } catch (e) {}
+  }, [qualityLeadsOnly]);
 
   if (sourceKeys.length === 0) {
     return (
@@ -402,20 +446,18 @@ function SpendSection({ rows, totals }) {
       conversions = Number(src.totals.conversions) || 0;
     }
     const matchedChannel = channelMatcher();
-    // Leads counted toward CPL. When siteLeadsOnly is ON we exclude
-    // OFFLINE-group contacts (phone calls, walk-ins) since they didn't
-    // come through the website ad funnel — only website form submissions
-    // count. PAID_SEARCH and PAID_SOCIAL contacts are always website-
-    // driven (ad click → landing page → form fill), so this is a no-op
-    // for them. But it matters when channel labels span sub-categories
-    // — e.g. «Other Campaign» that may include both online + offline.
-    let leads = matchedChannel ? matchedChannel.leads : 0;
-    if (siteLeadsOnly && matchedChannel && matchedChannel.group === "offline") {
-      leads = 0;
-    }
+    // Leads — две цифры:
+    //   totalContacts = ВСЕ HubSpot контакты с этим channel в окне
+    //   qualifiedLeads = только те у кого lifecycle stage >= MQL
+    // Toggle «Quality leads only» переключает CPL между ними.
+    // По умолчанию ON — Tony 2026-05-24: без фильтра Meta показывал
+    // 2,335 leads (Facebook Lead Ad мусор) и нереалистичный CPL $4.
+    const totalContacts = matchedChannel ? matchedChannel.leads : 0;
+    const qualifiedLeads = matchedChannel ? matchedChannel.qualified : 0;
+    const leadsForCPL = qualityLeadsOnly ? qualifiedLeads : totalContacts;
     const tours = matchedChannel ? matchedChannel.opportunity : 0;
     const customers = matchedChannel ? matchedChannel.customer : 0;
-    const cpl = leads > 0 ? cost / leads : 0;
+    const cpl = leadsForCPL > 0 ? cost / leadsForCPL : 0;
     const cpt = tours > 0 ? cost / tours : 0;
     const cac = customers > 0 ? cost / customers : 0;
     const cpc = clicks > 0 ? cost / clicks : 0;
@@ -433,7 +475,12 @@ function SpendSection({ rows, totals }) {
       clicks,
       impressions,
       conversions,
-      leads,
+      // Leads — keep both numbers + which one feeds CPL right now
+      totalContacts,
+      qualifiedLeads,
+      leads: leadsForCPL,           // legacy field — used by old call sites
+      leadsForCPL,
+      qualityLeadsOnly,
       tours,
       customers,
       cpl,
@@ -522,15 +569,15 @@ function SpendSection({ rows, totals }) {
           )}
           <label
             style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "var(--muted)", cursor: "pointer" }}
-            title="When ON: leads count includes only HubSpot contacts attributed to this ad channel that came through the website (i.e. paid-search/paid-social form fills on suitesforall.com). Offline-tracked calls and walk-ins are excluded. When OFF: all HubSpot contacts from this channel."
+            title="ON (рекомендовано): CPL считается только по quality-leads — контакты со lifecycle stage = MQL / SQL / opportunity / customer. Исключает массовый мусор от Facebook Lead Ads и подобного. OFF: CPL считается по ВСЕМ HubSpot контактам с этим source — даёт нереалистично низкий CPL когда платформа автозаливает контактов."
           >
             <input
               type="checkbox"
-              checked={siteLeadsOnly}
-              onChange={e => setSiteLeadsOnly(e.target.checked)}
+              checked={qualityLeadsOnly}
+              onChange={e => setQualityLeadsOnly(e.target.checked)}
               style={{ cursor: "pointer" }}
             />
-            Site leads only (exclude offline/phone-only)
+            Quality leads only (MQL+) — recommended
           </label>
         </div>
       </div>
@@ -543,10 +590,10 @@ function SpendSection({ rows, totals }) {
           <HeaderTip label="Clicks" hint={`Total clicks on ads over ${windowLabel}. From the ad platform.`} />
         </div>
         <div style={{ textAlign: "right" }}>
-          <HeaderTip label="Leads" hint={`HubSpot contacts attributed to this acquisition channel (paid-search/paid-social) with createDate in the global page window (top-right selector). ${siteLeadsOnly ? "Site-only mode: excludes OFFLINE source." : "All-source mode: includes phone-only / walk-in leads tagged to the channel."}`} />
+          <HeaderTip label="Leads" hint={`HubSpot контакты с этим source, созданные в окне (${windowLabel}). Большая цифра = quality (MQL+ stage). Меньшая = всего контактов. ${qualityLeadsOnly ? "CPL сейчас считается по QUALITY leads (recommended)." : "CPL сейчас считается по TOTAL contacts — может быть нереалистично низким если у тебя Facebook Lead Ads с массовыми контактами."}`} />
         </div>
         <div style={{ textAlign: "right" }}>
-          <HeaderTip label="CPL" hint="Cost Per Lead = Spend ÷ Leads. Lower is better. The leads count depends on the 'Site leads only' toggle." />
+          <HeaderTip label="CPL" hint={`Cost Per Lead = Spend ÷ ${qualityLeadsOnly ? "Quality leads" : "Total contacts"}. Lower is better. ${qualityLeadsOnly ? "Считается по quality-leads (lifecycle stage = MQL и выше) — это реальные потенциальные клиенты, прошедшие первичную фильтрацию." : "Считается по ВСЕМ контактам с этим source — включает мусор. Переключи toggle ↑ на «Quality leads only» для реалистичной картины."}`} />
         </div>
         <div style={{ textAlign: "right" }}>
           <HeaderTip label="CPC" hint="Cost Per Click = Spend ÷ Clicks. Channel-level average over the window. Useful for benchmarking ad-platform efficiency before funnel quality matters." />
@@ -731,8 +778,15 @@ function SpendRow({ r, windowLabel, fmtIngestTs }) {
         </div>
         <div className="mono" style={{ textAlign: "right", fontWeight: 700 }} title={r.cost > 0 ? `$${r.cost.toFixed(2)} over ${windowLabel}` : "No spend in window"}>${r.cost.toFixed(0)}</div>
         <div className="mono" style={{ textAlign: "right" }}>{r.clicks.toLocaleString()}</div>
-        <div className="mono" style={{ textAlign: "right", color: r.leads > 0 ? "var(--ink)" : "var(--muted)" }}>{r.leads.toLocaleString()}</div>
-        <div className="mono" style={{ textAlign: "right", fontWeight: 700, color: r.cpl > 0 ? "var(--ink)" : "var(--muted)" }} title={r.cpl > 0 ? `$${r.cost.toFixed(2)} ÷ ${r.leads} leads = $${r.cpl.toFixed(2)} per lead` : ""}>{r.cpl > 0 ? "$" + r.cpl.toFixed(0) : "—"}</div>
+        <div className="mono" style={{ textAlign: "right", color: r.leadsForCPL > 0 ? "var(--ink)" : "var(--muted)" }} title={`Quality (MQL+): ${r.qualifiedLeads.toLocaleString()}\nTotal contacts: ${r.totalContacts.toLocaleString()}\nCPL counts ${r.qualityLeadsOnly ? "quality" : "total"} (see toggle above).`}>
+          {r.leadsForCPL.toLocaleString()}
+          {r.qualifiedLeads !== r.totalContacts && (
+            <div style={{ fontSize: 9.5, fontWeight: 400, color: "var(--muted)", marginTop: 1 }}>
+              of {r.totalContacts.toLocaleString()} total
+            </div>
+          )}
+        </div>
+        <div className="mono" style={{ textAlign: "right", fontWeight: 700, color: r.cpl > 0 ? "var(--ink)" : "var(--muted)" }} title={r.cpl > 0 ? `$${r.cost.toFixed(2)} ÷ ${r.leadsForCPL.toLocaleString()} ${r.qualityLeadsOnly ? "quality leads" : "total contacts"} = $${r.cpl.toFixed(2)} per lead` : ""}>{r.cpl > 0 ? "$" + r.cpl.toFixed(0) : "—"}</div>
         <div className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>{r.cpc > 0 ? "$" + r.cpc.toFixed(2) : "—"}</div>
         <div className="mono" style={{ textAlign: "right", fontWeight: 700, color: r.cac > 0 ? "var(--success-ink)" : "var(--muted)" }}>{r.cac > 0 ? "$" + r.cac.toFixed(0) : "—"}</div>
         <div style={{ textAlign: "right", fontSize: 11, color: "var(--muted)" }} title={tsTooltip}>

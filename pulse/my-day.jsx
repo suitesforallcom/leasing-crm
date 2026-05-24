@@ -6,7 +6,16 @@
    peer comparison second.
    ================================================================ */
 
-window.MyDayPage = function MyDayPage({ meId = "u1", onOpenEmployee, onOpenQuickAction, onOpenJourney }) {
+window.MyDayPage = function MyDayPage({ meId = "u1", role = "employee", onNav, onOpenEmployee, onOpenQuickAction, onOpenJourney }) {
+  // 2026-05-24 Tony: «вам перевёл хлам со страницы My Day убери всё
+  // лишнее там и в самый верх выведи эту таблицу продублируй её там».
+  // Owner-режиму геймификация (growth tree / quests / fruits / streak /
+  // leaderboard) неуместна — это employee-only мотивация. Owner видит
+  // только Marketing spend dashboard + быстрые ссылки. Employee-режим
+  // остаётся как раньше.
+  if (role === "owner") {
+    return <OwnerDay onNav={onNav} />;
+  }
   const me = DATA.USERS.find(u => u && u.id === meId);
   // Phase 17 rev — guard against undefined me (no real users / stale meId
   // from removed demo seed). metricsFor would crash on undefined.
@@ -530,6 +539,80 @@ window.MyDayPage = function MyDayPage({ meId = "u1", onOpenEmployee, onOpenQuick
     </div>
   );
 };
+
+/* ================================================================
+   Owner-view My Day — 2026-05-24 Tony.
+   Тут только то что реально нужно владельцу с утра:
+   1. Quick-jump кнопки в основные разделы (Activity, Marketing,
+      Connections, HubSpot)
+   2. Spend × Conversions таблица (дубликат из Marketing page) —
+      главная метрика дня
+   3. Никакого growth-tree / fruits / leaderboard / quests —
+      это employee-мотивация, не owner-инструменты
+   ================================================================ */
+function OwnerDay({ onNav }) {
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const today = new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+
+  // Quick jumps to admin sections — saves a click from the sidebar.
+  // Marketing / Connections are most-used per Tony 2026-05-24 sessions.
+  const jumps = [
+    { id: "marketing",   label: "Marketing",   icon: "trendUp", desc: "Spend, CPL, channel mix" },
+    { id: "overview",    label: "Activity",    icon: "activity", desc: "Live employee + call activity" },
+    { id: "hubspot",     label: "HubSpot",     icon: "globe",   desc: "Contacts, deals, pipelines" },
+    { id: "connections", label: "Connections", icon: "settings", desc: "Manage all integrations" },
+  ];
+
+  return (
+    <div className="page">
+      {/* Header — minimal */}
+      <div className="page-h" style={{ marginBottom: 14 }}>
+        <div>
+          <div className="muted" style={{ fontSize: 11.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".08em" }}>{today}</div>
+          <h1 className="title">{greeting}, Tony</h1>
+          <div className="subtitle">Owner dashboard · marketing performance today</div>
+        </div>
+      </div>
+
+      {/* Spend × Conversions — главная таблица дня. SpendSectionStandalone
+          вычисляет rows/totals сам из window._hsDataCache и рендерит ту же
+          секцию что и на Marketing page. */}
+      {typeof window.SpendSectionStandalone === "function" ? (
+        <window.SpendSectionStandalone />
+      ) : (
+        <div className="card is-clean" style={{ padding: 14, fontSize: 12, color: "var(--muted)" }}>
+          Marketing module не загружен. Перезагрузи страницу (cmd+shift+R).
+        </div>
+      )}
+
+      {/* Quick-jump grid — большие кнопки в основные разделы */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginTop: 18 }}>
+        {jumps.map(j => (
+          <button
+            key={j.id}
+            className="card"
+            onClick={() => onNav && onNav(j.id)}
+            style={{
+              padding: 16, textAlign: "left", cursor: "pointer",
+              border: "1px solid var(--border)", background: "var(--surface)",
+              fontFamily: "inherit",
+              transition: "transform .12s, border-color .12s",
+            }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--accent)"; e.currentTarget.style.transform = "translateY(-1px)"; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.transform = ""; }}
+          >
+            <div className="row" style={{ marginBottom: 6 }}>
+              <span className="cat-icon" style={{ background: "var(--accent)" }}><Icon name={j.icon} /></span>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>{j.label}</div>
+            </div>
+            <div className="muted" style={{ fontSize: 12 }}>{j.desc}</div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 /* ================================================================
    Quest card
