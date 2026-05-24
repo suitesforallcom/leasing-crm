@@ -206,8 +206,11 @@ window.MarketingPage = function MarketingPage() {
           Meta / TikTok bridges start posting. */}
       <SpendSection rows={rows} totals={totals} />
 
-      {/* Integration status strip — placeholder for Phase 2 ad-platform syncs */}
-      <IntegrationsStatus />
+      {/* Footer hint — link to unified Connections page (the old
+          IntegrationsStatus widget lives there now). */}
+      <div className="card is-clean" style={{ padding: "12px 16px", fontSize: 11.5, color: "var(--muted)", textAlign: "center" }}>
+        Manage integrations + account toggles in <a href="#" onClick={(e) => { e.preventDefault(); try { window.location.hash = "connections"; if (window._navTo) window._navTo("connections"); } catch (err) {} }} style={{ color: "var(--accent-ink)", textDecoration: "underline" }}>Connections settings</a> (sidebar → Connections).
+      </div>
     </div>
   );
 };

@@ -214,13 +214,13 @@ async function _runSync() {
   let totalCost = 0, totalClicks = 0, totalImpressions = 0, totalConversions = 0;
   let totalDailyRows = 0;
   for (const acct of targetAccounts) {
-    if (acct.isRestricted) {
-      // Restricted accounts often 400 on insights — still include in
-      // payload with restriction flag so the UI shows them but doesn't
-      // try to compute spend.
-      accounts.push({ ...acct, daily: [], totals: { cost: 0, clicks: 0, impressions: 0, conversions: 0 }, error: 'restricted: ' + acct.statusDesc });
-      continue;
-    }
+    // 2026-05-24 fix: don't skip restricted accounts. Status 3 (Unsettled,
+    // i.e. unpaid invoice) and others still expose historical insights
+    // even though ads aren't currently delivering. Previously we returned
+    // empty payload here, which hid 70%+ of Tony's Meta spend (his
+    // main Suitesforall account was Unsettled). Now: always TRY insights;
+    // _fetchInsights catches any 400 and returns empty + error so the UI
+    // marks the row with «error» but other accounts still aggregate.
     const { daily, error } = await _fetchInsights(token, acct.id, DAYS_BACK);
     const totals = daily.reduce((acc, d) => ({
       cost: acc.cost + d.cost,
