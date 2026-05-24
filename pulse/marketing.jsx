@@ -204,7 +204,7 @@ window.MarketingPage = function MarketingPage() {
       {/* Ad spend section — pulls from window._mkDataCache populated by the
           marketingIngest CF endpoint. Empty until Google Ads Script /
           Meta / TikTok bridges start posting. */}
-      <SpendSection rows={rows} totals={totals} />
+      <SpendSection />
 
       {/* Footer hint — link to unified Connections page (the old
           IntegrationsStatus widget lives there now). */}
@@ -274,9 +274,10 @@ function HeaderTip({ label, hint }) {
   );
 }
 
-// Standalone wrapper — computes rows + totals from HubSpot cache and
-// renders just SpendSection. Used by My Day owner view so Tony sees
-// the «Ad spend × HubSpot conversions» table at the top of his day.
+// Standalone wrapper — SpendSection теперь полностью self-contained
+// (вычисляет leads/qualified для своего windowKind сам, см. fix
+// 2026-05-24). Этот wrapper просто рендерит SpendSection с fallback
+// на «загрузка» когда нет HubSpot кэша. Used by My Day owner view.
 window.SpendSectionStandalone = function SpendSectionStandalone() {
   const hs = window._hsDataCache;
   if (!hs || !hs.contactByEmail) {
@@ -286,13 +287,27 @@ window.SpendSectionStandalone = function SpendSectionStandalone() {
       </div>
     );
   }
-  const allContacts = Object.entries(hs.contactByEmail);
+  return <SpendSection />;
+};
+
+// Compute channel-mix buckets for a date window (YYYY-MM-DD strings,
+// inclusive). Returns rows + totals — same shape as MarketingPage's
+// top-level buckets, but scoped to the supplied window. Used by
+// SpendSection to align leads with spend (Tony 2026-05-24: ранее
+// leads брались за all-time, а spend за 30d → CPL смешивал шкалы).
+function _channelRowsForWindow(hsContacts, windowStart, windowEnd) {
+  const startMs = windowStart ? new Date(windowStart + "T00:00:00").getTime() : 0;
+  const endMs   = windowEnd   ? new Date(windowEnd   + "T23:59:59").getTime() : Infinity;
   const buckets = new Map();
   function getBucket(label, group) {
     if (!buckets.has(label)) buckets.set(label, { label, group, leads: 0, qualified: 0, opportunity: 0, customer: 0 });
     return buckets.get(label);
   }
-  for (const [, c] of allContacts) {
+  for (const [, c] of hsContacts) {
+    if (!c.c) continue;
+    const tMs = new Date(c.c).getTime();
+    if (!isFinite(tMs)) continue;
+    if (tMs < startMs || tMs > endMs) continue;
     const ch = classifyChannel(c.src, c.srcD);
     const lvl = stageLevel(c.s);
     const b = getBucket(ch.label, ch.group);
@@ -311,10 +326,10 @@ window.SpendSectionStandalone = function SpendSectionStandalone() {
     leads: t.leads + r.leads, qualified: t.qualified + r.qualified,
     opportunity: t.opportunity + r.opportunity, customer: t.customer + r.customer,
   }), { leads: 0, qualified: 0, opportunity: 0, customer: 0 });
-  return <SpendSection rows={rows} totals={totals} />;
-};
+  return { rows, totals };
+}
 
-function SpendSection({ rows, totals }) {
+function SpendSection() {
   const mk = window._mkDataCache;
   const sources = (mk && mk.sources) || {};
   const sourceKeys = Object.keys(sources);
@@ -383,10 +398,20 @@ function SpendSection({ rows, totals }) {
                     : windowKind === "mtd" ? "Month to date"
                     : "Custom range";
 
+  // 2026-05-24 Tony fix: пересчитываем HubSpot leads/qualified ДЛЯ
+  // того же окна что и spend. Раньше rows/totals приходили от
+  // MarketingPage (default 'all time') — CPL смешивал spend за
+  // 30 дней с leads за всю историю, отсюда нереальные 2,335 leads
+  // для Meta и CPL $4.
+  const hs = window._hsDataCache;
+  const hsContacts = hs && hs.contactByEmail ? Object.entries(hs.contactByEmail) : [];
+  const { rows, totals } = React.useMemo(
+    () => _channelRowsForWindow(hsContacts, windowStart, windowEnd),
+    [hs, windowStart, windowEnd]
+  );
+
   // Map our channel groups → ingest source keys. PAID_SEARCH + google →
   // 'google-ads' bucket; PAID_SOCIAL + facebook/instagram → 'meta'; etc.
-  // For each ingested source, compute cost / leads (joined from HubSpot
-  // channel-mix table) and surface CPL.
   function findChannelRow(group, namePrefix) {
     return rows.find(r => r.group === group && r.label.startsWith(namePrefix));
   }
@@ -524,10 +549,10 @@ function SpendSection({ rows, totals }) {
             <span className="dot" style={{ background: "var(--success)" }} /> {sourceCount} {sourceCount === 1 ? "source" : "sources"} live
           </span>
           <div className="spacer" />
-          <span style={{ fontSize: 11, color: "var(--muted)" }}>
-            Window: {windowLabel}
-            {windowKind === "custom" && ` (${windowStart} → ${windowEnd})`}
-            {` · $${totalSpend.toFixed(2)} spend · ${totalClicks.toLocaleString()} clicks`}
+          <span style={{ fontSize: 11, color: "var(--muted)" }} title={`Spend, clicks, leads — все цифры считаются за окно ${windowStart} → ${windowEnd} (inclusive). HubSpot leads counted by createDate within this range.`}>
+            Window: <b style={{ color: "var(--ink)" }}>{windowLabel}</b>
+            <span style={{ marginLeft: 4, color: "var(--muted-2)" }}>({windowStart} → {windowEnd})</span>
+            {` · $${totalSpend.toFixed(2)} spend · ${totalClicks.toLocaleString()} clicks · ${totals.leads.toLocaleString()} leads created`}
           </span>
         </div>
         {/* Date-range selector + Site-leads-only toggle */}
