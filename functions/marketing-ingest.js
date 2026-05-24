@@ -215,9 +215,10 @@ exports.marketingGetData = require('firebase-functions/v2/https').onCall(
     if (!snap.exists) return { marketingData: null };
     const raw = snap.data();
     const sources = raw.sources || {};
-    // Inflate campaignsJson + dailyJson back into objects for client
-    // consumption. Both fields are JSON-stringified server-side to avoid
-    // Firestore's index-entries cap.
+    // Inflate campaignsJson + dailyJson + accountsJson back into objects
+    // for client consumption. All are JSON-stringified server-side to
+    // avoid Firestore's index-entries cap. Plus per-source-doc top-level
+    // metaDiscoveredAccountsJson for the Settings UI list.
     const inflated = {};
     for (const [key, payload] of Object.entries(sources)) {
       if (!payload) { inflated[key] = payload; continue; }
@@ -232,12 +233,31 @@ exports.marketingGetData = require('firebase-functions/v2/https').onCall(
         catch (e) { out.daily = []; out._dailyParseError = e.message; }
         delete out.dailyJson;
       }
+      if (payload.accountsJson) {
+        try { out.accounts = JSON.parse(payload.accountsJson); }
+        catch (e) { out.accounts = []; out._accountsParseError = e.message; }
+        delete out.accountsJson;
+      }
       inflated[key] = out;
     }
+    let metaDiscoveredAccounts = null;
+    if (raw.metaDiscoveredAccountsJson) {
+      try { metaDiscoveredAccounts = JSON.parse(raw.metaDiscoveredAccountsJson); }
+      catch (e) { /* ignore */ }
+    }
+    // Also surface marketing-settings (so the UI knows which accounts
+    // are enabled). Separate doc, so a second small read.
+    let settings = {};
+    try {
+      const sSnap = await db.doc(`workspaces/${WORKSPACE_ID}/data/marketing-settings`).get();
+      if (sSnap.exists) settings = sSnap.data() || {};
+    } catch (e) { /* non-fatal */ }
     return {
       marketingData: {
         updatedAt: raw.updatedAt,
         sources: inflated,
+        metaDiscoveredAccounts,
+        settings,
       },
     };
   }

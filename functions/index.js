@@ -7159,6 +7159,15 @@ const _mk = require('./marketing-ingest');
 exports.marketingIngest = _mk.marketingIngest;
 exports.marketingGetData = _mk.marketingGetData;
 
+// Phase 20 (Meta) — server-side Meta Marketing API sync. Discovers all
+// ad accounts under the System User and pulls daily-granular insights.
+// Settings (which accounts to include) editable via metaSettingsSet
+// callable. Scheduled every 60 minutes; manual run via metaAdsSyncNow.
+const _meta = require('./meta-ads-sync');
+exports.metaAdsSync = _meta.metaAdsSync;
+exports.metaAdsSyncNow = _meta.metaAdsSyncNow;
+exports.metaSettingsSet = _meta.metaSettingsSet;
+
 // Phase 14 — Google Calendar polling. Requires operator to add
 // `https://www.googleapis.com/auth/calendar.events.readonly` scope to
 // the existing Domain-Wide Delegation entry in Workspace Admin Console.
