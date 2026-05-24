@@ -35,9 +35,24 @@
       if (!config || !config.apiKey) {
         throw new Error('Firebase config missing (init.json not served?)');
       }
-      // Use named app so we don't collide with anything else that
-      // may have initialized firebase on this page.
-      const app = appMod.initializeApp(config, 'pulse-bridge');
+      // ⚠ 2026-05-24 — раньше использовали именованный app ('pulse-bridge')
+      // чтобы «не конфликтовать с floor-map». Но Firebase Auth persistence
+      // ключится по appName (key вида `firebase:authUser:<apiKey>:<appName>`).
+      // Из-за этого pulse-bridge видел СВОЙ пустой auth slot вместо
+      // подписанного состояния floor-map → request.auth.token.email = ''
+      // → callable получали permission-denied (403) на metaSettingsSet,
+      // metaAdsSyncNow и пр. admin-only функциях. Pulse и floor-map
+      // не загружаются одновременно (это разные страницы) → коллизии
+      // [DEFAULT] нет, и общий ключ даёт shared auth state. Если когда-то
+      // понадобится исключение для конкретной функции — используй
+      // appMod.getApp('[DEFAULT]') в callable site.
+      let app;
+      try {
+        app = appMod.initializeApp(config);
+      } catch (e) {
+        // Уже инициализирован (например, если floor-map подгружен в iframe)
+        app = appMod.getApp();
+      }
       const auth = authMod.getAuth(app);
       // Wait for auth state (persistent from floor-map via IndexedDB).
       // Timeout 5 sec — if no signed-in user, callable will fail with

@@ -303,6 +303,16 @@ function MetaAccountList({ discovered, initialEnabled, initialNotes }) {
   const [saving, setSaving] = React.useState(false);
   const [msg, setMsg] = React.useState(null);
 
+  // 2026-05-24 — per-account synced-spend lookup. The CF stores
+  // accountsJson[].totals.cost per account; if the row is missing or
+  // cost==0, that's the diagnostic signal for «sync didn't pull this
+  // account» (most common cause: restricted-status accounts, where the
+  // OLD pre-2026-05-24 sync skipped the insights call entirely).
+  const mk = window._mkDataCache;
+  const syncedAccounts = (mk?.sources?.meta?.accounts) || [];
+  const syncedById = {};
+  for (const a of syncedAccounts) syncedById[String(a.id)] = a;
+
   function isEnabled(id) {
     if (!enabled) return true; // null = all enabled by default
     return enabled.has(String(id));
@@ -332,17 +342,22 @@ function MetaAccountList({ discovered, initialEnabled, initialNotes }) {
         Ad accounts ({discovered.length} discovered)
       </div>
       <div style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '30px 1.4fr 100px 110px 1.5fr', gap: 8, padding: '8px 10px', background: 'var(--surface-2)', fontSize: 10.5, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '30px 1.4fr 70px 100px 90px 1.5fr', gap: 8, padding: '8px 10px', background: 'var(--surface-2)', fontSize: 10.5, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>
           <div></div>
           <div>Account</div>
           <div>Currency</div>
           <div>Status</div>
+          <div title="Spend pulled from the last sync (90-day window). $0 means the sync couldn't read insights — usually because the account is restricted and Cloud Functions need redeploy.">Synced 90d</div>
           <div>Note (your label — e.g. «Tampa office · Sallyann»)</div>
         </div>
         {discovered.map(a => {
           const on = isEnabled(a.id);
+          const synced = syncedById[String(a.id)];
+          const syncedCost = synced?.totals?.cost || 0;
+          const syncedRows = (synced?.daily || []).length;
+          const syncErr = synced?.error;
           return (
-            <div key={a.id} style={{ display: 'grid', gridTemplateColumns: '30px 1.4fr 100px 110px 1.5fr', gap: 8, padding: '8px 10px', borderTop: '1px solid var(--border)', alignItems: 'center', fontSize: 12, background: on ? 'white' : 'var(--surface-2)', opacity: on ? 1 : 0.65 }}>
+            <div key={a.id} style={{ display: 'grid', gridTemplateColumns: '30px 1.4fr 70px 100px 90px 1.5fr', gap: 8, padding: '8px 10px', borderTop: '1px solid var(--border)', alignItems: 'center', fontSize: 12, background: on ? 'white' : 'var(--surface-2)', opacity: on ? 1 : 0.65 }}>
               <input type="checkbox" checked={on} onChange={() => toggle(a.id)} style={{ cursor: 'pointer' }} />
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontWeight: 600 }}>{a.name}</div>
@@ -361,6 +376,12 @@ function MetaAccountList({ discovered, initialEnabled, initialNotes }) {
                   {a.isRestricted ? '⚠ ' + a.statusDesc : '🟢 ' + a.statusDesc}
                 </span>
               </div>
+              <div title={syncErr ? ('Sync error: ' + syncErr) : (syncedRows + ' daily rows pulled')} style={{ fontSize: 11.5, fontWeight: 600, color: syncedCost > 0 ? '#166534' : (syncErr ? '#dc2626' : 'var(--muted)') }}>
+                {syncedCost > 0 ? '$' + syncedCost.toFixed(2) : (syncErr ? '⚠ error' : '$0')}
+                {syncedRows === 0 && !syncErr && (
+                  <span style={{ display: 'block', fontSize: 9, fontWeight: 400, color: '#9a3412' }} title="No daily rows pulled — CF may need redeploy">no rows</span>
+                )}
+              </div>
               <input
                 type="text"
                 placeholder="add note (which manager / which office)"
@@ -376,6 +397,26 @@ function MetaAccountList({ discovered, initialEnabled, initialNotes }) {
           );
         })}
       </div>
+      {/* Diagnostic banner — if EVERY discovered account shows $0 synced
+          spend, Cloud Functions is running the old code that skipped
+          restricted accounts (fix committed 2026-05-24, needs functions
+          redeploy). Shows total expected vs total synced if any mismatch. */}
+      {(() => {
+        const totalSynced = syncedAccounts.reduce((s, a) => s + (a.totals?.cost || 0), 0);
+        const accountsWithData = syncedAccounts.filter(a => (a.totals?.cost || 0) > 0).length;
+        const hasZeroAll = syncedAccounts.length > 0 && accountsWithData === 0;
+        const hasPartial = syncedAccounts.length > 0 && accountsWithData < syncedAccounts.length;
+        if (hasZeroAll || hasPartial) {
+          return (
+            <div style={{ marginTop: 12, padding: '10px 14px', background: 'rgba(245,158,11,.08)', border: '1px solid rgba(245,158,11,.3)', borderRadius: 6, fontSize: 11.5, color: '#92400e' }}>
+              ⚠ <b>Sync gap detected:</b> {accountsWithData}/{syncedAccounts.length} accounts returned data ($&nbsp;{totalSynced.toFixed(2)} total).
+              {hasZeroAll && <> All accounts show $0 — the deployed Cloud Function may still be the pre-2026-05-24 version that skipped restricted accounts. The fix is committed but Cloud Functions need a redeploy (requires Tony's approval per CLAUDE.md).</>}
+              {hasPartial && !hasZeroAll && <> Accounts showing $0 are either restricted (token can't read insights) or simply have no spend in the last 90 days.</>}
+            </div>
+          );
+        }
+        return null;
+      })()}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 }}>
         <ActionBtn onClick={save} disabled={saving} primary>{saving ? 'Saving…' : 'Save account settings'}</ActionBtn>
         <ActionBtn onClick={() => { setEnabled(null); }}>Enable all</ActionBtn>
