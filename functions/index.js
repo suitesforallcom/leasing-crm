@@ -7150,6 +7150,15 @@ exports.hubspotSync = _hs.hubspotSync;
 exports.hubspotSyncNow = _hs.hubspotSyncNow;
 exports.hubspotGetData = _hs.hubspotGetData;
 
+// Phase 20 — Marketing ingest (Google Ads Scripts / Meta / TikTok bridges).
+// HTTPS endpoint that external scripts POST spend/campaign data to. Uses
+// shared secret in X-Shared-Secret header for auth. Storage: separate
+// /workspaces/{wid}/data/marketing doc (JSON-stringified per-source).
+// Companion callable marketingGetData inflates back for Pulse read.
+const _mk = require('./marketing-ingest');
+exports.marketingIngest = _mk.marketingIngest;
+exports.marketingGetData = _mk.marketingGetData;
+
 // Phase 14 — Google Calendar polling. Requires operator to add
 // `https://www.googleapis.com/auth/calendar.events.readonly` scope to
 // the existing Domain-Wide Delegation entry in Workspace Admin Console.

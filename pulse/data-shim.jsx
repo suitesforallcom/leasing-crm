@@ -85,6 +85,53 @@
   }
   _hsRefresh();
 
+  // Phase 20 — Marketing data cache (Google Ads / Meta / TikTok / GA4 spend
+  // ingested via /marketingIngest endpoint). Same pattern as HubSpot —
+  // localStorage cache with TTL, async refresh, sessionStorage one-time
+  // reload trigger when cache populates for first time.
+  const MK_LS_KEY = 'sfa_marketing_data_v1';
+  const MK_TTL_MS = 30 * 60 * 1000; // 30 minutes (spend data refreshes hourly)
+  window._mkDataCache = null;
+  try {
+    const raw = localStorage.getItem(MK_LS_KEY);
+    if (raw) {
+      const wrap = JSON.parse(raw);
+      if (wrap && wrap.cachedAt && (Date.now() - wrap.cachedAt) < MK_TTL_MS && wrap.data) {
+        window._mkDataCache = wrap.data;
+        console.info('[pulse-shim] marketing data hit (localStorage cache age ' + Math.round((Date.now() - wrap.cachedAt) / 60000) + 'm)');
+      }
+    }
+  } catch (e) { /* corrupt cache — ignore */ }
+  function _mkRefresh() {
+    if (typeof window._pulseCallable !== 'function') return Promise.resolve(null);
+    return window._pulseCallable('marketingGetData', {})
+      .then(res => {
+        const d = (res && res.data && res.data.marketingData) || null;
+        if (!d) return null;
+        try {
+          localStorage.setItem(MK_LS_KEY, JSON.stringify({ cachedAt: Date.now(), data: d }));
+        } catch (e) {}
+        const wasEmpty = !window._mkDataCache;
+        window._mkDataCache = d;
+        const sourceCount = Object.keys(d.sources || {}).length;
+        console.info('[pulse-shim] marketing data refreshed (sources:' + sourceCount + ')');
+        if (wasEmpty) {
+          try {
+            if (!sessionStorage.getItem('mk_reloaded_for_data_v1')) {
+              sessionStorage.setItem('mk_reloaded_for_data_v1', '1');
+              setTimeout(function () { location.reload(); }, 1500);
+            }
+          } catch (e) {}
+        }
+        return d;
+      })
+      .catch(err => {
+        console.warn('[pulse-shim] marketing refresh failed:', err.message);
+        return null;
+      });
+  }
+  _mkRefresh();
+
   // Helpers used in the per-user mapper below.
   function _hsThisYm() {
     const d = new Date();

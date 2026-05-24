@@ -201,11 +201,159 @@ window.MarketingPage = function MarketingPage() {
         ))}
       </div>
 
+      {/* Ad spend section — pulls from window._mkDataCache populated by the
+          marketingIngest CF endpoint. Empty until Google Ads Script /
+          Meta / TikTok bridges start posting. */}
+      <SpendSection rows={rows} totals={totals} />
+
       {/* Integration status strip — placeholder for Phase 2 ad-platform syncs */}
       <IntegrationsStatus />
     </div>
   );
 };
+
+function SpendSection({ rows, totals }) {
+  const mk = window._mkDataCache;
+  const sources = (mk && mk.sources) || {};
+  const sourceKeys = Object.keys(sources);
+
+  if (sourceKeys.length === 0) {
+    return (
+      <div className="card is-clean" style={{ marginBottom: 18, padding: 14, borderLeft: "3px dashed #d4d4d8" }}>
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>Ad spend · pending</div>
+        <div style={{ fontSize: 11.5, color: "var(--muted)" }}>
+          No spend data has been ingested yet. Once a platform bridge (Google Ads Script / Meta API / TikTok API) starts posting, you'll see CPL / CPT / CAC / ROAS per channel here.
+        </div>
+      </div>
+    );
+  }
+
+  // Map our channel groups → ingest source keys. PAID_SEARCH + google →
+  // 'google-ads' bucket; PAID_SOCIAL + facebook/instagram → 'meta'; etc.
+  // For each ingested source, compute cost / leads (joined from HubSpot
+  // channel-mix table) and surface CPL.
+  function findChannelRow(group, namePrefix) {
+    return rows.find(r => r.group === group && r.label.startsWith(namePrefix));
+  }
+  function makeJoinedRow(sourceKey, friendlyLabel, channelMatcher) {
+    const src = sources[sourceKey];
+    if (!src) return null;
+    const matchedChannel = channelMatcher();
+    const cost = (src.totals && Number(src.totals.cost)) || 0;
+    const clicks = (src.totals && Number(src.totals.clicks)) || 0;
+    const conversions = (src.totals && Number(src.totals.conversions)) || 0;
+    const leads = matchedChannel ? matchedChannel.leads : 0;
+    const tours = matchedChannel ? matchedChannel.opportunity : 0;
+    const customers = matchedChannel ? matchedChannel.customer : 0;
+    const cpl = leads > 0 ? cost / leads : 0;
+    const cpt = tours > 0 ? cost / tours : 0;
+    const cac = customers > 0 ? cost / customers : 0;
+    const cpc = clicks > 0 ? cost / clicks : 0;
+    return {
+      sourceKey,
+      label: friendlyLabel,
+      campaigns: src.campaigns || [],
+      campaignCount: src.campaignCount || (src.campaigns || []).length,
+      cost,
+      clicks,
+      conversions,
+      leads,
+      tours,
+      customers,
+      cpl,
+      cpt,
+      cac,
+      cpc,
+      accountId: src.accountId,
+      fetchedAt: src.fetchedAt,
+      ingestedAt: src.ingestedAt,
+      dateRange: src.dateRange,
+    };
+  }
+
+  const spendRows = [
+    makeJoinedRow('google-ads', 'Google Ads', () => findChannelRow('paid-search', 'Google Ads') || findChannelRow('paid-search', 'Paid Search')),
+    makeJoinedRow('meta',       'Meta Ads',   () => findChannelRow('paid-social', 'Meta')),
+    makeJoinedRow('tiktok',     'TikTok Ads', () => findChannelRow('paid-social', 'TikTok')),
+  ].filter(Boolean);
+
+  const totalSpend = spendRows.reduce((s, r) => s + r.cost, 0);
+  const totalClicks = spendRows.reduce((s, r) => s + r.clicks, 0);
+  const sourceCount = sourceKeys.length;
+
+  return (
+    <div className="card is-clean" style={{ marginBottom: 18, padding: 0, overflow: "hidden", borderLeft: "3px solid #16a34a" }}>
+      <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
+        <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 700 }}>Ad spend × HubSpot conversions</div>
+          <span className="chip is-success" style={{ height: 18 }}>
+            <span className="dot" style={{ background: "var(--success)" }} /> {sourceCount} {sourceCount === 1 ? "source" : "sources"} live
+          </span>
+          <div className="spacer" />
+          <span style={{ fontSize: 11, color: "var(--muted)" }}>
+            Total spend ${totalSpend.toFixed(2)} · {totalClicks.toLocaleString()} clicks
+          </span>
+        </div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 90px 90px 90px 90px 90px 90px 120px", gap: 8, padding: "10px 14px", borderBottom: "1px solid var(--border)", background: "var(--surface-2)", fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>
+        <div>Source</div>
+        <div style={{ textAlign: "right" }}>Spend</div>
+        <div style={{ textAlign: "right" }}>Clicks</div>
+        <div style={{ textAlign: "right" }}>Leads</div>
+        <div style={{ textAlign: "right" }}>CPL</div>
+        <div style={{ textAlign: "right" }}>CPC</div>
+        <div style={{ textAlign: "right" }}>CAC</div>
+        <div style={{ textAlign: "right" }}>Last sync</div>
+      </div>
+      {spendRows.map(r => {
+        const lastSyncMin = r.ingestedAt ? Math.round((Date.now() - new Date(r.ingestedAt).getTime()) / 60000) : null;
+        return (
+          <div key={r.sourceKey} style={{ display: "grid", gridTemplateColumns: "1.4fr 90px 90px 90px 90px 90px 90px 120px", gap: 8, padding: "10px 14px", borderBottom: "1px solid var(--border)", alignItems: "center", fontSize: 12.5 }}>
+            <div>
+              <div style={{ fontWeight: 700 }}>{r.label}</div>
+              <div style={{ fontSize: 10.5, color: "var(--muted)" }}>{r.campaignCount} campaigns · acct {r.accountId || "—"}</div>
+            </div>
+            <div className="mono" style={{ textAlign: "right", fontWeight: 700 }}>${r.cost.toFixed(0)}</div>
+            <div className="mono" style={{ textAlign: "right" }}>{r.clicks.toLocaleString()}</div>
+            <div className="mono" style={{ textAlign: "right", color: r.leads > 0 ? "var(--ink)" : "var(--muted)" }}>{r.leads.toLocaleString()}</div>
+            <div className="mono" style={{ textAlign: "right", fontWeight: 700, color: r.cpl > 0 ? "var(--ink)" : "var(--muted)" }}>{r.cpl > 0 ? "$" + r.cpl.toFixed(0) : "—"}</div>
+            <div className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>{r.cpc > 0 ? "$" + r.cpc.toFixed(2) : "—"}</div>
+            <div className="mono" style={{ textAlign: "right", fontWeight: 700, color: r.cac > 0 ? "var(--success-ink)" : "var(--muted)" }}>{r.cac > 0 ? "$" + r.cac.toFixed(0) : "—"}</div>
+            <div style={{ textAlign: "right", fontSize: 10.5, color: "var(--muted)" }}>
+              {lastSyncMin !== null ? (lastSyncMin < 60 ? lastSyncMin + "m ago" : Math.round(lastSyncMin / 60) + "h ago") : "—"}
+            </div>
+          </div>
+        );
+      })}
+      {/* Per-campaign drilldown — collapsible */}
+      {spendRows.some(r => r.campaigns.length > 0) && (
+        <details style={{ padding: "10px 14px", fontSize: 12 }}>
+          <summary style={{ cursor: "pointer", color: "var(--muted)", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em" }}>
+            🔎 Top campaigns by spend
+          </summary>
+          <div style={{ marginTop: 10 }}>
+            {spendRows.flatMap(r => r.campaigns.map(c => ({ ...c, sourceKey: r.sourceKey, sourceLabel: r.label })))
+              .sort((a, b) => b.cost - a.cost)
+              .slice(0, 15)
+              .map((c, i) => (
+                <div key={c.sourceKey + ":" + c.id} style={{ display: "grid", gridTemplateColumns: "16px 1fr 80px 80px 80px 80px", gap: 8, padding: "6px 0", borderTop: i > 0 ? "1px solid var(--border)" : "none", alignItems: "center", fontSize: 12 }}>
+                  <span style={{ color: "var(--muted)" }}>{i + 1}</span>
+                  <div>
+                    <div style={{ fontWeight: 600 }}>{c.name}</div>
+                    <div style={{ fontSize: 10.5, color: "var(--muted)" }}>{c.sourceLabel} · {c.status}</div>
+                  </div>
+                  <div className="mono" style={{ textAlign: "right", fontWeight: 700 }}>${c.cost.toFixed(0)}</div>
+                  <div className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>{c.clicks.toLocaleString()}</div>
+                  <div className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>{c.impressions.toLocaleString()}</div>
+                  <div className="mono" style={{ textAlign: "right", color: c.conversions > 0 ? "var(--success-ink)" : "var(--muted)" }}>{c.conversions}</div>
+                </div>
+              ))}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
 
 function FunnelStat({ icon, label, value, denominator, tone }) {
   const colors = {
@@ -299,46 +447,50 @@ function ChannelRow({ row, totalLeads }) {
 }
 
 function IntegrationsStatus() {
-  // Status reads window._marketingIntegrations (populated later by Phase 2
-  // CFs writing to /workspaces/{wid}/data/marketing). For now, all
-  // platforms show «not connected» / «pending» placeholders so operator
-  // sees what's coming.
+  // Live status — derive from window._mkDataCache. Any source that has
+  // POSTed within the last 2h shows «🟢 Connected». Stale > 2h shows
+  // «🟡 Stale». No data ever → «⚪ Not configured» (or specific
+  // hint for Google Ads since the script is the official path).
+  const mk = window._mkDataCache;
+  const sources = (mk && mk.sources) || {};
+  function statusFor(key) {
+    const s = sources[key];
+    if (!s || !s.ingestedAt) return null;
+    const ageMin = Math.round((Date.now() - new Date(s.ingestedAt).getTime()) / 60000);
+    return { ageMin, accountId: s.accountId, campaignCount: s.campaignCount };
+  }
+  const googleAdsStatus = statusFor('google-ads');
+  const metaStatus = statusFor('meta');
+  const tiktokStatus = statusFor('tiktok');
+  const ga4Status = statusFor('ga4');
+  function makeIntegration(key, name, icon, liveStatus, defaultHint, docsUrl) {
+    if (!liveStatus) return { key, name, icon, status: 'not-connected', hint: defaultHint, docsUrl };
+    const fresh = liveStatus.ageMin < 120;
+    return {
+      key, name, icon,
+      status: fresh ? 'connected' : 'stale',
+      hint: 'acct ' + (liveStatus.accountId || '—') + ' · ' + (liveStatus.campaignCount || 0) + ' campaigns · last sync ' +
+            (liveStatus.ageMin < 60 ? liveStatus.ageMin + 'm ago' : Math.round(liveStatus.ageMin / 60) + 'h ago'),
+      docsUrl,
+    };
+  }
   const integrations = [
-    {
-      key: 'googleAds',
-      name: 'Google Ads',
-      icon: '🟦',
-      status: 'pending',
-      hint: 'Developer Token application submitted to Google · 1-3 business days for approval',
-      docsUrl: 'https://developers.google.com/google-ads/api/docs/first-call/dev-token',
-    },
-    {
-      key: 'metaAds',
-      name: 'Meta Ads (FB / IG)',
-      icon: '🟪',
-      status: 'not-connected',
-      hint: 'Long-lived access token from Meta Business Manager required',
-      docsUrl: 'https://developers.facebook.com/docs/marketing-api/get-started',
-    },
-    {
-      key: 'tiktokAds',
-      name: 'TikTok Ads',
-      icon: '⬛',
-      status: 'not-connected',
-      hint: 'OAuth token from TikTok Business Center required',
-      docsUrl: 'https://business-api.tiktok.com/portal/docs',
-    },
-    {
-      key: 'ga4',
-      name: 'Google Analytics 4',
-      icon: '🟧',
-      status: 'not-connected',
-      hint: 'Service account JSON + GA4 Property ID required (optional — for site-side funnel)',
-      docsUrl: 'https://developers.google.com/analytics/devguides/reporting/data/v1',
-    },
+    makeIntegration('google-ads', 'Google Ads', '🟦', googleAdsStatus,
+      'Paste the Google Ads Script (scripts/google-ads-script.js in repo) into Ads → Tools → Scripts, set hourly schedule. No Developer Token required.',
+      'https://developers.google.com/google-ads/scripts/docs/reference/adsapp/adsapp'),
+    makeIntegration('meta', 'Meta Ads (FB / IG)', '🟪', metaStatus,
+      'Long-lived access token from Meta Business Manager required. Same /marketingIngest endpoint with source:"meta".',
+      'https://developers.facebook.com/docs/marketing-api/get-started'),
+    makeIntegration('tiktok', 'TikTok Ads', '⬛', tiktokStatus,
+      'OAuth token from TikTok Business Center required. Same /marketingIngest endpoint with source:"tiktok".',
+      'https://business-api.tiktok.com/portal/docs'),
+    makeIntegration('ga4', 'Google Analytics 4', '🟧', ga4Status,
+      'Service account JSON + GA4 Property ID required (optional — for site-side funnel)',
+      'https://developers.google.com/analytics/devguides/reporting/data/v1'),
   ];
   const badgeStyle = {
     'connected':     { bg: 'rgba(34,197,94,.12)',  fg: '#166534', label: '🟢 Connected' },
+    'stale':         { bg: 'rgba(245,158,11,.12)', fg: '#92400e', label: '🟡 Stale (>2h)' },
     'pending':       { bg: 'rgba(245,158,11,.12)', fg: '#92400e', label: '🟡 Pending approval' },
     'not-connected': { bg: 'var(--surface-2)',     fg: 'var(--muted)', label: '⚪ Not configured' },
     'error':         { bg: 'rgba(239,68,68,.12)',  fg: '#991b1b', label: '🔴 Error' },
