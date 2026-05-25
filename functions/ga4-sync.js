@@ -129,9 +129,16 @@ function _flatten(report) {
     });
     return out;
   });
-  const totals = (report.totals && report.totals[0] && report.totals[0].metricValues) || [];
+  // 2026-05-25 fix: GA4 runReport БЕЗ dimensions возвращает данные в
+  // rows[0].metricValues, а НЕ в totals (totals только когда есть
+  // dimensions). Fallback на rows[0] когда totals пустые.
+  let totalsRaw = (report.totals && report.totals[0] && report.totals[0].metricValues) || null;
+  if (!totalsRaw && report.rows && report.rows.length === 1 && dims.length === 0) {
+    totalsRaw = report.rows[0].metricValues || [];
+  }
+  totalsRaw = totalsRaw || [];
   const totalsObj = {};
-  totals.forEach((v, i) => { totalsObj[mets[i]] = Number(v.value) || 0; });
+  totalsRaw.forEach((v, i) => { totalsObj[mets[i]] = Number(v.value) || 0; });
   return { rows, totals: totalsObj, rowCount: report.rowCount || rows.length };
 }
 
