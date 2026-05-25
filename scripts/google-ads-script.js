@@ -4,11 +4,15 @@
  * WHAT THIS DOES
  * --------------
  * Once an hour (set via the schedule below), this script queries the
- * Google Ads account it's installed in for the last 30 days of campaign
- * performance (cost, clicks, impressions, conversions) and POSTs the
- * data to the Pulse Cloud Function endpoint. Pulse's Marketing page
- * displays the spend joined with HubSpot lead source data to compute
- * CPL / CPT / CAC / ROAS per channel.
+ * Google Ads account it's installed in for the last 90 days and POSTs
+ * TWO data sets to Pulse Cloud Functions:
+ *
+ *   1) Campaign-level rollup → marketingIngest (powers Marketing tab
+ *      channel-mix KPIs: CPL / CPT / CAC / ROAS).
+ *   2) Ad-level + creative → marketingAdsIngest (powers Top Ads tab
+ *      alongside Meta + TikTok creative leaderboard).
+ *
+ * Both POSTs are independent — if one fails the other still runs.
  *
  * INSTALLATION (one-time, ~3 minutes)
  * -----------------------------------
@@ -19,9 +23,10 @@
  * 3. Click the (+) blue button → «New script»
  * 4. Paste this entire file (replace the «// Your code here» stub)
  * 5. Click «Authorize» (top right) → choose your Google account → Allow
- *    (the script reads campaign reports — no spend / no writes)
+ *    (the script reads campaign + ad reports — no spend / no writes)
  * 6. Click «Preview» first to verify it works (you'll see logs + the
  *    response from Pulse). Expected: «✓ Pulse ingest OK: <N> campaigns»
+ *    and «✓ Pulse ads ingest OK: <N> ads»
  * 7. Click «Save» (give it a name like «Pulse spend ingest»)
  * 8. From the scripts list → kebab menu (⋮) on this script →
  *    «Set frequency» → «Hourly» → Save
@@ -33,13 +38,17 @@
  *
  * IF NEEDED — manual run: Scripts → ⋮ → «Run»
  *
- * Last updated: 2026-05-24
+ * Last updated: 2026-05-25 (added ad-level pull → Top Ads tab)
  */
 
 // ============ CONFIG ============
 
 // Pulse ingest endpoint. Cloud Function deployed under suitesforall.
 var INGEST_URL = 'https://us-central1-suitesforall.cloudfunctions.net/marketingIngest';
+
+// Ad-level endpoint (Phase H, 2026-05-25). Same auth (X-Shared-Secret),
+// different schema — see marketingAdsIngest in functions/marketing-ingest.js.
+var ADS_INGEST_URL = 'https://us-central1-suitesforall.cloudfunctions.net/marketingAdsIngest';
 
 // Shared secret — must match the MARKETING_INGEST_SECRET secret in
 // Firebase Secret Manager. Anyone with this token can post spend data
@@ -163,8 +172,215 @@ function main() {
     Logger.log('✓ Pulse ingest OK (HTTP ' + code + '): ' + body);
   } else {
     Logger.log('✗ Pulse ingest FAILED (HTTP ' + code + '): ' + body);
-    throw new Error('Pulse ingest failed with HTTP ' + code);
+    // Не throw — ad-level pull ниже должен попытаться даже если campaign-level
+    // упал (они независимы).
+    Logger.log('  (continuing to ad-level pull anyway)');
   }
+
+  // ============ AD-LEVEL PULL (Phase H, 2026-05-25) ============
+  // Отдельный POST в marketingAdsIngest с per-ad daily spend + creative
+  // metadata. Питает Top Ads табу (cross-platform creative leaderboard).
+  try {
+    _runAdLevelIngest(customerId, startDate, endDate);
+  } catch (e) {
+    Logger.log('✗ Ad-level ingest threw: ' + (e && e.message ? e.message : e));
+  }
+}
+
+// Ad-level ingest — pulls per-ad daily metrics + creative metadata via
+// GAQL against ad_group_ad resource. POSTs to marketingAdsIngest CF
+// which writes into the marketing_ads subcollection alongside Meta + TikTok.
+function _runAdLevelIngest(customerId, startDate, endDate) {
+  Logger.log('Pulse ad-level ingest — fetching ' + startDate + ' to ' + endDate);
+
+  // GAQL — per-ad-per-day. Fields cover: ID/name/type/status, final URLs,
+  // creative content (RSA headlines/descriptions, image url, video asset),
+  // ad group + campaign context, daily cost/clicks/impressions/conversions.
+  // RSA headlines come back as repeated AdTextAsset structs which the
+  // script's row API exposes as a JSON-ish string we'll parse on the
+  // server side. Image / Video ads have simpler URL fields.
+  var query =
+    'SELECT ' +
+      'ad_group_ad.ad.id, ' +
+      'ad_group_ad.ad.name, ' +
+      'ad_group_ad.ad.type, ' +
+      'ad_group_ad.status, ' +
+      'ad_group_ad.ad.final_urls, ' +
+      'ad_group_ad.ad.responsive_search_ad.headlines, ' +
+      'ad_group_ad.ad.responsive_search_ad.descriptions, ' +
+      'ad_group_ad.ad.image_ad.image_url, ' +
+      'ad_group_ad.ad.video_ad.video.asset, ' +
+      'ad_group.id, ' +
+      'ad_group.name, ' +
+      'campaign.id, ' +
+      'campaign.name, ' +
+      'campaign.status, ' +
+      'campaign.advertising_channel_type, ' +
+      'segments.date, ' +
+      'metrics.cost_micros, ' +
+      'metrics.clicks, ' +
+      'metrics.impressions, ' +
+      'metrics.conversions, ' +
+      'metrics.video_views ' +
+    'FROM ad_group_ad ' +
+    'WHERE segments.date BETWEEN "' + startDate + '" AND "' + endDate + '" ' +
+    '  AND ad_group_ad.status != "REMOVED"';
+
+  var report;
+  try {
+    report = AdsApp.report(query);
+  } catch (e) {
+    Logger.log('✗ Ad-level GAQL failed: ' + (e && e.message ? e.message : e));
+    return;
+  }
+  var rows = report.rows();
+
+  // adsMap — keyed by ad ID. Each entry accumulates daily metrics + holds
+  // creative meta (copied from first row since meta is stable across days).
+  var adsMap = {};
+  var totals = { cost: 0, clicks: 0, impressions: 0, conversions: 0 };
+
+  while (rows.hasNext()) {
+    var r = rows.next();
+    var adId = String(r['ad_group_ad.ad.id'] || '');
+    if (!adId) continue;
+
+    var costMicros = Number(r['metrics.cost_micros']) || 0;
+    var cost = costMicros / 1000000;
+    var clicks = Number(r['metrics.clicks']) || 0;
+    var impressions = Number(r['metrics.impressions']) || 0;
+    var conversions = Number(r['metrics.conversions']) || 0;
+    var videoViews = Number(r['metrics.video_views']) || 0;
+
+    if (!adsMap[adId]) {
+      // Распаковка repeated fields из GAQL row strings. Google Ads Scripts
+      // возвращает RSA headlines/descriptions/finalUrls как stringified
+      // JSON-array («['Best ...', 'Hot ...']») — splitArray() парсит.
+      var headlines = _splitGaqlArray(r['ad_group_ad.ad.responsive_search_ad.headlines']);
+      var descriptions = _splitGaqlArray(r['ad_group_ad.ad.responsive_search_ad.descriptions']);
+      var finalUrls = _splitGaqlArray(r['ad_group_ad.ad.final_urls']);
+      var imageUrl = String(r['ad_group_ad.ad.image_ad.image_url'] || '');
+      var videoAsset = String(r['ad_group_ad.ad.video_ad.video.asset'] || '');
+      // Extract YouTube videoId from the asset resource name — last segment
+      // typically holds it (or the original ID). Server enriches into
+      // embed / thumb URLs.
+      var youtubeVideoId = '';
+      if (videoAsset) {
+        var parts = videoAsset.split('/');
+        youtubeVideoId = parts[parts.length - 1] || '';
+      }
+
+      adsMap[adId] = {
+        adId: adId,
+        adName: String(r['ad_group_ad.ad.name'] || ''),
+        adType: String(r['ad_group_ad.ad.type'] || ''),
+        adStatus: String(r['ad_group_ad.status'] || ''),
+        finalUrls: finalUrls,
+        headlines: headlines,
+        descriptions: descriptions,
+        imageUrl: imageUrl,
+        youtubeVideoId: youtubeVideoId,
+        campaignId: String(r['campaign.id'] || ''),
+        campaignName: String(r['campaign.name'] || ''),
+        campaignStatus: String(r['campaign.status'] || ''),
+        campaignChannel: String(r['campaign.advertising_channel_type'] || ''),
+        adGroupId: String(r['ad_group.id'] || ''),
+        adGroupName: String(r['ad_group.name'] || ''),
+        daily: [],
+      };
+    }
+
+    adsMap[adId].daily.push({
+      date: String(r['segments.date'] || ''),
+      cost: cost,
+      clicks: clicks,
+      impressions: impressions,
+      conversions: conversions,
+      videoViews: videoViews,
+    });
+
+    totals.cost += cost;
+    totals.clicks += clicks;
+    totals.impressions += impressions;
+    totals.conversions += conversions;
+  }
+
+  var ads = [];
+  for (var k in adsMap) {
+    if (adsMap.hasOwnProperty(k)) ads.push(adsMap[k]);
+  }
+
+  Logger.log('  ' + ads.length + ' ads found, ' +
+             '$' + totals.cost.toFixed(2) + ' total spend');
+
+  if (ads.length === 0) {
+    Logger.log('  (no ads to ingest — skipping POST)');
+    return;
+  }
+
+  var customerName = '';
+  try {
+    customerName = AdsApp.currentAccount().getName() || '';
+  } catch (e) { /* optional */ }
+
+  var currencyCode = 'USD';
+  try {
+    currencyCode = AdsApp.currentAccount().getCurrencyCode() || 'USD';
+  } catch (e) { /* optional */ }
+
+  var payload = {
+    source: 'google-ads',
+    customerId: customerId,
+    customerName: customerName,
+    currency: currencyCode,
+    fetchedAt: new Date().toISOString(),
+    dateRange: { start: startDate, end: endDate },
+    daysBack: DAYS_BACK,
+    ads: ads,
+    totals: totals,
+  };
+
+  var resp = UrlFetchApp.fetch(ADS_INGEST_URL, {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { 'X-Shared-Secret': SHARED_SECRET },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true,
+  });
+
+  var code = resp.getResponseCode();
+  var body = resp.getContentText();
+
+  if (code >= 200 && code < 300) {
+    Logger.log('✓ Pulse ads ingest OK (HTTP ' + code + '): ' + body);
+  } else {
+    Logger.log('✗ Pulse ads ingest FAILED (HTTP ' + code + '): ' + body);
+  }
+}
+
+// Парсит GAQL repeated-field string (например «["Headline 1","Headline 2"]»)
+// в обычный массив. Google Ads Script возвращает такие поля сериализованной
+// JSON-строкой; если parse падает — fallback на split по запятой.
+function _splitGaqlArray(raw) {
+  if (!raw) return [];
+  var s = String(raw).trim();
+  if (!s || s === '--') return [];
+  if (s.charAt(0) === '[') {
+    try {
+      var arr = JSON.parse(s);
+      if (Array.isArray(arr)) {
+        return arr.map(function (x) {
+          if (x && typeof x === 'object') {
+            // RSA assets: {asset:'...', text:'Best ...', pinned_field:...}
+            return String(x.text || x.asset || x.value || '');
+          }
+          return String(x || '');
+        }).filter(function (x) { return x.length > 0; });
+      }
+    } catch (e) { /* fall through */ }
+  }
+  return s.split(',').map(function (x) { return x.trim(); })
+    .filter(function (x) { return x.length > 0; });
 }
 
 function _fmtDate(d) {

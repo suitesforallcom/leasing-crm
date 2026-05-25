@@ -7158,6 +7158,13 @@ exports.hubspotGetData = _hs.hubspotGetData;
 const _mk = require('./marketing-ingest');
 exports.marketingIngest = _mk.marketingIngest;
 exports.marketingGetData = _mk.marketingGetData;
+// Ad-level ingest (Phase H, 2026-05-25) — отдельный HTTPS endpoint, в
+// который Google Ads Apps Script POST-ит per-ad данные (creative + daily
+// spend / clicks / conversions). Пишет в коллекцию marketing_ads через
+// общий UnifiedAd shape (см. marketing-ads-shared.js), параллельно с
+// Meta и TikTok ad-level. Auth: тот же X-Shared-Secret что и
+// marketingIngest. Источники whitelisted в коде: ['google-ads'].
+exports.marketingAdsIngest = _mk.marketingAdsIngest;
 
 // Phase 20 (Meta) — server-side Meta Marketing API sync. Discovers all
 // ad accounts under the System User and pulls daily-granular insights.
@@ -7167,6 +7174,11 @@ const _meta = require('./meta-ads-sync');
 exports.metaAdsSync = _meta.metaAdsSync;
 exports.metaAdsSyncNow = _meta.metaAdsSyncNow;
 exports.metaSettingsSet = _meta.metaSettingsSet;
+// Ad-level (Phase G, 2026-05-25) — pulls per-ad creative + daily insights
+// into the marketing_ads subcollection. Powers cross-platform Top-Ads tab
+// alongside tiktokAdsAdLevelSyncNow. Token (META_ACCESS_TOKEN) already
+// carries ads_read + business_management scopes; no portal change needed.
+exports.metaAdsAdLevelSyncNow = _meta.metaAdsAdLevelSyncNow;
 
 // Phase 20 (TikTok) — server-side TikTok Marketing API sync. Same
 // architecture as Meta: auto-discover advertisers + daily insights.

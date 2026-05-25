@@ -44,11 +44,15 @@ const {onRequest} = require('firebase-functions/v2/https');
 const {defineSecret} = require('firebase-functions/params');
 const logger = require('firebase-functions/logger');
 const admin = require('firebase-admin');
+const shared = require('./marketing-ads-shared');
 
 const MARKETING_INGEST_SECRET = defineSecret('MARKETING_INGEST_SECRET');
 const WORKSPACE_ID = 'default';
 const ALLOWED_SOURCES = ['google-ads', 'meta', 'tiktok', 'ga4', 'manual'];
 const MAX_CAMPAIGNS_PER_SOURCE = 200;  // trim to stay under Firestore 1MB cap
+// Ad-level (Phase H) — soft cap per ingest call. Sorted by spend desc
+// server-side before cap, so least-important drop first.
+const MAX_ADS_PER_INGEST = 500;
 
 const db = admin.firestore();
 
@@ -277,5 +281,275 @@ exports.marketingGetData = require('firebase-functions/v2/https').onCall(
         settings,
       },
     };
+  }
+);
+
+// =============================================================================
+// AD-LEVEL INGEST (Phase H, 2026-05-25)
+// =============================================================================
+// External-source POST endpoint for ad-level data. Currently fed by Google
+// Ads Scripts (scripts/google-ads-script.js does a second GAQL pass over
+// ad_group_ad and POSTs here). Same shared-secret auth as marketingIngest.
+//
+// Payload shape:
+//   {
+//     source: 'google-ads',           // (only google-ads for now; future Bing/etc)
+//     customerId: '215-096-1449',
+//     customerName: 'SuitesForAll',
+//     currency: 'USD',
+//     fetchedAt: ISO,
+//     dateRange: { start: 'YYYY-MM-DD', end: 'YYYY-MM-DD' },
+//     daysBack: 90,
+//     ads: [
+//       {
+//         adId: '123', adName: '...', adType: 'RESPONSIVE_SEARCH_AD',
+//         adStatus: 'ENABLED',
+//         finalUrls: ['https://...'],
+//         headlines: [...], descriptions: [...],   // for RSA
+//         imageUrl: '...',                          // for IMAGE_AD
+//         youtubeVideoId: '...',                    // for VIDEO_AD
+//         campaignId, campaignName, campaignType, campaignStatus,
+//         adGroupId, adGroupName, adGroupStatus,
+//         daily: [
+//           { date, spend, clicks, impressions, conversions,
+//             videoViews, p25, p50, p75, p100 }
+//         ]
+//       },
+//       ...
+//     ],
+//     totals: { spend, clicks, impressions, conversions }
+//   }
+//
+// Server: builds UnifiedAd per ad, sorts by spend desc, caps, upserts
+// to marketing_ads subcollection, soft-deletes ads missing from this run.
+// =============================================================================
+
+const ALLOWED_ADLEVEL_SOURCES = ['google-ads'];
+
+function _mapGoogleAdStatus(s) {
+  const u = String(s || '').toUpperCase();
+  if (u === 'ENABLED') return 'ACTIVE';
+  if (u === 'PAUSED') return 'PAUSED';
+  if (u === 'REMOVED') return 'DELETED';
+  return u || 'UNKNOWN';
+}
+
+function _googleCreativeType(adType) {
+  const t = String(adType || '').toUpperCase();
+  if (/VIDEO/.test(t)) return 'VIDEO';
+  if (/RESPONSIVE_SEARCH|RSA/.test(t)) return 'RSA';
+  if (/RESPONSIVE_DISPLAY|RDA|UPLOADED_AD|MULTI_ASSET/.test(t)) return 'CAROUSEL';
+  if (/IMAGE/.test(t)) return 'IMAGE';
+  return 'IMAGE';
+}
+
+function _buildGoogleUnifiedAd(payload, adRaw, ingestedAt) {
+  const externalId = String(adRaw.adId || '');
+  if (!externalId) return null;
+  // Normalize daily rows (script-side keys may vary slightly).
+  const daily = (Array.isArray(adRaw.daily) ? adRaw.daily : [])
+    .map(d => ({
+      date: String(d.date || ''),
+      spend: Number(d.spend || d.cost) || 0,
+      clicks: Number(d.clicks) || 0,
+      impressions: Number(d.impressions) || 0,
+      conversions: Number(d.conversions) || 0,
+      videoViews: Number(d.videoViews) || 0,
+      // Google Ads quartile metrics are RATES, not counts. Script-side
+      // should multiply by impressions BEFORE sending; we accept either
+      // form here defensively (if <= 1 treat as rate, else as count).
+      _videoViewsP25: _coerceCount(d.p25 ?? d._videoViewsP25, d.impressions),
+      _videoViewsP50: _coerceCount(d.p50 ?? d._videoViewsP50, d.impressions),
+      _videoViewsP75: _coerceCount(d.p75 ?? d._videoViewsP75, d.impressions),
+      _videoViewsP100: _coerceCount(d.p100 ?? d._videoViewsP100, d.impressions),
+    }))
+    .filter(d => d.date)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const baseTotals = shared.rollupDaily(daily);
+  let p25 = 0, p50 = 0, p75 = 0, p100 = 0;
+  for (const d of daily) {
+    p25 += Number(d._videoViewsP25) || 0;
+    p50 += Number(d._videoViewsP50) || 0;
+    p75 += Number(d._videoViewsP75) || 0;
+    p100 += Number(d._videoViewsP100) || 0;
+  }
+  const totals = shared.computeDerivedMetrics({
+    ...baseTotals,
+    videoViewsP25: p25, videoViewsP50: p50, videoViewsP75: p75, videoViewsP100: p100,
+  });
+  const creativeType = _googleCreativeType(adRaw.adType);
+  const creative = {
+    type: creativeType,
+    primaryText: null,
+    callToAction: null,
+    landingUrl: Array.isArray(adRaw.finalUrls) && adRaw.finalUrls.length > 0
+      ? String(adRaw.finalUrls[0]) : null,
+    displayUrl: null,
+    headlines: Array.isArray(adRaw.headlines) && adRaw.headlines.length > 0
+      ? adRaw.headlines.map(String) : null,
+    descriptions: Array.isArray(adRaw.descriptions) && adRaw.descriptions.length > 0
+      ? adRaw.descriptions.map(String) : null,
+    posterUrl: null,
+  };
+  if (creativeType === 'VIDEO' && adRaw.youtubeVideoId) {
+    creative.videoId = String(adRaw.youtubeVideoId);
+    // YouTube embed + thumbnail — universal URLs, no auth needed.
+    creative.videoUrl = `https://www.youtube.com/embed/${creative.videoId}`;
+    creative.posterUrl = `https://i.ytimg.com/vi/${creative.videoId}/hqdefault.jpg`;
+  } else if (creativeType === 'IMAGE' && adRaw.imageUrl) {
+    creative.imageUrl = String(adRaw.imageUrl);
+  }
+  return {
+    id: shared.adDocId('google', externalId),
+    platform: 'google',
+    externalId,
+    account: {
+      id: String(payload.customerId || ''),
+      name: String(payload.customerName || '(unknown customer)'),
+      currency: String(payload.currency || 'USD'),
+    },
+    campaign: {
+      id: String(adRaw.campaignId || ''),
+      name: String(adRaw.campaignName || '(unknown campaign)'),
+      objective: String(adRaw.campaignType || '') || null,
+      status: String(adRaw.campaignStatus || '') || null,
+    },
+    adgroup: {
+      id: String(adRaw.adGroupId || ''),
+      name: String(adRaw.adGroupName || '(unknown ad group)'),
+      status: String(adRaw.adGroupStatus || '') || null,
+    },
+    ad: {
+      id: externalId,
+      name: String(adRaw.adName || '(unnamed ad)'),
+      status: _mapGoogleAdStatus(adRaw.adStatus),
+      type: String(adRaw.adType || '') || null,
+      createdAt: null,
+      modifiedAt: null,
+    },
+    creative,
+    totals,
+    daily,
+    daysBack: Number(payload.daysBack) || 90,
+    fetchedAt: String(payload.fetchedAt || ingestedAt),
+    ingestedAt,
+    error: null,
+    platformExtras: {
+      adType: String(adRaw.adType || '') || null,
+      finalUrls: Array.isArray(adRaw.finalUrls) ? adRaw.finalUrls.map(String) : null,
+    },
+  };
+}
+
+// Helper — if raw is rate (≤ 1) AND impressions known, return rate × impressions.
+// Otherwise treat as already-count.
+function _coerceCount(raw, impressions) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  if (n <= 1 && Number(impressions) > 0) return Math.round(n * Number(impressions));
+  return Math.round(n);
+}
+
+exports.marketingAdsIngest = onRequest(
+  {
+    secrets: [MARKETING_INGEST_SECRET],
+    cors: false,
+    timeoutSeconds: 120,
+    memory: '512MiB',
+  },
+  async (req, res) => {
+    try {
+      if (req.method !== 'POST') {
+        res.status(405).json({ ok: false, error: 'POST only' });
+        return;
+      }
+      const got = req.get('x-shared-secret') || req.get('X-Shared-Secret') || '';
+      const expected = MARKETING_INGEST_SECRET.value();
+      if (!expected) {
+        res.status(500).json({ ok: false, error: 'server misconfigured' });
+        return;
+      }
+      if (got !== expected) {
+        logger.warn(`[marketing-ads-ingest] auth fail (ip=${req.ip})`);
+        res.status(401).json({ ok: false, error: 'unauthorized' });
+        return;
+      }
+      const body = req.body || {};
+      const source = String(body.source || '').toLowerCase();
+      if (!ALLOWED_ADLEVEL_SOURCES.includes(source)) {
+        res.status(400).json({
+          ok: false,
+          error: `source must be one of ${ALLOWED_ADLEVEL_SOURCES.join(',')}`,
+        });
+        return;
+      }
+      const adsRaw = Array.isArray(body.ads) ? body.ads : [];
+      if (adsRaw.length === 0) {
+        res.status(400).json({ ok: false, error: 'ads[] must be non-empty' });
+        return;
+      }
+      const ingestedAt = new Date().toISOString();
+      // Build UnifiedAds, drop invalid, sort by spend desc, cap.
+      const platform = source === 'google-ads' ? 'google' : source;
+      const built = [];
+      for (const a of adsRaw) {
+        const u = _buildGoogleUnifiedAd(body, a, ingestedAt);
+        if (u) built.push(u);
+      }
+      built.sort((a, b) => (b.totals.spend || 0) - (a.totals.spend || 0));
+      const capped = built.slice(0, MAX_ADS_PER_INGEST);
+      const presentIds = new Set(capped.map(u => u.id));
+      const totalSpend = capped.reduce((s, u) => s + (u.totals.spend || 0), 0);
+      // Write
+      const writeRes = await shared.upsertAdsBatch(capped);
+      // Prune: any google ad in DB not in this run gets soft-deleted.
+      let pruned = 0;
+      try {
+        pruned = await shared.pruneStaleAds(platform, presentIds);
+      } catch (e) {
+        logger.warn(`[marketing-ads-ingest] prune failed: ${e.message}`);
+      }
+      // Summary doc — mirror what TikTok/Meta ad-level syncs write.
+      try {
+        await db.doc(`workspaces/${WORKSPACE_ID}/data/marketing`).set({
+          sources: {
+            [source]: {
+              adLevelLastSyncedAt: ingestedAt,
+              adLevelTotalAds: writeRes.written,
+              adLevelTotalSpend: totalSpend,
+              adLevelPruned: pruned,
+              adLevelErrors: writeRes.errors,
+              adLevelCustomerId: String(body.customerId || ''),
+            },
+          },
+        }, { merge: true });
+        await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+          action: `marketing.${platform}-adlevel-ingest`,
+          ts: Date.now(),
+          actor: `external:${source}`,
+          note: `${source} ad-level: ${writeRes.written} ads written, $${totalSpend.toFixed(2)} spend, ${pruned} pruned`,
+          counts: { received: adsRaw.length, written: writeRes.written, pruned },
+          totals: { spend: totalSpend },
+          customerId: String(body.customerId || ''),
+        });
+      } catch (e) {
+        logger.warn(`[marketing-ads-ingest] summary/audit failed: ${e.message}`);
+      }
+      logger.info(`[marketing-ads-ingest] OK: ${source} ${writeRes.written}/${adsRaw.length} ads $${totalSpend.toFixed(2)}`);
+      res.status(200).json({
+        ok: true,
+        source,
+        received: adsRaw.length,
+        written: writeRes.written,
+        skipped: writeRes.skipped,
+        pruned,
+        totals: { spend: totalSpend },
+        errors: writeRes.errors,
+        ingestedAt,
+      });
+    } catch (e) {
+      logger.error(`[marketing-ads-ingest] crash: ${e.message}`, e);
+      res.status(500).json({ ok: false, error: e.message });
+    }
   }
 );

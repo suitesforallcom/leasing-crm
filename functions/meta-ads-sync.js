@@ -39,6 +39,8 @@ const {defineSecret} = require('firebase-functions/params');
 const logger = require('firebase-functions/logger');
 const admin = require('firebase-admin');
 
+const shared = require('./marketing-ads-shared');
+
 const META_ACCESS_TOKEN = defineSecret('META_ACCESS_TOKEN');
 const WORKSPACE_ID = 'default';
 const ROOT_ADMINS = ['tony@al-en.com'];
@@ -52,6 +54,10 @@ const DAYS_BACK = 90;
 // Firestore 40K index-entries cap (one entry per stringified field).
 const MAX_ACCOUNTS = 50;
 const MAX_DAILY_ROWS_PER_ACCT = 100;  // 90 daily + buffer
+// Ad-level constants. Soft caps to prevent runaway accounts from eating
+// entire Firestore quota. Spend-sorted before cap — least-important drops.
+const MAX_ADS_PER_ACCOUNT = 200;
+const MAX_DAILY_ROWS_PER_AD = 100;
 
 const db = admin.firestore();
 
@@ -350,5 +356,372 @@ exports.metaSettingsSet = onCall(
       updatedBy: email,
     }, { merge: true });
     return { ok: true, count: ids.length };
+  }
+);
+
+// =============================================================================
+// AD-LEVEL SYNC (Phase G, 2026-05-25)
+// =============================================================================
+// Pulls per-ad metadata + creative + daily insights from Meta Graph API,
+// builds UnifiedAd objects (see marketing-ads-shared.js), upserts to
+// workspaces/default/marketing_ads subcollection. Powers Pulse Top-Ads tab
+// alongside TikTok and (future) Google Ads.
+//
+// Endpoints:
+//   GET /{act_X}/ads        — list ads with embedded creative + campaign + adset
+//   GET /{act_X}/insights   — per-ad daily metrics (level=ad)
+//   GET /{video_id}         — enrich VIDEO creatives with source URL + poster
+//
+// Reuses _g(), _gPaginate(), _fetchAccounts(), _readSettings(), _fmtDate()
+// from the account-level sync above — no duplication.
+// =============================================================================
+
+// ---------- Ads list (with creative field-expansion) ----------
+async function _fetchAdsList(token, accountId) {
+  // Field expansion: `field{subfield1,subfield2}` syntax embeds joined
+  // entities in one request. Cheaper than separate /campaigns + /adsets calls.
+  const fields = [
+    'id', 'name', 'effective_status', 'status', 'created_time', 'updated_time',
+    'campaign{id,name,objective,effective_status}',
+    'adset{id,name,optimization_goal,effective_status}',
+    'creative{id,name,thumbnail_url,video_id,image_url,image_hash,body,title,' +
+      'call_to_action_type,link_url,object_url,object_story_spec,' +
+      'instagram_permalink_url,asset_feed_spec}',
+  ].join(',');
+  const raw = await _gPaginate(token, `/${accountId}/ads`, { fields, limit: 100 }, 20);
+  return raw;
+}
+
+// ---------- Per-ad daily insights ----------
+async function _fetchAdLevelInsights(token, accountId, daysBack) {
+  const today = new Date();
+  const end = _fmtDate(today);
+  const start = _fmtDate(new Date(today.getTime() - daysBack * 86400 * 1000));
+  // Meta video_* arrays come as [{action_type, value}] — we sum across.
+  const params = {
+    level: 'ad',
+    fields: [
+      'ad_id', 'ad_name', 'campaign_id', 'adset_id',
+      'spend', 'clicks', 'impressions', 'reach', 'frequency',
+      'actions',
+      'video_play_actions',
+      'video_p25_watched_actions', 'video_p50_watched_actions',
+      'video_p75_watched_actions', 'video_p100_watched_actions',
+      'video_avg_time_watched_actions',
+      'date_start',
+    ].join(','),
+    time_range: JSON.stringify({ since: start, until: end }),
+    time_increment: '1',
+    limit: 500,
+  };
+  let raw;
+  try {
+    raw = await _gPaginate(token, `/${accountId}/insights`, params, 20);
+  } catch (e) {
+    logger.warn(`[meta-ads-sync] ad-level insights ${accountId} failed: ${e.message}`);
+    return { byAdId: new Map(), error: e.message };
+  }
+  const sumActionsArray = (arr) => {
+    if (!Array.isArray(arr)) return 0;
+    return arr.reduce((s, a) => s + (Number(a.value) || 0), 0);
+  };
+  const avgActionsArray = (arr) => {
+    if (!Array.isArray(arr) || arr.length === 0) return 0;
+    const total = arr.reduce((s, a) => s + (Number(a.value) || 0), 0);
+    return total / arr.length;
+  };
+  const byAdId = new Map();
+  for (const row of raw) {
+    const adId = String(row.ad_id || '');
+    if (!adId) continue;
+    if (!byAdId.has(adId)) byAdId.set(adId, []);
+    let conversions = 0;
+    if (Array.isArray(row.actions)) {
+      for (const a of row.actions) {
+        const t = String(a.action_type || '');
+        // Same lead-detection regex as account-level sync — keeps the
+        // «conversions» definition consistent across both views.
+        if (/lead|submit_application|complete_registration/.test(t)) {
+          conversions += Number(a.value) || 0;
+        }
+      }
+    }
+    byAdId.get(adId).push({
+      date: String(row.date_start || ''),
+      spend: Number(row.spend) || 0,
+      clicks: Number(row.clicks) || 0,
+      impressions: Number(row.impressions) || 0,
+      conversions,
+      videoViews: sumActionsArray(row.video_play_actions),
+      _videoViewsP25: sumActionsArray(row.video_p25_watched_actions),
+      _videoViewsP50: sumActionsArray(row.video_p50_watched_actions),
+      _videoViewsP75: sumActionsArray(row.video_p75_watched_actions),
+      _videoViewsP100: sumActionsArray(row.video_p100_watched_actions),
+      _avgVideoPlay: avgActionsArray(row.video_avg_time_watched_actions),
+      _reach: Number(row.reach) || 0,
+      _frequency: Number(row.frequency) || 0,
+    });
+  }
+  for (const [adId, daily] of byAdId.entries()) {
+    byAdId.set(adId,
+      daily.sort((a, b) => a.date.localeCompare(b.date)).slice(0, MAX_DAILY_ROWS_PER_AD)
+    );
+  }
+  return { byAdId, error: null };
+}
+
+// ---------- Video enrichment (per video_id → source URL + poster) ----------
+// Graph API video endpoint is cheap (~50ms per call). Run sequentially
+// rather than fan-out because rate limits are tighter than ad endpoints.
+async function _fetchVideoEnrichment(token, ads) {
+  const videoIds = new Set();
+  for (const ad of ads) {
+    const vid = ad.creative?.video_id;
+    if (vid) videoIds.add(String(vid));
+  }
+  const out = new Map();
+  for (const vid of videoIds) {
+    try {
+      const data = await _g(token, `/${vid}`, {
+        fields: 'picture,source,length,format,permalink_url',
+      });
+      out.set(vid, {
+        url: data.source || null,
+        posterUrl: data.picture || null,
+        durationSec: Number(data.length) || 0,
+        permalink: data.permalink_url || null,
+      });
+    } catch (e) {
+      // Video deleted / perm error — skip, ad keeps thumbnail from creative.
+      logger.warn(`[meta-ads-sync] video ${vid} enrichment failed: ${e.message}`);
+    }
+  }
+  return out;
+}
+
+// ---------- Status mapping (Meta effective_status → canonical) ----------
+function _mapMetaStatus(effectiveStatus, status) {
+  const s = String(effectiveStatus || status || '').toUpperCase();
+  if (s === 'ACTIVE' || s === 'WITH_ISSUES') return 'ACTIVE';
+  if (s === 'DELETED' || s === 'ARCHIVED') return 'DELETED';
+  if (/PAUSED/.test(s)) return 'PAUSED'; // PAUSED, CAMPAIGN_PAUSED, ADSET_PAUSED
+  if (s === 'DISAPPROVED' || s === 'REJECTED') return 'REJECTED';
+  if (/PENDING|REVIEW|IN_PROCESS|PREAPPROVED/.test(s)) return 'PENDING_REVIEW';
+  return s || 'UNKNOWN';
+}
+
+// ---------- Creative shape ----------
+function _buildMetaCreative(creative, videoEnrichment) {
+  if (!creative) return { type: 'IMAGE' };
+  const videoId = creative.video_id ? String(creative.video_id) : null;
+  const linkData = creative.object_story_spec?.link_data || null;
+  const videoData = creative.object_story_spec?.video_data || null;
+  const childAttachments = linkData?.child_attachments || null;
+  const out = {
+    type: 'IMAGE',
+    primaryText: creative.body || linkData?.message || videoData?.message || null,
+    callToAction: creative.call_to_action_type
+      || linkData?.call_to_action?.type
+      || videoData?.call_to_action?.type
+      || null,
+    landingUrl: creative.link_url || linkData?.link || null,
+    displayUrl: creative.object_url || null,
+    headlines: creative.title ? [creative.title] : null,
+    posterUrl: creative.thumbnail_url || null,
+  };
+  if (videoId) {
+    out.type = 'VIDEO';
+    out.videoId = videoId;
+    const v = videoEnrichment?.get(videoId);
+    if (v) {
+      out.videoUrl = v.url;
+      if (!out.posterUrl) out.posterUrl = v.posterUrl;
+      out.videoDurationSec = v.durationSec || null;
+    }
+  } else if (Array.isArray(childAttachments) && childAttachments.length > 1) {
+    out.type = 'CAROUSEL';
+    out.imageUrls = childAttachments
+      .map(c => c.picture || c.image_url)
+      .filter(Boolean);
+  } else if (creative.image_url) {
+    out.type = 'IMAGE';
+    out.imageUrl = creative.image_url;
+  }
+  return out;
+}
+
+// ---------- UnifiedAd builder ----------
+function _buildMetaUnifiedAd(account, ad, dailyRows, videoEnrichment, daysBack, ingestedAt, insightsError) {
+  const creative = _buildMetaCreative(ad.creative, videoEnrichment);
+  const baseTotals = shared.rollupDaily(dailyRows);
+  let videoViewsP25 = 0, videoViewsP50 = 0, videoViewsP75 = 0, videoViewsP100 = 0;
+  let avgVideoPlaySum = 0, avgVideoPlayDays = 0;
+  for (const d of dailyRows) {
+    videoViewsP25 += Number(d._videoViewsP25) || 0;
+    videoViewsP50 += Number(d._videoViewsP50) || 0;
+    videoViewsP75 += Number(d._videoViewsP75) || 0;
+    videoViewsP100 += Number(d._videoViewsP100) || 0;
+    if (Number(d._avgVideoPlay) > 0) {
+      avgVideoPlaySum += Number(d._avgVideoPlay);
+      avgVideoPlayDays++;
+    }
+  }
+  const totals = shared.computeDerivedMetrics({
+    ...baseTotals,
+    videoViewsP25, videoViewsP50, videoViewsP75, videoViewsP100,
+    avgVideoPlaySec: avgVideoPlayDays > 0 ? avgVideoPlaySum / avgVideoPlayDays : 0,
+    // Meta doesn't expose per-ad engagement directly (likes/shares/comments
+    // are organic-side, not in ad insights). Leave engagement omitted.
+  });
+  return {
+    id: shared.adDocId('meta', ad.id),
+    platform: 'meta',
+    externalId: String(ad.id),
+    account: {
+      id: account.id,
+      name: account.name,
+      currency: account.currency,
+    },
+    campaign: {
+      id: String(ad.campaign?.id || ''),
+      name: ad.campaign?.name || '(unknown campaign)',
+      objective: ad.campaign?.objective || null,
+      status: ad.campaign?.effective_status || null,
+    },
+    adgroup: {
+      id: String(ad.adset?.id || ''),
+      name: ad.adset?.name || '(unknown ad set)',
+      status: ad.adset?.effective_status || null,
+    },
+    ad: {
+      id: String(ad.id),
+      name: ad.name || '(unnamed ad)',
+      status: _mapMetaStatus(ad.effective_status, ad.status),
+      type: creative.type || null,
+      createdAt: ad.created_time || null,
+      modifiedAt: ad.updated_time || null,
+    },
+    creative,
+    totals,
+    daily: dailyRows,
+    daysBack,
+    fetchedAt: ingestedAt,
+    ingestedAt,
+    error: insightsError || null,
+    platformExtras: {
+      effectiveStatusRaw: ad.effective_status || null,
+      instagramPermalink: ad.creative?.instagram_permalink_url || null,
+    },
+  };
+}
+
+// ---------- Main ad-level sync ----------
+async function _runAdLevelSync() {
+  const token = META_ACCESS_TOKEN.value();
+  if (!token) throw new Error('META_ACCESS_TOKEN secret not bound');
+  const t0 = Date.now();
+  const ingestedAt = new Date().toISOString();
+  const settings = await _readSettings();
+  const filterIds = Array.isArray(settings.metaAdAccountIds) && settings.metaAdAccountIds.length > 0
+    ? new Set(settings.metaAdAccountIds.map(s => String(s)))
+    : null;
+
+  const allAccounts = await _fetchAccounts(token);
+  const targetAccounts = filterIds
+    ? allAccounts.filter(a => filterIds.has(a.id))
+    : allAccounts;
+  logger.info(`[meta-ads-sync] ad-level: ${targetAccounts.length} accounts, ${DAYS_BACK} days back`);
+
+  let totalAdsFetched = 0;
+  let totalAdsWritten = 0;
+  let totalSpend = 0;
+  const presentIds = new Set();
+  const perAccountErrors = [];
+
+  for (const account of targetAccounts) {
+    try {
+      const [ads, insightsRes] = await Promise.all([
+        _fetchAdsList(token, account.id),
+        _fetchAdLevelInsights(token, account.id, DAYS_BACK),
+      ]);
+      totalAdsFetched += ads.length;
+      const videoEnrichment = await _fetchVideoEnrichment(token, ads);
+      const unifiedAds = ads
+        .map(ad => _buildMetaUnifiedAd(
+          account, ad,
+          insightsRes.byAdId.get(String(ad.id)) || [],
+          videoEnrichment,
+          DAYS_BACK, ingestedAt, insightsRes.error
+        ))
+        .sort((a, b) => (b.totals.spend || 0) - (a.totals.spend || 0))
+        .slice(0, MAX_ADS_PER_ACCOUNT);
+      for (const u of unifiedAds) {
+        presentIds.add(u.id);
+        totalSpend += u.totals.spend || 0;
+      }
+      const writeRes = await shared.upsertAdsBatch(unifiedAds);
+      totalAdsWritten += writeRes.written;
+      if (writeRes.errors.length) {
+        perAccountErrors.push({ accountId: account.id, batchErrors: writeRes.errors });
+      }
+      logger.info(`[meta-ads-sync] ${account.id}: ${ads.length} ads → ${writeRes.written} written`);
+    } catch (e) {
+      logger.error(`[meta-ads-sync] ad-level ${account.id} failed: ${e.message}`);
+      perAccountErrors.push({ accountId: account.id, error: e.message });
+    }
+  }
+
+  let pruned = 0;
+  try {
+    pruned = await shared.pruneStaleAds('meta', presentIds);
+  } catch (e) {
+    logger.warn(`[meta-ads-sync] prune failed: ${e.message}`);
+  }
+
+  try {
+    await db.doc(`workspaces/${WORKSPACE_ID}/data/marketing`).set({
+      sources: {
+        meta: {
+          adLevelLastSyncedAt: ingestedAt,
+          adLevelTotalAds: totalAdsWritten,
+          adLevelTotalSpend: totalSpend,
+          adLevelPruned: pruned,
+          adLevelErrors: perAccountErrors,
+        },
+      },
+    }, { merge: true });
+    await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+      action: 'marketing.meta-adlevel-sync',
+      ts: Date.now(),
+      actor: 'system:meta-ads-sync',
+      note: `Meta ad-level: ${totalAdsWritten} ads written, $${totalSpend.toFixed(2)} spend, ${pruned} pruned, ${perAccountErrors.length} accounts had errors`,
+      counts: { fetched: totalAdsFetched, written: totalAdsWritten, pruned },
+      totals: { spend: totalSpend },
+    });
+  } catch (e) {
+    logger.warn(`[meta-ads-sync] adlevel audit failed: ${e.message}`);
+  }
+
+  const durMs = Date.now() - t0;
+  logger.info(`[meta-ads-sync] ad-level DONE in ${durMs}ms: ${totalAdsWritten} ads, $${totalSpend.toFixed(2)} spend`);
+  return {
+    accounts: targetAccounts.length,
+    adsFetched: totalAdsFetched,
+    adsWritten: totalAdsWritten,
+    pruned,
+    totalSpend,
+    errors: perAccountErrors,
+    durMs,
+  };
+}
+
+exports.metaAdsAdLevelSyncNow = onCall(
+  { secrets: [META_ACCESS_TOKEN], timeoutSeconds: 540, memory: '512MiB' },
+  async (request) => {
+    const email = (request.auth?.token?.email || '').toLowerCase();
+    if (!ROOT_ADMINS.includes(email)) {
+      throw new HttpsError('permission-denied', 'Root admin only');
+    }
+    return _runAdLevelSync();
   }
 );
