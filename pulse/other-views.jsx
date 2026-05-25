@@ -197,11 +197,12 @@ window.EmployeeActivityTable = function EmployeeActivityTable({ users, onOpenEmp
       ),
     },
     {
+      // 2026-05-24 Tony: «сколько Туров сделано» — completed only, not scheduled+completed.
       key: "tours", label: "Tours", align: "right",
-      getValue: u => (u.toursScheduled || 0) + (u.toursCompleted || 0),
+      getValue: u => (u.toursCompleted || 0),
       render: (u) => {
-        const v = (u.toursScheduled || 0) + (u.toursCompleted || 0);
-        return <span className="mono num" style={{ fontWeight: v > 0 ? 600 : 400, color: v > 0 ? "var(--ink)" : "var(--muted-2)" }}>{v || "—"}</span>;
+        const v = (u.toursCompleted || 0);
+        return <span className="mono num" style={{ fontWeight: v > 0 ? 600 : 400, color: v > 0 ? "var(--ink)" : "var(--muted-2)" }} title="Completed tours (MTD, from HubSpot)">{v || "—"}</span>;
       },
     },
     {
@@ -213,11 +214,36 @@ window.EmployeeActivityTable = function EmployeeActivityTable({ users, onOpenEmp
       },
     },
     {
-      key: "calls", label: "Calls", align: "right",
+      // 2026-05-24 Tony: «сколько звонков принято больше 5 секунд» —
+      // inbound calls с talkSec > 5 (фильтрует misdials, voicemails,
+      // быстрые hangups). Period = today/MTD.
+      key: "callsIn", label: "Calls in (>5s)", align: "right",
+      getValue: (u, p) => _countCalls(u, "inbound", 5, p),
+      render: (u, p) => {
+        const v = _countCalls(u, "inbound", 5, p);
+        const hasAircall = u._aircallConnected;
+        return <span className="mono num" style={{ fontWeight: v > 0 ? 600 : 400, color: v > 0 ? "var(--ink)" : "var(--muted-2)" }} title={hasAircall ? `${v} inbound calls answered with talk-time > 5 seconds` : "Aircall not connected"}>{hasAircall ? (v || "—") : "—"}</span>;
+      },
+    },
+    {
+      // 2026-05-24 Tony: «сколько звонков сделано больше 5 секунд» —
+      // outbound calls с talkSec > 5.
+      key: "callsOut", label: "Calls out (>5s)", align: "right",
+      getValue: (u, p) => _countCalls(u, "outbound", 5, p),
+      render: (u, p) => {
+        const v = _countCalls(u, "outbound", 5, p);
+        const hasAircall = u._aircallConnected;
+        return <span className="mono num" style={{ fontWeight: v > 0 ? 600 : 400, color: v > 0 ? "var(--ink)" : "var(--muted-2)" }} title={hasAircall ? `${v} outbound calls connected with talk-time > 5 seconds` : "Aircall not connected"}>{hasAircall ? (v || "—") : "—"}</span>;
+      },
+    },
+    {
+      // Legacy «total calls» column — keep available but hidden by default
+      // (Tony больше не хочет видеть «весь объём», только quality-фильтр).
+      key: "calls", label: "Calls (all)", align: "right",
       getValue: (u, p) => p === "mtd" ? (u.callsMtd || 0) : (u.calls || 0),
       render: (u, p) => {
         const v = p === "mtd" ? (u.callsMtd || 0) : (u.calls || 0);
-        return <span className="mono num" style={{ fontWeight: v > 0 ? 600 : 400, color: v > 0 ? "var(--ink)" : "var(--muted-2)" }}>{v || "—"}</span>;
+        return <span className="mono num" style={{ fontWeight: v > 0 ? 600 : 400, color: v > 0 ? "var(--ink)" : "var(--muted-2)" }} title="All calls including misdials / voicemails / quick hangups">{v || "—"}</span>;
       },
     },
     {
@@ -258,12 +284,18 @@ window.EmployeeActivityTable = function EmployeeActivityTable({ users, onOpenEmp
     },
   ]), []);
 
-  const DEFAULT_VISIBLE = ["name", "tours", "emails", "calls", "login", "logout", "score"];
+  // 2026-05-24 Tony: четыре требуемых колонки — Tours / Emails /
+  // Calls in (>5s) / Calls out (>5s) — плюс Login, Logout, Score.
+  // «Calls (all)» доступна через ⚙ Columns, но скрыта по умолчанию.
+  const DEFAULT_VISIBLE = ["name", "tours", "emails", "callsIn", "callsOut", "login", "logout", "score"];
 
   // --- State: visible columns, sort, period — все persisted в localStorage.
+  // 2026-05-24 — _v2 в ключе после расширения column set'а (старый
+  // содержал «calls» без callsIn/callsOut). Sayed v1 prefs игнорируются
+  // → пользователь видит новый default набор колонок.
   const [visibleCols, setVisibleCols] = React.useState(() => {
     try {
-      const raw = localStorage.getItem(storageKey + "_cols");
+      const raw = localStorage.getItem(storageKey + "_cols_v2");
       const arr = raw ? JSON.parse(raw) : null;
       return Array.isArray(arr) && arr.length > 0 ? arr : DEFAULT_VISIBLE;
     } catch (e) { return DEFAULT_VISIBLE; }
@@ -280,7 +312,7 @@ window.EmployeeActivityTable = function EmployeeActivityTable({ users, onOpenEmp
   });
   const [colMenuOpen, setColMenuOpen] = React.useState(false);
 
-  React.useEffect(() => { try { localStorage.setItem(storageKey + "_cols", JSON.stringify(visibleCols)); } catch (e) {} }, [visibleCols, storageKey]);
+  React.useEffect(() => { try { localStorage.setItem(storageKey + "_cols_v2", JSON.stringify(visibleCols)); } catch (e) {} }, [visibleCols, storageKey]);
   React.useEffect(() => { try { localStorage.setItem(storageKey + "_sort", JSON.stringify(sort)); } catch (e) {} }, [sort, storageKey]);
   React.useEffect(() => { try { localStorage.setItem(storageKey + "_period", period); } catch (e) {} }, [period, storageKey]);
 
@@ -422,6 +454,33 @@ window.EmployeeActivityTable = function EmployeeActivityTable({ users, onOpenEmp
 
 // Helper — convert «8:51 AM» / «9:48 PM» / «Yesterday 4:10 PM» → minutes since midnight (sort).
 // Day-prefixed strings (Yesterday/Mon/etc.) sorted before today by subtracting big offsets.
+// 2026-05-24 Tony: count calls of given direction with talkSec above
+// threshold, scoped to period ('today' / 'mtd'). 5-sec threshold weeds
+// out misdials / quick hangups / voicemail-bot calls — left only the
+// «real conversation» calls. Reads from u._callActivity (raw Aircall
+// array attached by data-shim).
+function _countCalls(u, direction, minTalkSec, periodKind) {
+  if (!Array.isArray(u._callActivity)) return 0;
+  const now = new Date();
+  let cutoffMs;
+  if (periodKind === "mtd") {
+    cutoffMs = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+  } else {
+    // today — midnight local
+    const d = new Date(now);
+    d.setHours(0, 0, 0, 0);
+    cutoffMs = d.getTime();
+  }
+  let n = 0;
+  for (const c of u._callActivity) {
+    if (!c || !c.ts || c.ts < cutoffMs) continue;
+    if (c.direction !== direction) continue;
+    if ((c.talkSec || 0) <= minTalkSec) continue;
+    n++;
+  }
+  return n;
+}
+
 function _parseTimeForSort(s) {
   if (!s) return -1;
   let offset = 0;
