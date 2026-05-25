@@ -35,6 +35,7 @@ window.Sidebar = function Sidebar({ view, onNav, role }) {
           <NavItem id="compare"  view={view} onNav={onNav} icon="compare"  label="Compare" />
           <NavItem id="hubspot"  view={view} onNav={onNav} icon="globe"    label="HubSpot" />
           <NavItem id="marketing" view={view} onNav={onNav} icon="trendUp" label="Marketing" />
+          <NavItem id="topads" view={view} onNav={onNav} icon="star" label="Top Ads" />
           <NavItem id="analytics" view={view} onNav={onNav} icon="globe" label="Analytics (GA4)" />
           <NavItem id="connections" view={view} onNav={onNav} icon="settings" label="Connections" />
           <NavItem id="bonuses"  view={view} onNav={onNav} icon="star"     label="Bonuses" />
@@ -92,7 +93,7 @@ window.Topbar = function Topbar({ view, employeeId, onNav, role, onRoleChange, m
 
   const titleMap = {
     overview: "Activity",  people: "People",   compare: "Compare",
-    hubspot: "HubSpot",  marketing: "Marketing",  analytics: "Analytics",  connections: "Connections",
+    hubspot: "HubSpot",  marketing: "Marketing",  topads: "Top Ads",  analytics: "Analytics",  connections: "Connections",
     bonuses: "Bonuses",    bonusrules: "Bonus rules",
     alerts: "Alerts",   centers: "Centers",
     myday: "My Day",       myjourney: "My Journey",   earn: "How to earn",
