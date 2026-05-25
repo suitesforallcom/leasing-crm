@@ -733,6 +733,68 @@ function SpendSection() {
           </div>
         );
       })()}
+      {/* 2026-05-24 Tony: «Снизу выведи суммарную строку» — Total row
+          aggregates все paid каналы + Other. Spend/Clicks suм только по
+          paid (Other = 0). Leads/Contracts/MRR sум по всем строкам.
+          Blended CPL/CPC/CAC = total_spend / total_метрика. */}
+      {(() => {
+        const totalSpend = spendRows.reduce((s, r) => s + (r.cost || 0), 0);
+        const totalClicks = spendRows.reduce((s, r) => s + (r.clicks || 0), 0);
+        const otherLeads = rows.filter(r => r.group !== "paid-search" && r.group !== "paid-social")
+                               .reduce((s, r) => s + r.leads, 0);
+        const otherQualified = rows.filter(r => r.group !== "paid-search" && r.group !== "paid-social")
+                                   .reduce((s, r) => s + r.qualified, 0);
+        const otherFmLeases = (window._floorMapLeases && window._floorMapLeases.byChannel)
+                              ? (window._floorMapLeases.byChannel['other'] || []) : [];
+        const totalLeadsTotal = spendRows.reduce((s, r) => s + (r.totalContacts || 0), 0) + otherLeads;
+        const totalLeadsQuality = spendRows.reduce((s, r) => s + (r.qualifiedLeads || 0), 0) + otherQualified;
+        const totalLeadsForCPL = qualityLeadsOnly ? totalLeadsQuality : totalLeadsTotal;
+        const totalContracts = spendRows.reduce((s, r) => s + (r.customers || 0), 0) + otherFmLeases.length;
+        const totalMRR = spendRows.reduce((s, r) => s + (r.customersMRR || 0), 0)
+                       + otherFmLeases.reduce((s, l) => s + (l.monthly || 0), 0);
+        const blendedCPL = totalLeadsForCPL > 0 ? totalSpend / totalLeadsForCPL : 0;
+        const blendedCPC = totalClicks > 0 ? totalSpend / totalClicks : 0;
+        const blendedCAC = totalContracts > 0 ? totalSpend / totalContracts : 0;
+        return (
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "1.4fr 90px 90px 90px 90px 90px 90px 90px 140px",
+            gap: 8, padding: "12px 14px",
+            borderTop: "2px solid var(--ink)",
+            alignItems: "center",
+            fontSize: 13,
+            background: "var(--surface)",
+            fontWeight: 700,
+          }}>
+            <div>
+              <div style={{ fontWeight: 800 }}>TOTAL</div>
+              <div style={{ fontSize: 10.5, color: "var(--muted)", fontWeight: 400 }}>
+                {spendRows.length} paid {spendRows.length === 1 ? "channel" : "channels"} + Other · {windowLabel.toLowerCase()}
+              </div>
+            </div>
+            <div className="mono" style={{ textAlign: "right" }} title={`$${totalSpend.toFixed(2)} total ad spend across all paid channels`}>${Math.round(totalSpend).toLocaleString()}</div>
+            <div className="mono" style={{ textAlign: "right" }}>{totalClicks.toLocaleString()}</div>
+            <div className="mono" style={{ textAlign: "right" }} title={`Quality (MQL+): ${totalLeadsQuality.toLocaleString()}\nTotal contacts: ${totalLeadsTotal.toLocaleString()}\nIncludes Other row (${otherLeads} leads from non-paid)`}>
+              {totalLeadsForCPL.toLocaleString()}
+              {totalLeadsQuality !== totalLeadsTotal && (
+                <div style={{ fontSize: 9.5, fontWeight: 400, color: "var(--muted)", marginTop: 1 }}>of {totalLeadsTotal.toLocaleString()} total</div>
+              )}
+            </div>
+            <div className="mono" style={{ textAlign: "right", color: totalContracts > 0 ? "var(--success-ink)" : "var(--muted)" }} title={`${totalContracts} signed lease${totalContracts === 1 ? "" : "s"} this month across all sources (paid + non-paid). $${totalMRR.toLocaleString()}/mo combined MRR.`}>
+              {totalContracts || "—"}
+              {totalMRR > 0 && (
+                <div style={{ fontSize: 10, fontWeight: 700, color: "var(--success-ink)", marginTop: 1 }}>
+                  +${totalMRR.toLocaleString()}/mo
+                </div>
+              )}
+            </div>
+            <div className="mono" style={{ textAlign: "right" }} title={blendedCPL > 0 ? `Blended CPL = $${totalSpend.toFixed(2)} ÷ ${totalLeadsForCPL.toLocaleString()} = $${blendedCPL.toFixed(2)} per lead` : ""}>{blendedCPL > 0 ? "$" + Math.round(blendedCPL) : "—"}</div>
+            <div className="mono" style={{ textAlign: "right" }} title={blendedCPC > 0 ? `Blended CPC = $${totalSpend.toFixed(2)} ÷ ${totalClicks.toLocaleString()} = $${blendedCPC.toFixed(2)} per click` : ""}>{blendedCPC > 0 ? "$" + blendedCPC.toFixed(2) : "—"}</div>
+            <div className="mono" style={{ textAlign: "right", color: blendedCAC > 0 ? "var(--success-ink)" : "var(--muted)" }} title={blendedCAC > 0 ? `Blended CAC = $${totalSpend.toFixed(2)} ÷ ${totalContracts} contracts = $${blendedCAC.toFixed(2)} per signed lease (paid + Other combined)` : ""}>{blendedCAC > 0 ? "$" + Math.round(blendedCAC).toLocaleString() : "—"}</div>
+            <div style={{ textAlign: "right", fontSize: 11, color: "var(--muted)", fontWeight: 400 }}>—</div>
+          </div>
+        );
+      })()}
       {/* 2026-05-24 Tony: обе панели спрятаны под ОДИН компактный toggle
           снизу. По умолчанию ничего не видно кроме одной маленькой
           ссылки «Show breakdown stats ▾» — кликом раскрывает обе. */}
