@@ -150,8 +150,18 @@ window.AnalyticsPage = function AnalyticsPage() {
         </div>
       </div>
 
-      {/* Period selector */}
-      <div className="card is-clean" style={{ padding: 12, marginBottom: 14 }}>
+      {/* Period selector — 2026-05-25 Tony: «при прокрутки эта таблица
+          зависала сверху». Sticky-top: остаётся видимой при скролле
+          страницы, чтобы можно было переключить period без скролла
+          обратно наверх. z-index 30 чтобы быть над KPI плитками
+          и таблицами. Боковой sidebar Pulse'а имеет z-index ~50 — не
+          перекрываем его. */}
+      <div className="card is-clean" style={{
+        padding: 12, marginBottom: 14,
+        position: 'sticky', top: 0, zIndex: 30,
+        background: 'var(--surface)',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
+      }}>
         <div className="row" style={{ flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
           <span style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginRight: 4 }}>Period:</span>
           {_PERIODS.map(p => (
