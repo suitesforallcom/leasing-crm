@@ -296,6 +296,11 @@ window.SpendSectionStandalone = function SpendSectionStandalone() {
 // SpendSection to align leads with spend (Tony 2026-05-24: ранее
 // leads брались за all-time, а spend за 30d → CPL смешивал шкалы).
 function _channelRowsForWindow(hsContacts, windowStart, windowEnd) {
+  // 2026-05-24 fix: парсим обе границы И contact.createDate как
+  // LOCAL midnight, чтобы избежать UTC offset shift. Раньше:
+  // windowStart="2026-05-15" + "T00:00:00" → local 00:00 = +5h UTC
+  // contact.c="2026-05-15" → new Date("2026-05-15") = UTC 00:00 (-5h)
+  // → contact's tMs < startMs → исключался → 1 день теряли на границе.
   const startMs = windowStart ? new Date(windowStart + "T00:00:00").getTime() : 0;
   const endMs   = windowEnd   ? new Date(windowEnd   + "T23:59:59").getTime() : Infinity;
   const buckets = new Map();
@@ -305,7 +310,8 @@ function _channelRowsForWindow(hsContacts, windowStart, windowEnd) {
   }
   for (const [, c] of hsContacts) {
     if (!c.c) continue;
-    const tMs = new Date(c.c).getTime();
+    // Same parsing strategy as window bounds — LOCAL midnight of the date.
+    const tMs = new Date(c.c + "T00:00:00").getTime();
     if (!isFinite(tMs)) continue;
     if (tMs < startMs || tMs > endMs) continue;
     const ch = classifyChannel(c.src, c.srcD);
@@ -633,6 +639,46 @@ function SpendSection() {
       {spendRows.map(r => (
         <SpendRow key={r.sourceKey} r={r} windowLabel={windowLabel} fmtIngestTs={fmtIngestTs} />
       ))}
+      {/* Channel attribution breakdown — показывает КУДА ушли остальные
+          leads (Tony 2026-05-24: «11 заказов с гугла? мало!» — нужно
+          видеть сколько leads попало в Direct / Unknown / Organic, чтобы
+          понимать насколько хорошо настроена аттрибуция в HubSpot). */}
+      {totals.leads > 0 && (
+        <details open style={{ padding: "10px 14px", fontSize: 12, borderTop: "1px solid var(--border)", background: "var(--surface-2)" }}>
+          <summary style={{ cursor: "pointer", color: "var(--muted)", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em" }}>
+            📊 All leads by source ({totals.leads} contacts created {windowKind === "custom" ? `${windowStart} → ${windowEnd}` : windowLabel.toLowerCase()})
+            <span style={{ marginLeft: 8, fontWeight: 400, textTransform: "none", letterSpacing: "0" }}>— shows where Google/Meta/TikTok leads sit vs untracked sources</span>
+          </summary>
+          <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr 80px 80px 110px 80px", gap: 8, padding: "6px 0", borderTop: "1px solid var(--border)", fontSize: 10.5, color: "var(--muted)", textTransform: "uppercase", fontWeight: 700, letterSpacing: ".04em" }}>
+            <div>Source (HubSpot attribution)</div>
+            <div style={{ textAlign: "right" }}>Leads</div>
+            <div style={{ textAlign: "right" }}>Quality</div>
+            <div style={{ textAlign: "right" }}>% of total</div>
+            <div style={{ textAlign: "right" }}>Group</div>
+          </div>
+          {rows.map(r => {
+            const pct = totals.leads > 0 ? (r.leads / totals.leads) * 100 : 0;
+            const isPaid = r.group === "paid-search" || r.group === "paid-social";
+            return (
+              <div key={r.label} style={{ display: "grid", gridTemplateColumns: "1fr 80px 80px 110px 80px", gap: 8, padding: "6px 0", borderTop: "1px solid var(--border)", alignItems: "center", fontSize: 12, fontWeight: isPaid ? 600 : 400, color: isPaid ? "var(--ink)" : "var(--muted)" }}>
+                <div>{r.label}</div>
+                <div className="mono" style={{ textAlign: "right" }}>{r.leads.toLocaleString()}</div>
+                <div className="mono" style={{ textAlign: "right", color: r.qualified > 0 ? "var(--success-ink)" : "var(--muted-2)" }}>{r.qualified || "—"}</div>
+                <div style={{ textAlign: "right", color: "var(--muted)", fontSize: 11 }}>
+                  <span style={{ display: "inline-block", width: 50, height: 6, background: "var(--surface)", borderRadius: 3, overflow: "hidden", verticalAlign: "middle", marginRight: 6 }}>
+                    <span style={{ display: "block", height: "100%", width: pct + "%", background: isPaid ? "var(--accent)" : "var(--muted-2)" }} />
+                  </span>
+                  {pct.toFixed(1)}%
+                </div>
+                <div style={{ textAlign: "right", fontSize: 10, color: "var(--muted)" }}>{r.group}</div>
+              </div>
+            );
+          })}
+          <div style={{ marginTop: 8, padding: "8px 0 0 0", borderTop: "1px solid var(--border)", fontSize: 11, color: "var(--muted)" }}>
+            💡 <b>Если paid каналов меньше чем ожидаешь:</b> HubSpot tracking script может не быть на лендинге, или UTM-метки теряются. Большинство leads в «Direct» или «Unknown» = атрибуция не настроена. Каналы помеченные жирным — paid (по hs_analytics_source).
+          </div>
+        </details>
+      )}
       {/* Per-campaign drilldown — collapsible */}
       {spendRows.some(r => r.campaigns.length > 0) && (
         <details style={{ padding: "10px 14px", fontSize: 12 }}>
