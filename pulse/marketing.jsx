@@ -705,73 +705,87 @@ function SpendSection() {
           </div>
         );
       })()}
-      {/* ВОЗВРАЩЕНО 2026-05-24 — Tony: «Верни строки статистики ты не то
-          сделал». Свёрнуты по умолчанию (без open), чтобы не занимали
-          экран, но доступны кликом. */}
-      {/* Channel attribution breakdown — показывает КУДА ушли остальные
-          leads (если paid каналов меньше чем ожидаешь — HubSpot tracking
-          script может не быть на лендинге, или UTM теряются). */}
-      {totals.leads > 0 && (
-        <details style={{ padding: "10px 14px", fontSize: 12, borderTop: "1px solid var(--border)", background: "var(--surface-2)" }}>
-          <summary style={{ cursor: "pointer", color: "var(--muted)", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em" }}>
-            📊 All leads by source ({totals.leads} contacts created {windowKind === "custom" ? `${windowStart} → ${windowEnd}` : windowLabel.toLowerCase()})
-            <span style={{ marginLeft: 8, fontWeight: 400, textTransform: "none", letterSpacing: "0" }}>— shows where Google/Meta/TikTok leads sit vs untracked sources</span>
+      {/* 2026-05-24 Tony: обе панели спрятаны под ОДИН компактный toggle
+          снизу. По умолчанию ничего не видно кроме одной маленькой
+          ссылки «Show breakdown stats ▾» — кликом раскрывает обе. */}
+      {(totals.leads > 0 || spendRows.some(r => r.campaigns.length > 0)) && (
+        <details style={{ borderTop: "1px solid var(--border)" }}>
+          <summary style={{
+            cursor: "pointer",
+            padding: "6px 14px",
+            fontSize: 10.5, fontWeight: 600, color: "var(--muted)",
+            background: "var(--surface)",
+            textAlign: "right",
+            listStyle: "none",
+          }}>
+            Show breakdown stats ▾
           </summary>
-          <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr 80px 80px 80px 110px 80px", gap: 8, padding: "6px 0", borderTop: "1px solid var(--border)", fontSize: 10.5, color: "var(--muted)", textTransform: "uppercase", fontWeight: 700, letterSpacing: ".04em" }}>
-            <div>Source (HubSpot attribution)</div>
-            <div style={{ textAlign: "right" }}>Leads</div>
-            <div style={{ textAlign: "right" }}>Quality</div>
-            <div style={{ textAlign: "right" }}>Contracts</div>
-            <div style={{ textAlign: "right" }}>% of total</div>
-            <div style={{ textAlign: "right" }}>Group</div>
-          </div>
-          {rows.map(r => {
-            const pct = totals.leads > 0 ? (r.leads / totals.leads) * 100 : 0;
-            const isPaid = r.group === "paid-search" || r.group === "paid-social";
-            return (
-              <div key={r.label} style={{ display: "grid", gridTemplateColumns: "1fr 80px 80px 80px 110px 80px", gap: 8, padding: "6px 0", borderTop: "1px solid var(--border)", alignItems: "center", fontSize: 12, fontWeight: isPaid ? 600 : 400, color: isPaid ? "var(--ink)" : "var(--muted)" }}>
-                <div>{r.label}</div>
-                <div className="mono" style={{ textAlign: "right" }}>{r.leads.toLocaleString()}</div>
-                <div className="mono" style={{ textAlign: "right", color: r.qualified > 0 ? "var(--success-ink)" : "var(--muted-2)" }}>{r.qualified || "—"}</div>
-                <div className="mono" style={{ textAlign: "right", fontWeight: r.customer > 0 ? 700 : 400, color: r.customer > 0 ? "var(--success-ink)" : "var(--muted-2)" }}>{r.customer || "—"}</div>
-                <div style={{ textAlign: "right", color: "var(--muted)", fontSize: 11 }}>
-                  <span style={{ display: "inline-block", width: 50, height: 6, background: "var(--surface)", borderRadius: 3, overflow: "hidden", verticalAlign: "middle", marginRight: 6 }}>
-                    <span style={{ display: "block", height: "100%", width: pct + "%", background: isPaid ? "var(--accent)" : "var(--muted-2)" }} />
-                  </span>
-                  {pct.toFixed(1)}%
+          <div>
+            {/* Channel attribution breakdown */}
+            {totals.leads > 0 && (
+              <details open style={{ padding: "10px 14px", fontSize: 12, borderTop: "1px solid var(--border)", background: "var(--surface-2)" }}>
+                <summary style={{ cursor: "pointer", color: "var(--muted)", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em" }}>
+                  📊 All leads by source ({totals.leads} contacts created {windowKind === "custom" ? `${windowStart} → ${windowEnd}` : windowLabel.toLowerCase()})
+                  <span style={{ marginLeft: 8, fontWeight: 400, textTransform: "none", letterSpacing: "0" }}>— shows where Google/Meta/TikTok leads sit vs untracked sources</span>
+                </summary>
+                <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr 80px 80px 80px 110px 80px", gap: 8, padding: "6px 0", borderTop: "1px solid var(--border)", fontSize: 10.5, color: "var(--muted)", textTransform: "uppercase", fontWeight: 700, letterSpacing: ".04em" }}>
+                  <div>Source (HubSpot attribution)</div>
+                  <div style={{ textAlign: "right" }}>Leads</div>
+                  <div style={{ textAlign: "right" }}>Quality</div>
+                  <div style={{ textAlign: "right" }}>Contracts</div>
+                  <div style={{ textAlign: "right" }}>% of total</div>
+                  <div style={{ textAlign: "right" }}>Group</div>
                 </div>
-                <div style={{ textAlign: "right", fontSize: 10, color: "var(--muted)" }}>{r.group}</div>
-              </div>
-            );
-          })}
-          <div style={{ marginTop: 8, padding: "8px 0 0 0", borderTop: "1px solid var(--border)", fontSize: 11, color: "var(--muted)" }}>
-            💡 <b>Если paid каналов меньше чем ожидаешь:</b> HubSpot tracking script может не быть на лендинге, или UTM-метки теряются. Большинство leads в «Direct» или «Unknown» = атрибуция не настроена. Каналы помеченные жирным — paid (по hs_analytics_source).
-          </div>
-        </details>
-      )}
-      {/* Per-campaign drilldown — свёрнут по умолчанию. */}
-      {spendRows.some(r => r.campaigns.length > 0) && (
-        <details style={{ padding: "10px 14px", fontSize: 12, borderTop: "1px solid var(--border)" }}>
-          <summary style={{ cursor: "pointer", color: "var(--muted)", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em" }}>
-            🔎 Top campaigns by spend
-          </summary>
-          <div style={{ marginTop: 10 }}>
-            {spendRows.flatMap(r => r.campaigns.map(c => ({ ...c, sourceKey: r.sourceKey, sourceLabel: r.label })))
-              .sort((a, b) => b.cost - a.cost)
-              .slice(0, 15)
-              .map((c, i) => (
-                <div key={c.sourceKey + ":" + c.id} style={{ display: "grid", gridTemplateColumns: "16px 1fr 80px 80px 80px 80px", gap: 8, padding: "6px 0", borderTop: i > 0 ? "1px solid var(--border)" : "none", alignItems: "center", fontSize: 12 }}>
-                  <span style={{ color: "var(--muted)" }}>{i + 1}</span>
-                  <div>
-                    <div style={{ fontWeight: 600 }}>{c.name}</div>
-                    <div style={{ fontSize: 10.5, color: "var(--muted)" }}>{c.sourceLabel} · {c.status}</div>
-                  </div>
-                  <div className="mono" style={{ textAlign: "right", fontWeight: 700 }}>${c.cost.toFixed(0)}</div>
-                  <div className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>{c.clicks.toLocaleString()}</div>
-                  <div className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>{c.impressions.toLocaleString()}</div>
-                  <div className="mono" style={{ textAlign: "right", color: c.conversions > 0 ? "var(--success-ink)" : "var(--muted)" }}>{c.conversions}</div>
+                {rows.map(r => {
+                  const pct = totals.leads > 0 ? (r.leads / totals.leads) * 100 : 0;
+                  const isPaid = r.group === "paid-search" || r.group === "paid-social";
+                  return (
+                    <div key={r.label} style={{ display: "grid", gridTemplateColumns: "1fr 80px 80px 80px 110px 80px", gap: 8, padding: "6px 0", borderTop: "1px solid var(--border)", alignItems: "center", fontSize: 12, fontWeight: isPaid ? 600 : 400, color: isPaid ? "var(--ink)" : "var(--muted)" }}>
+                      <div>{r.label}</div>
+                      <div className="mono" style={{ textAlign: "right" }}>{r.leads.toLocaleString()}</div>
+                      <div className="mono" style={{ textAlign: "right", color: r.qualified > 0 ? "var(--success-ink)" : "var(--muted-2)" }}>{r.qualified || "—"}</div>
+                      <div className="mono" style={{ textAlign: "right", fontWeight: r.customer > 0 ? 700 : 400, color: r.customer > 0 ? "var(--success-ink)" : "var(--muted-2)" }}>{r.customer || "—"}</div>
+                      <div style={{ textAlign: "right", color: "var(--muted)", fontSize: 11 }}>
+                        <span style={{ display: "inline-block", width: 50, height: 6, background: "var(--surface)", borderRadius: 3, overflow: "hidden", verticalAlign: "middle", marginRight: 6 }}>
+                          <span style={{ display: "block", height: "100%", width: pct + "%", background: isPaid ? "var(--accent)" : "var(--muted-2)" }} />
+                        </span>
+                        {pct.toFixed(1)}%
+                      </div>
+                      <div style={{ textAlign: "right", fontSize: 10, color: "var(--muted)" }}>{r.group}</div>
+                    </div>
+                  );
+                })}
+                <div style={{ marginTop: 8, padding: "8px 0 0 0", borderTop: "1px solid var(--border)", fontSize: 11, color: "var(--muted)" }}>
+                  💡 <b>Если paid каналов меньше чем ожидаешь:</b> HubSpot tracking script может не быть на лендинге, или UTM-метки теряются. Большинство leads в «Direct» или «Unknown» = атрибуция не настроена. Каналы помеченные жирным — paid (по hs_analytics_source).
                 </div>
-              ))}
+              </details>
+            )}
+            {/* Per-campaign drilldown */}
+            {spendRows.some(r => r.campaigns.length > 0) && (
+              <details open style={{ padding: "10px 14px", fontSize: 12, borderTop: "1px solid var(--border)" }}>
+                <summary style={{ cursor: "pointer", color: "var(--muted)", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em" }}>
+                  🔎 Top campaigns by spend
+                </summary>
+                <div style={{ marginTop: 10 }}>
+                  {spendRows.flatMap(r => r.campaigns.map(c => ({ ...c, sourceKey: r.sourceKey, sourceLabel: r.label })))
+                    .sort((a, b) => b.cost - a.cost)
+                    .slice(0, 15)
+                    .map((c, i) => (
+                      <div key={c.sourceKey + ":" + c.id} style={{ display: "grid", gridTemplateColumns: "16px 1fr 80px 80px 80px 80px", gap: 8, padding: "6px 0", borderTop: i > 0 ? "1px solid var(--border)" : "none", alignItems: "center", fontSize: 12 }}>
+                        <span style={{ color: "var(--muted)" }}>{i + 1}</span>
+                        <div>
+                          <div style={{ fontWeight: 600 }}>{c.name}</div>
+                          <div style={{ fontSize: 10.5, color: "var(--muted)" }}>{c.sourceLabel} · {c.status}</div>
+                        </div>
+                        <div className="mono" style={{ textAlign: "right", fontWeight: 700 }}>${c.cost.toFixed(0)}</div>
+                        <div className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>{c.clicks.toLocaleString()}</div>
+                        <div className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>{c.impressions.toLocaleString()}</div>
+                        <div className="mono" style={{ textAlign: "right", color: c.conversions > 0 ? "var(--success-ink)" : "var(--muted)" }}>{c.conversions}</div>
+                      </div>
+                    ))}
+                </div>
+              </details>
+            )}
           </div>
         </details>
       )}
