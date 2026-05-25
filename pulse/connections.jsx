@@ -24,7 +24,40 @@
      metaSettingsSet (CF)    — admin only, save per-account enable + notes
    =================================================================== */
 
+// 2026-05-24 Tony: «Сделай возможность выбора периода и по умолчанию
+// поставь сначала месяца». Period selector наверху Connections, default
+// = MTD. Карточки получают windowStart/windowEnd и сами пересчитывают
+// spend/contacts/clicks за окно. Состояние persist в localStorage.
+function fmtYmd(d) {
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+function _windowRange(kind, customStart, customEnd) {
+  const today = new Date();
+  const todayYmd = fmtYmd(today);
+  if (kind === "custom") return { start: customStart, end: customEnd };
+  if (kind === "mtd")    return { start: today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0") + "-01", end: todayYmd };
+  if (kind === "all")    return { start: null, end: null };
+  const days = kind === "7d" ? 7 : kind === "90d" ? 90 : 30;
+  const back = new Date(today.getTime() - (days - 1) * 86400 * 1000);
+  return { start: fmtYmd(back), end: todayYmd };
+}
+const _PERIOD_LABELS = { "7d": "Last 7 days", "30d": "Last 30 days", "90d": "Last 90 days", "mtd": "Month to date", "custom": "Custom range", "all": "All time" };
+
 window.ConnectionsPage = function ConnectionsPage() {
+  // Period state — Tony default MTD, persisted в localStorage.
+  const [periodKind, setPeriodKind] = React.useState(() => {
+    try { return localStorage.getItem("pulse_connections_period") || "mtd"; } catch (e) { return "mtd"; }
+  });
+  const _today = new Date();
+  const _twoWksAgo = new Date(_today.getTime() - 14 * 86400 * 1000);
+  const [customStart, setCustomStart] = React.useState(fmtYmd(_twoWksAgo));
+  const [customEnd, setCustomEnd] = React.useState(fmtYmd(_today));
+  React.useEffect(() => { try { localStorage.setItem("pulse_connections_period", periodKind); } catch (e) {} }, [periodKind]);
+
+  const { start: windowStart, end: windowEnd } = _windowRange(periodKind, customStart, customEnd);
+  const windowLabel = _PERIOD_LABELS[periodKind] || periodKind;
+  const periodCtx = { kind: periodKind, start: windowStart, end: windowEnd, label: windowLabel };
+
   return (
     <div className="page">
       <div className="page-h">
@@ -34,16 +67,83 @@ window.ConnectionsPage = function ConnectionsPage() {
             <span>All external integrations in one place. Add/manage CRM, ad platforms, and analytics.</span>
           </div>
         </div>
+        {/* Period selector — действует на все карточки ниже */}
+        <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+          <div className="f-segment">
+            {[["7d", "7d"], ["30d", "30d"], ["90d", "90d"], ["mtd", "MTD"], ["custom", "Custom"], ["all", "All time"]].map(([k, l]) => (
+              <button key={k} className={periodKind === k ? "is-active" : ""} onClick={() => setPeriodKind(k)}>{l}</button>
+            ))}
+          </div>
+          {periodKind === "custom" && (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+              <input type="date" value={customStart} max={customEnd} onChange={e => setCustomStart(e.target.value)}
+                     style={{ padding: "5px 8px", fontSize: 12, border: "1px solid var(--border)", borderRadius: 4, background: "var(--surface)", color: "var(--ink)" }} />
+              <span style={{ color: "var(--muted)" }}>→</span>
+              <input type="date" value={customEnd} min={customStart} max={fmtYmd(new Date())} onChange={e => setCustomEnd(e.target.value)}
+                     style={{ padding: "5px 8px", fontSize: 12, border: "1px solid var(--border)", borderRadius: 4, background: "var(--surface)", color: "var(--ink)" }} />
+            </div>
+          )}
+        </div>
       </div>
 
-      <HubSpotConnection />
-      <GoogleAdsConnection />
-      <MetaConnection />
+      {/* Inline period summary — explicit dates чтобы Tony видел что под капотом */}
+      <div style={{ padding: "8px 12px", marginBottom: 12, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 11.5, color: "var(--muted)" }}>
+        <Icon name="cal" style={{ width: 12, height: 12, marginRight: 4, verticalAlign: "middle" }} />
+        Showing data for <b style={{ color: "var(--ink)" }}>{windowLabel}</b>
+        {windowStart && <span style={{ color: "var(--muted-2)" }}> · {windowStart} → {windowEnd} (inclusive)</span>}
+        {!windowStart && <span style={{ color: "var(--muted-2)" }}> · все исторические данные без фильтра</span>}
+      </div>
+
+      <HubSpotConnection period={periodCtx} />
+      <GoogleAdsConnection period={periodCtx} />
+      <MetaConnection period={periodCtx} />
       <TikTokConnection />
       <GA4Connection />
     </div>
   );
 };
+
+// Aggregate daily rows for a window. Returns { cost, clicks, impressions, conversions, rows }
+function _aggregateDailyForWindow(daily, windowStart, windowEnd) {
+  if (!Array.isArray(daily)) return { cost: 0, clicks: 0, impressions: 0, conversions: 0, rows: 0 };
+  if (!windowStart || !windowEnd) {
+    // all-time: sum everything
+    return daily.reduce((acc, d) => ({
+      cost: acc.cost + (d.cost || 0),
+      clicks: acc.clicks + (d.clicks || 0),
+      impressions: acc.impressions + (d.impressions || 0),
+      conversions: acc.conversions + (d.conversions || 0),
+      rows: acc.rows + 1,
+    }), { cost: 0, clicks: 0, impressions: 0, conversions: 0, rows: 0 });
+  }
+  return daily.reduce((acc, d) => {
+    if (d.date < windowStart || d.date > windowEnd) return acc;
+    return {
+      cost: acc.cost + (d.cost || 0),
+      clicks: acc.clicks + (d.clicks || 0),
+      impressions: acc.impressions + (d.impressions || 0),
+      conversions: acc.conversions + (d.conversions || 0),
+      rows: acc.rows + 1,
+    };
+  }, { cost: 0, clicks: 0, impressions: 0, conversions: 0, rows: 0 });
+}
+
+// Count HubSpot contacts created within a window (uses contactByEmail.c)
+function _countHsContactsForWindow(hs, windowStart, windowEnd) {
+  if (!hs || !hs.contactByEmail) return null;
+  const entries = Object.entries(hs.contactByEmail);
+  if (!windowStart || !windowEnd) return entries.length;
+  const startMs = new Date(windowStart + "T00:00:00").getTime();
+  const endMs = new Date(windowEnd + "T23:59:59").getTime();
+  let n = 0;
+  for (const [, c] of entries) {
+    if (!c.c) continue;
+    const tMs = new Date(c.c + "T00:00:00").getTime();
+    if (!isFinite(tMs)) continue;
+    if (tMs >= startMs && tMs <= endMs) n++;
+  }
+  return n;
+}
 
 /* ===== Reusable card chrome ===== */
 function ConnectionCard({ icon, name, color, status, statusLabel, hint, children, actions }) {
@@ -132,7 +232,7 @@ async function _callAdmin(name, args, setMsg) {
 /* ============================================================
    HubSpot
    ============================================================ */
-function HubSpotConnection() {
+function HubSpotConnection({ period }) {
   const hs = window._hsDataCache;
   const counts = hs?.counts;
   const syncedAt = hs?.syncedAt;
@@ -140,6 +240,13 @@ function HubSpotConnection() {
   const status = !hs ? 'not-connected' : (ago < 90 ? 'connected' : 'stale');
   const [syncing, setSyncing] = React.useState(false);
   const [msg, setMsg] = React.useState(null);
+
+  // Per-window contacts count (created в окне). Owners/Pipelines не имеют
+  // даты — это глобальные настройки, показываем как есть.
+  const contactsInWindow = React.useMemo(
+    () => _countHsContactsForWindow(hs, period?.start, period?.end),
+    [hs, period?.start, period?.end]
+  );
 
   async function syncNow() {
     setSyncing(true);
@@ -151,6 +258,10 @@ function HubSpotConnection() {
       try { localStorage.removeItem('sfa_hubspot_data_v1'); } catch (e) {}
     }
   }
+
+  const inWindow = period?.start && period?.end;
+  const contactsLabel = inWindow ? `Contacts (${period.label.toLowerCase()})` : "Contacts (all time)";
+  const contactsValue = contactsInWindow != null ? contactsInWindow.toLocaleString() : (counts?.contacts?.toLocaleString() || "—");
 
   return (
     <ConnectionCard
@@ -166,9 +277,9 @@ function HubSpotConnection() {
     >
       {hs && (
         <div style={{ padding: '12px 16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 14, fontSize: 12, background: 'var(--surface-2)' }}>
-          <StatBlock label="Contacts" value={counts?.contacts?.toLocaleString() || '—'} />
-          <StatBlock label="Deals" value={counts?.deals?.toLocaleString() || '—'} />
-          <StatBlock label="Meetings" value={counts?.meetings?.toLocaleString() || '—'} />
+          <StatBlock label={contactsLabel} value={contactsValue} sub={inWindow && counts?.contacts ? `${counts.contacts.toLocaleString()} all-time` : null} />
+          <StatBlock label="Deals (all-time)" value={counts?.deals?.toLocaleString() || '—'} />
+          <StatBlock label="Meetings (all-time)" value={counts?.meetings?.toLocaleString() || '—'} />
           <StatBlock label="Owners" value={counts?.owners?.toLocaleString() || '—'} />
           <StatBlock label="Pipelines" value={counts?.pipelines?.toLocaleString() || '—'} />
           <StatBlock label="Last sync" value={formatAgo(syncedAt)} sub={formatDateTime(syncedAt)} />
@@ -190,11 +301,27 @@ function HubSpotConnection() {
 /* ============================================================
    Google Ads
    ============================================================ */
-function GoogleAdsConnection() {
+function GoogleAdsConnection({ period }) {
   const mk = window._mkDataCache;
   const src = mk?.sources?.['google-ads'];
   const ago = src?.ingestedAt ? Math.floor((Date.now() - new Date(src.ingestedAt).getTime()) / 60000) : null;
   const status = !src ? 'not-connected' : (ago < 120 ? 'connected' : 'stale');
+
+  // Aggregate daily для выбранного периода. Если daily нет (legacy
+  // payload) — fallback на src.totals (90d, как раньше).
+  const windowAgg = React.useMemo(() => {
+    if (!src) return null;
+    if (Array.isArray(src.daily) && src.daily.length > 0) {
+      return _aggregateDailyForWindow(src.daily, period?.start, period?.end);
+    }
+    return null;
+  }, [src, period?.start, period?.end]);
+
+  const usingDaily = !!windowAgg;
+  const spendValue = usingDaily ? windowAgg.cost : (src?.totals?.cost || 0);
+  const clicksValue = usingDaily ? windowAgg.clicks : (src?.totals?.clicks || 0);
+  const rowsInWindow = usingDaily ? windowAgg.rows : (src?.dailyRowCount || 0);
+
   return (
     <ConnectionCard
       icon="🟦"
@@ -210,8 +337,9 @@ function GoogleAdsConnection() {
         <div style={{ padding: '12px 16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 14, fontSize: 12, background: 'var(--surface-2)' }}>
           <StatBlock label="Account ID" value={src.accountId || '—'} mono />
           <StatBlock label="Campaigns" value={src.campaignCount?.toLocaleString() || '—'} />
-          <StatBlock label="Daily rows" value={src.dailyRowCount?.toLocaleString() || '—'} />
-          <StatBlock label="Total spend (90d)" value={'$' + (src.totals?.cost?.toFixed(0) || 0)} />
+          <StatBlock label="Daily rows" value={rowsInWindow.toLocaleString()} sub={usingDaily ? `${src.dailyRowCount?.toLocaleString() || '?'} total cached` : null} />
+          <StatBlock label={`Spend (${(period?.label || 'all').toLowerCase()})`} value={'$' + spendValue.toFixed(0)} />
+          <StatBlock label="Clicks" value={clicksValue.toLocaleString()} />
           <StatBlock label="Last sync" value={formatAgo(src.ingestedAt)} sub={formatDateTime(src.ingestedAt)} />
         </div>
       )}
@@ -233,7 +361,7 @@ function GoogleAdsConnection() {
 /* ============================================================
    Meta Ads (FB/IG) — multi-account with per-account toggle + notes
    ============================================================ */
-function MetaConnection() {
+function MetaConnection({ period }) {
   const mk = window._mkDataCache;
   const src = mk?.sources?.meta;
   const discovered = mk?.metaDiscoveredAccounts || [];
@@ -242,6 +370,27 @@ function MetaConnection() {
   const status = !src ? 'not-connected' : (ago < 120 ? 'connected' : 'stale');
   const [syncing, setSyncing] = React.useState(false);
   const [msg, setMsg] = React.useState(null);
+
+  // Aggregate per-window: для Meta daily живёт inside accounts[].daily.
+  // Suммируем по всем accounts чтобы получить window-cost / window-clicks.
+  const windowAgg = React.useMemo(() => {
+    if (!src || !Array.isArray(src.accounts)) return null;
+    let cost = 0, clicks = 0, impressions = 0, conversions = 0, rows = 0;
+    for (const a of src.accounts) {
+      const agg = _aggregateDailyForWindow(a.daily || [], period?.start, period?.end);
+      cost += agg.cost;
+      clicks += agg.clicks;
+      impressions += agg.impressions;
+      conversions += agg.conversions;
+      rows += agg.rows;
+    }
+    return { cost, clicks, impressions, conversions, rows };
+  }, [src, period?.start, period?.end]);
+
+  const usingWindow = !!windowAgg;
+  const spendValue = usingWindow ? windowAgg.cost : (src?.totals?.cost || 0);
+  const clicksValue = usingWindow ? windowAgg.clicks : (src?.totals?.clicks || 0);
+  const rowsInWindow = usingWindow ? windowAgg.rows : (src?.dailyRowCount || 0);
 
   async function syncNow() {
     setSyncing(true);
@@ -271,9 +420,9 @@ function MetaConnection() {
         <div style={{ padding: '12px 16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 14, fontSize: 12, background: 'var(--surface-2)' }}>
           <StatBlock label="Discovered" value={discovered.length} />
           <StatBlock label="Enabled" value={src.accountCount || discovered.length} />
-          <StatBlock label="Daily rows" value={src.dailyRowCount?.toLocaleString() || '—'} />
-          <StatBlock label="Total spend (90d)" value={'$' + (src.totals?.cost?.toFixed(0) || 0)} />
-          <StatBlock label="Total clicks" value={src.totals?.clicks?.toLocaleString() || '—'} />
+          <StatBlock label="Daily rows" value={rowsInWindow.toLocaleString()} sub={usingWindow ? `${src.dailyRowCount?.toLocaleString() || '?'} total cached` : null} />
+          <StatBlock label={`Spend (${(period?.label || 'all').toLowerCase()})`} value={'$' + spendValue.toFixed(0)} />
+          <StatBlock label="Clicks" value={clicksValue.toLocaleString()} />
           <StatBlock label="Last sync" value={formatAgo(src.ingestedAt)} sub={formatDateTime(src.ingestedAt)} />
         </div>
       )}
@@ -287,6 +436,7 @@ function MetaConnection() {
           discovered={discovered}
           initialEnabled={Array.isArray(settings.metaAdAccountIds) ? new Set(settings.metaAdAccountIds.map(String)) : null}
           initialNotes={settings.metaAccountNotes || {}}
+          period={period}
         />
       )}
       <div style={{ padding: '10px 16px', fontSize: 11, color: 'var(--muted)', background: 'var(--surface)', borderTop: '1px solid var(--border)' }}>
@@ -297,7 +447,7 @@ function MetaConnection() {
   );
 }
 
-function MetaAccountList({ discovered, initialEnabled, initialNotes }) {
+function MetaAccountList({ discovered, initialEnabled, initialNotes, period }) {
   const [enabled, setEnabled] = React.useState(initialEnabled);
   const [notes, setNotes] = React.useState(initialNotes);
   const [saving, setSaving] = React.useState(false);
@@ -388,14 +538,18 @@ function MetaAccountList({ discovered, initialEnabled, initialNotes }) {
           <div>Account</div>
           <div>Currency</div>
           <div>Status</div>
-          <div title="Spend pulled from the last sync (90-day window). $0 means the sync couldn't read insights — usually because the account is restricted and Cloud Functions need redeploy.">Synced 90d</div>
+          <div title={`Spend для выбранного периода (${period?.label || 'all-time'}). $0 = нет spend в окне ИЛИ sync не смог прочитать insights (restricted account).`}>Spend {period?.label ? "(" + period.label.toLowerCase() + ")" : "(90d)"}</div>
           <div>Note (your label — e.g. «Tampa office · Sallyann»)</div>
         </div>
         {discovered.map(a => {
           const on = isEnabled(a.id);
           const synced = syncedById[String(a.id)];
-          const syncedCost = synced?.totals?.cost || 0;
-          const syncedRows = (synced?.daily || []).length;
+          // Per-window aggregation when period is set; иначе 90d totals.
+          const windowAgg = (synced && Array.isArray(synced.daily))
+            ? _aggregateDailyForWindow(synced.daily, period?.start, period?.end)
+            : null;
+          const syncedCost = windowAgg ? windowAgg.cost : (synced?.totals?.cost || 0);
+          const syncedRows = windowAgg ? windowAgg.rows : ((synced?.daily || []).length);
           const syncErr = synced?.error;
           return (
             <div key={a.id} style={{ display: 'grid', gridTemplateColumns: '30px 1.4fr 70px 100px 90px 1.5fr', gap: 8, padding: '8px 10px', borderTop: '1px solid var(--border)', alignItems: 'center', fontSize: 12, background: on ? 'white' : 'var(--surface-2)', opacity: on ? 1 : 0.65 }}>
