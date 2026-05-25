@@ -142,6 +142,13 @@ function _flatten(report) {
   return { rows, totals: totalsObj, rowCount: report.rowCount || rows.length };
 }
 
+// Top-level YYYY-MM-DD formatter (used by both _runSync and _runSyncRange)
+function _fmtDate(d) {
+  return d.getFullYear() + '-' +
+    String(d.getMonth() + 1).padStart(2, '0') + '-' +
+    String(d.getDate()).padStart(2, '0');
+}
+
 // ---------- Main sync ----------
 async function _runSync() {
   const propertyId = GA4_PROPERTY_ID.value();

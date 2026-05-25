@@ -373,131 +373,363 @@ function DimCard({ title, rows, dimKey, limit = 5, hasComparison }) {
   );
 }
 
-function SourceTable({ rows, hasComparison, totalSessions }) {
-  if (!rows || rows.length === 0) return <div style={{ padding: 18, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>No data.</div>;
-  const cols = [
-    { label: 'Source', align: 'left' },
-    { label: 'Medium', align: 'left' },
-    { label: 'Sessions', align: 'right' },
-    { label: 'Users', align: 'right' },
-    { label: 'Conv.', align: 'right' },
-    { label: 'CR %', align: 'right' },
-    ...(hasComparison ? [{ label: 'Δ Sessions', align: 'right' }] : []),
-    { label: '% of total', align: 'right' },
-  ];
-  const gridCols = hasComparison ? '1.4fr 1fr 80px 80px 80px 70px 80px 90px' : '1.4fr 1fr 80px 80px 80px 70px 90px';
+/* ================================================================
+   SortableTable — общий компонент таблицы с:
+     • Per-column tooltip ('?' icon в шапке, hover/click → объяснение)
+     • Click header to sort (asc ↔ desc toggle)
+     • Drag-to-reorder columns (HTML5 drag&drop)
+     • Persisted sort + column order в localStorage по storageKey
+
+   Props:
+     cols:     [{ key, label, tooltip, align, gridWidth, getValue, render, defaultSort?: 'desc'|'asc' }]
+     rows:     [{ ...rawData }]
+     storageKey: 'pulse_ga4_source' и пр.
+     emptyText: 'No data.'
+
+   getValue(row): возвращает значение для сортировки (number или string)
+   render(row, ctx): возвращает JSX ячейки (ctx содержит rowIndex + totalSessions etc)
+   ================================================================ */
+function SortableTable({ cols, rows, storageKey, emptyText, ctx }) {
+  // Default sort: first col with defaultSort, or first numeric (right-aligned), or first col
+  const defaultCol = cols.find(c => c.defaultSort) || cols.find(c => c.align === 'right') || cols[0];
+  const defaultDir = defaultCol?.defaultSort || 'desc';
+
+  const [sort, setSort] = React.useState(() => {
+    try {
+      const v = localStorage.getItem(storageKey + '_sort');
+      const p = v ? JSON.parse(v) : null;
+      return p && p.key ? p : { key: defaultCol.key, dir: defaultDir };
+    } catch (e) { return { key: defaultCol.key, dir: defaultDir }; }
+  });
+  const [order, setOrder] = React.useState(() => {
+    try {
+      const v = localStorage.getItem(storageKey + '_order');
+      const arr = v ? JSON.parse(v) : null;
+      // Validate: all keys must still exist in cols
+      if (Array.isArray(arr) && arr.every(k => cols.some(c => c.key === k)) && arr.length === cols.length) {
+        return arr;
+      }
+    } catch (e) {}
+    return cols.map(c => c.key);
+  });
+  const [openTooltip, setOpenTooltip] = React.useState(null);
+  const [dragKey, setDragKey] = React.useState(null);
+
+  React.useEffect(() => { try { localStorage.setItem(storageKey + '_sort', JSON.stringify(sort)); } catch (e) {} }, [sort, storageKey]);
+  React.useEffect(() => { try { localStorage.setItem(storageKey + '_order', JSON.stringify(order)); } catch (e) {} }, [order, storageKey]);
+
+  // Sync order if cols add/remove (e.g. comparison toggle changes columns)
+  React.useEffect(() => {
+    const valid = order.filter(k => cols.some(c => c.key === k));
+    const missing = cols.map(c => c.key).filter(k => !valid.includes(k));
+    if (valid.length !== order.length || missing.length > 0) {
+      setOrder([...valid, ...missing]);
+    }
+  }, [cols.length]);
+
+  const orderedCols = order.map(k => cols.find(c => c.key === k)).filter(Boolean);
+  const sortCol = cols.find(c => c.key === sort.key) || cols[0];
+
+  // Sort rows
+  const sortedRows = React.useMemo(() => {
+    if (!rows || rows.length === 0) return [];
+    const arr = rows.slice();
+    arr.sort((a, b) => {
+      const va = sortCol.getValue ? sortCol.getValue(a) : '';
+      const vb = sortCol.getValue ? sortCol.getValue(b) : '';
+      let cmp = 0;
+      if (typeof va === 'number' && typeof vb === 'number') cmp = va - vb;
+      else cmp = String(va).localeCompare(String(vb));
+      return sort.dir === 'asc' ? cmp : -cmp;
+    });
+    return arr;
+  }, [rows, sort, sortCol]);
+
+  function onHeaderClick(c, e) {
+    // If user clicked the tooltip icon — don't sort
+    if (e.target.closest('[data-tooltip-icon]')) return;
+    setSort(s => s.key === c.key ? { key: c.key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key: c.key, dir: 'desc' });
+  }
+  function onTooltipClick(c, e) {
+    e.stopPropagation();
+    setOpenTooltip(openTooltip === c.key ? null : c.key);
+  }
+  function onDragStart(c, e) {
+    setDragKey(c.key);
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', c.key); } catch (err) {}
+  }
+  function onDragOver(c, e) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  }
+  function onDrop(c, e) {
+    e.preventDefault();
+    if (!dragKey || dragKey === c.key) { setDragKey(null); return; }
+    setOrder(prev => {
+      const next = prev.slice();
+      const fromIdx = next.indexOf(dragKey);
+      const toIdx = next.indexOf(c.key);
+      if (fromIdx < 0 || toIdx < 0) return prev;
+      next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, dragKey);
+      return next;
+    });
+    setDragKey(null);
+  }
+  function onDragEnd() { setDragKey(null); }
+
+  // Close tooltip when clicking outside
+  React.useEffect(() => {
+    if (!openTooltip) return;
+    const h = () => setOpenTooltip(null);
+    setTimeout(() => document.addEventListener('click', h, { once: true }), 0);
+    return () => document.removeEventListener('click', h);
+  }, [openTooltip]);
+
+  if (!rows || rows.length === 0) {
+    return <div style={{ padding: 18, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>{emptyText || 'No data.'}</div>;
+  }
+
+  const gridCols = orderedCols.map(c => c.gridWidth || (c.align === 'left' ? '1fr' : '80px')).join(' ');
+
   return (
     <div>
       <div style={{ display: 'grid', gridTemplateColumns: gridCols, gap: 8, padding: '8px 14px', background: 'var(--surface-2)', fontSize: 10.5, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>
-        {cols.map((c, i) => <div key={i} style={{ textAlign: c.align }}>{c.label}</div>)}
-      </div>
-      {rows.map((r, i) => {
-        const sess = r.current.sessions || 0;
-        const conv = r.current.conversions || 0;
-        const users = r.current.totalUsers || 0;
-        const cr = sess > 0 ? (conv / sess * 100) : 0;
-        const pct = totalSessions > 0 ? (sess / totalSessions * 100) : 0;
-        const prevSess = r.previous ? (r.previous.sessions || 0) : null;
-        const delta = prevSess !== null && prevSess > 0 ? (sess - prevSess) / prevSess : null;
-        return (
-          <div key={i} style={{ display: 'grid', gridTemplateColumns: gridCols, gap: 8, padding: '7px 14px', borderTop: '1px solid var(--border)', alignItems: 'center', fontSize: 12 }}>
-            <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.dims.sessionSource || '(unset)'}</div>
-            <div style={{ color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.dims.sessionMedium || '(none)'}</div>
-            <div className="mono" style={{ textAlign: 'right' }}>{sess.toLocaleString()}</div>
-            <div className="mono" style={{ textAlign: 'right', color: 'var(--muted)' }}>{users.toLocaleString()}</div>
-            <div className="mono" style={{ textAlign: 'right', fontWeight: conv > 0 ? 700 : 400, color: conv > 0 ? '#166534' : 'var(--muted)' }}>{conv}</div>
-            <div className="mono" style={{ textAlign: 'right', color: cr >= 5 ? '#16a34a' : cr >= 1 ? 'var(--ink)' : 'var(--muted)', fontWeight: 700 }}>{cr.toFixed(1)}%</div>
-            {hasComparison && (
-              <div className="mono" style={{ textAlign: 'right', color: delta === null ? 'var(--muted-2)' : delta >= 0 ? '#16a34a' : '#dc2626', fontWeight: 600 }}>
-                {delta === null ? '—' : (delta >= 0 ? '+' : '') + Math.round(delta * 100) + '%'}
-              </div>
-            )}
-            <div style={{ textAlign: 'right', fontSize: 11, color: 'var(--muted)' }}>
-              <span style={{ display: 'inline-block', width: 30, height: 4, background: 'var(--surface)', borderRadius: 2, overflow: 'hidden', verticalAlign: 'middle', marginRight: 4 }}>
-                <span style={{ display: 'block', height: '100%', width: pct + '%', background: 'var(--accent)' }} />
-              </span>
-              {pct.toFixed(1)}%
+        {orderedCols.map(c => {
+          const isSort = sort.key === c.key;
+          const dragging = dragKey === c.key;
+          return (
+            <div
+              key={c.key}
+              draggable
+              onDragStart={(e) => onDragStart(c, e)}
+              onDragOver={(e) => onDragOver(c, e)}
+              onDrop={(e) => onDrop(c, e)}
+              onDragEnd={onDragEnd}
+              onClick={(e) => onHeaderClick(c, e)}
+              style={{
+                textAlign: c.align,
+                cursor: 'pointer',
+                userSelect: 'none',
+                opacity: dragging ? 0.4 : 1,
+                display: 'flex', alignItems: 'center',
+                justifyContent: c.align === 'right' ? 'flex-end' : 'flex-start',
+                gap: 4,
+                position: 'relative',
+              }}
+              title={isSort ? 'Click to flip sort' : 'Click to sort · Drag to reorder'}
+            >
+              <span style={{ cursor: 'grab' }}>≡</span>
+              <span>{c.label}</span>
+              {c.tooltip && (
+                <span
+                  data-tooltip-icon
+                  onClick={(e) => onTooltipClick(c, e)}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    width: 13, height: 13, borderRadius: '50%',
+                    border: '1px solid currentColor',
+                    fontSize: 9, fontWeight: 700,
+                    cursor: 'help',
+                    background: openTooltip === c.key ? 'var(--muted-2)' : 'transparent',
+                    color: openTooltip === c.key ? 'white' : 'inherit',
+                  }}
+                >?</span>
+              )}
+              {isSort && (
+                <span style={{ fontSize: 8, color: 'var(--accent)', marginLeft: 1 }}>
+                  {sort.dir === 'asc' ? '▲' : '▼'}
+                </span>
+              )}
+              {openTooltip === c.key && (
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  style={{
+                    position: 'absolute', top: 'calc(100% + 6px)',
+                    [c.align === 'right' ? 'right' : 'left']: 0,
+                    zIndex: 100,
+                    background: '#1f2937', color: '#f9fafb',
+                    padding: '8px 11px', borderRadius: 6,
+                    fontSize: 11.5, fontWeight: 500,
+                    letterSpacing: 'normal', textTransform: 'none',
+                    lineHeight: 1.4, width: 280,
+                    boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
+                    whiteSpace: 'normal', textAlign: 'left',
+                  }}>
+                  {c.tooltip}
+                </div>
+              )}
             </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
+      {sortedRows.map((r, i) => (
+        <div key={i} style={{ display: 'grid', gridTemplateColumns: gridCols, gap: 8, padding: '7px 14px', borderTop: '1px solid var(--border)', alignItems: 'center', fontSize: 12 }}>
+          {orderedCols.map(c => (
+            <div key={c.key} style={{ textAlign: c.align, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {c.render ? c.render(r, { ...ctx, rowIndex: i }) : (c.getValue ? c.getValue(r) : '—')}
+            </div>
+          ))}
+        </div>
+      ))}
     </div>
   );
+}
+
+function SourceTable({ rows, hasComparison, totalSessions }) {
+  const cols = [
+    { key: 'source', label: 'Source', align: 'left', gridWidth: '1.4fr',
+      tooltip: 'Откуда пришла сессия (hs_analytics_source-like). Примеры: google, tiktok.com, (direct), facebook, reddit. «(direct)» = пользователь вбил URL руками или пришёл из закладки, или GA4 не смогла определить источник.',
+      getValue: r => (r.dims.sessionSource || '').toLowerCase(),
+      render: r => <span style={{ fontWeight: 600 }}>{r.dims.sessionSource || '(unset)'}</span> },
+    { key: 'medium', label: 'Medium', align: 'left', gridWidth: '1fr',
+      tooltip: 'Канал внутри source. Типичные значения: cpc (paid ads), referral (по ссылке с другого сайта), organic (поисковая выдача), paid (Facebook Lead Ads), social (Instagram/FB organic posts), email, (none) = direct.',
+      getValue: r => (r.dims.sessionMedium || '').toLowerCase(),
+      render: r => <span style={{ color: 'var(--muted)' }}>{r.dims.sessionMedium || '(none)'}</span> },
+    { key: 'sessions', label: 'Sessions', align: 'right', gridWidth: '80px',
+      tooltip: 'Число сессий — посещений сайта от этого source/medium за период. Сессия начинается когда пользователь зашёл, заканчивается после 30 минут неактивности.',
+      getValue: r => r.current.sessions || 0,
+      render: r => <span className="mono">{(r.current.sessions || 0).toLocaleString()}</span>,
+      defaultSort: 'desc' },
+    { key: 'users', label: 'Users', align: 'right', gridWidth: '80px',
+      tooltip: 'Уникальные пользователи с этого канала. Один пользователь может сделать несколько сессий (вернулся через день).',
+      getValue: r => r.current.totalUsers || 0,
+      render: r => <span className="mono" style={{ color: 'var(--muted)' }}>{(r.current.totalUsers || 0).toLocaleString()}</span> },
+    { key: 'conv', label: 'Conv.', align: 'right', gridWidth: '80px',
+      tooltip: 'Количество conversions — целевых действий (form submit, phone click, lead). Настраивается в GA4 → Configure → Events → Mark as conversion.',
+      getValue: r => r.current.conversions || 0,
+      render: r => {
+        const conv = r.current.conversions || 0;
+        return <span className="mono" style={{ fontWeight: conv > 0 ? 700 : 400, color: conv > 0 ? '#166534' : 'var(--muted)' }}>{conv}</span>;
+      } },
+    { key: 'cr', label: 'CR %', align: 'right', gridWidth: '70px',
+      tooltip: 'Conversion Rate = Conversions ÷ Sessions × 100. Показывает какой % посетителей с этого канала совершает целевое действие. >5% = отличный канал; 1-5% — норма; <1% — стоит пересмотреть.',
+      getValue: r => { const s = r.current.sessions || 0; return s > 0 ? (r.current.conversions || 0) / s : 0; },
+      render: r => {
+        const s = r.current.sessions || 0;
+        const cr = s > 0 ? (r.current.conversions || 0) / s * 100 : 0;
+        return <span className="mono" style={{ color: cr >= 5 ? '#16a34a' : cr >= 1 ? 'var(--ink)' : 'var(--muted)', fontWeight: 700 }}>{cr.toFixed(1)}%</span>;
+      } },
+    ...(hasComparison ? [{ key: 'delta', label: 'Δ Sessions', align: 'right', gridWidth: '80px',
+      tooltip: 'Δ Sessions — процент изменения числа сессий к предыдущему периоду. +50% = выросло в 1.5 раза, -30% = упало на треть. «—» означает что в предыдущем периоде было 0 (нельзя вычислить процент).',
+      getValue: r => {
+        const cur = r.current.sessions || 0;
+        const prev = r.previous ? (r.previous.sessions || 0) : 0;
+        if (prev === 0) return cur > 0 ? Infinity : -Infinity;
+        return (cur - prev) / prev;
+      },
+      render: r => {
+        const cur = r.current.sessions || 0;
+        const prev = r.previous ? (r.previous.sessions || 0) : null;
+        const delta = prev !== null && prev > 0 ? (cur - prev) / prev : null;
+        return <span className="mono" style={{ color: delta === null ? 'var(--muted-2)' : delta >= 0 ? '#16a34a' : '#dc2626', fontWeight: 600 }}>
+          {delta === null ? '—' : (delta >= 0 ? '+' : '') + Math.round(delta * 100) + '%'}
+        </span>;
+      } }] : []),
+    { key: 'pct', label: '% of total', align: 'right', gridWidth: '90px',
+      tooltip: 'Доля сессий этого канала от ОБЩЕГО числа сессий за период. Показывает насколько канал важен в общей картине трафика.',
+      getValue: r => { const s = r.current.sessions || 0; return totalSessions > 0 ? s / totalSessions : 0; },
+      render: r => {
+        const s = r.current.sessions || 0;
+        const pct = totalSessions > 0 ? s / totalSessions * 100 : 0;
+        return <span style={{ fontSize: 11, color: 'var(--muted)' }}>
+          <span style={{ display: 'inline-block', width: 30, height: 4, background: 'var(--surface)', borderRadius: 2, overflow: 'hidden', verticalAlign: 'middle', marginRight: 4 }}>
+            <span style={{ display: 'block', height: '100%', width: pct + '%', background: 'var(--accent)' }} />
+          </span>
+          {pct.toFixed(1)}%
+        </span>;
+      } },
+  ];
+  return <SortableTable cols={cols} rows={rows} storageKey="pulse_ga4_source" />;
 }
 
 function LandingTable({ rows, hasComparison }) {
-  if (!rows || rows.length === 0) return <div style={{ padding: 18, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>No data.</div>;
-  const gridCols = hasComparison ? '2fr 80px 80px 70px 70px 70px 80px' : '2fr 80px 80px 70px 70px 70px';
-  return (
-    <div>
-      <div style={{ display: 'grid', gridTemplateColumns: gridCols, gap: 8, padding: '8px 14px', background: 'var(--surface-2)', fontSize: 10.5, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>
-        <div>Landing page</div>
-        <div style={{ textAlign: 'right' }}>Sessions</div>
-        <div style={{ textAlign: 'right' }}>Users</div>
-        <div style={{ textAlign: 'right' }}>Conv.</div>
-        <div style={{ textAlign: 'right' }}>Avg time</div>
-        <div style={{ textAlign: 'right' }}>Bounce</div>
-        {hasComparison && <div style={{ textAlign: 'right' }}>Δ Sess</div>}
-      </div>
-      {rows.map((r, i) => {
-        const sess = r.current.sessions || 0;
-        const conv = r.current.conversions || 0;
-        const avg = r.current.averageSessionDuration || 0;
-        const bounce = r.current.bounceRate || 0;
-        const prevSess = r.previous ? (r.previous.sessions || 0) : null;
-        const delta = prevSess !== null && prevSess > 0 ? (sess - prevSess) / prevSess : null;
-        const page = r.dims.landingPage || '(unset)';
-        return (
-          <div key={i} style={{ display: 'grid', gridTemplateColumns: gridCols, gap: 8, padding: '7px 14px', borderTop: '1px solid var(--border)', alignItems: 'center', fontSize: 12 }}>
-            <div title={page} style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{page}</div>
-            <div className="mono" style={{ textAlign: 'right', fontWeight: 700 }}>{sess.toLocaleString()}</div>
-            <div className="mono" style={{ textAlign: 'right', color: 'var(--muted)' }}>{(r.current.totalUsers || 0).toLocaleString()}</div>
-            <div className="mono" style={{ textAlign: 'right', fontWeight: conv > 0 ? 700 : 400, color: conv > 0 ? '#166534' : 'var(--muted)' }}>{conv}</div>
-            <div className="mono" style={{ textAlign: 'right', color: 'var(--muted)' }}>{_fmtDuration(avg)}</div>
-            <div className="mono" style={{ textAlign: 'right', color: bounce > 0.7 ? '#dc2626' : bounce > 0.5 ? '#f59e0b' : '#16a34a' }}>{(bounce * 100).toFixed(0)}%</div>
-            {hasComparison && (
-              <div className="mono" style={{ textAlign: 'right', color: delta === null ? 'var(--muted-2)' : delta >= 0 ? '#16a34a' : '#dc2626', fontWeight: 600 }}>
-                {delta === null ? '—' : (delta >= 0 ? '+' : '') + Math.round(delta * 100) + '%'}
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
+  const cols = [
+    { key: 'page', label: 'Landing page', align: 'left', gridWidth: '2fr',
+      tooltip: 'URL первой страницы сессии — та куда user приземлился из поиска / ad click / referral. /=главная, /product/...=конкретное объявление. По landing page видно какие страницы привлекают больше всего трафика.',
+      getValue: r => (r.dims.landingPage || '').toLowerCase(),
+      render: r => <span title={r.dims.landingPage || '(unset)'} style={{ fontWeight: 500 }}>{r.dims.landingPage || '(unset)'}</span> },
+    { key: 'sessions', label: 'Sessions', align: 'right', gridWidth: '80px',
+      tooltip: 'Сколько сессий начались с этой страницы. Высокий показатель = страница хорошо ранжируется в поиске или активно используется как landing для рекламы.',
+      getValue: r => r.current.sessions || 0,
+      render: r => <span className="mono" style={{ fontWeight: 700 }}>{(r.current.sessions || 0).toLocaleString()}</span>,
+      defaultSort: 'desc' },
+    { key: 'users', label: 'Users', align: 'right', gridWidth: '80px',
+      tooltip: 'Уникальные пользователи которые приземлились на эту страницу.',
+      getValue: r => r.current.totalUsers || 0,
+      render: r => <span className="mono" style={{ color: 'var(--muted)' }}>{(r.current.totalUsers || 0).toLocaleString()}</span> },
+    { key: 'conv', label: 'Conv.', align: 'right', gridWidth: '70px',
+      tooltip: 'Конверсии на сессиях которые начались с этой страницы. Высокий conv + sessions = золотая страница, дублируй её формат для других объявлений.',
+      getValue: r => r.current.conversions || 0,
+      render: r => {
+        const c = r.current.conversions || 0;
+        return <span className="mono" style={{ fontWeight: c > 0 ? 700 : 400, color: c > 0 ? '#166534' : 'var(--muted)' }}>{c}</span>;
+      } },
+    { key: 'avg', label: 'Avg time', align: 'right', gridWidth: '70px',
+      tooltip: 'Средняя длительность сессии на этой странице. >2 минут = пользователи реально читают; <30 сек = либо мисс-таргет, либо страница не зацепила.',
+      getValue: r => r.current.averageSessionDuration || 0,
+      render: r => <span className="mono" style={{ color: 'var(--muted)' }}>{_fmtDuration(r.current.averageSessionDuration || 0)}</span> },
+    { key: 'bounce', label: 'Bounce', align: 'right', gridWidth: '70px',
+      tooltip: 'Bounce rate — % сессий которые ушли с этой страницы НЕ совершив ни одного действия (не кликнули, не проскроллили далеко). <50% = норма (зелёный); 50-70% = средне (жёлтый); >70% = плохо (красный).',
+      getValue: r => r.current.bounceRate || 0,
+      render: r => {
+        const b = r.current.bounceRate || 0;
+        return <span className="mono" style={{ color: b > 0.7 ? '#dc2626' : b > 0.5 ? '#f59e0b' : '#16a34a' }}>{(b * 100).toFixed(0)}%</span>;
+      } },
+    ...(hasComparison ? [{ key: 'delta', label: 'Δ Sess', align: 'right', gridWidth: '80px',
+      tooltip: 'Изменение числа сессий относительно предыдущего периода. Помогает увидеть растущие vs падающие страницы.',
+      getValue: r => {
+        const cur = r.current.sessions || 0;
+        const prev = r.previous ? (r.previous.sessions || 0) : 0;
+        if (prev === 0) return cur > 0 ? Infinity : -Infinity;
+        return (cur - prev) / prev;
+      },
+      render: r => {
+        const cur = r.current.sessions || 0;
+        const prev = r.previous ? (r.previous.sessions || 0) : null;
+        const delta = prev !== null && prev > 0 ? (cur - prev) / prev : null;
+        return <span className="mono" style={{ color: delta === null ? 'var(--muted-2)' : delta >= 0 ? '#16a34a' : '#dc2626', fontWeight: 600 }}>
+          {delta === null ? '—' : (delta >= 0 ? '+' : '') + Math.round(delta * 100) + '%'}
+        </span>;
+      } }] : []),
+  ];
+  return <SortableTable cols={cols} rows={rows} storageKey="pulse_ga4_landing" emptyText="No landing pages tracked." />;
 }
 
 function EventsTable({ rows, hasComparison }) {
-  if (!rows || rows.length === 0) return <div style={{ padding: 18, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>No events.</div>;
-  const gridCols = hasComparison ? '2fr 100px 100px 100px' : '2fr 100px 100px';
-  return (
-    <div>
-      <div style={{ display: 'grid', gridTemplateColumns: gridCols, gap: 8, padding: '8px 14px', background: 'var(--surface-2)', fontSize: 10.5, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>
-        <div>Event name</div>
-        <div style={{ textAlign: 'right' }}>Count</div>
-        <div style={{ textAlign: 'right' }}>Users</div>
-        {hasComparison && <div style={{ textAlign: 'right' }}>Δ vs prev</div>}
-      </div>
-      {rows.map((r, i) => {
-        const count = r.current.eventCount || 0;
-        const users = r.current.totalUsers || 0;
-        const prevCount = r.previous ? (r.previous.eventCount || 0) : null;
-        const delta = prevCount !== null && prevCount > 0 ? (count - prevCount) / prevCount : null;
-        return (
-          <div key={i} style={{ display: 'grid', gridTemplateColumns: gridCols, gap: 8, padding: '7px 14px', borderTop: '1px solid var(--border)', alignItems: 'center', fontSize: 12 }}>
-            <div style={{ fontWeight: 500 }}>{r.dims.eventName || '(unset)'}</div>
-            <div className="mono" style={{ textAlign: 'right', fontWeight: 700 }}>{count.toLocaleString()}</div>
-            <div className="mono" style={{ textAlign: 'right', color: 'var(--muted)' }}>{users.toLocaleString()}</div>
-            {hasComparison && (
-              <div className="mono" style={{ textAlign: 'right', color: delta === null ? 'var(--muted-2)' : delta >= 0 ? '#16a34a' : '#dc2626', fontWeight: 600 }}>
-                {delta === null ? '—' : (delta >= 0 ? '+' : '') + Math.round(delta * 100) + '%'}
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
+  const cols = [
+    { key: 'event', label: 'Event name', align: 'left', gridWidth: '2fr',
+      tooltip: 'Имя события в GA4. Стандартные: page_view, session_start, scroll, click, form_submit. Кастомные настраиваются через GTM или gtag код на сайте. Чем больше уникальных events — тем лучше можно anlysir по funnel.',
+      getValue: r => (r.dims.eventName || '').toLowerCase(),
+      render: r => <span style={{ fontWeight: 500 }}>{r.dims.eventName || '(unset)'}</span> },
+    { key: 'count', label: 'Count', align: 'right', gridWidth: '100px',
+      tooltip: 'Сколько раз это событие сработало за период. Например page_view = общее число просмотров страниц, form_submit = число отправленных форм.',
+      getValue: r => r.current.eventCount || 0,
+      render: r => <span className="mono" style={{ fontWeight: 700 }}>{(r.current.eventCount || 0).toLocaleString()}</span>,
+      defaultSort: 'desc' },
+    { key: 'users', label: 'Users', align: 'right', gridWidth: '100px',
+      tooltip: 'Сколько уникальных пользователей сделали хотя бы один такой event.',
+      getValue: r => r.current.totalUsers || 0,
+      render: r => <span className="mono" style={{ color: 'var(--muted)' }}>{(r.current.totalUsers || 0).toLocaleString()}</span> },
+    ...(hasComparison ? [{ key: 'delta', label: 'Δ vs prev', align: 'right', gridWidth: '100px',
+      tooltip: 'Изменение числа событий относительно предыдущего периода.',
+      getValue: r => {
+        const cur = r.current.eventCount || 0;
+        const prev = r.previous ? (r.previous.eventCount || 0) : 0;
+        if (prev === 0) return cur > 0 ? Infinity : -Infinity;
+        return (cur - prev) / prev;
+      },
+      render: r => {
+        const cur = r.current.eventCount || 0;
+        const prev = r.previous ? (r.previous.eventCount || 0) : null;
+        const delta = prev !== null && prev > 0 ? (cur - prev) / prev : null;
+        return <span className="mono" style={{ color: delta === null ? 'var(--muted-2)' : delta >= 0 ? '#16a34a' : '#dc2626', fontWeight: 600 }}>
+          {delta === null ? '—' : (delta >= 0 ? '+' : '') + Math.round(delta * 100) + '%'}
+        </span>;
+      } }] : []),
+  ];
+  return <SortableTable cols={cols} rows={rows} storageKey="pulse_ga4_events" emptyText="No events tracked." />;
 }
 
 function TimeseriesChart({ series, granularity, hasComparison }) {
