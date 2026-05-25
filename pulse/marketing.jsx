@@ -344,7 +344,13 @@ function SpendSection() {
   // (Google Ads Script pulls 90d; older incoming sources still work
   // on aggregate fallback). State scoped to this section.
   // windowKind: '7d' / '30d' / '90d' / 'mtd' / 'custom'
-  const [windowKind, setWindowKind] = React.useState("30d");
+  // 2026-05-24 Tony: default MTD чтобы цифры совпадали с Meta Ads
+  // Manager / Google Ads UI «This month». Last 30 days было путало
+  // потому что включало 6 дней предыдущего месяца. Persisted в LS.
+  const [windowKind, setWindowKind] = React.useState(() => {
+    try { return localStorage.getItem("pulse_marketing_window") || "mtd"; } catch (e) { return "mtd"; }
+  });
+  React.useEffect(() => { try { localStorage.setItem("pulse_marketing_window", windowKind); } catch (e) {} }, [windowKind]);
   // Custom range — only used when windowKind === 'custom'. Defaults
   // to last 14 days so the inputs aren't empty when first opened.
   const _today = new Date();
@@ -561,6 +567,16 @@ function SpendSection() {
             {` · $${totalSpend.toFixed(2)} spend · ${totalClicks.toLocaleString()} clicks · ${totals.leads.toLocaleString()} leads created`}
           </span>
         </div>
+        {/* Cross-check hint — если выбрано 7d / 30d / 90d, окно НЕ совпадает
+            с «This month» в Meta Ads Manager / Google Ads UI → числа будут
+            расходиться. Tony 2026-05-24: «у нас на сайте $11342 vs $8185 в
+            Meta UI» — это разница между «last 30 days» (включает 6 дней
+            прошлого месяца) и «May 1-24». Hint предлагает переключиться. */}
+        {(windowKind === "7d" || windowKind === "30d" || windowKind === "90d") && (
+          <div style={{ marginTop: 6, padding: "6px 10px", background: "rgba(59,130,246,.06)", border: "1px solid rgba(59,130,246,.2)", borderRadius: 6, fontSize: 11, color: "#1e40af" }}>
+            💡 Чтобы сравнить с <b>Meta Ads Manager / Google Ads UI</b> («This month» = {new Date().toLocaleString("en-US", { month: "long" })} 1 → today), переключи на <button onClick={() => setWindowKind("mtd")} style={{ background: "transparent", border: "none", color: "#1e40af", fontWeight: 700, textDecoration: "underline", cursor: "pointer", padding: 0, fontSize: 11, fontFamily: "inherit" }}>MTD</button>. Окно «{windowLabel}» включает дни предыдущего месяца → числа в Pulse будут больше.
+          </div>
+        )}
         {/* Date-range selector + Site-leads-only toggle */}
         <div className="row" style={{ marginTop: 8, gap: 10, flexWrap: "wrap" }}>
           <div className="f-segment">
