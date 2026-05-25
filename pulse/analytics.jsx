@@ -1,346 +1,654 @@
 /* global React, Icon */
 
 /* ================================================================
-   Analytics — dedicated GA4 page.
+   Analytics — redesigned 2026-05-25 (Tony).
 
-   Pulls site analytics from Google Analytics Data API (via ga4Sync CF)
-   and renders:
-     - Summary KPI tiles
-     - Source / Medium breakdown
-     - Top landing pages
-     - Events / conversions
-     - Device + geo split
-     - Daily timeseries chart
+   Single-page comprehensive GA4 dashboard. Period selector at top
+   (default Today), comparison vs previous period (default ON),
+   hourly/daily auto-detect chart, sections for all data plus
+   one-click «Copy for AI» export to clipboard.
 
-   Data source: window._mkDataCache.sources.ga4 (populated by data-shim
-   from marketingGetData callable). All fields inflated server-side.
+   Data source: ga4SyncRange callable — on-demand fetch per period,
+   no localStorage caching (fresh on every selection click). Each
+   period change triggers a new CF call (~5-10s response).
    ================================================================ */
 
+const _PERIODS = [
+  { id: 'today',     label: 'Today',       short: 'Today' },
+  { id: 'yesterday', label: 'Yesterday',   short: 'Yesterday' },
+  { id: '7d',        label: 'Last 7 days', short: '7d' },
+  { id: '30d',       label: 'Last 30 days',short: '30d' },
+  { id: 'mtd',       label: 'Month to date', short: 'MTD' },
+  { id: 'lastMonth', label: 'Last month',  short: 'Last mo.' },
+  { id: '90d',       label: 'Last 90 days',short: '90d' },
+  { id: 'all',       label: 'All time',    short: 'All' },
+  { id: 'custom',    label: 'Custom range',short: 'Custom' },
+];
+
+const _COMPARE_TO = [
+  { id: 'previous', label: 'Previous period' },
+  { id: 'lastYear', label: 'Same period last year' },
+  { id: 'none',     label: 'No comparison' },
+];
+
 window.AnalyticsPage = function AnalyticsPage() {
-  const mk = window._mkDataCache;
-  const ga = mk && mk.sources && mk.sources.ga4;
+  const [periodId, setPeriodId] = React.useState(() => {
+    try { return localStorage.getItem('pulse_ga4_period') || 'today'; } catch (e) { return 'today'; }
+  });
+  const [compareTo, setCompareTo] = React.useState(() => {
+    try { return localStorage.getItem('pulse_ga4_compareTo') || 'previous'; } catch (e) { return 'previous'; }
+  });
+  const _today = new Date();
+  const _twoWksAgo = new Date(_today.getTime() - 14 * 86400000);
+  const [customStart, setCustomStart] = React.useState(() => _fmtYmd(_twoWksAgo));
+  const [customEnd, setCustomEnd] = React.useState(() => _fmtYmd(_today));
+  const [data, setData] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [err, setErr] = React.useState(null);
+  const [copyMsg, setCopyMsg] = React.useState(null);
 
-  const [syncing, setSyncing] = React.useState(false);
-  const [msg, setMsg] = React.useState(null);
+  React.useEffect(() => { try { localStorage.setItem('pulse_ga4_period', periodId); } catch (e) {} }, [periodId]);
+  React.useEffect(() => { try { localStorage.setItem('pulse_ga4_compareTo', compareTo); } catch (e) {} }, [compareTo]);
 
-  async function syncNow() {
-    setSyncing(true);
-    setMsg(null);
+  // Fetch on period/compareTo/customRange change
+  const fetchSig = periodId === 'custom' ? `${periodId}|${customStart}|${customEnd}|${compareTo}` : `${periodId}|${compareTo}`;
+  React.useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setLoading(true); setErr(null);
+      try {
+        if (typeof window._pulseCallable !== 'function') {
+          throw new Error('Firebase bridge not loaded yet — reload');
+        }
+        const args = { period: periodId, compareTo };
+        if (periodId === 'custom') args.custom = { start: customStart, end: customEnd };
+        const r = await window._pulseCallable('ga4SyncRange', args);
+        if (!cancelled) setData(r?.data || null);
+      } catch (e) {
+        if (!cancelled) setErr(e?.message || String(e));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [fetchSig]);
+
+  function copyForAI() {
+    if (!data) return;
+    const markdown = _buildMarkdownSummary(data);
+    const payload = '## GA4 Analytics — ' + (data.currentRange?.label || data.period) + '\n\n' + markdown + '\n\n```json\n' + JSON.stringify(data, null, 2).slice(0, 50000) + '\n```\n';
     try {
-      if (typeof window._pulseCallable !== 'function') {
-        setMsg({ kind: 'err', text: 'Firebase bridge not ready' });
-        return;
-      }
-      const r = await window._pulseCallable('ga4SyncNow', {});
-      const d = r?.data || {};
-      setMsg({ kind: 'ok', text: `Synced — ${d.counts?.sessions || 0} sessions, ${d.counts?.conversions || 0} conversions across ${d.counts?.daily || 0} days. Reload to see.` });
-      try { localStorage.removeItem('sfa_marketing_data_v1'); } catch (e) {}
+      navigator.clipboard.writeText(payload).then(() => {
+        setCopyMsg({ kind: 'ok', text: 'Copied! Paste to Claude/ChatGPT (markdown + JSON) — ' + payload.length.toLocaleString() + ' chars' });
+        setTimeout(() => setCopyMsg(null), 5000);
+      }).catch(e => {
+        setCopyMsg({ kind: 'err', text: 'Clipboard failed: ' + e.message });
+      });
     } catch (e) {
-      const code = e?.code || '';
-      if (code === 'permission-denied') {
-        setMsg({ kind: 'err', text: 'Permission denied. Open Floor map console: window.stripeCallable("ga4SyncNow")({})' });
-      } else {
-        setMsg({ kind: 'err', text: 'Sync failed: ' + (e?.message || String(e)) });
-      }
-    } finally {
-      setSyncing(false);
+      setCopyMsg({ kind: 'err', text: 'Clipboard unavailable in this browser' });
     }
   }
 
-  if (!ga) {
-    return (
-      <div className="page">
-        <div className="page-h">
-          <div>
-            <h1 className="title">Analytics</h1>
-            <div className="subtitle">Site behaviour from Google Analytics 4 · funnel + traffic source</div>
-          </div>
-          <div className="row">
-            <button className="btn is-primary" onClick={syncNow} disabled={syncing}>
-              {syncing ? 'Syncing…' : '↻ Sync now'}
-            </button>
-          </div>
-        </div>
-        <div className="card is-clean" style={{ padding: 24, textAlign: 'center' }}>
-          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>📊 GA4 not configured yet</div>
-          <div style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 540, margin: '0 auto', lineHeight: 1.5 }}>
-            To enable this page, set up a Google Service Account, grant it Viewer access to your GA4 property, and add the credentials as Firebase secrets <code>GA4_PROPERTY_ID</code> + <code>GA4_SERVICE_ACCOUNT_JSON</code>. Then click «Sync now».
-          </div>
-          <div style={{ marginTop: 14, fontSize: 12 }}>
-            <a href="#" onClick={(e) => { e.preventDefault(); window.location.hash = 'connections'; if (window._navTo) window._navTo('connections'); }} style={{ color: 'var(--accent-ink)', textDecoration: 'underline' }}>
-              Setup instructions → Connections page
-            </a>
-          </div>
-          {msg && <SaveMsg msg={msg} />}
-        </div>
-      </div>
-    );
+  function exportCsv() {
+    if (!data) return;
+    const csv = _buildCsv(data);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'ga4-' + periodId + '-' + (data.currentRange?.start || '') + '.csv';
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+    setCopyMsg({ kind: 'ok', text: 'CSV downloaded' });
+    setTimeout(() => setCopyMsg(null), 3000);
   }
 
-  const sum = ga.summary || {};
-  const sourceMedium = Array.isArray(ga.sourceMedium) ? ga.sourceMedium : [];
-  const landingPages = Array.isArray(ga.landingPages) ? ga.landingPages : [];
-  const events = Array.isArray(ga.events) ? ga.events : [];
-  const devices = Array.isArray(ga.devices) ? ga.devices : [];
-  const geo = Array.isArray(ga.geo) ? ga.geo : [];
-  const daily = Array.isArray(ga.daily) ? ga.daily : [];
+  function onSyncAndReload() {
+    setData(null);
+    setPeriodId(p => p); // trigger refetch via state churn
+    // Force refetch by changing a hidden state — simplest: re-set periodId same val won't trigger useEffect. Workaround: bump compareTo back.
+    setCompareTo(c => c === 'previous' ? 'previous' : c);
+    // Direct refetch:
+    (async () => {
+      setLoading(true); setErr(null);
+      try {
+        const args = { period: periodId, compareTo };
+        if (periodId === 'custom') args.custom = { start: customStart, end: customEnd };
+        const r = await window._pulseCallable('ga4SyncRange', args);
+        setData(r?.data || null);
+      } catch (e) {
+        setErr(e?.message || String(e));
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }
 
-  const conversionRate = sum.sessions > 0 ? (sum.conversions / sum.sessions) * 100 : 0;
-  const engagementRate = sum.sessions > 0 ? (sum.engagedSessions / sum.sessions) * 100 : 0;
-  const avgDuration = sum.averageSessionDuration || 0;
-  const fmtDuration = (sec) => {
-    const m = Math.floor(sec / 60);
-    const s = Math.round(sec % 60);
-    return m > 0 ? `${m}m ${s}s` : `${s}s`;
-  };
+  const cur = data?.summary?.current || {};
+  const prev = data?.summary?.previous;
+  const deltas = data?.summary?.deltas || {};
+  const hasComparison = !!data?.previousRange;
 
   return (
     <div className="page">
-      <div className="page-h">
+      {/* Header */}
+      <div className="page-h" style={{ flexWrap: 'wrap' }}>
         <div>
           <h1 className="title">Analytics</h1>
           <div className="subtitle">
-            <span>Google Analytics 4 · last {ga.daysBack || 90} days</span>
-            <span>·</span>
-            <span className="mono">Property {ga.propertyId}</span>
-            <span>·</span>
-            <span className="mono">Synced {formatAgo(ga.ingestedAt)}</span>
+            <span>Site behaviour from GA4 · Property {data?.propertyId || '494945826'}</span>
+            {data?.fetchedAt && <span> · Loaded {_fmtAgo(data.fetchedAt)}</span>}
           </div>
         </div>
-        <div className="row">
-          <button className="btn is-primary" onClick={syncNow} disabled={syncing}>
-            {syncing ? 'Syncing…' : '↻ Sync now'}
+        <div className="row" style={{ gap: 6 }}>
+          <button className="btn is-small" onClick={onSyncAndReload} disabled={loading}>
+            {loading ? '⏳ Loading…' : '↻ Refresh'}
           </button>
+          <button className="btn is-small" onClick={exportCsv} disabled={!data}>⤓ CSV</button>
+          <button className="btn is-small is-primary" onClick={copyForAI} disabled={!data}>🤖 Copy for AI</button>
         </div>
       </div>
-      {msg && <div style={{ marginBottom: 12 }}><SaveMsg msg={msg} /></div>}
 
-      {/* KPI tiles */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
-        <KpiTile label="Sessions" value={sum.sessions?.toLocaleString() || '—'} icon="trendUp" />
-        <KpiTile label="Users" value={sum.totalUsers?.toLocaleString() || '—'} sub={`${sum.newUsers?.toLocaleString() || 0} new`} icon="people" />
-        <KpiTile label="Page views" value={sum.screenPageViews?.toLocaleString() || '—'} sub={`${(sum.screenPageViews / (sum.sessions || 1)).toFixed(1)} pp/session`} icon="cal" />
-        <KpiTile label="Conversions" value={sum.conversions?.toLocaleString() || '—'} sub={`${conversionRate.toFixed(2)}% rate`} icon="star" tone="success" />
-        <KpiTile label="Avg session" value={fmtDuration(avgDuration)} sub={`${engagementRate.toFixed(0)}% engaged`} icon="clock" />
-        <KpiTile label="Bounce rate" value={`${((sum.bounceRate || 0) * 100).toFixed(1)}%`} sub="lower = better" icon="warning" tone={sum.bounceRate < 0.5 ? "success" : sum.bounceRate < 0.7 ? "warning" : "danger"} />
+      {/* Period selector */}
+      <div className="card is-clean" style={{ padding: 12, marginBottom: 14 }}>
+        <div className="row" style={{ flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+          <span style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginRight: 4 }}>Period:</span>
+          {_PERIODS.map(p => (
+            <button key={p.id}
+                    className={'chip' + (periodId === p.id ? ' is-accent' : '')}
+                    style={{ cursor: 'pointer', padding: '5px 10px', fontSize: 12 }}
+                    onClick={() => setPeriodId(p.id)}>
+              {p.short}
+            </button>
+          ))}
+          {periodId === 'custom' && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 8, fontSize: 12 }}>
+              <input type="date" value={customStart} max={customEnd} onChange={e => setCustomStart(e.target.value)}
+                     style={{ padding: '4px 8px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 4 }} />
+              <span style={{ color: 'var(--muted)' }}>→</span>
+              <input type="date" value={customEnd} min={customStart} max={_fmtYmd(new Date())} onChange={e => setCustomEnd(e.target.value)}
+                     style={{ padding: '4px 8px', fontSize: 12, border: '1px solid var(--border)', borderRadius: 4 }} />
+            </span>
+          )}
+        </div>
+        <div className="row" style={{ flexWrap: 'wrap', gap: 6, alignItems: 'center', marginTop: 8 }}>
+          <span style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginRight: 4 }}>Compare:</span>
+          {_COMPARE_TO.map(c => (
+            <button key={c.id}
+                    className={'chip' + (compareTo === c.id ? ' is-accent' : '')}
+                    style={{ cursor: 'pointer', padding: '4px 9px', fontSize: 11.5 }}
+                    onClick={() => setCompareTo(c.id)}>
+              {c.label}
+            </button>
+          ))}
+          {data && (
+            <span style={{ marginLeft: 'auto', fontSize: 11.5, color: 'var(--muted)' }}>
+              <b style={{ color: 'var(--ink)' }}>{data.currentRange?.label}</b>
+              {data.previousRange && <span> vs {data.previousRange.label} ({data.previousRange.start} → {data.previousRange.end})</span>}
+              {' · '}{data.granularity === 'hourly' ? 'hourly' : 'daily'} granularity
+            </span>
+          )}
+        </div>
       </div>
 
-      {/* Source / Medium */}
-      <Section title="Source / Medium" subtitle={`${sourceMedium.length} sources`}>
-        <DataTable
-          cols={[
-            { key: 'sessionSource', label: 'Source', align: 'left' },
-            { key: 'sessionMedium', label: 'Medium', align: 'left' },
-            { key: 'sessions', label: 'Sessions', align: 'right', format: 'num' },
-            { key: 'totalUsers', label: 'Users', align: 'right', format: 'num' },
-            { key: 'engagedSessions', label: 'Engaged', align: 'right', format: 'num' },
-            { key: 'conversions', label: 'Conv.', align: 'right', format: 'num', highlight: true },
-            { key: 'convRate', label: 'CR %', align: 'right', compute: (r) => r.sessions > 0 ? ((r.conversions / r.sessions) * 100).toFixed(1) + '%' : '—' },
-          ]}
-          rows={sourceMedium}
-        />
-      </Section>
+      {/* Status messages */}
+      {copyMsg && (
+        <div style={{ padding: '10px 14px', marginBottom: 12, borderRadius: 8, fontSize: 12.5,
+          background: copyMsg.kind === 'ok' ? 'rgba(34,197,94,.12)' : 'rgba(239,68,68,.12)',
+          color: copyMsg.kind === 'ok' ? '#166534' : '#991b1b' }}>
+          {copyMsg.text}
+        </div>
+      )}
+      {err && (
+        <div className="card is-clean" style={{ padding: 14, fontSize: 13, color: '#991b1b', background: 'rgba(239,68,68,.06)' }}>
+          ⚠ Load failed: {err}
+        </div>
+      )}
+      {loading && !data && (
+        <div className="card is-clean" style={{ padding: 24, textAlign: 'center', color: 'var(--muted)' }}>
+          ⏳ Fetching GA4 data for {data?.currentRange?.label || periodId}…
+        </div>
+      )}
 
-      {/* Top landing pages */}
-      <Section title="Top landing pages" subtitle={`${landingPages.length} pages by sessions`}>
-        <DataTable
-          cols={[
-            { key: 'landingPage', label: 'Landing page', align: 'left', truncate: 50 },
-            { key: 'sessions', label: 'Sessions', align: 'right', format: 'num' },
-            { key: 'totalUsers', label: 'Users', align: 'right', format: 'num' },
-            { key: 'avgDuration', label: 'Avg duration', align: 'right', compute: (r) => fmtDuration(r.averageSessionDuration || 0) },
-            { key: 'bounce', label: 'Bounce', align: 'right', compute: (r) => `${((r.bounceRate || 0) * 100).toFixed(0)}%` },
-            { key: 'conversions', label: 'Conv.', align: 'right', format: 'num', highlight: true },
-          ]}
-          rows={landingPages}
-        />
-      </Section>
+      {/* Body */}
+      {data && (
+        <>
+          {/* KPI tiles row */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginBottom: 16 }}>
+            <KpiTile label="Sessions" value={cur.sessions} prev={hasComparison ? prev?.sessions : null} delta={deltas.sessions} format="num" />
+            <KpiTile label="Users" value={cur.totalUsers} prev={hasComparison ? prev?.totalUsers : null} delta={deltas.totalUsers} sub={cur.newUsers ? cur.newUsers.toLocaleString() + ' new' : null} format="num" />
+            <KpiTile label="Conversions" value={cur.conversions} prev={hasComparison ? prev?.conversions : null} delta={deltas.conversions} format="num" tone="success"
+                     sub={cur.sessions > 0 ? ((cur.conversions / cur.sessions) * 100).toFixed(1) + '% rate' : null} />
+            <KpiTile label="Page views" value={cur.screenPageViews} prev={hasComparison ? prev?.screenPageViews : null} delta={deltas.screenPageViews} format="num"
+                     sub={cur.sessions > 0 ? (cur.screenPageViews / cur.sessions).toFixed(1) + ' pp/sess' : null} />
+            <KpiTile label="Avg session" value={cur.averageSessionDuration} prev={hasComparison ? prev?.averageSessionDuration : null} delta={deltas.averageSessionDuration} format="duration"
+                     sub={cur.sessions > 0 ? Math.round(cur.engagedSessions / cur.sessions * 100) + '% engaged' : null} />
+            <KpiTile label="Bounce rate" value={cur.bounceRate * 100} prev={hasComparison ? prev?.bounceRate * 100 : null} delta={deltas.bounceRate} format="pct" invert />
+          </div>
 
-      {/* Events */}
-      <Section title="Events" subtitle={`${events.length} unique events tracked`}>
-        <DataTable
-          cols={[
-            { key: 'eventName', label: 'Event name', align: 'left' },
-            { key: 'eventCount', label: 'Count', align: 'right', format: 'num' },
-            { key: 'totalUsers', label: 'Users', align: 'right', format: 'num' },
-            { key: 'eventCountPerUser', label: 'Per user', align: 'right', compute: (r) => (r.eventCountPerUser || 0).toFixed(2) },
-          ]}
-          rows={events}
-        />
-      </Section>
+          {/* Timeseries chart */}
+          <Section title={data.granularity === 'hourly' ? 'Hourly traffic' : 'Daily traffic'}
+                   subtitle={(data.timeseries?.length || 0) + ' points · sessions overlay'}>
+            <TimeseriesChart series={data.timeseries || []} granularity={data.granularity} hasComparison={hasComparison} />
+          </Section>
 
-      {/* Device + Geo side by side */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: 18, marginBottom: 18 }}>
-        <Section title="Device category" subtitle="">
-          <DataTable
-            cols={[
-              { key: 'deviceCategory', label: 'Device', align: 'left' },
-              { key: 'sessions', label: 'Sessions', align: 'right', format: 'num' },
-              { key: 'totalUsers', label: 'Users', align: 'right', format: 'num' },
-              { key: 'conversions', label: 'Conv.', align: 'right', format: 'num', highlight: true },
-              { key: 'share', label: '%', align: 'right', compute: (r) => {
-                const total = devices.reduce((s, d) => s + (d.sessions || 0), 0);
-                return total > 0 ? ((r.sessions / total) * 100).toFixed(0) + '%' : '—';
-              }},
-            ]}
-            rows={devices}
-          />
-        </Section>
-        <Section title="Geography (country)" subtitle="">
-          <DataTable
-            cols={[
-              { key: 'country', label: 'Country', align: 'left' },
-              { key: 'sessions', label: 'Sessions', align: 'right', format: 'num' },
-              { key: 'totalUsers', label: 'Users', align: 'right', format: 'num' },
-              { key: 'conversions', label: 'Conv.', align: 'right', format: 'num', highlight: true },
-            ]}
-            rows={geo}
-          />
-        </Section>
-      </div>
+          {/* Source/Medium */}
+          <Section title="Source / Medium" subtitle={(data.sourceMedium?.length || 0) + ' sources'}>
+            <SourceTable rows={data.sourceMedium || []} hasComparison={hasComparison} totalSessions={cur.sessions} />
+          </Section>
 
-      {/* Daily timeseries — simple sparkline rendering */}
-      <Section title="Daily traffic" subtitle={`Last ${daily.length} days · sessions / users / conversions`}>
-        <DailyChart daily={daily} />
-      </Section>
+          {/* Top landing pages */}
+          <Section title="Top landing pages" subtitle={(data.landingPages?.length || 0) + ' pages by sessions'}>
+            <LandingTable rows={data.landingPages || []} hasComparison={hasComparison} />
+          </Section>
 
-      {/* Notes / context */}
-      <div className="card is-clean" style={{ padding: 14, fontSize: 12, color: 'var(--muted)', lineHeight: 1.5 }}>
-        <b>💡 How to read this page:</b>
-        <ul style={{ margin: '6px 0 0 18px', padding: 0 }}>
-          <li><b>Source/Medium</b> — where traffic comes from. Compare with Pulse Marketing CPL — if Google brings 50% of traffic but only 10% of conversions, landing page needs work.</li>
-          <li><b>Top landing pages</b> — high bounce + low conv = either wrong audience or weak page. Bounce {'>'} 70% = problem.</li>
-          <li><b>Events</b> — make sure form-submit / phone-click events are tracked. Without them GA4 «conversions» = 0.</li>
-          <li><b>Device</b> — if mobile users have lower conv rate than desktop, your form/page is broken on mobile.</li>
-        </ul>
-      </div>
+          {/* Funnel + Devices + Geo */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14, marginBottom: 14 }}>
+            <FunnelCard cur={cur} prev={prev} />
+            <DimCard title="Devices" rows={data.devices || []} dimKey="deviceCategory" hasComparison={hasComparison} />
+            <DimCard title="Geography (country)" rows={data.geo || []} dimKey="country" limit={10} hasComparison={hasComparison} />
+          </div>
+
+          {/* Events */}
+          <Section title="Events" subtitle={(data.events?.length || 0) + ' types tracked'}>
+            <EventsTable rows={data.events || []} hasComparison={hasComparison} />
+          </Section>
+
+          <div className="card is-clean" style={{ padding: 14, fontSize: 11.5, color: 'var(--muted)', lineHeight: 1.5 }}>
+            💡 <b>How to use «🤖 Copy for AI»:</b> Click the button — page state copies to clipboard as markdown summary + full JSON. Paste into Claude/ChatGPT and ask: "Analyze this site behavior — find anomalies, suggest landing page improvements, identify wasted ad spend." The AI gets ALL data structured, not just numbers.
+          </div>
+        </>
+      )}
     </div>
   );
 };
 
-/* ===== Helpers ===== */
-function KpiTile({ label, value, sub, icon, tone }) {
-  const toneColors = {
-    success: '#16a34a',
-    warning: '#f59e0b',
-    danger: '#dc2626',
-  };
+/* ===== Components ===== */
+function KpiTile({ label, value, prev, delta, format, sub, tone, invert }) {
+  const v = _fmtMetric(value, format);
+  const hasDelta = delta !== null && delta !== undefined;
+  const deltaPct = hasDelta ? Math.round(delta * 1000) / 10 : null;
+  // For invert metrics (bounce rate), lower is better
+  const positiveDirection = invert ? deltaPct < 0 : deltaPct > 0;
+  const deltaColor = !hasDelta ? 'var(--muted)' : (deltaPct === 0 ? 'var(--muted)' : (positiveDirection ? '#16a34a' : '#dc2626'));
+  const deltaArrow = !hasDelta ? '' : (deltaPct === 0 ? '·' : (deltaPct > 0 ? '▲' : '▼'));
+  const toneColor = tone === 'success' ? '#166534' : 'var(--ink)';
   return (
-    <div className="card is-clean" style={{ padding: 14 }}>
-      <div className="row" style={{ marginBottom: 4, fontSize: 11, color: 'var(--muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em' }}>
-        {icon && <Icon name={icon} style={{ width: 12, height: 12 }} />}
-        {label}
-      </div>
-      <div className="num" style={{ fontSize: 22, fontWeight: 800, color: toneColors[tone] || 'var(--ink)', lineHeight: 1.1 }}>
-        {value}
-      </div>
-      {sub && <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>{sub}</div>}
+    <div className="card is-clean" style={{ padding: 12 }}>
+      <div style={{ fontSize: 10.5, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em' }}>{label}</div>
+      <div className="num" style={{ fontSize: 22, fontWeight: 800, color: toneColor, lineHeight: 1.1, marginTop: 2 }}>{v}</div>
+      {sub && <div className="muted" style={{ fontSize: 10.5, marginTop: 2 }}>{sub}</div>}
+      {hasDelta ? (
+        <div style={{ fontSize: 10.5, marginTop: 4, color: deltaColor, fontWeight: 600 }} title={'Previous: ' + _fmtMetric(prev, format)}>
+          {deltaArrow} {Math.abs(deltaPct).toFixed(1)}% vs prev ({_fmtMetric(prev, format)})
+        </div>
+      ) : prev === null && value > 0 ? (
+        <div style={{ fontSize: 10.5, marginTop: 4, color: 'var(--muted)' }}>no baseline</div>
+      ) : null}
     </div>
   );
 }
 
 function Section({ title, subtitle, children }) {
   return (
-    <div className="card is-clean" style={{ marginBottom: 18, padding: 0, overflow: 'hidden' }}>
-      <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
+    <div className="card is-clean" style={{ marginBottom: 14, padding: 0, overflow: 'hidden' }}>
+      <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
         <div style={{ fontSize: 13, fontWeight: 700 }}>{title}</div>
-        {subtitle && <div style={{ fontSize: 11, color: 'var(--muted)' }}>{subtitle}</div>}
+        {subtitle && <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>{subtitle}</div>}
       </div>
       <div>{children}</div>
     </div>
   );
 }
 
-function DataTable({ cols, rows }) {
-  if (!rows || rows.length === 0) {
-    return <div style={{ padding: 18, fontSize: 12, color: 'var(--muted)', textAlign: 'center' }}>No data in window.</div>;
-  }
-  const gridCols = cols.map(c => c.align === 'left' ? '1fr' : '90px').join(' ');
+function FunnelCard({ cur, prev }) {
+  const sessions = cur.sessions || 0;
+  const engaged = cur.engagedSessions || 0;
+  const conversions = cur.conversions || 0;
+  const engagedPct = sessions > 0 ? (engaged / sessions * 100) : 0;
+  const convPct = sessions > 0 ? (conversions / sessions * 100) : 0;
+  return (
+    <div className="card is-clean" style={{ padding: 14 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 10 }}>Conversion funnel</div>
+      <FunnelBar label="Sessions" value={sessions} max={sessions} color="#3b82f6" />
+      <FunnelBar label={`Engaged (${engagedPct.toFixed(0)}%)`} value={engaged} max={sessions} color="#a855f7" />
+      <FunnelBar label={`Conversions (${convPct.toFixed(1)}%)`} value={conversions} max={sessions} color="#16a34a" />
+    </div>
+  );
+}
+
+function FunnelBar({ label, value, max, color }) {
+  const pct = max > 0 ? (value / max * 100) : 0;
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, marginBottom: 2 }}>
+        <span style={{ color: 'var(--muted)' }}>{label}</span>
+        <span style={{ fontWeight: 700, fontFamily: 'var(--font-mono)' }}>{value.toLocaleString()}</span>
+      </div>
+      <div style={{ height: 8, background: 'var(--surface-2)', borderRadius: 4, overflow: 'hidden' }}>
+        <div style={{ height: '100%', width: pct + '%', background: color, transition: 'width .2s' }} />
+      </div>
+    </div>
+  );
+}
+
+function DimCard({ title, rows, dimKey, limit = 5, hasComparison }) {
+  const top = rows.slice(0, limit);
+  const total = rows.reduce((s, r) => s + (r.current.sessions || 0), 0);
+  return (
+    <div className="card is-clean" style={{ padding: 14 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 10 }}>{title}</div>
+      {top.length === 0 && <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>No data.</div>}
+      {top.map((r, i) => {
+        const sess = r.current.sessions || 0;
+        const pct = total > 0 ? (sess / total * 100) : 0;
+        const prevSess = r.previous ? (r.previous.sessions || 0) : null;
+        const delta = prevSess !== null && prevSess > 0 ? (sess - prevSess) / prevSess : null;
+        const label = r.dims[dimKey] || '(unknown)';
+        return (
+          <div key={label + i} style={{ marginBottom: 7 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, marginBottom: 2 }}>
+              <span style={{ fontWeight: 500 }}>{label}</span>
+              <span className="num" style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{sess.toLocaleString()}</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10.5, color: 'var(--muted)' }}>
+              <div style={{ flex: 1, height: 4, background: 'var(--surface-2)', borderRadius: 2, overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: pct + '%', background: 'var(--accent)' }} />
+              </div>
+              <span style={{ minWidth: 40, textAlign: 'right' }}>{pct.toFixed(1)}%</span>
+              {hasComparison && delta !== null && (
+                <span style={{ minWidth: 36, textAlign: 'right', color: delta >= 0 ? '#16a34a' : '#dc2626', fontWeight: 600 }}>
+                  {delta >= 0 ? '+' : ''}{Math.round(delta * 100)}%
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      })}
+      {rows.length > limit && (
+        <div style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 4 }}>+{rows.length - limit} more</div>
+      )}
+    </div>
+  );
+}
+
+function SourceTable({ rows, hasComparison, totalSessions }) {
+  if (!rows || rows.length === 0) return <div style={{ padding: 18, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>No data.</div>;
+  const cols = [
+    { label: 'Source', align: 'left' },
+    { label: 'Medium', align: 'left' },
+    { label: 'Sessions', align: 'right' },
+    { label: 'Users', align: 'right' },
+    { label: 'Conv.', align: 'right' },
+    { label: 'CR %', align: 'right' },
+    ...(hasComparison ? [{ label: 'Δ Sessions', align: 'right' }] : []),
+    { label: '% of total', align: 'right' },
+  ];
+  const gridCols = hasComparison ? '1.4fr 1fr 80px 80px 80px 70px 80px 90px' : '1.4fr 1fr 80px 80px 80px 70px 90px';
   return (
     <div>
       <div style={{ display: 'grid', gridTemplateColumns: gridCols, gap: 8, padding: '8px 14px', background: 'var(--surface-2)', fontSize: 10.5, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>
-        {cols.map(c => <div key={c.key} style={{ textAlign: c.align }}>{c.label}</div>)}
+        {cols.map((c, i) => <div key={i} style={{ textAlign: c.align }}>{c.label}</div>)}
       </div>
-      {rows.map((r, i) => (
-        <div key={i} style={{ display: 'grid', gridTemplateColumns: gridCols, gap: 8, padding: '8px 14px', borderTop: '1px solid var(--border)', fontSize: 12.5, alignItems: 'center' }}>
-          {cols.map(c => {
-            let v;
-            if (typeof c.compute === 'function') v = c.compute(r);
-            else if (c.format === 'num') v = (typeof r[c.key] === 'number' ? r[c.key].toLocaleString() : (r[c.key] || '—'));
-            else v = r[c.key] != null ? String(r[c.key]) : '—';
-            const truncated = c.truncate && typeof v === 'string' && v.length > c.truncate ? v.slice(0, c.truncate) + '…' : v;
-            const numeric = c.align === 'right';
-            const highlight = c.highlight && r[c.key] > 0;
-            return (
-              <div key={c.key} className={numeric ? 'mono' : ''} style={{
-                textAlign: c.align,
-                fontWeight: highlight ? 700 : (c.align === 'left' && c === cols[0] ? 600 : 400),
-                color: highlight ? 'var(--success-ink)' : (c.align === 'left' ? 'var(--ink)' : 'var(--ink)'),
-                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-              }} title={typeof v === 'string' ? v : ''}>
-                {truncated}
+      {rows.map((r, i) => {
+        const sess = r.current.sessions || 0;
+        const conv = r.current.conversions || 0;
+        const users = r.current.totalUsers || 0;
+        const cr = sess > 0 ? (conv / sess * 100) : 0;
+        const pct = totalSessions > 0 ? (sess / totalSessions * 100) : 0;
+        const prevSess = r.previous ? (r.previous.sessions || 0) : null;
+        const delta = prevSess !== null && prevSess > 0 ? (sess - prevSess) / prevSess : null;
+        return (
+          <div key={i} style={{ display: 'grid', gridTemplateColumns: gridCols, gap: 8, padding: '7px 14px', borderTop: '1px solid var(--border)', alignItems: 'center', fontSize: 12 }}>
+            <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.dims.sessionSource || '(unset)'}</div>
+            <div style={{ color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.dims.sessionMedium || '(none)'}</div>
+            <div className="mono" style={{ textAlign: 'right' }}>{sess.toLocaleString()}</div>
+            <div className="mono" style={{ textAlign: 'right', color: 'var(--muted)' }}>{users.toLocaleString()}</div>
+            <div className="mono" style={{ textAlign: 'right', fontWeight: conv > 0 ? 700 : 400, color: conv > 0 ? '#166534' : 'var(--muted)' }}>{conv}</div>
+            <div className="mono" style={{ textAlign: 'right', color: cr >= 5 ? '#16a34a' : cr >= 1 ? 'var(--ink)' : 'var(--muted)', fontWeight: 700 }}>{cr.toFixed(1)}%</div>
+            {hasComparison && (
+              <div className="mono" style={{ textAlign: 'right', color: delta === null ? 'var(--muted-2)' : delta >= 0 ? '#16a34a' : '#dc2626', fontWeight: 600 }}>
+                {delta === null ? '—' : (delta >= 0 ? '+' : '') + Math.round(delta * 100) + '%'}
               </div>
-            );
-          })}
-        </div>
-      ))}
+            )}
+            <div style={{ textAlign: 'right', fontSize: 11, color: 'var(--muted)' }}>
+              <span style={{ display: 'inline-block', width: 30, height: 4, background: 'var(--surface)', borderRadius: 2, overflow: 'hidden', verticalAlign: 'middle', marginRight: 4 }}>
+                <span style={{ display: 'block', height: '100%', width: pct + '%', background: 'var(--accent)' }} />
+              </span>
+              {pct.toFixed(1)}%
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-function DailyChart({ daily }) {
-  if (!daily || daily.length === 0) {
-    return <div style={{ padding: 24, fontSize: 12, color: 'var(--muted)', textAlign: 'center' }}>No daily data.</div>;
+function LandingTable({ rows, hasComparison }) {
+  if (!rows || rows.length === 0) return <div style={{ padding: 18, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>No data.</div>;
+  const gridCols = hasComparison ? '2fr 80px 80px 70px 70px 70px 80px' : '2fr 80px 80px 70px 70px 70px';
+  return (
+    <div>
+      <div style={{ display: 'grid', gridTemplateColumns: gridCols, gap: 8, padding: '8px 14px', background: 'var(--surface-2)', fontSize: 10.5, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>
+        <div>Landing page</div>
+        <div style={{ textAlign: 'right' }}>Sessions</div>
+        <div style={{ textAlign: 'right' }}>Users</div>
+        <div style={{ textAlign: 'right' }}>Conv.</div>
+        <div style={{ textAlign: 'right' }}>Avg time</div>
+        <div style={{ textAlign: 'right' }}>Bounce</div>
+        {hasComparison && <div style={{ textAlign: 'right' }}>Δ Sess</div>}
+      </div>
+      {rows.map((r, i) => {
+        const sess = r.current.sessions || 0;
+        const conv = r.current.conversions || 0;
+        const avg = r.current.averageSessionDuration || 0;
+        const bounce = r.current.bounceRate || 0;
+        const prevSess = r.previous ? (r.previous.sessions || 0) : null;
+        const delta = prevSess !== null && prevSess > 0 ? (sess - prevSess) / prevSess : null;
+        const page = r.dims.landingPage || '(unset)';
+        return (
+          <div key={i} style={{ display: 'grid', gridTemplateColumns: gridCols, gap: 8, padding: '7px 14px', borderTop: '1px solid var(--border)', alignItems: 'center', fontSize: 12 }}>
+            <div title={page} style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{page}</div>
+            <div className="mono" style={{ textAlign: 'right', fontWeight: 700 }}>{sess.toLocaleString()}</div>
+            <div className="mono" style={{ textAlign: 'right', color: 'var(--muted)' }}>{(r.current.totalUsers || 0).toLocaleString()}</div>
+            <div className="mono" style={{ textAlign: 'right', fontWeight: conv > 0 ? 700 : 400, color: conv > 0 ? '#166534' : 'var(--muted)' }}>{conv}</div>
+            <div className="mono" style={{ textAlign: 'right', color: 'var(--muted)' }}>{_fmtDuration(avg)}</div>
+            <div className="mono" style={{ textAlign: 'right', color: bounce > 0.7 ? '#dc2626' : bounce > 0.5 ? '#f59e0b' : '#16a34a' }}>{(bounce * 100).toFixed(0)}%</div>
+            {hasComparison && (
+              <div className="mono" style={{ textAlign: 'right', color: delta === null ? 'var(--muted-2)' : delta >= 0 ? '#16a34a' : '#dc2626', fontWeight: 600 }}>
+                {delta === null ? '—' : (delta >= 0 ? '+' : '') + Math.round(delta * 100) + '%'}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function EventsTable({ rows, hasComparison }) {
+  if (!rows || rows.length === 0) return <div style={{ padding: 18, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>No events.</div>;
+  const gridCols = hasComparison ? '2fr 100px 100px 100px' : '2fr 100px 100px';
+  return (
+    <div>
+      <div style={{ display: 'grid', gridTemplateColumns: gridCols, gap: 8, padding: '8px 14px', background: 'var(--surface-2)', fontSize: 10.5, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>
+        <div>Event name</div>
+        <div style={{ textAlign: 'right' }}>Count</div>
+        <div style={{ textAlign: 'right' }}>Users</div>
+        {hasComparison && <div style={{ textAlign: 'right' }}>Δ vs prev</div>}
+      </div>
+      {rows.map((r, i) => {
+        const count = r.current.eventCount || 0;
+        const users = r.current.totalUsers || 0;
+        const prevCount = r.previous ? (r.previous.eventCount || 0) : null;
+        const delta = prevCount !== null && prevCount > 0 ? (count - prevCount) / prevCount : null;
+        return (
+          <div key={i} style={{ display: 'grid', gridTemplateColumns: gridCols, gap: 8, padding: '7px 14px', borderTop: '1px solid var(--border)', alignItems: 'center', fontSize: 12 }}>
+            <div style={{ fontWeight: 500 }}>{r.dims.eventName || '(unset)'}</div>
+            <div className="mono" style={{ textAlign: 'right', fontWeight: 700 }}>{count.toLocaleString()}</div>
+            <div className="mono" style={{ textAlign: 'right', color: 'var(--muted)' }}>{users.toLocaleString()}</div>
+            {hasComparison && (
+              <div className="mono" style={{ textAlign: 'right', color: delta === null ? 'var(--muted-2)' : delta >= 0 ? '#16a34a' : '#dc2626', fontWeight: 600 }}>
+                {delta === null ? '—' : (delta >= 0 ? '+' : '') + Math.round(delta * 100) + '%'}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function TimeseriesChart({ series, granularity, hasComparison }) {
+  if (!series || series.length === 0) {
+    return <div style={{ padding: 24, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>No data points.</div>;
   }
-  const maxSessions = Math.max(...daily.map(d => d.sessions || 0), 1);
-  const maxUsers = Math.max(...daily.map(d => d.users || 0), 1);
-  const maxConversions = Math.max(...daily.map(d => d.conversions || 0), 1);
-  const w = 100 / daily.length;
+  const max = Math.max(...series.map(s => Math.max(s.current?.sessions || 0, s.previous?.sessions || 0)), 1);
+  const maxConv = Math.max(...series.map(s => s.current?.conversions || 0), 1);
+  const w = 100 / series.length;
   return (
     <div style={{ padding: 14 }}>
-      <div style={{ position: 'relative', height: 140, background: 'var(--surface-2)', borderRadius: 8, padding: 8, overflow: 'hidden' }}>
+      <div style={{ position: 'relative', height: 160, background: 'var(--surface-2)', borderRadius: 8, padding: 8, overflow: 'hidden' }}>
         <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ width: '100%', height: '100%' }}>
-          {/* sessions bars */}
-          {daily.map((d, i) => (
-            <rect key={i} x={i * w + w * 0.1} y={100 - ((d.sessions || 0) / maxSessions) * 95} width={w * 0.8} height={((d.sessions || 0) / maxSessions) * 95} fill="var(--accent)" opacity="0.35" />
+          {/* Current sessions bars */}
+          {series.map((s, i) => (
+            <rect key={'c' + i} x={i * w + w * 0.1} y={100 - ((s.current?.sessions || 0) / max) * 95}
+                  width={w * 0.4} height={((s.current?.sessions || 0) / max) * 95}
+                  fill="var(--accent)" opacity="0.7" />
           ))}
-          {/* conversions line */}
-          {daily.length > 1 && (
-            <polyline
-              points={daily.map((d, i) => `${i * w + w / 2},${100 - ((d.conversions || 0) / maxConversions) * 95}`).join(' ')}
-              fill="none" stroke="#16a34a" strokeWidth="0.7" vectorEffect="non-scaling-stroke"
-            />
+          {/* Previous sessions bars (lighter) */}
+          {hasComparison && series.map((s, i) => (
+            <rect key={'p' + i} x={i * w + w * 0.5} y={100 - ((s.previous?.sessions || 0) / max) * 95}
+                  width={w * 0.4} height={((s.previous?.sessions || 0) / max) * 95}
+                  fill="#94a3b8" opacity="0.4" />
+          ))}
+          {/* Conversions line on current */}
+          {series.length > 1 && (
+            <polyline points={series.map((s, i) => (i * w + w / 2) + ',' + (100 - ((s.current?.conversions || 0) / maxConv) * 95)).join(' ')}
+                      fill="none" stroke="#16a34a" strokeWidth="0.6" vectorEffect="non-scaling-stroke" />
           )}
         </svg>
       </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, fontSize: 10.5, color: 'var(--muted)' }}>
-        <span>{daily[0]?.date || '—'}</span>
-        <span><span style={{ display: 'inline-block', width: 10, height: 10, background: 'var(--accent)', opacity: 0.35, borderRadius: 2, verticalAlign: 'middle', marginRight: 4 }}/>Sessions (peak {maxSessions.toLocaleString()})</span>
-        <span><span style={{ display: 'inline-block', width: 10, height: 2, background: '#16a34a', verticalAlign: 'middle', marginRight: 4 }}/>Conversions (peak {maxConversions.toLocaleString()})</span>
-        <span>{daily[daily.length - 1]?.date || '—'}</span>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, fontSize: 10.5, color: 'var(--muted)', flexWrap: 'wrap', gap: 6 }}>
+        <span><span style={{ display: 'inline-block', width: 10, height: 10, background: 'var(--accent)', opacity: 0.7, borderRadius: 2, verticalAlign: 'middle', marginRight: 4 }}/>Current sessions (peak {max.toLocaleString()})</span>
+        {hasComparison && <span><span style={{ display: 'inline-block', width: 10, height: 10, background: '#94a3b8', opacity: 0.4, borderRadius: 2, verticalAlign: 'middle', marginRight: 4 }}/>Previous sessions</span>}
+        <span><span style={{ display: 'inline-block', width: 10, height: 2, background: '#16a34a', verticalAlign: 'middle', marginRight: 4 }}/>Conversions (peak {maxConv})</span>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: 10, color: 'var(--muted-2)' }}>
+        <span>{series[0]?.key}</span><span>{series[series.length - 1]?.key}</span>
       </div>
     </div>
   );
 }
 
-function SaveMsg({ msg }) {
-  if (!msg) return null;
-  return (
-    <div style={{ padding: '8px 12px', marginTop: 10, fontSize: 12, borderRadius: 6,
-      background: msg.kind === 'ok' ? 'rgba(34,197,94,.12)' : 'rgba(239,68,68,.12)',
-      color: msg.kind === 'ok' ? '#166534' : '#991b1b' }}>
-      {msg.text}
-    </div>
-  );
+/* ===== Helpers ===== */
+function _fmtYmd(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
-
-function formatAgo(iso) {
+function _fmtAgo(iso) {
   if (!iso) return '—';
   const ms = Date.now() - new Date(iso).getTime();
   const m = Math.floor(ms / 60000);
   if (m < 1) return 'just now';
   if (m < 60) return m + 'm ago';
   const h = Math.floor(m / 60);
-  if (h < 24) return h + 'h ago';
-  return Math.floor(h / 24) + 'd ago';
+  return h + 'h ago';
+}
+function _fmtDuration(sec) {
+  if (!sec || sec < 1) return '0s';
+  const m = Math.floor(sec / 60);
+  const s = Math.round(sec % 60);
+  return m > 0 ? m + 'm ' + s + 's' : s + 's';
+}
+function _fmtMetric(v, format) {
+  if (v === null || v === undefined) return '—';
+  if (format === 'num') return Math.round(v).toLocaleString();
+  if (format === 'duration') return _fmtDuration(v);
+  if (format === 'pct') return v.toFixed(1) + '%';
+  return String(v);
+}
+
+// Build markdown summary for AI export (concise + structured)
+function _buildMarkdownSummary(data) {
+  const cur = data.summary?.current || {};
+  const prev = data.summary?.previous;
+  const d = data.summary?.deltas || {};
+  const fmtPct = (delta) => delta === null || delta === undefined ? 'N/A' : (delta >= 0 ? '+' : '') + (delta * 100).toFixed(1) + '%';
+  let md = '';
+  md += `**Period:** ${data.currentRange?.label} (${data.currentRange?.start} → ${data.currentRange?.end})\n`;
+  if (data.previousRange) md += `**Comparison:** ${data.previousRange.label} (${data.previousRange.start} → ${data.previousRange.end})\n`;
+  md += '\n### Summary KPIs\n\n';
+  md += '| Metric | Current | Previous | Δ |\n|---|---:|---:|---:|\n';
+  const metrics = [
+    ['Sessions', 'sessions', 'num'],
+    ['Users', 'totalUsers', 'num'],
+    ['New Users', 'newUsers', 'num'],
+    ['Engaged Sessions', 'engagedSessions', 'num'],
+    ['Page Views', 'screenPageViews', 'num'],
+    ['Event Count', 'eventCount', 'num'],
+    ['Conversions', 'conversions', 'num'],
+    ['Avg Session Duration', 'averageSessionDuration', 'duration'],
+    ['Bounce Rate', 'bounceRate', 'pct'],
+  ];
+  for (const [label, key, fmt] of metrics) {
+    md += `| ${label} | ${_fmtMetric(cur[key], fmt)} | ${prev ? _fmtMetric(prev[key], fmt) : '—'} | ${fmtPct(d[key])} |\n`;
+  }
+  md += '\n### Top Sources\n\n';
+  md += '| Source | Medium | Sessions | Conv. | CR% |\n|---|---|---:|---:|---:|\n';
+  for (const r of (data.sourceMedium || []).slice(0, 10)) {
+    const cr = r.current.sessions > 0 ? (r.current.conversions / r.current.sessions * 100).toFixed(1) : '0';
+    md += `| ${r.dims.sessionSource} | ${r.dims.sessionMedium} | ${r.current.sessions} | ${r.current.conversions} | ${cr}% |\n`;
+  }
+  md += '\n### Top Landing Pages\n\n';
+  md += '| Page | Sessions | Conv. | Bounce |\n|---|---:|---:|---:|\n';
+  for (const r of (data.landingPages || []).slice(0, 10)) {
+    md += `| ${r.dims.landingPage} | ${r.current.sessions} | ${r.current.conversions} | ${(r.current.bounceRate * 100).toFixed(0)}% |\n`;
+  }
+  md += '\n### Devices\n\n';
+  for (const r of (data.devices || [])) {
+    md += `- ${r.dims.deviceCategory}: ${r.current.sessions} sessions, ${r.current.conversions} conversions\n`;
+  }
+  md += '\n### Top Events\n\n';
+  for (const r of (data.events || []).slice(0, 10)) {
+    md += `- ${r.dims.eventName}: ${r.current.eventCount} (${r.current.totalUsers} users)\n`;
+  }
+  return md;
+}
+
+function _buildCsv(data) {
+  const lines = [];
+  lines.push('# GA4 Analytics Export — ' + (data.currentRange?.label || data.period));
+  lines.push('# Period: ' + data.currentRange?.start + ' to ' + data.currentRange?.end);
+  if (data.previousRange) lines.push('# Compared to: ' + data.previousRange.start + ' to ' + data.previousRange.end);
+  lines.push('');
+  // Summary
+  lines.push('Summary,Current,Previous');
+  const cur = data.summary?.current || {};
+  const prev = data.summary?.previous || {};
+  for (const key of Object.keys(cur)) {
+    lines.push(`"${key}",${cur[key]},${prev[key] || ''}`);
+  }
+  lines.push('');
+  // Source/Medium
+  lines.push('Source/Medium');
+  lines.push('Source,Medium,Sessions,Users,Conversions,Engaged');
+  for (const r of (data.sourceMedium || [])) {
+    lines.push(`"${r.dims.sessionSource}","${r.dims.sessionMedium}",${r.current.sessions || 0},${r.current.totalUsers || 0},${r.current.conversions || 0},${r.current.engagedSessions || 0}`);
+  }
+  lines.push('');
+  // Landing pages
+  lines.push('Landing Pages');
+  lines.push('Page,Sessions,Users,Conversions,AvgDuration,BounceRate');
+  for (const r of (data.landingPages || [])) {
+    lines.push(`"${r.dims.landingPage}",${r.current.sessions || 0},${r.current.totalUsers || 0},${r.current.conversions || 0},${(r.current.averageSessionDuration || 0).toFixed(1)},${(r.current.bounceRate || 0).toFixed(3)}`);
+  }
+  lines.push('');
+  // Events
+  lines.push('Events');
+  lines.push('EventName,Count,Users');
+  for (const r of (data.events || [])) {
+    lines.push(`"${r.dims.eventName}",${r.current.eventCount || 0},${r.current.totalUsers || 0}`);
+  }
+  return lines.join('\n');
 }

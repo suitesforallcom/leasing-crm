@@ -7184,6 +7184,7 @@ exports.tiktokSettingsSet = _tiktok.tiktokSettingsSet;
 const _ga4 = require('./ga4-sync');
 exports.ga4Sync = _ga4.ga4Sync;
 exports.ga4SyncNow = _ga4.ga4SyncNow;
+exports.ga4SyncRange = _ga4.ga4SyncRange;
 
 // Phase 14 — Google Calendar polling. Requires operator to add
 // `https://www.googleapis.com/auth/calendar.events.readonly` scope to

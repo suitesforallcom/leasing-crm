@@ -356,3 +356,297 @@ exports.ga4SyncNow = onCall(
     return { ok: true, counts };
   }
 );
+
+/* ============================================================
+   2026-05-25 Tony — ga4SyncRange callable
+   On-demand range-based GA4 data fetch with comparison support.
+   Used by redesigned Analytics page (period selector + delta tiles).
+
+   Args (in request.data):
+     period?: 'today' | 'yesterday' | '7d' | '30d' | '90d' | 'mtd' |
+              'lastMonth' | 'all' | 'custom'   (default 'today')
+     custom?: { start: 'YYYY-MM-DD', end: 'YYYY-MM-DD' }
+     compareTo?: 'previous' | 'lastYear' | 'none'  (default 'previous')
+     hourly?: boolean  (auto-true when period length ≤ 2 days)
+
+   Returns:
+     { ok, propertyId, period, granularity ('hourly'|'daily'),
+       currentRange: { start, end, label },
+       previousRange: { ... } | null,
+       summary: { current, previous, deltas },
+       timeseries: [{ key, current, previous }],
+       sourceMedium / landingPages / events / devices / geo:
+         [{ dims, current, previous }],
+       fetchedAt }
+   ============================================================ */
+function _resolveRange(period, custom, today) {
+  const todayYmd = _fmtDate(today);
+  function shift(d, days) { return new Date(d.getTime() + days * 86400000); }
+  function ymd(d) { return _fmtDate(d); }
+  function monthStart(d) { return new Date(d.getFullYear(), d.getMonth(), 1); }
+  function prevMonthStart(d) { return new Date(d.getFullYear(), d.getMonth() - 1, 1); }
+  function prevMonthEnd(d) { return new Date(d.getFullYear(), d.getMonth(), 0); }
+
+  let start, end, label;
+  switch (period) {
+    case 'today':
+      start = todayYmd; end = todayYmd; label = 'Today (' + todayYmd + ')'; break;
+    case 'yesterday':
+      { const y = shift(today, -1); start = ymd(y); end = ymd(y); label = 'Yesterday (' + start + ')'; }
+      break;
+    case '7d':
+      start = ymd(shift(today, -6)); end = todayYmd; label = 'Last 7 days'; break;
+    case '30d':
+      start = ymd(shift(today, -29)); end = todayYmd; label = 'Last 30 days'; break;
+    case '90d':
+      start = ymd(shift(today, -89)); end = todayYmd; label = 'Last 90 days'; break;
+    case 'mtd':
+      start = ymd(monthStart(today)); end = todayYmd; label = 'Month to date'; break;
+    case 'lastMonth':
+      start = ymd(prevMonthStart(today)); end = ymd(prevMonthEnd(today)); label = 'Last month'; break;
+    case 'all':
+      // GA4 Data API max lookback ≈ 14 months for property
+      start = ymd(shift(today, -395)); end = todayYmd; label = 'All time (last 395d)'; break;
+    case 'custom':
+      start = (custom && custom.start) || todayYmd;
+      end = (custom && custom.end) || todayYmd;
+      label = 'Custom (' + start + ' → ' + end + ')';
+      break;
+    default:
+      start = todayYmd; end = todayYmd; label = 'Today';
+  }
+  return { start, end, label };
+}
+
+function _resolveComparisonRange(currentRange, compareTo, today) {
+  if (compareTo === 'none') return null;
+  const cStart = new Date(currentRange.start + 'T00:00:00');
+  const cEnd = new Date(currentRange.end + 'T00:00:00');
+  const lengthDays = Math.round((cEnd.getTime() - cStart.getTime()) / 86400000) + 1;
+
+  if (compareTo === 'lastYear') {
+    const lyStart = new Date(cStart); lyStart.setFullYear(lyStart.getFullYear() - 1);
+    const lyEnd = new Date(cEnd); lyEnd.setFullYear(lyEnd.getFullYear() - 1);
+    return { start: _fmtDate(lyStart), end: _fmtDate(lyEnd), label: 'Same period last year' };
+  }
+  // 'previous' — equal-length window immediately before currentRange
+  const prevEnd = new Date(cStart.getTime() - 86400000);
+  const prevStart = new Date(prevEnd.getTime() - (lengthDays - 1) * 86400000);
+  return {
+    start: _fmtDate(prevStart),
+    end: _fmtDate(prevEnd),
+    label: 'Previous ' + lengthDays + ' day' + (lengthDays === 1 ? '' : 's'),
+  };
+}
+
+// Group GA4 multi-range report rows by dimension values; split current/previous.
+function _splitByRange(report, hasComparison) {
+  const dims = (report.dimensionHeaders || []).map(h => h.name);
+  const mets = (report.metricHeaders || []).map(h => h.name);
+  const out = [];
+  for (const row of (report.rows || [])) {
+    const dimVals = {};
+    (row.dimensionValues || []).forEach((v, i) => { dimVals[dims[i]] = v.value; });
+    const rangeIdx = dimVals.dateRange === 'date_range_1' ? 1 : 0;
+    const metricObj = {};
+    (row.metricValues || []).forEach((v, i) => {
+      const n = Number(v.value);
+      metricObj[mets[i]] = Number.isFinite(n) ? n : v.value;
+    });
+    const dimsClean = Object.fromEntries(Object.entries(dimVals).filter(([k]) => k !== 'dateRange'));
+    const groupKey = JSON.stringify(dimsClean);
+    let existing = out.find(r => r.groupKey === groupKey);
+    if (!existing) {
+      existing = { groupKey, dims: dimsClean, current: {}, previous: hasComparison ? {} : null };
+      out.push(existing);
+    }
+    if (rangeIdx === 0) existing.current = metricObj;
+    else if (existing.previous !== null) existing.previous = metricObj;
+  }
+  // Sort by current.sessions desc when possible
+  out.sort((a, b) => (b.current.sessions || b.current.eventCount || 0) - (a.current.sessions || a.current.eventCount || 0));
+  return out.map(({ groupKey, ...rest }) => rest);
+}
+
+function _delta(cur, prev) {
+  if (prev === undefined || prev === null) return null;
+  if (prev === 0) return cur > 0 ? null : 0;
+  return (cur - prev) / prev;
+}
+
+async function _runSyncRange({ period, custom, compareTo, hourly }) {
+  const propertyId = GA4_PROPERTY_ID.value();
+  const saJson = GA4_SERVICE_ACCOUNT_JSON.value();
+  if (!propertyId || !saJson) throw new Error('GA4 secrets not bound');
+  const accessToken = await _getAccessToken(saJson);
+
+  const today = new Date();
+  const currentRange = _resolveRange(period || 'today', custom, today);
+  const compareToFinal = compareTo || 'previous';
+  const previousRange = _resolveComparisonRange(currentRange, compareToFinal, today);
+  const dateRanges = previousRange
+    ? [
+        { startDate: currentRange.start, endDate: currentRange.end },
+        { startDate: previousRange.start, endDate: previousRange.end },
+      ]
+    : [{ startDate: currentRange.start, endDate: currentRange.end }];
+
+  // Auto-hourly when range ≤ 2 days
+  const rangeLengthDays = Math.round(
+    (new Date(currentRange.end).getTime() - new Date(currentRange.start).getTime()) / 86400000
+  ) + 1;
+  const useHourly = hourly || rangeLengthDays <= 2;
+  const timeDim = useHourly ? 'dateHour' : 'date';
+
+  // 7 reports in parallel (each accepts 2 dateRanges for comparison in one call)
+  const [
+    summaryReport, sourceMediumReport, landingPagesReport, eventsReport,
+    deviceReport, geoReport, timeseriesReport,
+  ] = await Promise.all([
+    _runReport(propertyId, accessToken, {
+      dateRanges,
+      metrics: [
+        { name: 'sessions' }, { name: 'totalUsers' }, { name: 'newUsers' },
+        { name: 'engagedSessions' }, { name: 'eventCount' }, { name: 'conversions' },
+        { name: 'averageSessionDuration' }, { name: 'bounceRate' }, { name: 'screenPageViews' },
+      ],
+    }),
+    _runReport(propertyId, accessToken, {
+      dateRanges,
+      dimensions: [{ name: 'sessionSource' }, { name: 'sessionMedium' }],
+      metrics: [{ name: 'sessions' }, { name: 'totalUsers' }, { name: 'conversions' }, { name: 'engagedSessions' }],
+      orderBys: [{ metric: { metricName: 'sessions' }, desc: true }],
+      limit: TOP_N,
+    }),
+    _runReport(propertyId, accessToken, {
+      dateRanges,
+      dimensions: [{ name: 'landingPage' }],
+      metrics: [{ name: 'sessions' }, { name: 'totalUsers' }, { name: 'conversions' }, { name: 'averageSessionDuration' }, { name: 'bounceRate' }],
+      orderBys: [{ metric: { metricName: 'sessions' }, desc: true }],
+      limit: TOP_N,
+    }),
+    _runReport(propertyId, accessToken, {
+      dateRanges,
+      dimensions: [{ name: 'eventName' }],
+      metrics: [{ name: 'eventCount' }, { name: 'totalUsers' }],
+      orderBys: [{ metric: { metricName: 'eventCount' }, desc: true }],
+      limit: TOP_N,
+    }),
+    _runReport(propertyId, accessToken, {
+      dateRanges,
+      dimensions: [{ name: 'deviceCategory' }],
+      metrics: [{ name: 'sessions' }, { name: 'totalUsers' }, { name: 'conversions' }],
+      orderBys: [{ metric: { metricName: 'sessions' }, desc: true }],
+    }),
+    _runReport(propertyId, accessToken, {
+      dateRanges,
+      dimensions: [{ name: 'country' }],
+      metrics: [{ name: 'sessions' }, { name: 'totalUsers' }, { name: 'conversions' }],
+      orderBys: [{ metric: { metricName: 'sessions' }, desc: true }],
+      limit: 15,
+    }),
+    _runReport(propertyId, accessToken, {
+      dateRanges,
+      dimensions: [{ name: timeDim }],
+      metrics: [{ name: 'sessions' }, { name: 'totalUsers' }, { name: 'conversions' }],
+      orderBys: [{ dimension: { dimensionName: timeDim }, desc: false }],
+      limit: 500,
+    }),
+  ]);
+
+  // Summary — multi-range report returns rows = [current, previous].
+  // When no dimensions but multiple dateRanges, GA4 auto-adds dateRange dim → 2 rows.
+  const sumFlat = _flatten(summaryReport);
+  let sumCur = {}, sumPrev = null;
+  for (const row of sumFlat.rows) {
+    const rangeIdx = row.dateRange === 'date_range_1' ? 1 : 0;
+    const m = { ...row };
+    delete m.dateRange;
+    if (rangeIdx === 0) sumCur = m;
+    else if (previousRange) sumPrev = m;
+  }
+  // If no dimensions case (single dateRange, no dateRange dim), fall back to flat totals
+  if (!Object.keys(sumCur).length && sumFlat.totals && Object.keys(sumFlat.totals).length) {
+    sumCur = sumFlat.totals;
+  }
+  const summaryDeltas = {};
+  if (sumPrev) {
+    for (const key of Object.keys(sumCur)) {
+      summaryDeltas[key] = _delta(sumCur[key], sumPrev[key]);
+    }
+  }
+
+  const hasComparison = !!previousRange;
+  const sourceMedium = _splitByRange(sourceMediumReport, hasComparison);
+  const landingPages = _splitByRange(landingPagesReport, hasComparison);
+  const events = _splitByRange(eventsReport, hasComparison);
+  const devices = _splitByRange(deviceReport, hasComparison);
+  const geo = _splitByRange(geoReport, hasComparison);
+
+  // Timeseries — normalize key + split current/previous
+  const tsFlat = _flatten(timeseriesReport);
+  const tsByKey = {};
+  for (const row of tsFlat.rows) {
+    const rawKey = row[timeDim];
+    if (!rawKey) continue;
+    const rangeIdx = row.dateRange === 'date_range_1' ? 1 : 0;
+    let normKey = rawKey;
+    if (useHourly && rawKey.length === 10) {
+      // YYYYMMDDHH → "YYYY-MM-DD HH:00"
+      normKey = rawKey.slice(0,4) + '-' + rawKey.slice(4,6) + '-' + rawKey.slice(6,8) + ' ' + rawKey.slice(8,10) + ':00';
+    } else if (!useHourly && rawKey.length === 8) {
+      normKey = rawKey.slice(0,4) + '-' + rawKey.slice(4,6) + '-' + rawKey.slice(6,8);
+    }
+    // For comparison, group "current" and "previous" by relative position rather than literal key
+    // (since previous key dates differ). We'll keep them at the index position within their range.
+    const groupKey = rangeIdx === 0 ? normKey : 'prev_' + normKey;
+    if (!tsByKey[groupKey]) tsByKey[groupKey] = { key: normKey, rangeIdx };
+    tsByKey[groupKey].sessions = row.sessions || 0;
+    tsByKey[groupKey].users = row.totalUsers || 0;
+    tsByKey[groupKey].conversions = row.conversions || 0;
+  }
+  // Build aligned timeseries: index 0 of current ↔ index 0 of previous
+  const currentTs = Object.values(tsByKey).filter(r => r.rangeIdx === 0).sort((a,b) => a.key.localeCompare(b.key));
+  const previousTs = Object.values(tsByKey).filter(r => r.rangeIdx === 1).sort((a,b) => a.key.localeCompare(b.key));
+  const timeseries = currentTs.map((c, i) => ({
+    key: c.key,
+    current: { sessions: c.sessions, users: c.users, conversions: c.conversions },
+    previous: previousTs[i] ? { sessions: previousTs[i].sessions, users: previousTs[i].users, conversions: previousTs[i].conversions } : null,
+  }));
+
+  return {
+    ok: true,
+    propertyId,
+    period: period || 'today',
+    compareTo: compareToFinal,
+    granularity: useHourly ? 'hourly' : 'daily',
+    currentRange,
+    previousRange,
+    summary: { current: sumCur, previous: sumPrev, deltas: summaryDeltas },
+    timeseries,
+    sourceMedium,
+    landingPages,
+    events,
+    devices,
+    geo,
+    fetchedAt: new Date().toISOString(),
+  };
+}
+
+exports.ga4SyncRange = onCall(
+  { secrets: [GA4_PROPERTY_ID, GA4_SERVICE_ACCOUNT_JSON], timeoutSeconds: 60 },
+  async (request) => {
+    const email = (request.auth?.token?.email || '').toLowerCase();
+    if (!ROOT_ADMINS.includes(email)) {
+      throw new HttpsError('permission-denied', 'Root admin only');
+    }
+    const { period, custom, compareTo, hourly } = request.data || {};
+    try {
+      const result = await _runSyncRange({ period, custom, compareTo, hourly });
+      return result;
+    } catch (e) {
+      logger.error('[ga4-sync-range] FAIL: ' + e.message, e);
+      throw new HttpsError('internal', e.message);
+    }
+  }
+);
