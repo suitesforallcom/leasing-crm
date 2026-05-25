@@ -245,6 +245,13 @@ exports.marketingGetData = require('firebase-functions/v2/https').onCall(
       try { metaDiscoveredAccounts = JSON.parse(raw.metaDiscoveredAccountsJson); }
       catch (e) { /* ignore */ }
     }
+    // 2026-05-24 — TikTok mirror of metaDiscoveredAccounts. Same pattern,
+    // separate JSON-stringified blob to keep doc size predictable.
+    let tiktokDiscoveredAccounts = null;
+    if (raw.tiktokDiscoveredAccountsJson) {
+      try { tiktokDiscoveredAccounts = JSON.parse(raw.tiktokDiscoveredAccountsJson); }
+      catch (e) { /* ignore */ }
+    }
     // Also surface marketing-settings (so the UI knows which accounts
     // are enabled). Separate doc, so a second small read.
     let settings = {};
@@ -257,6 +264,7 @@ exports.marketingGetData = require('firebase-functions/v2/https').onCall(
         updatedAt: raw.updatedAt,
         sources: inflated,
         metaDiscoveredAccounts,
+        tiktokDiscoveredAccounts,
         settings,
       },
     };

@@ -7168,6 +7168,15 @@ exports.metaAdsSync = _meta.metaAdsSync;
 exports.metaAdsSyncNow = _meta.metaAdsSyncNow;
 exports.metaSettingsSet = _meta.metaSettingsSet;
 
+// Phase 20 (TikTok) — server-side TikTok Marketing API sync. Same
+// architecture as Meta: auto-discover advertisers + daily insights.
+// Token from TikTok For Business → Developer → Sandbox app (no review
+// needed for sandbox-bound advertisers). Stored as TIKTOK_ACCESS_TOKEN.
+const _tiktok = require('./tiktok-ads-sync');
+exports.tiktokAdsSync = _tiktok.tiktokAdsSync;
+exports.tiktokAdsSyncNow = _tiktok.tiktokAdsSyncNow;
+exports.tiktokSettingsSet = _tiktok.tiktokSettingsSet;
+
 // Phase 14 — Google Calendar polling. Requires operator to add
 // `https://www.googleapis.com/auth/calendar.events.readonly` scope to
 // the existing Domain-Wide Delegation entry in Workspace Admin Console.

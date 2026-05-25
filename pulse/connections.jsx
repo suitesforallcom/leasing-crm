@@ -97,7 +97,7 @@ window.ConnectionsPage = function ConnectionsPage() {
       <HubSpotConnection period={periodCtx} />
       <GoogleAdsConnection period={periodCtx} />
       <MetaConnection period={periodCtx} />
-      <TikTokConnection />
+      <TikTokConnection period={periodCtx} />
       <GA4Connection />
     </div>
   );
@@ -629,24 +629,208 @@ function MetaAccountList({ discovered, initialEnabled, initialNotes, period }) {
 }
 
 /* ============================================================
-   TikTok Ads (placeholder)
+   TikTok Ads — multi-advertiser, same pattern as Meta
    ============================================================ */
-function TikTokConnection() {
+function TikTokConnection({ period }) {
+  const mk = window._mkDataCache;
+  const src = mk?.sources?.tiktok;
+  const discovered = mk?.tiktokDiscoveredAccounts || [];
+  const settings = mk?.settings || {};
+  const ago = src?.ingestedAt ? Math.floor((Date.now() - new Date(src.ingestedAt).getTime()) / 60000) : null;
+  // No src AND no discovered → token not set / first sync never ran.
+  const status = !src ? 'not-connected' : (ago < 120 ? 'connected' : 'stale');
+  const [syncing, setSyncing] = React.useState(false);
+  const [msg, setMsg] = React.useState(null);
+
+  // Per-window aggregation across all advertisers' daily rows.
+  const windowAgg = React.useMemo(() => {
+    if (!src || !Array.isArray(src.accounts)) return null;
+    let cost = 0, clicks = 0, impressions = 0, conversions = 0, rows = 0;
+    for (const a of src.accounts) {
+      const agg = _aggregateDailyForWindow(a.daily || [], period?.start, period?.end);
+      cost += agg.cost;
+      clicks += agg.clicks;
+      impressions += agg.impressions;
+      conversions += agg.conversions;
+      rows += agg.rows;
+    }
+    return { cost, clicks, impressions, conversions, rows };
+  }, [src, period?.start, period?.end]);
+
+  const usingWindow = !!windowAgg;
+  const spendValue = usingWindow ? windowAgg.cost : (src?.totals?.cost || 0);
+  const clicksValue = usingWindow ? windowAgg.clicks : (src?.totals?.clicks || 0);
+  const rowsInWindow = usingWindow ? windowAgg.rows : (src?.dailyRowCount || 0);
+
+  async function syncNow() {
+    setSyncing(true);
+    setMsg(null);
+    const data = await _callAdmin('tiktokAdsSyncNow', {}, setMsg);
+    setSyncing(false);
+    if (data) {
+      setMsg({ kind: 'ok', text: `Synced ${data.counts?.accounts} advertisers, $${(data.counts?.totalCost || 0).toFixed(2)} spend, ${data.counts?.dailyRows} daily rows. Reload to see.` });
+      try { localStorage.removeItem('sfa_marketing_data_v1'); } catch (e) {}
+    }
+  }
+
   return (
     <ConnectionCard
       icon="⬛"
       color="#000000"
       name="TikTok Ads"
-      hint="TikTok Business API · spend + lead-form conversions"
-      status="not-connected"
+      hint="Multi-advertiser TikTok Marketing API · spend + insights per advertiser"
+      status={status}
+      statusLabel={status === 'connected' ? `🟢 Connected · ${src?.accountCount || 0} advertisers` : null}
       actions={[
+        <ActionBtn key="bc" href="https://business.tiktok.com/">Business Center ↗</ActionBtn>,
         <ActionBtn key="docs" href="https://business-api.tiktok.com/portal/docs">Docs ↗</ActionBtn>,
+        <ActionBtn key="sync" onClick={syncNow} disabled={syncing} primary>{syncing ? 'Syncing…' : 'Sync now'}</ActionBtn>,
       ]}
     >
-      <div style={{ padding: '12px 16px', fontSize: 12, color: 'var(--muted)' }}>
-        Not yet integrated. Architecture ready — pattern matches Meta (OAuth token + scheduled CF + per-account discovery). Same <code>/marketingIngest</code> endpoint with <code>source: "tiktok"</code>. Ping engineering when you want this added.
+      {src && (
+        <div style={{ padding: '12px 16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 14, fontSize: 12, background: 'var(--surface-2)' }}>
+          <StatBlock label="Discovered" value={discovered.length} />
+          <StatBlock label="Enabled" value={src.accountCount || discovered.length} />
+          <StatBlock label="Daily rows" value={rowsInWindow.toLocaleString()} sub={usingWindow ? `${src.dailyRowCount?.toLocaleString() || '?'} total cached` : null} />
+          <StatBlock label={`Spend (${(period?.label || 'all').toLowerCase()})`} value={'$' + spendValue.toFixed(0)} />
+          <StatBlock label="Clicks" value={clicksValue.toLocaleString()} />
+          <StatBlock label="Last sync" value={formatAgo(src.ingestedAt)} sub={formatDateTime(src.ingestedAt)} />
+        </div>
+      )}
+      {!src && (
+        <div style={{ padding: '12px 16px', fontSize: 12, color: 'var(--muted)' }}>
+          TikTok not yet synced. Get a Sandbox access token from <a href="https://business-api.tiktok.com/portal/" target="_blank" rel="noopener" style={{ color: 'var(--accent-ink)' }}>TikTok For Business Developer ↗</a>, set <code>TIKTOK_ACCESS_TOKEN</code> in Firebase Secret Manager, then «Sync now».
+        </div>
+      )}
+      {discovered.length > 0 && (
+        <TikTokAdvertiserList
+          discovered={discovered}
+          initialEnabled={Array.isArray(settings.tiktokAdvertiserIds) ? new Set(settings.tiktokAdvertiserIds.map(String)) : null}
+          initialNotes={settings.tiktokAccountNotes || {}}
+          period={period}
+        />
+      )}
+      <div style={{ padding: '10px 16px', fontSize: 11, color: 'var(--muted)', background: 'var(--surface)', borderTop: '1px solid var(--border)' }}>
+        🔐 Token: Firebase Secret Manager (<code>TIKTOK_ACCESS_TOKEN</code>) · Type: Sandbox / Long-lived Access Token · Endpoint: business-api.tiktok.com/open_api/v1.3
       </div>
+      {msg && <SaveMsg msg={msg} />}
     </ConnectionCard>
+  );
+}
+
+// Per-advertiser list — same pattern as MetaAccountList but for TikTok.
+// Collapsible by default (Tony 2026-05-24: «не нужно на весь экран»).
+function TikTokAdvertiserList({ discovered, initialEnabled, initialNotes, period }) {
+  const [enabled, setEnabled] = React.useState(initialEnabled);
+  const [notes, setNotes] = React.useState(initialNotes);
+  const [saving, setSaving] = React.useState(false);
+  const [msg, setMsg] = React.useState(null);
+  const [expanded, setExpanded] = React.useState(() => {
+    try { return localStorage.getItem('pulse_tiktok_accts_expanded') === '1'; } catch (e) { return false; }
+  });
+  React.useEffect(() => { try { localStorage.setItem('pulse_tiktok_accts_expanded', expanded ? '1' : '0'); } catch (e) {} }, [expanded]);
+
+  const mk = window._mkDataCache;
+  const syncedAccounts = (mk?.sources?.tiktok?.accounts) || [];
+  const syncedById = {};
+  for (const a of syncedAccounts) syncedById[String(a.id)] = a;
+
+  function isEnabled(id) {
+    if (!enabled) return true;
+    return enabled.has(String(id));
+  }
+  const enabledCount = enabled ? enabled.size : discovered.length;
+  const enabledWithSpend = discovered.filter(a => {
+    if (!isEnabled(a.id)) return false;
+    const s = syncedById[String(a.id)];
+    return (s?.totals?.cost || 0) > 0;
+  }).length;
+  function toggle(id) {
+    setEnabled(prev => {
+      const next = new Set(prev || discovered.map(a => String(a.id)));
+      const s = String(id);
+      if (next.has(s)) next.delete(s); else next.add(s);
+      return next;
+    });
+  }
+  async function save() {
+    setSaving(true);
+    setMsg(null);
+    const ids = enabled ? Array.from(enabled) : discovered.map(a => String(a.id));
+    const data = await _callAdmin('tiktokSettingsSet', { tiktokAdvertiserIds: ids, tiktokAccountNotes: notes }, setMsg);
+    setSaving(false);
+    if (data) {
+      setMsg({ kind: 'ok', text: 'Saved · ' + ids.length + ' advertisers enabled. Next hourly sync (or Sync now) will use new filter.' });
+    }
+  }
+
+  return (
+    <div style={{ padding: '12px 16px', background: 'white' }}>
+      <button type="button" onClick={() => setExpanded(e => !e)}
+        style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 6, border: '1px solid var(--border)', background: expanded ? 'var(--surface-2)' : 'var(--surface)', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', marginBottom: expanded ? 8 : 0 }}>
+        <span style={{ fontSize: 14, color: 'var(--muted)', transition: 'transform .15s', display: 'inline-block', transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)' }}>▸</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink)', textTransform: 'uppercase', letterSpacing: '.05em' }}>Advertisers</span>
+        <span style={{ fontSize: 11.5, color: 'var(--muted)', marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span><b style={{ color: 'var(--ink)' }}>{enabledCount}</b> of {discovered.length} enabled</span>
+          {enabledWithSpend > 0 && <span style={{ color: '#166534' }}>· <b>{enabledWithSpend}</b> with spend</span>}
+          <span style={{ color: 'var(--muted)', fontSize: 10.5 }}>{expanded ? 'click to hide' : 'click to manage'}</span>
+        </span>
+      </button>
+      {expanded && (
+      <React.Fragment>
+      <div style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '30px 1.4fr 70px 100px 110px 1.5fr', gap: 8, padding: '8px 10px', background: 'var(--surface-2)', fontSize: 10.5, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>
+          <div></div>
+          <div>Advertiser</div>
+          <div>Currency</div>
+          <div>Status</div>
+          <div title={`Spend для выбранного периода (${period?.label || 'all-time'}).`}>Spend {period?.label ? "(" + period.label.toLowerCase() + ")" : "(90d)"}</div>
+          <div>Note (your label)</div>
+        </div>
+        {discovered.map(a => {
+          const on = isEnabled(a.id);
+          const synced = syncedById[String(a.id)];
+          const windowAgg = (synced && Array.isArray(synced.daily))
+            ? _aggregateDailyForWindow(synced.daily, period?.start, period?.end)
+            : null;
+          const syncedCost = windowAgg ? windowAgg.cost : (synced?.totals?.cost || 0);
+          const syncedRows = windowAgg ? windowAgg.rows : ((synced?.daily || []).length);
+          const syncErr = synced?.error;
+          return (
+            <div key={a.id} style={{ display: 'grid', gridTemplateColumns: '30px 1.4fr 70px 100px 110px 1.5fr', gap: 8, padding: '8px 10px', borderTop: '1px solid var(--border)', alignItems: 'center', fontSize: 12, background: on ? 'white' : 'var(--surface-2)', opacity: on ? 1 : 0.65 }}>
+              <input type="checkbox" checked={on} onChange={() => toggle(a.id)} style={{ cursor: 'pointer' }} />
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 600 }}>{a.name}</div>
+                <div style={{ fontSize: 10, color: 'var(--muted)', fontFamily: 'var(--font-mono)' }}>
+                  {a.id}{a.businessName && <span style={{ marginLeft: 6 }}>· {a.businessName}</span>}
+                </div>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--muted)' }}>{a.currency}</div>
+              <div>
+                <span style={{ padding: '2px 7px', borderRadius: 3, fontSize: 10, fontWeight: 600, background: a.isRestricted ? 'rgba(239,68,68,.10)' : 'rgba(34,197,94,.10)', color: a.isRestricted ? '#9a3412' : '#166534' }}>
+                  {a.isRestricted ? '⚠ ' + a.statusDesc : '🟢 ' + a.statusDesc}
+                </span>
+              </div>
+              <div title={syncErr ? ('Sync error: ' + syncErr) : (syncedRows + ' daily rows pulled')} style={{ fontSize: 11.5, fontWeight: 600, color: syncedCost > 0 ? '#166534' : (syncErr ? '#dc2626' : 'var(--muted)') }}>
+                {syncedCost > 0 ? '$' + syncedCost.toFixed(2) : (syncErr ? '⚠ error' : '$0')}
+              </div>
+              <input type="text" placeholder="add note" value={notes[a.id] || ''} onChange={e => setNotes(n => ({ ...n, [a.id]: e.target.value }))}
+                     style={{ padding: '4px 8px', fontSize: 11.5, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--surface)', color: 'var(--ink)', width: '100%' }} />
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 }}>
+        <ActionBtn onClick={save} disabled={saving} primary>{saving ? 'Saving…' : 'Save advertiser settings'}</ActionBtn>
+        <ActionBtn onClick={() => { setEnabled(null); }}>Enable all</ActionBtn>
+        {msg && <SaveMsg msg={msg} inline />}
+      </div>
+      </React.Fragment>
+      )}
+      {!expanded && msg && (
+        <div style={{ marginTop: 8 }}><SaveMsg msg={msg} inline /></div>
+      )}
+    </div>
   );
 }
 
