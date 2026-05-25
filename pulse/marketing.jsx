@@ -660,7 +660,7 @@ function SpendSection() {
           видеть сколько leads попало в Direct / Unknown / Organic, чтобы
           понимать насколько хорошо настроена аттрибуция в HubSpot). */}
       {totals.leads > 0 && (
-        <details open style={{ padding: "10px 14px", fontSize: 12, borderTop: "1px solid var(--border)", background: "var(--surface-2)" }}>
+        <details style={{ padding: "10px 14px", fontSize: 12, borderTop: "1px solid var(--border)", background: "var(--surface-2)" }}>
           <summary style={{ cursor: "pointer", color: "var(--muted)", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em" }}>
             📊 All leads by source ({totals.leads} contacts created {windowKind === "custom" ? `${windowStart} → ${windowEnd}` : windowLabel.toLowerCase()})
             <span style={{ marginLeft: 8, fontWeight: 400, textTransform: "none", letterSpacing: "0" }}>— shows where Google/Meta/TikTok leads sit vs untracked sources</span>
