@@ -403,6 +403,20 @@ function MetaConnection({ period }) {
     }
   }
 
+  // Триггер ad-level pull (Phase G, 2026-05-25). Отдельный callable
+  // metaAdsAdLevelSyncNow — пишет per-ad creative + daily в коллекцию
+  // marketing_ads, питает «Top Ads» табу.
+  const [syncingAds, setSyncingAds] = React.useState(false);
+  async function syncAdsNow() {
+    setSyncingAds(true);
+    setMsg(null);
+    const data = await _callAdmin('metaAdsAdLevelSyncNow', {}, setMsg);
+    setSyncingAds(false);
+    if (data) {
+      setMsg({ kind: 'ok', text: `Synced ${data.counts?.adsWritten || 0} ads across ${data.counts?.accounts || 0} accounts. Open «Top Ads» tab to view.` });
+    }
+  }
+
   return (
     <ConnectionCard
       icon="🟪"
@@ -413,6 +427,7 @@ function MetaConnection({ period }) {
       statusLabel={status === 'connected' ? `🟢 Connected · ${src?.accountCount || 0} accounts` : null}
       actions={[
         <ActionBtn key="bm" href="https://business.facebook.com/settings">Business Manager ↗</ActionBtn>,
+        <ActionBtn key="syncAds" onClick={syncAdsNow} disabled={syncingAds}>{syncingAds ? 'Syncing ads…' : 'Sync ads'}</ActionBtn>,
         <ActionBtn key="sync" onClick={syncNow} disabled={syncing} primary>{syncing ? 'Syncing…' : 'Sync now'}</ActionBtn>,
       ]}
     >
