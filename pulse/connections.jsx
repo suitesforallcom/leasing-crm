@@ -98,7 +98,7 @@ window.ConnectionsPage = function ConnectionsPage() {
       <GoogleAdsConnection period={periodCtx} />
       <MetaConnection period={periodCtx} />
       <TikTokConnection period={periodCtx} />
-      <GA4Connection />
+      <GA4Connection period={periodCtx} />
     </div>
   );
 };
@@ -835,23 +835,93 @@ function TikTokAdvertiserList({ discovered, initialEnabled, initialNotes, period
 }
 
 /* ============================================================
-   Google Analytics 4 (placeholder)
+   Google Analytics 4 — site analytics integration
    ============================================================ */
-function GA4Connection() {
+function GA4Connection({ period }) {
+  const mk = window._mkDataCache;
+  const src = mk?.sources?.ga4;
+  const ago = src?.ingestedAt ? Math.floor((Date.now() - new Date(src.ingestedAt).getTime()) / 60000) : null;
+  const status = !src ? 'not-connected' : (ago < 120 ? 'connected' : 'stale');
+  const [syncing, setSyncing] = React.useState(false);
+  const [msg, setMsg] = React.useState(null);
+
+  // Daily aggregation for selected period (sessions / users / conversions)
+  const windowAgg = React.useMemo(() => {
+    if (!src || !Array.isArray(src.daily)) return null;
+    const start = period?.start;
+    const end = period?.end;
+    let sessions = 0, users = 0, conversions = 0, rows = 0;
+    for (const d of src.daily) {
+      if (start && end && (d.date < start || d.date > end)) continue;
+      sessions += d.sessions || 0;
+      users += d.users || 0;
+      conversions += d.conversions || 0;
+      rows++;
+    }
+    return { sessions, users, conversions, rows };
+  }, [src, period?.start, period?.end]);
+
+  async function syncNow() {
+    setSyncing(true);
+    setMsg(null);
+    const data = await _callAdmin('ga4SyncNow', {}, setMsg);
+    setSyncing(false);
+    if (data) {
+      setMsg({ kind: 'ok', text: `Synced ${data.counts?.sessions} sessions, ${data.counts?.conversions} conversions across ${data.counts?.daily} days. Reload to see.` });
+      try { localStorage.removeItem('sfa_marketing_data_v1'); } catch (e) {}
+    }
+  }
+
   return (
     <ConnectionCard
       icon="🟧"
       color="#f97316"
       name="Google Analytics 4"
-      hint="Site analytics for suitesforall.com · page views, form submissions, source/medium"
-      status="not-connected"
+      hint="Site analytics for suitesforall.com · sessions, conversions, source/medium, landing pages"
+      status={status}
       actions={[
-        <ActionBtn key="docs" href="https://developers.google.com/analytics/devguides/reporting/data/v1">Docs ↗</ActionBtn>,
+        <ActionBtn key="ga" href="https://analytics.google.com">Open GA4 ↗</ActionBtn>,
+        <ActionBtn key="page" href="#" onClick={() => { window.location.hash = 'analytics'; if (window._navTo) window._navTo('analytics'); }}>View Analytics page →</ActionBtn>,
+        <ActionBtn key="sync" onClick={syncNow} disabled={syncing} primary>{syncing ? 'Syncing…' : 'Sync now'}</ActionBtn>,
       ]}
     >
-      <div style={{ padding: '12px 16px', fontSize: 12, color: 'var(--muted)' }}>
-        Not yet integrated. Requires GA4 Property ID + Service Account JSON. Optional — complements Meta/Google Ads with site-side funnel data (form fill rate, bounce, etc.).
+      {src && (
+        <div style={{ padding: '12px 16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 14, fontSize: 12, background: 'var(--surface-2)' }}>
+          <StatBlock label="Property ID" value={src.propertyId || '—'} mono />
+          <StatBlock label={`Sessions (${(period?.label || 'all').toLowerCase()})`} value={windowAgg ? windowAgg.sessions.toLocaleString() : '—'} />
+          <StatBlock label="Users" value={windowAgg ? windowAgg.users.toLocaleString() : '—'} />
+          <StatBlock label="Conversions" value={windowAgg ? windowAgg.conversions.toLocaleString() : '—'} />
+          <StatBlock label="Daily rows" value={windowAgg ? windowAgg.rows : '—'} sub={`${src.rowCounts?.daily || '?'} total cached`} />
+          <StatBlock label="Last sync" value={formatAgo(src.ingestedAt)} sub={formatDateTime(src.ingestedAt)} />
+        </div>
+      )}
+      {!src && (
+        <div style={{ padding: '14px 16px', fontSize: 12, background: 'var(--surface-2)' }}>
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>📋 Setup (one-time, ~10 min)</div>
+          <ol style={{ margin: '0 0 8px 18px', padding: 0, lineHeight: 1.7 }}>
+            <li>Open <a href="https://console.cloud.google.com" target="_blank" rel="noopener" style={{ color: 'var(--accent-ink)' }}>Google Cloud Console</a> — create project «pulse-ga4» or reuse existing</li>
+            <li>APIs & Services → Library → enable «<b>Google Analytics Data API</b>»</li>
+            <li>APIs & Services → Credentials → Create credentials → <b>Service Account</b>
+              <ul style={{ margin: '4px 0 0 18px', padding: 0 }}>
+                <li>Name: <code>pulse-ga4</code></li>
+                <li>Role: skip (no project access needed)</li>
+                <li>After create — Keys → Add Key → <b>JSON</b> → download</li>
+              </ul>
+            </li>
+            <li>Copy the service-account email (looks like <code>pulse-ga4@&lt;project&gt;.iam.gserviceaccount.com</code>)</li>
+            <li>Open <a href="https://analytics.google.com" target="_blank" rel="noopener" style={{ color: 'var(--accent-ink)' }}>GA4</a> → Admin (⚙) → Property → <b>Property Access Management</b> → add the service-account email with <b>Viewer</b> role</li>
+            <li>From GA4 Admin → Property Settings — copy the numeric <b>Property ID</b> (e.g. 475139286)</li>
+            <li>Send me the JSON file + Property ID — I'll set Firebase secrets and deploy the Cloud Function</li>
+          </ol>
+          <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>
+            Secrets to be set: <code>GA4_PROPERTY_ID</code>, <code>GA4_SERVICE_ACCOUNT_JSON</code>
+          </div>
+        </div>
+      )}
+      <div style={{ padding: '10px 16px', fontSize: 11, color: 'var(--muted)', background: 'var(--surface)', borderTop: '1px solid var(--border)' }}>
+        🔐 Auth: Google Cloud Service Account (JWT signed) · Scope: analytics.readonly · No user OAuth flow
       </div>
+      {msg && <SaveMsg msg={msg} />}
     </ConnectionCard>
   );
 }

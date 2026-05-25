@@ -238,6 +238,15 @@ exports.marketingGetData = require('firebase-functions/v2/https').onCall(
         catch (e) { out.accounts = []; out._accountsParseError = e.message; }
         delete out.accountsJson;
       }
+      // GA4 extra fields — inflate all _Json suffixed payloads.
+      for (const k of Object.keys(payload)) {
+        if (!k.endsWith('Json')) continue;
+        if (k === 'campaignsJson' || k === 'dailyJson' || k === 'accountsJson') continue; // already handled
+        const targetKey = k.slice(0, -4); // strip 'Json' suffix
+        try { out[targetKey] = JSON.parse(payload[k]); }
+        catch (e) { out[targetKey] = []; }
+        delete out[k];
+      }
       inflated[key] = out;
     }
     let metaDiscoveredAccounts = null;

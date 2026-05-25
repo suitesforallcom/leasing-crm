@@ -7177,6 +7177,14 @@ exports.tiktokAdsSync = _tiktok.tiktokAdsSync;
 exports.tiktokAdsSyncNow = _tiktok.tiktokAdsSyncNow;
 exports.tiktokSettingsSet = _tiktok.tiktokSettingsSet;
 
+// Phase 20 (GA4) — Google Analytics Data API pull. Service-account
+// JWT auth (no user OAuth). Pulls summary KPIs + source/medium +
+// landing pages + events + device + geo + daily timeseries. Tokens:
+// GA4_PROPERTY_ID + GA4_SERVICE_ACCOUNT_JSON secrets.
+const _ga4 = require('./ga4-sync');
+exports.ga4Sync = _ga4.ga4Sync;
+exports.ga4SyncNow = _ga4.ga4SyncNow;
+
 // Phase 14 — Google Calendar polling. Requires operator to add
 // `https://www.googleapis.com/auth/calendar.events.readonly` scope to
 // the existing Domain-Wide Delegation entry in Workspace Admin Console.
