@@ -7176,6 +7176,17 @@ const _tiktok = require('./tiktok-ads-sync');
 exports.tiktokAdsSync = _tiktok.tiktokAdsSync;
 exports.tiktokAdsSyncNow = _tiktok.tiktokAdsSyncNow;
 exports.tiktokSettingsSet = _tiktok.tiktokSettingsSet;
+// Ad-level (campaign → adgroup → ad → creative tree). Requires the access
+// token to carry Ads Management + Creative Management scopes — see
+// tiktok-ads-sync.js «AD-LEVEL SYNC» section header for details.
+exports.tiktokAdsAdLevelSyncNow = _tiktok.tiktokAdsAdLevelSyncNow;
+
+// Cross-platform Top-Ads list + detail read endpoints (Pulse «Top Ads» tab).
+// Backed by the marketing_ads subcollection populated by the per-platform
+// ad-level syncs (TikTok now; Meta + Google to come).
+const _marketingAdsShared = require('./marketing-ads-shared');
+exports.marketingAdsList = _marketingAdsShared.marketingAdsList;
+exports.marketingAdGet = _marketingAdsShared.marketingAdGet;
 
 // Phase 20 (GA4) — Google Analytics Data API pull. Service-account
 // JWT auth (no user OAuth). Pulls summary KPIs + source/medium +
