@@ -493,7 +493,16 @@ function SpendSection() {
     const qualifiedLeads = matchedChannel ? matchedChannel.qualified : 0;
     const leadsForCPL = qualityLeadsOnly ? qualifiedLeads : totalContacts;
     const tours = matchedChannel ? matchedChannel.opportunity : 0;
-    const customers = matchedChannel ? matchedChannel.customer : 0;
+    // 2026-05-24 Tony: contracts из floor-map state (signed leases
+    // MTD attributed по email→HubSpot source), а НЕ из HubSpot
+    // lifecycle=customer (который у Tony пустой — pipeline не помечает).
+    // _floorMapLeases.byChannel[sourceKey] — массив leases для этого
+    // канала. Длина = число контрактов. monthly суммируется → +$XXX/mo.
+    const fmLeases = (window._floorMapLeases && window._floorMapLeases.byChannel)
+                     ? (window._floorMapLeases.byChannel[sourceKey] || [])
+                     : [];
+    const customers = fmLeases.length;
+    const customersMRR = fmLeases.reduce((s, l) => s + (l.monthly || 0), 0);
     const cpl = leadsForCPL > 0 ? cost / leadsForCPL : 0;
     const cpt = tours > 0 ? cost / tours : 0;
     const cac = customers > 0 ? cost / customers : 0;
@@ -520,6 +529,8 @@ function SpendSection() {
       qualityLeadsOnly,
       tours,
       customers,
+      customersMRR,
+      fmLeases,
       cpl,
       cpt,
       cac,
@@ -643,7 +654,7 @@ function SpendSection() {
           <HeaderTip label="Leads" hint={`HubSpot контакты с этим source, созданные в окне (${windowLabel}). Большая цифра = quality (MQL+ stage). Меньшая = всего контактов. ${qualityLeadsOnly ? "CPL сейчас считается по QUALITY leads (recommended)." : "CPL сейчас считается по TOTAL contacts — может быть нереалистично низким если у тебя Facebook Lead Ads с массовыми контактами."}`} />
         </div>
         <div style={{ textAlign: "right" }}>
-          <HeaderTip label="Contracts" hint={`Подписанные контракты от leads из этого канала. Считается как HubSpot контакты с этим source И lifecycle stage = «customer» (или выше), созданные в окне ${windowLabel}. Строка «Other» внизу — контракты которые HubSpot не смог атрибуировать ни к Google/Meta/TikTok.`} />
+          <HeaderTip label="Contracts" hint={`Подписанные leases этого месяца (по floor-map: signed date OR deposit paid в текущем календарном месяце). Аттрибуция канала — по email тенанта: lookup в HubSpot contactByEmail, читаем hs_analytics_source. Если email пустой или нет в HubSpot → строка «Other» внизу. Под цифрой — +$сумма/mo (total MRR этих контрактов). Hover на число — список Suite + tenant + rent.`} />
         </div>
         <div style={{ textAlign: "right" }}>
           <HeaderTip label="CPL" hint={`Cost Per Lead = Spend ÷ ${qualityLeadsOnly ? "Quality leads" : "Total contacts"}. Lower is better. ${qualityLeadsOnly ? "Считается по quality-leads (lifecycle stage = MQL и выше) — это реальные потенциальные клиенты, прошедшие первичную фильтрацию." : "Считается по ВСЕМ контактам с этим source — включает мусор. Переключи toggle ↑ на «Quality leads only» для реалистичной картины."}`} />
@@ -672,9 +683,16 @@ function SpendSection() {
                                .reduce((s, r) => s + r.leads, 0);
         const otherQualified = rows.filter(r => r.group !== "paid-search" && r.group !== "paid-social")
                                    .reduce((s, r) => s + r.qualified, 0);
-        const otherContracts = rows.filter(r => r.group !== "paid-search" && r.group !== "paid-social")
-                                   .reduce((s, r) => s + r.customer, 0);
         const otherLeadsForCPL = qualityLeadsOnly ? otherQualified : otherLeads;
+        // 2026-05-24 Tony: contracts из floor-map state — для row «Other»
+        // берём channel = 'other' (любой email который не в HubSpot или
+        // src не paid-search/paid-social). Так Tony видит сколько новых
+        // лиз пришло НЕ от платных каналов.
+        const otherFmLeases = (window._floorMapLeases && window._floorMapLeases.byChannel)
+                              ? (window._floorMapLeases.byChannel['other'] || [])
+                              : [];
+        const otherContracts = otherFmLeases.length;
+        const otherMRR = otherFmLeases.reduce((s, l) => s + (l.monthly || 0), 0);
         if (otherLeads === 0 && otherContracts === 0) return null;
         // Build label listing top non-paid channels (e.g. "Direct, Organic Search, Referrals · ...")
         const sortedOther = rows.filter(r => r.group !== "paid-search" && r.group !== "paid-social")
@@ -685,7 +703,7 @@ function SpendSection() {
           <div style={{ display: "grid", gridTemplateColumns: "1.4fr 90px 90px 90px 90px 90px 90px 90px 140px", gap: 8, padding: "10px 14px", borderTop: "1px dashed var(--border)", alignItems: "center", fontSize: 12.5, background: "var(--surface-2)" }}>
             <div>
               <div style={{ fontWeight: 700 }}>Other <span className="muted" style={{ fontSize: 11, fontWeight: 400 }}>(non-paid attribution)</span></div>
-              <div style={{ fontSize: 10.5, color: "var(--muted)" }} title={sortedOther.map(r => `${r.label}: ${r.leads} leads, ${r.customer} contracts`).join("\n")}>
+              <div style={{ fontSize: 10.5, color: "var(--muted)" }} title={sortedOther.map(r => `${r.label}: ${r.leads} leads, ${r.customer} contracts (HubSpot lifecycle)`).join("\n")}>
                 {topNames}{moreCount > 0 ? ` +${moreCount} more` : ""}
               </div>
             </div>
@@ -697,7 +715,17 @@ function SpendSection() {
                 <div style={{ fontSize: 9.5, fontWeight: 400, color: "var(--muted)", marginTop: 1 }}>of {otherLeads.toLocaleString()} total</div>
               )}
             </div>
-            <div className="mono" style={{ textAlign: "right", fontWeight: 700, color: otherContracts > 0 ? "var(--success-ink)" : "var(--muted)" }}>{otherContracts || "—"}</div>
+            <div className="mono" style={{ textAlign: "right", fontWeight: 700, color: otherContracts > 0 ? "var(--success-ink)" : "var(--muted)" }}
+                 title={otherContracts > 0
+                   ? `${otherContracts} signed lease${otherContracts === 1 ? "" : "s"} this month not attributed to any paid channel:\n` + otherFmLeases.slice(0, 8).map(l => `· Suite ${l.unitId} — ${l.tenant} — +$${l.monthly}/mo${l.email ? "" : " (no email)"}`).join("\n") + (otherFmLeases.length > 8 ? `\n... +${otherFmLeases.length - 8} more` : "")
+                   : "No non-paid leases this month"}>
+              {otherContracts || "—"}
+              {otherMRR > 0 && (
+                <div style={{ fontSize: 9.5, fontWeight: 400, color: "var(--success-ink)", marginTop: 1 }}>
+                  +${otherMRR.toLocaleString()}/mo
+                </div>
+              )}
+            </div>
             <div className="mono" style={{ textAlign: "right", color: "var(--muted-2)" }}>—</div>
             <div className="mono" style={{ textAlign: "right", color: "var(--muted-2)" }}>—</div>
             <div className="mono" style={{ textAlign: "right", color: "var(--muted-2)" }}>—</div>
@@ -941,10 +969,19 @@ function SpendRow({ r, windowLabel, fmtIngestTs }) {
             </div>
           )}
         </div>
-        {/* 2026-05-24 Tony: Contracts column — signed contracts from
-            HubSpot contacts с этим source и lifecycle stage = customer. */}
-        <div className="mono" style={{ textAlign: "right", fontWeight: 700, color: r.customers > 0 ? "var(--success-ink)" : "var(--muted)" }} title={r.customers > 0 ? `${r.customers} signed contracts attributed to ${r.label} in ${windowLabel}` : "No signed contracts yet attributed to this source"}>
+        {/* 2026-05-24 Tony: Contracts column — signed leases из floor-map
+            state, attributed по email→HubSpot source. Показывает count +
+            MRR ($X/mo total). */}
+        <div className="mono" style={{ textAlign: "right", fontWeight: 700, color: r.customers > 0 ? "var(--success-ink)" : "var(--muted)" }}
+             title={r.customers > 0
+               ? `${r.customers} signed contract${r.customers === 1 ? "" : "s"} attributed to ${r.label} this month:\n` + (r.fmLeases || []).slice(0, 8).map(l => `· Suite ${l.unitId} — ${l.tenant} — +$${l.monthly}/mo`).join("\n") + (r.fmLeases && r.fmLeases.length > 8 ? `\n... +${r.fmLeases.length - 8} more` : "")
+               : "No signed contracts attributed to this source this month"}>
           {r.customers > 0 ? r.customers : "—"}
+          {r.customersMRR > 0 && (
+            <div style={{ fontSize: 9.5, fontWeight: 400, color: "var(--success-ink)", marginTop: 1 }}>
+              +${r.customersMRR.toLocaleString()}/mo
+            </div>
+          )}
         </div>
         <div className="mono" style={{ textAlign: "right", fontWeight: 700, color: r.cpl > 0 ? "var(--ink)" : "var(--muted)" }} title={r.cpl > 0 ? `$${r.cost.toFixed(2)} ÷ ${r.leadsForCPL.toLocaleString()} ${r.qualityLeadsOnly ? "quality leads" : "total contacts"} = $${r.cpl.toFixed(2)} per lead` : ""}>{r.cpl > 0 ? "$" + r.cpl.toFixed(0) : "—"}</div>
         <div className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>{r.cpc > 0 ? "$" + r.cpc.toFixed(2) : "—"}</div>

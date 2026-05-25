@@ -65,6 +65,11 @@
         } catch (e) { /* localStorage full — give up silently */ }
         const wasEmpty = !window._hsDataCache;
         window._hsDataCache = d;
+        // 2026-05-24 — recompute floor-map leases когда HubSpot
+        // обновился, чтобы channel attribution учёл свежие contact.src.
+        if (typeof window._recomputeFloorMapLeases === 'function') {
+          try { window._recomputeFloorMapLeases(); } catch (e) {}
+        }
         console.info('[pulse-shim] HubSpot data refreshed (counts:' + JSON.stringify(d.counts) + ')');
         // If cache was empty during first mapping pass → soft reload
         // ONCE so Pulse re-renders with real tour counts.
@@ -131,6 +136,162 @@
       });
   }
   _mkRefresh();
+
+  // 2026-05-24 Tony: «Контроль можно вытаскивать с основного сайта»
+  // — берём signed leases из floor-map state (state.buildings[].
+  // floors[].units[]), а не из HubSpot lifecycle=customer (который
+  // у Tony пустой). Зеркалит логику _compute30DayActivity() в floor-
+  // map-editor.html (line 50628) но БЕЗ building filter — все адреса.
+  //
+  // Аттрибуция к каналу (Google/Meta/TikTok/Other) по email тенанта:
+  //   1. Найти u.email или u.tenantEmail в HubSpot contactByEmail
+  //   2. Прочитать c.src + c.srcD → classifyChannel → каналу
+  //   3. Если email пустой / нет в HubSpot → канал = 'other'
+  //
+  // Результат: window._floorMapLeasesByChannel = { 'google-ads': [...],
+  //   'meta': [...], 'tiktok': [...], 'other': [...] }
+  // Каждый элемент: { unitId, buildingId, tenant, email, monthly,
+  //   activatedMs, signedAt, depositPaidAt, sqft }
+  function _computeFloorMapLeases() {
+    const stNow = (function () {
+      try {
+        const raw = localStorage.getItem('sfa_v5_state');
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) { return null; }
+    })();
+    if (!stNow) return { byChannel: {}, all: [], windowStart: null, windowEnd: null };
+
+    const now = Date.now();
+    const _today = new Date(now);
+    const _isFirstOfMonth = _today.getDate() === 1;
+    const _monthStart = new Date(_today.getFullYear(), _today.getMonth(), 1, 0, 0, 0, 0).getTime();
+    const cutoff = _isFirstOfMonth
+      ? (now - 7 * 24 * 60 * 60 * 1000)
+      : _monthStart;
+
+    // HubSpot lookup for channel attribution
+    const hs = window._hsDataCache;
+    const contactByEmail = (hs && hs.contactByEmail) || {};
+
+    function _attributeChannel(email) {
+      if (!email) return 'other';
+      const c = contactByEmail[String(email).toLowerCase().trim()];
+      if (!c) return 'other';
+      const cat = String(c.src || '').toUpperCase();
+      const platform = String(c.srcD || '').toLowerCase();
+      if (cat === 'PAID_SEARCH') return 'google-ads';
+      if (cat === 'PAID_SOCIAL') {
+        if (platform.includes('facebook') || platform.includes('instagram') || platform.includes('meta')) return 'meta';
+        if (platform.includes('tiktok')) return 'tiktok';
+        return 'other'; // paid-social other (LinkedIn, Twitter, etc.)
+      }
+      return 'other';
+    }
+
+    const all = [];
+    const byChannel = { 'google-ads': [], 'meta': [], 'tiktok': [], 'other': [] };
+
+    for (const b of (stNow.buildings || [])) {
+      for (const f of (b.floors || [])) {
+        for (const u of (f.units || [])) {
+          // Skip archived / non-rentable / non-office
+          if (u && u.archived) continue;
+          if (u && u.rentable === false) continue;
+          if (u && u.type && u.type !== 'office') continue;
+
+          const isRented = u.status === 'occupied' || (!!u.tenant && u.status !== 'vacant');
+          if (!isRented || (!u.tenant && !u.company)) continue;
+
+          // Trigger 1: signed date
+          let signedMs = null;
+          if (u.signed) {
+            const t = new Date(u.signed + 'T00:00:00').getTime();
+            if (Number.isFinite(t)) signedMs = t;
+          }
+          // Trigger 2: deposit paid
+          const _depDateIso = (u.payments && u.payments.deposit && u.payments.deposit.date) || '';
+          const _depPaidAtIso = (u.stripe && u.stripe.depositInvoice && u.stripe.depositInvoice.paidAt) || '';
+          const _depMs1 = _depDateIso
+            ? new Date(_depDateIso + (_depDateIso.length === 10 ? 'T00:00:00' : '')).getTime() : 0;
+          const _depMs2 = _depPaidAtIso ? new Date(_depPaidAtIso).getTime() : 0;
+          const depositPaidAt = Number.isFinite(_depMs1) && _depMs1 > 0
+            ? _depMs1
+            : (Number.isFinite(_depMs2) && _depMs2 > 0 ? _depMs2 : null);
+
+          const signedInWindow = signedMs != null && signedMs >= cutoff && signedMs <= now;
+          const depositInWindow = depositPaidAt != null && depositPaidAt >= cutoff && depositPaidAt <= now;
+          if (!signedInWindow && !depositInWindow) continue;
+
+          const triggerMs = Math.max(
+            signedInWindow ? signedMs : 0,
+            depositInWindow ? depositPaidAt : 0
+          );
+
+          // Sanity-gate against back-fill (Suite 101 NUHS case in floor-map)
+          const _earliestTriggerMs = Math.min(
+            signedInWindow ? signedMs : Infinity,
+            depositInWindow ? depositPaidAt : Infinity
+          );
+          const _trigDate = new Date(_earliestTriggerMs);
+          const triggerYm = `${_trigDate.getFullYear()}-${String(_trigDate.getMonth()+1).padStart(2,'0')}`;
+          const hasPaidMonthsBefore = Object.entries(u.payments || {}).some(([ym, p]) => {
+            if (ym === 'deposit') return false;
+            if (!p || !['paid', 'free', 'waived'].includes(p.status)) return false;
+            return ym < triggerYm;
+          });
+          if (hasPaidMonthsBefore) continue;
+
+          const monthly = +u.contractRent || +u.rent || 0;
+          const email = u.email || u.tenantEmail || '';
+          const channel = _attributeChannel(email);
+          const lease = {
+            unitId: u.id,
+            buildingId: b.id,
+            buildingName: b.name || '',
+            tenant: (u.tenant || u.company || '(no name)').trim(),
+            email,
+            monthly,
+            activatedMs: triggerMs,
+            signedAt: signedMs,
+            depositPaidAt,
+            sqft: +u.sqft || 0,
+            channel,
+          };
+          all.push(lease);
+          byChannel[channel].push(lease);
+        }
+      }
+    }
+
+    all.sort((a, b) => b.activatedMs - a.activatedMs);
+    for (const k of Object.keys(byChannel)) {
+      byChannel[k].sort((a, b) => b.activatedMs - a.activatedMs);
+    }
+    return {
+      byChannel,
+      all,
+      windowStart: new Date(cutoff).toISOString().slice(0, 10),
+      windowEnd: new Date(now).toISOString().slice(0, 10),
+      windowKind: _isFirstOfMonth ? '7d-fallback' : 'mtd',
+    };
+  }
+
+  // Initial compute + expose to globals so SpendSection can read.
+  window._floorMapLeases = _computeFloorMapLeases();
+  console.info('[pulse-shim] floor-map leases:', window._floorMapLeases.all.length,
+    'total —', Object.keys(window._floorMapLeases.byChannel)
+      .map(k => k + ':' + window._floorMapLeases.byChannel[k].length).join(' · '));
+
+  // Recompute when HubSpot data refreshes (channel attribution depends on it)
+  window._recomputeFloorMapLeases = function () {
+    window._floorMapLeases = _computeFloorMapLeases();
+  };
+  // Also recompute when localStorage state changes (floor-map writes)
+  window.addEventListener('storage', function (e) {
+    if (e.key === 'sfa_v5_state') {
+      try { window._recomputeFloorMapLeases(); } catch (err) {}
+    }
+  });
 
   // Helpers used in the per-user mapper below.
   function _hsThisYm() {
