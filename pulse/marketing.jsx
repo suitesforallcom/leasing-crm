@@ -628,7 +628,10 @@ function SpendSection() {
           </label>
         </div>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 90px 90px 90px 90px 90px 90px 140px", gap: 8, padding: "10px 14px", borderBottom: "1px solid var(--border)", background: "var(--surface-2)", fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>
+      {/* 2026-05-24 Tony: добавлена Contracts колонка (sign-ups для окна).
+          Order: Source | Spend | Clicks | Leads | Contracts | CPL | CPC |
+          CAC | Last sync. Grid columns sync с SpendRow внизу. */}
+      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 90px 90px 90px 90px 90px 90px 90px 140px", gap: 8, padding: "10px 14px", borderBottom: "1px solid var(--border)", background: "var(--surface-2)", fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".04em" }}>
         <div>Source</div>
         <div style={{ textAlign: "right" }}>
           <HeaderTip label="Spend" hint={`Total ad spend over the selected window (${windowLabel}). Pulled from the ad platform's reported cost (Google Ads: metrics.cost_micros / 1M).`} />
@@ -640,13 +643,16 @@ function SpendSection() {
           <HeaderTip label="Leads" hint={`HubSpot контакты с этим source, созданные в окне (${windowLabel}). Большая цифра = quality (MQL+ stage). Меньшая = всего контактов. ${qualityLeadsOnly ? "CPL сейчас считается по QUALITY leads (recommended)." : "CPL сейчас считается по TOTAL contacts — может быть нереалистично низким если у тебя Facebook Lead Ads с массовыми контактами."}`} />
         </div>
         <div style={{ textAlign: "right" }}>
+          <HeaderTip label="Contracts" hint={`Подписанные контракты от leads из этого канала. Считается как HubSpot контакты с этим source И lifecycle stage = «customer» (или выше), созданные в окне ${windowLabel}. Строка «Other» внизу — контракты которые HubSpot не смог атрибуировать ни к Google/Meta/TikTok.`} />
+        </div>
+        <div style={{ textAlign: "right" }}>
           <HeaderTip label="CPL" hint={`Cost Per Lead = Spend ÷ ${qualityLeadsOnly ? "Quality leads" : "Total contacts"}. Lower is better. ${qualityLeadsOnly ? "Считается по quality-leads (lifecycle stage = MQL и выше) — это реальные потенциальные клиенты, прошедшие первичную фильтрацию." : "Считается по ВСЕМ контактам с этим source — включает мусор. Переключи toggle ↑ на «Quality leads only» для реалистичной картины."}`} />
         </div>
         <div style={{ textAlign: "right" }}>
           <HeaderTip label="CPC" hint="Cost Per Click = Spend ÷ Clicks. Channel-level average over the window. Useful for benchmarking ad-platform efficiency before funnel quality matters." />
         </div>
         <div style={{ textAlign: "right" }}>
-          <HeaderTip label="CAC" hint="Customer Acquisition Cost = Spend ÷ Customers. Customer = HubSpot contact at lifecycle stage 'customer' or higher. '—' when no customer-stage contacts in window (your pipeline doesn't currently mark stage = customer)." />
+          <HeaderTip label="CAC" hint="Customer Acquisition Cost = Spend ÷ Contracts. '—' when no customer-stage contacts in window." />
         </div>
         <div style={{ textAlign: "right" }}>
           <HeaderTip label="Last sync" hint="When the spend data was last ingested. Google Ads Script runs hourly and POSTs to /marketingIngest. Fresh data appears here ~1 minute after the script run." />
@@ -655,72 +661,50 @@ function SpendSection() {
       {spendRows.map(r => (
         <SpendRow key={r.sourceKey} r={r} windowLabel={windowLabel} fmtIngestTs={fmtIngestTs} />
       ))}
-      {/* Channel attribution breakdown — показывает КУДА ушли остальные
-          leads (Tony 2026-05-24: «11 заказов с гугла? мало!» — нужно
-          видеть сколько leads попало в Direct / Unknown / Organic, чтобы
-          понимать насколько хорошо настроена аттрибуция в HubSpot). */}
-      {totals.leads > 0 && (
-        <details style={{ padding: "10px 14px", fontSize: 12, borderTop: "1px solid var(--border)", background: "var(--surface-2)" }}>
-          <summary style={{ cursor: "pointer", color: "var(--muted)", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em" }}>
-            📊 All leads by source ({totals.leads} contacts created {windowKind === "custom" ? `${windowStart} → ${windowEnd}` : windowLabel.toLowerCase()})
-            <span style={{ marginLeft: 8, fontWeight: 400, textTransform: "none", letterSpacing: "0" }}>— shows where Google/Meta/TikTok leads sit vs untracked sources</span>
-          </summary>
-          <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr 80px 80px 110px 80px", gap: 8, padding: "6px 0", borderTop: "1px solid var(--border)", fontSize: 10.5, color: "var(--muted)", textTransform: "uppercase", fontWeight: 700, letterSpacing: ".04em" }}>
-            <div>Source (HubSpot attribution)</div>
-            <div style={{ textAlign: "right" }}>Leads</div>
-            <div style={{ textAlign: "right" }}>Quality</div>
-            <div style={{ textAlign: "right" }}>% of total</div>
-            <div style={{ textAlign: "right" }}>Group</div>
-          </div>
-          {rows.map(r => {
-            const pct = totals.leads > 0 ? (r.leads / totals.leads) * 100 : 0;
-            const isPaid = r.group === "paid-search" || r.group === "paid-social";
-            return (
-              <div key={r.label} style={{ display: "grid", gridTemplateColumns: "1fr 80px 80px 110px 80px", gap: 8, padding: "6px 0", borderTop: "1px solid var(--border)", alignItems: "center", fontSize: 12, fontWeight: isPaid ? 600 : 400, color: isPaid ? "var(--ink)" : "var(--muted)" }}>
-                <div>{r.label}</div>
-                <div className="mono" style={{ textAlign: "right" }}>{r.leads.toLocaleString()}</div>
-                <div className="mono" style={{ textAlign: "right", color: r.qualified > 0 ? "var(--success-ink)" : "var(--muted-2)" }}>{r.qualified || "—"}</div>
-                <div style={{ textAlign: "right", color: "var(--muted)", fontSize: 11 }}>
-                  <span style={{ display: "inline-block", width: 50, height: 6, background: "var(--surface)", borderRadius: 3, overflow: "hidden", verticalAlign: "middle", marginRight: 6 }}>
-                    <span style={{ display: "block", height: "100%", width: pct + "%", background: isPaid ? "var(--accent)" : "var(--muted-2)" }} />
-                  </span>
-                  {pct.toFixed(1)}%
-                </div>
-                <div style={{ textAlign: "right", fontSize: 10, color: "var(--muted)" }}>{r.group}</div>
+      {/* 2026-05-24 Tony: «Other» row — контракты и leads из каналов
+          которые HubSpot не атрибуирует к Google/Meta/TikTok (Direct,
+          Unknown, Organic, Email, Referral, Offline и т.д.). Это
+          обычно walk-in'ы, прямые звонки, рекомендации, или просто
+          сломанная UTM-атрибуция. Spend = 0 потому что не от ad-platform. */}
+      {(() => {
+        // Sum non-paid channel rows: anything not paid-search / paid-social
+        const otherLeads = rows.filter(r => r.group !== "paid-search" && r.group !== "paid-social")
+                               .reduce((s, r) => s + r.leads, 0);
+        const otherQualified = rows.filter(r => r.group !== "paid-search" && r.group !== "paid-social")
+                                   .reduce((s, r) => s + r.qualified, 0);
+        const otherContracts = rows.filter(r => r.group !== "paid-search" && r.group !== "paid-social")
+                                   .reduce((s, r) => s + r.customer, 0);
+        const otherLeadsForCPL = qualityLeadsOnly ? otherQualified : otherLeads;
+        if (otherLeads === 0 && otherContracts === 0) return null;
+        // Build label listing top non-paid channels (e.g. "Direct, Organic Search, Referrals · ...")
+        const sortedOther = rows.filter(r => r.group !== "paid-search" && r.group !== "paid-social")
+                                .sort((a, b) => b.leads - a.leads);
+        const topNames = sortedOther.slice(0, 3).map(r => r.label).join(", ");
+        const moreCount = Math.max(0, sortedOther.length - 3);
+        return (
+          <div style={{ display: "grid", gridTemplateColumns: "1.4fr 90px 90px 90px 90px 90px 90px 90px 140px", gap: 8, padding: "10px 14px", borderTop: "1px dashed var(--border)", alignItems: "center", fontSize: 12.5, background: "var(--surface-2)" }}>
+            <div>
+              <div style={{ fontWeight: 700 }}>Other <span className="muted" style={{ fontSize: 11, fontWeight: 400 }}>(non-paid attribution)</span></div>
+              <div style={{ fontSize: 10.5, color: "var(--muted)" }} title={sortedOther.map(r => `${r.label}: ${r.leads} leads, ${r.customer} contracts`).join("\n")}>
+                {topNames}{moreCount > 0 ? ` +${moreCount} more` : ""}
               </div>
-            );
-          })}
-          <div style={{ marginTop: 8, padding: "8px 0 0 0", borderTop: "1px solid var(--border)", fontSize: 11, color: "var(--muted)" }}>
-            💡 <b>Если paid каналов меньше чем ожидаешь:</b> HubSpot tracking script может не быть на лендинге, или UTM-метки теряются. Большинство leads в «Direct» или «Unknown» = атрибуция не настроена. Каналы помеченные жирным — paid (по hs_analytics_source).
+            </div>
+            <div className="mono" style={{ textAlign: "right", color: "var(--muted-2)" }}>—</div>
+            <div className="mono" style={{ textAlign: "right", color: "var(--muted-2)" }}>—</div>
+            <div className="mono" style={{ textAlign: "right", color: otherLeadsForCPL > 0 ? "var(--ink)" : "var(--muted)" }}>
+              {otherLeadsForCPL.toLocaleString()}
+              {otherQualified !== otherLeads && (
+                <div style={{ fontSize: 9.5, fontWeight: 400, color: "var(--muted)", marginTop: 1 }}>of {otherLeads.toLocaleString()} total</div>
+              )}
+            </div>
+            <div className="mono" style={{ textAlign: "right", fontWeight: 700, color: otherContracts > 0 ? "var(--success-ink)" : "var(--muted)" }}>{otherContracts || "—"}</div>
+            <div className="mono" style={{ textAlign: "right", color: "var(--muted-2)" }}>—</div>
+            <div className="mono" style={{ textAlign: "right", color: "var(--muted-2)" }}>—</div>
+            <div className="mono" style={{ textAlign: "right", color: "var(--muted-2)" }}>—</div>
+            <div style={{ textAlign: "right", fontSize: 11, color: "var(--muted)" }}>—</div>
           </div>
-        </details>
-      )}
-      {/* Per-campaign drilldown — collapsible */}
-      {spendRows.some(r => r.campaigns.length > 0) && (
-        <details style={{ padding: "10px 14px", fontSize: 12 }}>
-          <summary style={{ cursor: "pointer", color: "var(--muted)", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em" }}>
-            🔎 Top campaigns by spend
-          </summary>
-          <div style={{ marginTop: 10 }}>
-            {spendRows.flatMap(r => r.campaigns.map(c => ({ ...c, sourceKey: r.sourceKey, sourceLabel: r.label })))
-              .sort((a, b) => b.cost - a.cost)
-              .slice(0, 15)
-              .map((c, i) => (
-                <div key={c.sourceKey + ":" + c.id} style={{ display: "grid", gridTemplateColumns: "16px 1fr 80px 80px 80px 80px", gap: 8, padding: "6px 0", borderTop: i > 0 ? "1px solid var(--border)" : "none", alignItems: "center", fontSize: 12 }}>
-                  <span style={{ color: "var(--muted)" }}>{i + 1}</span>
-                  <div>
-                    <div style={{ fontWeight: 600 }}>{c.name}</div>
-                    <div style={{ fontSize: 10.5, color: "var(--muted)" }}>{c.sourceLabel} · {c.status}</div>
-                  </div>
-                  <div className="mono" style={{ textAlign: "right", fontWeight: 700 }}>${c.cost.toFixed(0)}</div>
-                  <div className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>{c.clicks.toLocaleString()}</div>
-                  <div className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>{c.impressions.toLocaleString()}</div>
-                  <div className="mono" style={{ textAlign: "right", color: c.conversions > 0 ? "var(--success-ink)" : "var(--muted)" }}>{c.conversions}</div>
-                </div>
-              ))}
-          </div>
-        </details>
-      )}
+        );
+      })()}
     </div>
   );
 }
@@ -829,7 +813,7 @@ function SpendRow({ r, windowLabel, fmtIngestTs }) {
     <>
       <div
         style={{
-          display: "grid", gridTemplateColumns: "1.4fr 90px 90px 90px 90px 90px 90px 140px",
+          display: "grid", gridTemplateColumns: "1.4fr 90px 90px 90px 90px 90px 90px 90px 140px",
           gap: 8, padding: "10px 14px", borderBottom: hasAccounts && expanded ? "none" : "1px solid var(--border)",
           alignItems: "center", fontSize: 12.5,
           cursor: hasAccounts ? "pointer" : "default",
@@ -873,6 +857,11 @@ function SpendRow({ r, windowLabel, fmtIngestTs }) {
             </div>
           )}
         </div>
+        {/* 2026-05-24 Tony: Contracts column — signed contracts from
+            HubSpot contacts с этим source и lifecycle stage = customer. */}
+        <div className="mono" style={{ textAlign: "right", fontWeight: 700, color: r.customers > 0 ? "var(--success-ink)" : "var(--muted)" }} title={r.customers > 0 ? `${r.customers} signed contracts attributed to ${r.label} in ${windowLabel}` : "No signed contracts yet attributed to this source"}>
+          {r.customers > 0 ? r.customers : "—"}
+        </div>
         <div className="mono" style={{ textAlign: "right", fontWeight: 700, color: r.cpl > 0 ? "var(--ink)" : "var(--muted)" }} title={r.cpl > 0 ? `$${r.cost.toFixed(2)} ÷ ${r.leadsForCPL.toLocaleString()} ${r.qualityLeadsOnly ? "quality leads" : "total contacts"} = $${r.cpl.toFixed(2)} per lead` : ""}>{r.cpl > 0 ? "$" + r.cpl.toFixed(0) : "—"}</div>
         <div className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>{r.cpc > 0 ? "$" + r.cpc.toFixed(2) : "—"}</div>
         <div className="mono" style={{ textAlign: "right", fontWeight: 700, color: r.cac > 0 ? "var(--success-ink)" : "var(--muted)" }}>{r.cac > 0 ? "$" + r.cac.toFixed(0) : "—"}</div>
@@ -887,7 +876,7 @@ function SpendRow({ r, windowLabel, fmtIngestTs }) {
             Per-account breakdown · sorted by spend
           </div>
           {[...r.accountBreakdown].sort((a, b) => b.cost - a.cost).map(a => (
-            <div key={a.id} style={{ display: "grid", gridTemplateColumns: "1.4fr 90px 90px 90px 90px 90px 90px 140px", gap: 8, padding: "6px 0", fontSize: 12, color: a.isRestricted ? "var(--muted)" : "var(--ink)", alignItems: "center", borderTop: "1px dashed var(--border)" }}>
+            <div key={a.id} style={{ display: "grid", gridTemplateColumns: "1.4fr 90px 90px 90px 90px 90px 90px 90px 140px", gap: 8, padding: "6px 0", fontSize: 12, color: a.isRestricted ? "var(--muted)" : "var(--ink)", alignItems: "center", borderTop: "1px dashed var(--border)" }}>
               <div>
                 <div style={{ fontWeight: 600 }}>
                   {a.name}
@@ -906,6 +895,7 @@ function SpendRow({ r, windowLabel, fmtIngestTs }) {
               </div>
               <div className="mono" style={{ textAlign: "right", fontWeight: 600 }}>${a.cost.toFixed(0)}</div>
               <div className="mono" style={{ textAlign: "right" }}>{a.clicks.toLocaleString()}</div>
+              <div className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>—</div>
               <div className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>—</div>
               <div className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>—</div>
               <div className="mono" style={{ textAlign: "right", color: "var(--muted)" }}>{a.clicks > 0 ? "$" + (a.cost / a.clicks).toFixed(2) : "—"}</div>
