@@ -42,6 +42,10 @@ const logger = require('firebase-functions/logger');
 const admin = require('firebase-admin');
 
 const TIKTOK_ACCESS_TOKEN = defineSecret('TIKTOK_ACCESS_TOKEN');
+// App credentials — нужны для /oauth2/* endpoints (introspection).
+// app_id публичный (виден в OAuth redirect URL), secret — Firebase secret.
+const TIKTOK_APP_ID = '7643724741798281232';
+const TIKTOK_APP_SECRET = defineSecret('TIKTOK_APP_SECRET');
 const WORKSPACE_ID = 'default';
 const ROOT_ADMINS = ['tony@al-en.com'];
 // TikTok Business API base. v1.3 — current stable as of 2026-05.
@@ -97,7 +101,11 @@ async function _fetchAdvertisers(token) {
   // The endpoint returns app_id + secret-derived list of authorized
   // advertisers. For Sandbox tokens it's whoever you added in Sandbox UI.
   // For Production: all advertisers the app was authorized for via OAuth.
-  const data = await _tt(token, '/oauth2/advertiser/get/');
+  // /oauth2/* endpoints REQUIRE app_id + secret в query params (не header).
+  const data = await _tt(token, '/oauth2/advertiser/get/', {
+    app_id: TIKTOK_APP_ID,
+    secret: TIKTOK_APP_SECRET.value(),
+  });
   const list = Array.isArray(data.list) ? data.list : [];
   // Enrich with /advertiser/info/ for name + currency + status (parallel).
   const ids = list.map(a => String(a.advertiser_id || a.id)).filter(Boolean).slice(0, MAX_ADVERTISERS);
@@ -134,45 +142,58 @@ async function _fetchAdvertisers(token) {
 // report_type=BASIC, dimensions=['advertiser_id', 'stat_time_day'] → daily rows.
 // metrics: spend, clicks, impressions, conversions.
 async function _fetchInsights(token, advertiserId, daysBack) {
+  // TikTok жёсткий лимит: max 30 дней на запрос при dimension=stat_time_day.
+  // Чанкуем по 30 дней последовательно (TikTok rate-limit чувствительный).
+  const CHUNK_DAYS = 30;
   const today = new Date();
-  const end = _fmtDate(today);
-  const start = _fmtDate(new Date(today.getTime() - daysBack * 86400 * 1000));
-  const params = {
-    advertiser_id: advertiserId,
-    report_type: 'BASIC',
-    data_level: 'AUCTION_ADVERTISER',
-    dimensions: JSON.stringify(['advertiser_id', 'stat_time_day']),
-    metrics: JSON.stringify(['spend', 'clicks', 'impressions', 'conversion']),
-    start_date: start,
-    end_date: end,
-    page_size: 1000,
-  };
-  let data;
-  try {
-    data = await _tt(token, '/report/integrated/get/', params);
-  } catch (e) {
-    logger.warn(`[tiktok-ads-sync] ${advertiserId} insights failed: ${e.message}`);
-    return { daily: [], error: e.message };
+  const allDaily = [];
+  let lastError = null;
+  for (let offset = 0; offset < daysBack; offset += CHUNK_DAYS) {
+    const endOffset = offset;                                    // ближе к сегодня
+    const startOffset = Math.min(offset + CHUNK_DAYS - 1, daysBack - 1);  // дальше в прошлое
+    const end = _fmtDate(new Date(today.getTime() - endOffset * 86400 * 1000));
+    const start = _fmtDate(new Date(today.getTime() - startOffset * 86400 * 1000));
+    const params = {
+      advertiser_id: advertiserId,
+      report_type: 'BASIC',
+      data_level: 'AUCTION_ADVERTISER',
+      dimensions: JSON.stringify(['advertiser_id', 'stat_time_day']),
+      metrics: JSON.stringify(['spend', 'clicks', 'impressions', 'conversion']),
+      start_date: start,
+      end_date: end,
+      page_size: 1000,
+    };
+    let data;
+    try {
+      data = await _tt(token, '/report/integrated/get/', params);
+    } catch (e) {
+      logger.warn(`[tiktok-ads-sync] ${advertiserId} chunk ${start}..${end} failed: ${e.message}`);
+      lastError = e.message;
+      continue;  // другие чанки могут пройти
+    }
+    const rows = Array.isArray(data.list) ? data.list : [];
+    for (const row of rows) {
+      const dim = row.dimensions || {};
+      const m = row.metrics || {};
+      // stat_time_day comes as "YYYY-MM-DD 00:00:00" — slice to YYYY-MM-DD.
+      const date = String(dim.stat_time_day || '').slice(0, 10);
+      if (!date) continue;
+      allDaily.push({
+        date,
+        cost: Number(m.spend) || 0,
+        clicks: Number(m.clicks) || 0,
+        impressions: Number(m.impressions) || 0,
+        conversions: Number(m.conversion) || 0,
+      });
+    }
   }
-  const rows = Array.isArray(data.list) ? data.list : [];
-  const daily = [];
-  for (const row of rows) {
-    const dim = row.dimensions || {};
-    const m = row.metrics || {};
-    // stat_time_day comes as "YYYY-MM-DD 00:00:00" — slice to YYYY-MM-DD.
-    const date = String(dim.stat_time_day || '').slice(0, 10);
-    if (!date) continue;
-    daily.push({
-      date,
-      cost: Number(m.spend) || 0,
-      clicks: Number(m.clicks) || 0,
-      impressions: Number(m.impressions) || 0,
-      conversions: Number(m.conversion) || 0,
-    });
-  }
-  // Sort by date asc + cap to MAX_DAILY_ROWS_PER_ACCT.
-  daily.sort((a, b) => a.date.localeCompare(b.date));
-  return { daily: daily.slice(0, MAX_DAILY_ROWS_PER_ACCT), error: null };
+  // Dedupe (overlap на границах чанков) + sort + cap.
+  const byDate = new Map();
+  for (const d of allDaily) if (!byDate.has(d.date)) byDate.set(d.date, d);
+  const daily = Array.from(byDate.values())
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(0, MAX_DAILY_ROWS_PER_ACCT);
+  return { daily, error: lastError };
 }
 
 function _fmtDate(d) {
@@ -284,7 +305,7 @@ exports.tiktokAdsSync = onSchedule(
     timeZone: 'UTC',
     timeoutSeconds: 540,
     memory: '256MiB',
-    secrets: [TIKTOK_ACCESS_TOKEN],
+    secrets: [TIKTOK_ACCESS_TOKEN, TIKTOK_APP_SECRET],
   },
   async () => {
     try {
@@ -298,7 +319,7 @@ exports.tiktokAdsSync = onSchedule(
 );
 
 exports.tiktokAdsSyncNow = onCall(
-  { secrets: [TIKTOK_ACCESS_TOKEN], timeoutSeconds: 540 },
+  { secrets: [TIKTOK_ACCESS_TOKEN, TIKTOK_APP_SECRET], timeoutSeconds: 540 },
   async (request) => {
     const email = (request.auth?.token?.email || '').toLowerCase();
     if (!ROOT_ADMINS.includes(email)) {
