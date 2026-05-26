@@ -1,4 +1,4 @@
-/* global React, Icon, DATA, Avatar, CenterChip, Trend, Sparkline, fmt, metricsFor */
+/* global React, Icon, DATA, Avatar, CenterChip, Trend, Sparkline, fmt, metricsFor, PageHelp */
 
 /* ================================================================
    Centers — branch comparison for the owner / admin
@@ -48,7 +48,7 @@ window.CentersPage = function CentersPage({ onOpenEmployee }) {
     <div className="page">
       <div className="page-h">
         <div>
-          <h1 className="title">Centers</h1>
+          <h1 className="title">Centers <PageHelp pageId="centers" /></h1>
           <div className="subtitle">
             <span>{byCenter.length} branches · {grand.headcount} people · {grand.active} working now</span>
             <span>·</span>

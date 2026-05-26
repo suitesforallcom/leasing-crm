@@ -1,4 +1,4 @@
-/* global React, Icon, DATA, Avatar, CatIcon, Trend, fmt, parseTime */
+/* global React, Icon, DATA, Avatar, CatIcon, Trend, fmt, parseTime, PageHelp */
 
 /* ================================================================
    Unusual activity / Alerts page
@@ -12,7 +12,7 @@ window.AlertsPage = function AlertsPage({ onOpenEmployee, onOpenEvent }) {
     <div className="page">
       <div className="page-h">
         <div>
-          <h1 className="title">Unusual activity</h1>
+          <h1 className="title">Unusual activity <PageHelp pageId="alerts" /></h1>
           <div className="subtitle">
             <span><Icon name="warning" style={{ width: 13, height: 13, verticalAlign: "-2px", color: "var(--warning-ink)" }} /> {events.length} flagged event{events.length === 1 ? "" : "s"} · {users.length} {users.length === 1 ? "person" : "people"} needing review</span>
           </div>
@@ -108,7 +108,7 @@ window.PeoplePage = function PeoplePage({ onOpenEmployee }) {
     <div className="page">
       <div className="page-h">
         <div>
-          <h1 className="title">People</h1>
+          <h1 className="title">People <PageHelp pageId="people" /></h1>
           <div className="subtitle"><span>{users.length} of {DATA.USERS.length} employees</span></div>
         </div>
         <div className="row">

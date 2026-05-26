@@ -1,4 +1,4 @@
-/* global React, Icon, DATA, Avatar, Trend, Sparkline, fmt, metricsFor, BONUS_TIERS, StatusPill, BonusBadge, TargetMeter, HelpHint */
+/* global React, Icon, DATA, Avatar, Trend, Sparkline, fmt, metricsFor, BONUS_TIERS, StatusPill, BonusBadge, TargetMeter, HelpHint, PageHelp */
 
 /* ================================================================
    Bonuses page — who's earning what + tier rules + history
@@ -29,7 +29,7 @@ window.BonusesPage = function BonusesPage({ onOpenEmployee }) {
     <div className="page">
       <div className="page-h">
         <div>
-          <h1 className="title">Bonuses</h1>
+          <h1 className="title">Bonuses <PageHelp pageId="bonuses" /></h1>
           <div className="subtitle">
             <span><Icon name="star" style={{ color: "var(--warning-ink)", verticalAlign: "-2px" }} /> Performance bonuses earned this month — based on hitting role targets.</span>
           </div>

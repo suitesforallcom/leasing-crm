@@ -1,4 +1,4 @@
-/* global React, Icon */
+/* global React, Icon, PageHelp */
 
 /* ===================================================================
    Pulse — Google Ads dimensions (Keywords / Search Terms / Geo / Devices)
@@ -95,7 +95,7 @@ const _dimTdStyle = {
 
 /* ============== DimensionTable — reusable across all 4 pages ============== */
 
-function DimensionTable({ kind, title, subtitle, columns, helpText }) {
+function DimensionTable({ kind, title, subtitle, columns, helpText, pageId }) {
   const [rows, setRows] = React.useState([]);
   const [cursor, setCursor] = React.useState(null);
   const [loading, setLoading] = React.useState(false);
@@ -175,7 +175,7 @@ function DimensionTable({ kind, title, subtitle, columns, helpText }) {
     <div className="page">
       <div className="page-h" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 14 }}>
         <div>
-          <h1 className="title">{title}</h1>
+          <h1 className="title">{title} {pageId && <PageHelp pageId={pageId} />}</h1>
           <div className="subtitle">{subtitle}</div>
         </div>
         <button
@@ -361,6 +361,7 @@ window.KeywordsPage = function KeywordsPage() {
   return (
     <DimensionTable
       kind="keyword"
+      pageId="keywords"
       title="Keywords"
       subtitle="What you're bidding on — sorted by spend across the last 90 days"
       helpText="Active keywords from your Google Ads account that drove paid traffic. Includes match type (exact / phrase / broad) and Google's Quality Score where available."
@@ -400,6 +401,7 @@ window.SearchTermsPage = function SearchTermsPage() {
   return (
     <DimensionTable
       kind="searchTerm"
+      pageId="searchterms"
       title="Search Terms"
       subtitle="The actual user queries that triggered your ads"
       helpText="Real searches typed by users that matched one of your keywords. Useful for finding negative-keyword candidates and discovering new keyword ideas."
@@ -432,6 +434,7 @@ window.GeoPage = function GeoPage() {
   return (
     <DimensionTable
       kind="geo"
+      pageId="geo"
       title="Geography"
       subtitle="Where your impressions and clicks come from — by user location"
       helpText="Country breakdown of users who saw your ads. «Location of presence» = where the user actually was; «area of interest» = location they were researching about."
@@ -458,6 +461,7 @@ window.DevicesPage = function DevicesPage() {
   return (
     <DimensionTable
       kind="device"
+      pageId="devices"
       title="Devices"
       subtitle="Performance split by device type — desktop / mobile / tablet"
       helpText="Where users were when they saw your ads. Use this to tune device bid adjustments in Google Ads (e.g. cut mobile if it converts poorly)."

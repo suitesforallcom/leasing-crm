@@ -1,4 +1,4 @@
-/* global React, DATA, Icon */
+/* global React, DATA, Icon, PageHelp */
 
 /* ===================================================================
    Pulse — HubSpot Insights page (extracted from OverviewPage 2026-05-24)
@@ -67,7 +67,7 @@ window.HubspotPage = function HubspotPage({ centerFilter }) {
           so we keep this one slim. */}
       <div className="page-h">
         <div>
-          <h1 className="title">HubSpot</h1>
+          <h1 className="title">HubSpot <PageHelp pageId="hubspot" /></h1>
           <div className="subtitle">
             <span>Pipeline analytics from HubSpot CRM, cross-referenced with SuitesForAll leases</span>
           </div>

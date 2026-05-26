@@ -1,4 +1,4 @@
-/* global React, Icon */
+/* global React, Icon, PageHelp */
 
 /* ===================================================================
    Pulse — Top Ads page (Phase 2 marketing — cross-platform ad detail)
@@ -830,7 +830,7 @@ window.TopAdsPage = function TopAdsPage() {
     <div className="page">
       <div className="page-h" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
         <div>
-          <h1 className="title">Top Ads</h1>
+          <h1 className="title">Top Ads <PageHelp pageId="topads" /></h1>
           <div className="subtitle">
             Cross-platform creative leaderboard — sorted by spend across the last 90 days
           </div>

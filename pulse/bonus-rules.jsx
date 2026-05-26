@@ -1,4 +1,4 @@
-/* global React, Icon, DATA, Avatar, HelpHint */
+/* global React, Icon, DATA, Avatar, HelpHint, PageHelp */
 
 /* ================================================================
    Bonus Rules — admin page for configuring how bonuses work
@@ -68,7 +68,7 @@ window.BonusRulesPage = function BonusRulesPage({ onOpenEmployee }) {
     <div className="page">
       <div className="page-h">
         <div>
-          <h1 className="title">Bonus rules</h1>
+          <h1 className="title">Bonus rules <PageHelp pageId="bonusrules" /></h1>
           <div className="subtitle">
             <span>Configure how employees earn bonuses — per action, by streak, by team, by wellness.</span>
           </div>

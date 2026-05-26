@@ -365,6 +365,20 @@ At the end of every task, include a "Rollback" block with:
 
 Every data table must satisfy: column sort + drag-to-reorder + per-column tooltip + visibility gear menu. Use `mountTablePrefs` + `attachTableSort` + `applyTableSort` + `ensureColumnsButton` helpers. Sort + reorder must be PURE UI — must not change row count or totals. CSV export must follow current view.
 
+### 14b. Page Header Standard — PageHelp on every page (Tony 2026-05-26)
+
+Every Pulse page MUST have a `<PageHelp pageId="..."/>` button immediately after the `<h1 className="title">…</h1>` text. This renders the round «?» tooltip → click expands a styled detail panel describing what the page shows, where data comes from, how to read it, and how to use it.
+
+**When adding a new Pulse page:**
+1. Add a `PAGE_DOCS` entry in `pulse/page-docs.jsx` keyed by the page's view id (e.g. `mynewpage: { title: "…", detail: <>…</> }`). The `detail` JSX should answer: *what this is · data sources · how to read it · how to use it.*
+2. In the page component, include `PageHelp` in its `/* global … */` declaration and render `<h1 className="title">My New Page <PageHelp pageId="mynewpage" /></h1>`.
+3. Bump the cache-bust query on `page-docs.jsx` in `pulse.html`.
+
+**Anti-patterns** (do NOT do):
+- Adding a page with no `PAGE_DOCS` entry (the «?» button silently no-ops; operator gets confused).
+- Writing the detail inline inside the page file (PAGE_DOCS is the single source of truth so future pages stay consistent and so the dictionary can be lifted into other surfaces — search, AI summaries, etc.).
+- Using a custom help icon — reuse `<PageHelp>` so the styling stays consistent.
+
 ### 16. Collections Applied Algorithm (Tony 2026-05-22)
 
 The primary «Collected · <Month>» KPI uses the **Collections Applied** algorithm — the same metric used by Yardi Voyager / AppFolio / Buildium / MRI / QuickBooks accrual mode. **DO NOT** confuse it with cash basis.

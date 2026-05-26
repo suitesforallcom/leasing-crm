@@ -1,4 +1,4 @@
-/* global React, Icon, DATA, Avatar, StatusPill, BonusBadge, CenterChip, Trend, Sparkline, fmt, metricsFor */
+/* global React, Icon, DATA, Avatar, StatusPill, BonusBadge, CenterChip, Trend, Sparkline, fmt, metricsFor, PageHelp */
 
 /* ================================================================
    My Journey — long-term personal history & motivation page
@@ -187,7 +187,7 @@ window.MyJourneyPage = function MyJourneyPage({ meId = "u1", onBack }) {
 
       <div className="page-h">
         <div>
-          <h1 className="title">My Journey</h1>
+          <h1 className="title">My Journey <PageHelp pageId="myjourney" /></h1>
           <div className="subtitle">
             <span>Your story so far — weeks, months, years of progress.</span>
           </div>

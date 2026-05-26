@@ -1,4 +1,4 @@
-/* global React, Icon, DATA, Avatar, CatIcon, StatusDot, KPI, Sparkline, Trend, fmt, parseTime, metricsFor, StatusPill, TargetMeter, BonusBadge, HelpHint */
+/* global React, Icon, DATA, Avatar, CatIcon, StatusDot, KPI, Sparkline, Trend, fmt, parseTime, metricsFor, StatusPill, TargetMeter, BonusBadge, HelpHint, PageHelp */
 
 /* ================================================================
    Activity Center — main overview page (v2)
@@ -58,7 +58,7 @@ window.OverviewPage = function OverviewPage({ centerFilter, onOpenEmployee, onOp
       {/* Page header */}
       <div className="page-h">
         <div>
-          <h1 className="title">Activity Center</h1>
+          <h1 className="title">Activity Center <PageHelp pageId="overview" /></h1>
           <div className="subtitle">
             <span><StatusDot status="online" /> {users.filter(x => x.u.status === "online").length} of {DATA.USERS.length} people working</span>
             <span>·</span>

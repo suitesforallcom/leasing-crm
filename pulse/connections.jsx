@@ -1,4 +1,4 @@
-/* global React, Icon */
+/* global React, Icon, PageHelp */
 
 /* ===================================================================
    Connections — unified integrations dashboard (Tony 2026-05-24)
@@ -62,7 +62,7 @@ window.ConnectionsPage = function ConnectionsPage() {
     <div className="page">
       <div className="page-h">
         <div>
-          <h1 className="title">Connections</h1>
+          <h1 className="title">Connections <PageHelp pageId="connections" /></h1>
           <div className="subtitle">
             <span>All external integrations in one place. Add/manage CRM, ad platforms, and analytics.</span>
           </div>

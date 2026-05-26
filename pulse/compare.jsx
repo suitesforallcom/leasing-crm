@@ -1,4 +1,4 @@
-/* global React, Icon, DATA, Avatar, CatIcon, Trend, Sparkline, HourBars, fmt */
+/* global React, Icon, DATA, Avatar, CatIcon, Trend, Sparkline, HourBars, fmt, PageHelp */
 
 /* ================================================================
    Compare view — pick 2-4 employees, see side-by-side
@@ -64,7 +64,7 @@ window.ComparePage = function ComparePage({ initial, onOpenEmployee }) {
     <div className="page">
       <div className="page-h">
         <div>
-          <h1 className="title">Compare employees</h1>
+          <h1 className="title">Compare employees <PageHelp pageId="compare" /></h1>
           <div className="subtitle">
             <span>Side-by-side benchmark across activity, calls, emails, and productivity.</span>
           </div>

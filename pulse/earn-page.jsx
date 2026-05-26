@@ -1,4 +1,4 @@
-/* global React, Icon, DATA, Avatar, fmt, metricsFor */
+/* global React, Icon, DATA, Avatar, fmt, metricsFor, PageHelp */
 
 /* ================================================================
    Earn More — employee-facing read-only view of bonus rules.
@@ -91,7 +91,7 @@ window.EarnPage = function EarnPage({ meId = "u1", onBack }) {
       {/* Header */}
       <div className="page-h">
         <div>
-          <h1 className="title">How to earn more</h1>
+          <h1 className="title">How to earn more <PageHelp pageId="earn" /></h1>
           <div className="subtitle">
             <span>Every bonus rule active in May — what triggers them, how much they pay, and what to do next.</span>
           </div>

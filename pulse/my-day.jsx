@@ -1,4 +1,4 @@
-/* global React, Icon, DATA, Avatar, CatIcon, StatusPill, TargetMeter, BonusBadge, CenterChip, Trend, Sparkline, HourBars, GrowthTree, fmt, metricsFor, BONUS_TIERS, HelpHint */
+/* global React, Icon, DATA, Avatar, CatIcon, StatusPill, TargetMeter, BonusBadge, CenterChip, Trend, Sparkline, HourBars, GrowthTree, fmt, metricsFor, BONUS_TIERS, HelpHint, PageHelp */
 
 /* ================================================================
    My Day — personal page for an employee (Maya by default).
@@ -567,7 +567,7 @@ function OwnerDay({ onNav, onOpenEmployee }) {
       <div className="page-h" style={{ marginBottom: 14 }}>
         <div>
           <div className="muted" style={{ fontSize: 11.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".08em" }}>{today}</div>
-          <h1 className="title">{greeting}, Tony</h1>
+          <h1 className="title">{greeting}, Tony <PageHelp pageId="myday" /></h1>
           <div className="subtitle">Owner dashboard · marketing + team activity today</div>
         </div>
       </div>

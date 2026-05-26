@@ -1,4 +1,4 @@
-/* global React, Icon */
+/* global React, Icon, PageHelp */
 
 /* ================================================================
    Analytics — redesigned 2026-05-25 (Tony).
@@ -135,7 +135,7 @@ window.AnalyticsPage = function AnalyticsPage() {
       {/* Header */}
       <div className="page-h" style={{ flexWrap: 'wrap' }}>
         <div>
-          <h1 className="title">Analytics</h1>
+          <h1 className="title">Analytics <PageHelp pageId="analytics" /></h1>
           <div className="subtitle">
             <span>Site behaviour from GA4 · Property {data?.propertyId || '494945826'}</span>
             {data?.fetchedAt && <span> · Loaded {_fmtAgo(data.fetchedAt)}</span>}
