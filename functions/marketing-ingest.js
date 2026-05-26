@@ -383,12 +383,15 @@ function _buildGoogleUnifiedAd(payload, adRaw, ingestedAt) {
     primaryText: null,
     callToAction: null,
     landingUrl: Array.isArray(adRaw.finalUrls) && adRaw.finalUrls.length > 0
-      ? String(adRaw.finalUrls[0]) : null,
+      ? _gaText(adRaw.finalUrls[0]) || null : null,
     displayUrl: null,
-    headlines: Array.isArray(adRaw.headlines) && adRaw.headlines.length > 0
-      ? adRaw.headlines.map(String) : null,
-    descriptions: Array.isArray(adRaw.descriptions) && adRaw.descriptions.length > 0
-      ? adRaw.descriptions.map(String) : null,
+    // RSA headlines/descriptions могут приходить либо строками, либо
+    // AdTextAsset-объектами {asset, text, pinned_field} — зависит от
+    // версии google-ads-script.js. Всегда нормализуем до string-массива
+    // и фильтруем пустые / «[object Object]» (мусор от первого ingest
+    // pass до того как _splitGaqlArray начал извлекать .text).
+    headlines: _gaCleanList(adRaw.headlines),
+    descriptions: _gaCleanList(adRaw.descriptions),
     posterUrl: null,
   };
   if (creativeType === 'VIDEO' && adRaw.youtubeVideoId) {
@@ -436,7 +439,7 @@ function _buildGoogleUnifiedAd(payload, adRaw, ingestedAt) {
     error: null,
     platformExtras: {
       adType: String(adRaw.adType || '') || null,
-      finalUrls: Array.isArray(adRaw.finalUrls) ? adRaw.finalUrls.map(String) : null,
+      finalUrls: _gaCleanList(adRaw.finalUrls),
     },
   };
 }
@@ -448,6 +451,29 @@ function _coerceCount(raw, impressions) {
   if (!Number.isFinite(n) || n < 0) return 0;
   if (n <= 1 && Number(impressions) > 0) return Math.round(n * Number(impressions));
   return Math.round(n);
+}
+
+// Достаёт строковое значение из AdTextAsset-подобного объекта или
+// пропускает уже-строку. Возвращает '' для null/undefined/мусора.
+function _gaText(x) {
+  if (x == null) return '';
+  if (typeof x === 'string') return x;
+  if (typeof x === 'object') {
+    return String(x.text || x.asset || x.value || x.label || '');
+  }
+  return String(x);
+}
+
+// Нормализует массив RSA assets к чистому массиву строк, отфильтровывая
+// пустые элементы и строки-мусор «[object Object]» (артефакт раннего
+// .map(String) поверх объектов до того как ввёлся _gaText).
+function _gaCleanList(arr) {
+  if (!Array.isArray(arr) || arr.length === 0) return null;
+  const out = arr
+    .map(_gaText)
+    .map(s => String(s).trim())
+    .filter(s => s.length > 0 && s.indexOf('[object Object]') < 0);
+  return out.length > 0 ? out : null;
 }
 
 exports.marketingAdsIngest = onRequest(
