@@ -688,6 +688,21 @@ function TikTokConnection({ period }) {
     }
   }
 
+  // Триггер ad-level pull для TikTok (зеркало metaAdsAdLevelSyncNow).
+  // Дёргает /campaign/get/, /adgroup/get/, /ad/get/ + creative-метаданные.
+  // Требует у токена scopes: Ads Management + Creative Management.
+  // Если scopes урезаны — увидим code=40xxx «permission denied» в логах.
+  const [syncingAds, setSyncingAds] = React.useState(false);
+  async function syncAdsNow() {
+    setSyncingAds(true);
+    setMsg(null);
+    const data = await _callAdmin('tiktokAdsAdLevelSyncNow', {}, setMsg);
+    setSyncingAds(false);
+    if (data) {
+      setMsg({ kind: 'ok', text: `Synced ${data.counts?.adsWritten || 0} ads across ${data.counts?.advertisers || 0} advertisers. Open «Top Ads» tab to view.` });
+    }
+  }
+
   return (
     <ConnectionCard
       icon="⬛"
@@ -699,6 +714,7 @@ function TikTokConnection({ period }) {
       actions={[
         <ActionBtn key="bc" href="https://business.tiktok.com/">Business Center ↗</ActionBtn>,
         <ActionBtn key="docs" href="https://business-api.tiktok.com/portal/docs">Docs ↗</ActionBtn>,
+        <ActionBtn key="syncAds" onClick={syncAdsNow} disabled={syncingAds}>{syncingAds ? 'Syncing ads…' : 'Sync ads'}</ActionBtn>,
         <ActionBtn key="sync" onClick={syncNow} disabled={syncing} primary>{syncing ? 'Syncing…' : 'Sync now'}</ActionBtn>,
       ]}
     >
