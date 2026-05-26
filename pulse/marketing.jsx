@@ -1,4 +1,4 @@
-/* global React, Icon, PageHelp */
+/* global React, Icon, PageHelp, LeadsContractsModal */
 
 /* ===================================================================
    Pulse — Marketing page (Phase 1: channel mix from HubSpot data)
@@ -382,6 +382,22 @@ function SpendSection() {
     try { localStorage.setItem("pulse_marketing_quality_leads_only", qualityLeadsOnly ? "true" : "false"); } catch (e) {}
   }, [qualityLeadsOnly]);
 
+  // Leads/Contracts modal — открывается кликом по ячейкам Leads/Contracts
+  // в таблице. По умолчанию закрыт. Tony 2026-05-26.
+  const [leadsModal, setLeadsModal] = React.useState({ open: false, tab: 'leads', channel: 'all' });
+  function openLeads(channelKey) { setLeadsModal({ open: true, tab: 'leads', channel: channelKey || 'all' }); }
+  function openContracts(channelKey) { setLeadsModal({ open: true, tab: 'contracts', channel: channelKey || 'all' }); }
+  function closeLeadsModal() { setLeadsModal(prev => Object.assign({}, prev, { open: false })); }
+
+  // Re-render when overrides change so the SpendSection table reflects
+  // the new bucketing (HubSpot cache mutated in-place by data-shim).
+  const [, _rerenderTick] = React.useState(0);
+  React.useEffect(() => {
+    function onChange() { _rerenderTick(t => t + 1); }
+    window.addEventListener('pulseSourceOverridesChanged', onChange);
+    return () => window.removeEventListener('pulseSourceOverridesChanged', onChange);
+  }, []);
+
   if (sourceKeys.length === 0) {
     return (
       <div className="card is-clean" style={{ marginBottom: 18, padding: 14, borderLeft: "3px dashed #d4d4d8" }}>
@@ -579,6 +595,15 @@ function SpendSection() {
   }
 
   return (
+    <>
+    {typeof LeadsContractsModal === "function" && (
+      <LeadsContractsModal
+        open={leadsModal.open}
+        onClose={closeLeadsModal}
+        initialTab={leadsModal.tab}
+        initialChannel={leadsModal.channel}
+      />
+    )}
     <div className="card is-clean" style={{ marginBottom: 18, padding: 0, overflow: "hidden", borderLeft: "3px solid #16a34a" }}>
       <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
         <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
@@ -688,7 +713,14 @@ function SpendSection() {
         </div>
       </div>
       {spendRows.map(r => (
-        <SpendRow key={r.sourceKey} r={r} windowLabel={windowLabel} fmtIngestTs={fmtIngestTs} />
+        <SpendRow
+          key={r.sourceKey}
+          r={r}
+          windowLabel={windowLabel}
+          fmtIngestTs={fmtIngestTs}
+          onOpenLeads={openLeads}
+          onOpenContracts={openContracts}
+        />
       ))}
       {/* 2026-05-24 Tony: «Other» row — контракты и leads из каналов
           которые HubSpot не атрибуирует к Google/Meta/TikTok (Direct,
@@ -727,16 +759,45 @@ function SpendSection() {
             </div>
             <div className="mono" style={{ textAlign: "right", color: "var(--muted-2)" }}>—</div>
             <div className="mono" style={{ textAlign: "right", color: "var(--muted-2)" }}>—</div>
-            <div className="mono" style={{ textAlign: "right", color: otherLeadsForCPL > 0 ? "var(--ink)" : "var(--muted)" }}>
+            <div
+              className="mono"
+              style={{
+                textAlign: "right",
+                color: otherLeadsForCPL > 0 ? "var(--accent-ink)" : "var(--muted)",
+                cursor: otherLeadsForCPL > 0 ? "pointer" : "default",
+                textDecoration: otherLeadsForCPL > 0 ? "underline dotted" : "none",
+              }}
+              title={otherLeadsForCPL > 0 ? "Click to open the non-paid-attribution lead list." : ""}
+              onClick={(e) => {
+                if (otherLeadsForCPL > 0) {
+                  e.stopPropagation();
+                  openLeads('all');
+                }
+              }}
+            >
               {otherLeadsForCPL.toLocaleString()}
               {otherQualified !== otherLeads && (
                 <div style={{ fontSize: 9.5, fontWeight: 400, color: "var(--muted)", marginTop: 1 }}>of {otherLeads.toLocaleString()} total</div>
               )}
             </div>
-            <div className="mono" style={{ textAlign: "right", fontWeight: 700, color: otherContracts > 0 ? "var(--success-ink)" : "var(--muted)" }}
-                 title={otherContracts > 0
-                   ? `${otherContracts} signed lease${otherContracts === 1 ? "" : "s"} this month not attributed to any paid channel:\n` + otherFmLeases.slice(0, 8).map(l => `· Suite ${l.unitId} — ${l.tenant} — +$${l.monthly}/mo${l.email ? "" : " (no email)"}`).join("\n") + (otherFmLeases.length > 8 ? `\n... +${otherFmLeases.length - 8} more` : "")
-                   : "No non-paid leases this month"}>
+            <div
+              className="mono"
+              style={{
+                textAlign: "right", fontWeight: 700,
+                color: otherContracts > 0 ? "var(--success-ink)" : "var(--muted)",
+                cursor: otherContracts > 0 ? "pointer" : "default",
+                textDecoration: otherContracts > 0 ? "underline dotted" : "none",
+              }}
+              title={otherContracts > 0
+                ? `Click to open non-paid contracts.\n${otherContracts} signed lease${otherContracts === 1 ? "" : "s"} this month not attributed to any paid channel:\n` + otherFmLeases.slice(0, 8).map(l => `· Suite ${l.unitId} — ${l.tenant} — +$${l.monthly}/mo${l.email ? "" : " (no email)"}`).join("\n") + (otherFmLeases.length > 8 ? `\n... +${otherFmLeases.length - 8} more` : "")
+                : "No non-paid leases this month"}
+              onClick={(e) => {
+                if (otherContracts > 0) {
+                  e.stopPropagation();
+                  openContracts('other');
+                }
+              }}
+            >
               {otherContracts || "—"}
               {otherMRR > 0 && (
                 <div style={{ fontSize: 9.5, fontWeight: 400, color: "var(--success-ink)", marginTop: 1 }}>
@@ -792,13 +853,33 @@ function SpendSection() {
             </div>
             <div className="mono" style={{ textAlign: "right" }} title={`$${totalSpend.toFixed(2)} total ad spend across all paid channels`}>${Math.round(totalSpend).toLocaleString()}</div>
             <div className="mono" style={{ textAlign: "right" }}>{totalClicks.toLocaleString()}</div>
-            <div className="mono" style={{ textAlign: "right" }} title={`Quality (MQL+): ${totalLeadsQuality.toLocaleString()}\nTotal contacts: ${totalLeadsTotal.toLocaleString()}\nIncludes Other row (${otherLeads} leads from non-paid)`}>
+            <div
+              className="mono"
+              style={{
+                textAlign: "right",
+                cursor: "pointer",
+                textDecoration: totalLeadsForCPL > 0 ? "underline dotted" : "none",
+                color: totalLeadsForCPL > 0 ? "var(--ink)" : "var(--muted)",
+              }}
+              title={`Click to open all leads.\nQuality (MQL+): ${totalLeadsQuality.toLocaleString()}\nTotal contacts: ${totalLeadsTotal.toLocaleString()}\nIncludes Other row (${otherLeads} leads from non-paid)`}
+              onClick={(e) => { e.stopPropagation(); openLeads('all'); }}
+            >
               {totalLeadsForCPL.toLocaleString()}
               {totalLeadsQuality !== totalLeadsTotal && (
                 <div style={{ fontSize: 9.5, fontWeight: 400, color: "var(--muted)", marginTop: 1 }}>of {totalLeadsTotal.toLocaleString()} total</div>
               )}
             </div>
-            <div className="mono" style={{ textAlign: "right", color: totalContracts > 0 ? "var(--success-ink)" : "var(--muted)" }} title={`${totalContracts} signed lease${totalContracts === 1 ? "" : "s"} this month across all sources (paid + non-paid). $${totalMRR.toLocaleString()}/mo combined MRR.`}>
+            <div
+              className="mono"
+              style={{
+                textAlign: "right",
+                color: totalContracts > 0 ? "var(--success-ink)" : "var(--muted)",
+                cursor: "pointer",
+                textDecoration: totalContracts > 0 ? "underline dotted" : "none",
+              }}
+              title={`Click to open all contracts.\n${totalContracts} signed lease${totalContracts === 1 ? "" : "s"} this month across all sources (paid + non-paid). $${totalMRR.toLocaleString()}/mo combined MRR.`}
+              onClick={(e) => { e.stopPropagation(); openContracts('all'); }}
+            >
               {totalContracts || "—"}
               {totalMRR > 0 && (
                 <div style={{ fontSize: 10, fontWeight: 700, color: "var(--success-ink)", marginTop: 1 }}>
@@ -898,6 +979,7 @@ function SpendSection() {
         </details>
       )}
     </div>
+    </>
   );
 }
 
@@ -994,7 +1076,7 @@ function ChannelRow({ row, totalLeads }) {
 
 // One source row in SpendSection. For Meta (multi-account), supports
 // click-to-expand per-account breakdown.
-function SpendRow({ r, windowLabel, fmtIngestTs }) {
+function SpendRow({ r, windowLabel, fmtIngestTs, onOpenLeads, onOpenContracts }) {
   const [expanded, setExpanded] = React.useState(false);
   const tsLabel = fmtIngestTs(r.ingestedAt);
   const tsTooltip = r.ingestedAt
@@ -1041,7 +1123,17 @@ function SpendRow({ r, windowLabel, fmtIngestTs }) {
         </div>
         <div className="mono" style={{ textAlign: "right", fontWeight: 700 }} title={r.cost > 0 ? `$${r.cost.toFixed(2)} over ${windowLabel}` : "No spend in window"}>${r.cost.toFixed(0)}</div>
         <div className="mono" style={{ textAlign: "right" }}>{r.clicks.toLocaleString()}</div>
-        <div className="mono" style={{ textAlign: "right", color: r.leadsForCPL > 0 ? "var(--ink)" : "var(--muted)" }} title={`Quality (MQL+): ${r.qualifiedLeads.toLocaleString()}\nTotal contacts: ${r.totalContacts.toLocaleString()}\nCPL counts ${r.qualityLeadsOnly ? "quality" : "total"} (see toggle above).`}>
+        <div
+          className="mono"
+          style={{
+            textAlign: "right",
+            color: r.leadsForCPL > 0 ? "var(--accent-ink)" : "var(--muted)",
+            cursor: "pointer",
+            textDecoration: r.leadsForCPL > 0 ? "underline dotted" : "none",
+          }}
+          title={`Click to open the lead list for ${r.label}.\nQuality (MQL+): ${r.qualifiedLeads.toLocaleString()}\nTotal contacts: ${r.totalContacts.toLocaleString()}\nCPL counts ${r.qualityLeadsOnly ? "quality" : "total"} (see toggle above).`}
+          onClick={(e) => { e.stopPropagation(); onOpenLeads && onOpenLeads(r.sourceKey); }}
+        >
           {r.leadsForCPL.toLocaleString()}
           {r.qualifiedLeads !== r.totalContacts && (
             <div style={{ fontSize: 9.5, fontWeight: 400, color: "var(--muted)", marginTop: 1 }}>
@@ -1051,11 +1143,21 @@ function SpendRow({ r, windowLabel, fmtIngestTs }) {
         </div>
         {/* 2026-05-24 Tony: Contracts column — signed leases из floor-map
             state, attributed по email→HubSpot source. Показывает count +
-            MRR ($X/mo total). */}
-        <div className="mono" style={{ textAlign: "right", fontWeight: 700, color: r.customers > 0 ? "var(--success-ink)" : "var(--muted)" }}
-             title={r.customers > 0
-               ? `${r.customers} signed contract${r.customers === 1 ? "" : "s"} attributed to ${r.label} this month:\n` + (r.fmLeases || []).slice(0, 8).map(l => `· Suite ${l.unitId} — ${l.tenant} — +$${l.monthly}/mo`).join("\n") + (r.fmLeases && r.fmLeases.length > 8 ? `\n... +${r.fmLeases.length - 8} more` : "")
-               : "No signed contracts attributed to this source this month"}>
+            MRR ($X/mo total). 2026-05-26: clickable — открывает Contracts-
+            таб в LeadsContractsModal с filter=channel. */}
+        <div
+          className="mono"
+          style={{
+            textAlign: "right", fontWeight: 700,
+            color: r.customers > 0 ? "var(--success-ink)" : "var(--muted)",
+            cursor: "pointer",
+            textDecoration: r.customers > 0 ? "underline dotted" : "none",
+          }}
+          title={r.customers > 0
+            ? `Click to open contracts attributed to ${r.label}.\n${r.customers} signed contract${r.customers === 1 ? "" : "s"} this month:\n` + (r.fmLeases || []).slice(0, 8).map(l => `· Suite ${l.unitId} — ${l.tenant} — +$${l.monthly}/mo`).join("\n") + (r.fmLeases && r.fmLeases.length > 8 ? `\n... +${r.fmLeases.length - 8} more` : "")
+            : `Click to open contracts (none attributed to ${r.label} this month).`}
+          onClick={(e) => { e.stopPropagation(); onOpenContracts && onOpenContracts(r.sourceKey); }}
+        >
           {r.customers > 0 ? r.customers : "—"}
           {r.customersMRR > 0 && (
             <div style={{ fontSize: 9.5, fontWeight: 400, color: "var(--success-ink)", marginTop: 1 }}>

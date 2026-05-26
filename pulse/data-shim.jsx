@@ -53,6 +53,85 @@
     }
   } catch (e) { /* corrupt cache — ignore */ }
 
+  // 2026-05-26 Tony: «сделай возможность изменять» — операторские
+  // overrides канала-источника контакта/лиза. Per-browser в
+  // localStorage. Применяются прямо к contactByEmail в памяти →
+  // downstream classifyChannel + _attributeChannel автоматически
+  // видят новый канал без правки call-сайтов. Сбрасываются обратно
+  // к оригиналу через окно (выбор "— auto —").
+  const OV_LS_KEY = 'sfa_pulse_source_overrides_v1';
+  const _CHANNEL_TO_SRC = {
+    'google-ads': { src: 'PAID_SEARCH',    srcD: 'google' },
+    'meta':       { src: 'PAID_SOCIAL',    srcD: 'facebook' },
+    'tiktok':     { src: 'PAID_SOCIAL',    srcD: 'tiktok' },
+    'direct':     { src: 'DIRECT_TRAFFIC', srcD: '' },
+    'organic':    { src: 'ORGANIC_SEARCH', srcD: '' },
+    'email':      { src: 'EMAIL_MARKETING',srcD: '' },
+    'referral':   { src: 'REFERRALS',      srcD: '' },
+    'offline':    { src: 'OFFLINE',        srcD: '' },
+    'other':      { src: 'OTHER_CAMPAIGNS',srcD: '' },
+  };
+  function _readSourceOverrides() {
+    try { return JSON.parse(localStorage.getItem(OV_LS_KEY) || '{}') || {}; }
+    catch (e) { return {}; }
+  }
+  function _writeSourceOverrides(map) {
+    try { localStorage.setItem(OV_LS_KEY, JSON.stringify(map)); }
+    catch (e) { /* localStorage full — silent */ }
+  }
+  function _resetOverrideOnContact(email) {
+    const hs = window._hsDataCache;
+    if (!hs || !hs.contactByEmail) return;
+    const c = hs.contactByEmail[email];
+    if (!c || c._origSrc === undefined) return;
+    c.src = c._origSrc;
+    c.srcD = c._origSrcD;
+    delete c._origSrc;
+    delete c._origSrcD;
+  }
+  function _applyOverridesToContacts() {
+    const hs = window._hsDataCache;
+    if (!hs || !hs.contactByEmail) return 0;
+    const overrides = _readSourceOverrides();
+    let applied = 0;
+    for (const [email, channelKey] of Object.entries(overrides)) {
+      const c = hs.contactByEmail[email];
+      if (!c) continue;
+      const map = _CHANNEL_TO_SRC[channelKey];
+      if (!map) continue;
+      if (c._origSrc === undefined) {
+        c._origSrc = c.src;
+        c._origSrcD = c.srcD;
+      }
+      c.src = map.src;
+      c.srcD = map.srcD;
+      applied++;
+    }
+    return applied;
+  }
+  window.getPulseSourceOverrides = function () { return _readSourceOverrides(); };
+  window.setPulseSourceOverride = function (email, channelKey) {
+    const key = String(email || '').toLowerCase().trim();
+    if (!key) return;
+    const overrides = _readSourceOverrides();
+    // Сначала откатываем contact к оригинальному src — чтобы
+    // повторное применение нового канала использовало свежие _origSrc.
+    _resetOverrideOnContact(key);
+    if (channelKey === null || channelKey === '' || channelKey === undefined) {
+      delete overrides[key];
+    } else {
+      overrides[key] = channelKey;
+    }
+    _writeSourceOverrides(overrides);
+    _applyOverridesToContacts();
+    if (typeof window._recomputeFloorMapLeases === 'function') {
+      try { window._recomputeFloorMapLeases(); } catch (e) {}
+    }
+    try { window.dispatchEvent(new Event('pulseSourceOverridesChanged')); } catch (e) {}
+  };
+  // Применяем overrides сейчас если HubSpot cache уже загружен.
+  _applyOverridesToContacts();
+
   // Async refresh, fire-and-forget.
   function _hsRefresh() {
     if (typeof window._pulseCallable !== 'function') return Promise.resolve(null);
@@ -65,6 +144,9 @@
         } catch (e) { /* localStorage full — give up silently */ }
         const wasEmpty = !window._hsDataCache;
         window._hsDataCache = d;
+        // 2026-05-26 — applyOverrides ДО recompute, чтобы leases
+        // тоже учли operator-assigned каналы при первом проходе.
+        try { _applyOverridesToContacts(); } catch (e) {}
         // 2026-05-24 — recompute floor-map leases когда HubSpot
         // обновился, чтобы channel attribution учёл свежие contact.src.
         if (typeof window._recomputeFloorMapLeases === 'function') {
@@ -244,6 +326,45 @@
           const monthly = +u.contractRent || +u.rent || 0;
           const email = u.email || u.tenantEmail || '';
           const channel = _attributeChannel(email);
+
+          // 2026-05-26 Tony: «пусть пользователи будет написано кто
+          // отправил договор или сохранил договор который подписали».
+          // Источники имени оператора (по приоритету):
+          //   1. DocuSign envelope — последний по sentAt/createdAt
+          //   2. legacy u.signedPdf.uploadedBy
+          //   3. leaseDocuments[*].uploadedBy / versions[*].uploadedBy —
+          //      манульно загруженный signed-lease PDF
+          let sentBy = '';
+          let uploadedBy = '';
+          if (Array.isArray(u.leaseEnvelopes) && u.leaseEnvelopes.length) {
+            const newest = u.leaseEnvelopes
+              .filter(e => e && e.sentBy)
+              .sort((a, b) =>
+                (new Date(b.sentAt || b.createdAt || 0).getTime())
+                - (new Date(a.sentAt || a.createdAt || 0).getTime())
+              )[0];
+            if (newest) sentBy = newest.sentBy;
+          }
+          if (u.signedPdf && u.signedPdf.uploadedBy) {
+            uploadedBy = u.signedPdf.uploadedBy;
+          }
+          if (!uploadedBy && Array.isArray(u.leaseDocuments)) {
+            const docs = u.leaseDocuments.filter(d => !!d);
+            const newest = docs
+              .sort((a, b) =>
+                (new Date(b.uploadedAt || 0).getTime())
+                - (new Date(a.uploadedAt || 0).getTime())
+              )[0];
+            if (newest) {
+              if (newest.uploadedBy) {
+                uploadedBy = newest.uploadedBy;
+              } else if (Array.isArray(newest.versions)) {
+                const v = newest.versions.slice().reverse().find(x => x && x.uploadedBy);
+                if (v) uploadedBy = v.uploadedBy;
+              }
+            }
+          }
+
           const lease = {
             unitId: u.id,
             buildingId: b.id,
@@ -256,6 +377,8 @@
             depositPaidAt,
             sqft: +u.sqft || 0,
             channel,
+            sentBy,
+            uploadedBy,
           };
           all.push(lease);
           byChannel[channel].push(lease);
