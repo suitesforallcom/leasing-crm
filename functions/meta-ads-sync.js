@@ -725,3 +725,27 @@ exports.metaAdsAdLevelSyncNow = onCall(
     return _runAdLevelSync();
   }
 );
+
+// Scheduled cron — раз в час дёргает _runAdLevelSync() автоматически,
+// чтобы Top Ads табу всегда была свежей без ручного клика «Sync ads».
+// Кадр 60 минут совпадает с metaAdsSync (account-level rollup) — оба
+// бьют в Meta Graph API, но против разных endpoints, так что rate limits
+// независимы.
+exports.metaAdsAdLevelSync = onSchedule(
+  {
+    schedule: 'every 60 minutes',
+    timeZone: 'UTC',
+    timeoutSeconds: 540,
+    memory: '512MiB',
+    secrets: [META_ACCESS_TOKEN],
+  },
+  async () => {
+    try {
+      const result = await _runAdLevelSync();
+      logger.info('[meta-ads-adlevel-sync] scheduled OK', result.counts || {});
+    } catch (e) {
+      logger.error('[meta-ads-adlevel-sync] scheduled FAIL: ' + e.message, e);
+      throw e;
+    }
+  }
+);

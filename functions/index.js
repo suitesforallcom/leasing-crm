@@ -7179,6 +7179,8 @@ exports.metaSettingsSet = _meta.metaSettingsSet;
 // alongside tiktokAdsAdLevelSyncNow. Token (META_ACCESS_TOKEN) already
 // carries ads_read + business_management scopes; no portal change needed.
 exports.metaAdsAdLevelSyncNow = _meta.metaAdsAdLevelSyncNow;
+// Scheduled (60 min) — auto-обновляет Top Ads без ручного клика.
+exports.metaAdsAdLevelSync = _meta.metaAdsAdLevelSync;
 
 // Phase 20 (TikTok) — server-side TikTok Marketing API sync. Same
 // architecture as Meta: auto-discover advertisers + daily insights.
