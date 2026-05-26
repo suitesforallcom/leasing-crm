@@ -33,18 +33,38 @@ window.Sidebar = function Sidebar({ view, onNav, role }) {
           <NavItem id="people"   view={view} onNav={onNav} icon="people"   label="People"  count={onlineCount + " on"} isActive={view === "people" || view === "employee"} />
           <NavItem id="centers"  view={view} onNav={onNav} icon="building" label="Centers" count={DATA.CENTERS.length} />
           <NavItem id="compare"  view={view} onNav={onNav} icon="compare"  label="Compare" />
-          <NavItem id="hubspot"  view={view} onNav={onNav} icon="globe"    label="HubSpot" />
-          <NavItem id="marketing" view={view} onNav={onNav} icon="trendUp" label="Marketing" />
-          <NavItem id="topads" view={view} onNav={onNav} icon="star" label="Top Ads" />
-          {/* Google Ads dimension pages — read from marketing_keywords /
-              _search_terms / _geo / _devices subcollections populated by
-              the Google Ads Apps Script (см. scripts/google-ads-script.js). */}
-          <NavItem id="keywords"    view={view} onNav={onNav} icon="search"   label="Keywords" />
-          <NavItem id="searchterms" view={view} onNav={onNav} icon="search"   label="Search Terms" />
-          <NavItem id="geo"         view={view} onNav={onNav} icon="globe"    label="Geography" />
-          <NavItem id="devices"     view={view} onNav={onNav} icon="building" label="Devices" />
-          <NavItem id="analytics" view={view} onNav={onNav} icon="globe" label="Analytics (GA4)" />
-          <NavItem id="connections" view={view} onNav={onNav} icon="settings" label="Connections" />
+
+          {/* Группа «Marketing» — собирает все рекламно-аналитические
+              страницы под одним родителем (CRM-источник, channel mix,
+              top creatives, Google Ads размерности, GA4, настройки
+              интеграций). Tony 2026-05-26: «Все что относится к
+              рекламным компаниям … сделал в отдельное меню слева и
+              там уже делал под меню». */}
+          <NavGroup
+            id="marketing"
+            view={view}
+            icon="trendUp"
+            label="Marketing"
+            childIds={[
+              "hubspot","marketing","topads",
+              "keywords","searchterms","geo","devices",
+              "analytics","connections",
+            ]}
+          >
+            <NavItem id="hubspot"     view={view} onNav={onNav} icon="globe"    label="HubSpot" />
+            <NavItem id="marketing"   view={view} onNav={onNav} icon="trendUp"  label="Channel mix" />
+            <NavItem id="topads"      view={view} onNav={onNav} icon="star"     label="Top Ads" />
+            {/* Google Ads dimension pages — read from marketing_keywords /
+                _search_terms / _geo / _devices subcollections populated by
+                the Google Ads Apps Script (см. scripts/google-ads-script.js). */}
+            <NavItem id="keywords"    view={view} onNav={onNav} icon="search"   label="Keywords" />
+            <NavItem id="searchterms" view={view} onNav={onNav} icon="search"   label="Search Terms" />
+            <NavItem id="geo"         view={view} onNav={onNav} icon="globe"    label="Geography" />
+            <NavItem id="devices"     view={view} onNav={onNav} icon="building" label="Devices" />
+            <NavItem id="analytics"   view={view} onNav={onNav} icon="globe"    label="Analytics (GA4)" />
+            <NavItem id="connections" view={view} onNav={onNav} icon="settings" label="Connections" />
+          </NavGroup>
+
           <NavItem id="bonuses"  view={view} onNav={onNav} icon="star"     label="Bonuses" />
           <NavItem id="bonusrules" view={view} onNav={onNav} icon="settings" label="Bonus rules" />
           <NavItem id="alerts"   view={view} onNav={onNav} icon="warning"  label="Unusual" count={unusual || null} />
@@ -84,6 +104,77 @@ function NavItem({ id, view, onNav, icon, label, count, isActive }) {
   );
 }
 
+/* Сворачиваемая группа пунктов в sidebar.
+   - childIds[] = список view-id, входящих в группу: если активный view
+     попадает в этот список, родитель подсвечивается + группа авто-
+     раскрывается (полезно при глубоких ссылках / навигации из топбара).
+   - Состояние «раскрыто/свёрнуто» — пер-группа в localStorage,
+     чтобы между сессиями сохранялось.
+   - Шеврон у заголовка крутится на 90° при сворачивании (chevD →
+     влево-вниз превращается в chevR-аналог через CSS-transform). */
+function NavGroup({ id, view, icon, label, childIds, children, defaultOpen }) {
+  const lsKey = "pulse-nav-group-" + id;
+  const anyChildActive = Array.isArray(childIds) && childIds.indexOf(view) !== -1;
+
+  const [open, setOpen] = React.useState(() => {
+    try {
+      const saved = localStorage.getItem(lsKey);
+      if (saved === "1") return true;
+      if (saved === "0") return false;
+    } catch (_) {}
+    return !!defaultOpen || anyChildActive;
+  });
+
+  /* Если пользователь зашёл на дочернюю страницу через cmd-K или
+     прямую ссылку — авто-раскрыть группу, чтобы он видел, где находится. */
+  React.useEffect(() => {
+    if (anyChildActive && !open) {
+      setOpen(true);
+      try { localStorage.setItem(lsKey, "1"); } catch (_) {}
+    }
+  }, [anyChildActive]);
+
+  function toggle() {
+    const next = !open;
+    setOpen(next);
+    try { localStorage.setItem(lsKey, next ? "1" : "0"); } catch (_) {}
+  }
+
+  return (
+    <>
+      <button
+        className={"nav-item" + (anyChildActive ? " is-active" : "")}
+        onClick={toggle}
+        aria-expanded={open}
+        title={open ? "Collapse " + label : "Expand " + label}
+      >
+        <Icon name={icon} />
+        <span style={{ flex: 1, textAlign: "left" }}>{label}</span>
+        <Icon
+          name="chevD"
+          style={{
+            width: 12, height: 12, opacity: .55,
+            transform: open ? "rotate(0deg)" : "rotate(-90deg)",
+            transition: "transform 150ms",
+          }}
+        />
+      </button>
+      {open && (
+        <div
+          className="nav-subgroup"
+          style={{
+            marginLeft: 14, paddingLeft: 8,
+            borderLeft: "1px solid var(--border)",
+            display: "flex", flexDirection: "column", gap: 1,
+          }}
+        >
+          {children}
+        </div>
+      )}
+    </>
+  );
+}
+
 window.Topbar = function Topbar({ view, employeeId, onNav, role, onRoleChange, meId, onMeIdChange, centerFilter, onCenterFilterChange, onOpenFilter, onOpenCmd, onOpenNotif, recentIds = [], onOpenEmployee }) {
   const employee = employeeId ? DATA.USERS.find(u => u.id === employeeId) : null;
   const [roleMenu, setRoleMenu] = React.useState(false);
@@ -100,7 +191,7 @@ window.Topbar = function Topbar({ view, employeeId, onNav, role, onRoleChange, m
 
   const titleMap = {
     overview: "Activity",  people: "People",   compare: "Compare",
-    hubspot: "HubSpot",  marketing: "Marketing",  topads: "Top Ads",  analytics: "Analytics",  connections: "Connections",
+    hubspot: "HubSpot",  marketing: "Channel mix",  topads: "Top Ads",  analytics: "Analytics",  connections: "Connections",
     keywords: "Keywords",  searchterms: "Search Terms",  geo: "Geography",  devices: "Devices",
     bonuses: "Bonuses",    bonusrules: "Bonus rules",
     alerts: "Alerts",   centers: "Centers",
