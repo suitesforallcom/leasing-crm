@@ -32,6 +32,14 @@
         { "fieldPath": "action", "order": "ASCENDING" },
         { "fieldPath": "ts", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "marketing_ads",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "ad.status", "order": "ASCENDING" },
+        { "fieldPath": "totals.spend", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []
