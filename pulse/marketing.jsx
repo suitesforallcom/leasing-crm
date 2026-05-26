@@ -343,12 +343,12 @@ function SpendSection() {
   // Date-range selector — applies to the daily-granular spend data
   // (Google Ads Script pulls 90d; older incoming sources still work
   // on aggregate fallback). State scoped to this section.
-  // windowKind: '7d' / '30d' / '90d' / 'mtd' / 'custom'
-  // 2026-05-24 Tony: default MTD чтобы цифры совпадали с Meta Ads
-  // Manager / Google Ads UI «This month». Last 30 days было путало
-  // потому что включало 6 дней предыдущего месяца. Persisted в LS.
+  // windowKind: 'today' / 'yesterday' / '7d' / '30d' / '90d' / 'mtd' / 'custom'
+  // 2026-05-26 Tony: default → Today (раньше был MTD). Tony хочет
+  // видеть «сегодня» при заходе и иметь рядом Yesterday + MTD как
+  // основные пресеты. Persisted в localStorage между сессиями.
   const [windowKind, setWindowKind] = React.useState(() => {
-    try { return localStorage.getItem("pulse_marketing_window") || "mtd"; } catch (e) { return "mtd"; }
+    try { return localStorage.getItem("pulse_marketing_window") || "today"; } catch (e) { return "today"; }
   });
   React.useEffect(() => { try { localStorage.setItem("pulse_marketing_window", windowKind); } catch (e) {} }, [windowKind]);
   // Custom range — only used when windowKind === 'custom'. Defaults
@@ -396,6 +396,14 @@ function SpendSection() {
     if (kind === "custom") {
       return { start: customStart, end: customEnd };
     }
+    if (kind === "today") {
+      return { start: todayYmd, end: todayYmd };
+    }
+    if (kind === "yesterday") {
+      const y = new Date(today.getTime() - 86400 * 1000);
+      const yYmd = fmtYmd(y);
+      return { start: yYmd, end: yYmd };
+    }
     if (kind === "mtd") {
       return { start: today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0") + "-01", end: todayYmd };
     }
@@ -404,7 +412,9 @@ function SpendSection() {
     return { start: fmtYmd(back), end: todayYmd };
   }
   const { start: windowStart, end: windowEnd } = windowRange(windowKind);
-  const windowLabel = windowKind === "7d" ? "Last 7 days"
+  const windowLabel = windowKind === "today" ? "Today"
+                    : windowKind === "yesterday" ? "Yesterday"
+                    : windowKind === "7d" ? "Last 7 days"
                     : windowKind === "30d" ? "Last 30 days"
                     : windowKind === "90d" ? "Last 90 days"
                     : windowKind === "mtd" ? "Month to date"
@@ -591,7 +601,10 @@ function SpendSection() {
         {/* Date-range selector + Site-leads-only toggle */}
         <div className="row" style={{ marginTop: 8, gap: 10, flexWrap: "wrap" }}>
           <div className="f-segment">
-            {[["7d", "7d"], ["30d", "30d"], ["90d", "90d"], ["mtd", "MTD"], ["custom", "Custom"]].map(([k, l]) => (
+            {/* Tony 2026-05-26: добавлены Today + Yesterday как два
+                первых пресета (дефолт = Today). MTD оставлен — частый
+                use-case для сверки с Meta Ads Manager / Google Ads UI. */}
+            {[["today", "Today"], ["yesterday", "Yesterday"], ["7d", "7d"], ["30d", "30d"], ["90d", "90d"], ["mtd", "MTD"], ["custom", "Custom"]].map(([k, l]) => (
               <button key={k} className={windowKind === k ? "is-active" : ""} onClick={() => setWindowKind(k)}>{l}</button>
             ))}
           </div>
