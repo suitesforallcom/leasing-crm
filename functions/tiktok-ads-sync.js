@@ -341,9 +341,14 @@ async function _ttPaginate(token, path, params, maxPages = 10) {
 
 // ---------- Campaigns ----------
 async function _fetchCampaigns(token, advertiserId) {
+  // 2026-05-26: TikTok API v1.3 убрал поле 'status' — теперь
+  // 'operation_status' (включён/выключен оператором) + 'secondary_status'
+  // (живой статус с учётом review/delivery). Downstream код мапит
+  // operation_status в общий .status (строки 628/633/638).
   const fields = JSON.stringify([
-    'campaign_id', 'campaign_name', 'objective_type', 'status',
-    'operation_status', 'budget', 'budget_mode', 'create_time', 'modify_time',
+    'campaign_id', 'campaign_name', 'objective_type',
+    'operation_status', 'secondary_status',
+    'budget', 'budget_mode', 'create_time', 'modify_time',
   ]);
   const list = await _ttPaginate(token, '/campaign/get/', {
     advertiser_id: advertiserId,
@@ -357,9 +362,11 @@ async function _fetchCampaigns(token, advertiserId) {
 
 // ---------- Ad groups ----------
 async function _fetchAdgroups(token, advertiserId) {
+  // См. комментарий в _fetchCampaigns — поле 'status' удалено в v1.3.
   const fields = JSON.stringify([
-    'adgroup_id', 'adgroup_name', 'campaign_id', 'status',
-    'operation_status', 'budget', 'optimization_goal', 'placement_type',
+    'adgroup_id', 'adgroup_name', 'campaign_id',
+    'operation_status', 'secondary_status',
+    'budget', 'optimization_goal', 'placement_type',
     'create_time', 'modify_time',
   ]);
   const list = await _ttPaginate(token, '/adgroup/get/', {
@@ -373,9 +380,13 @@ async function _fetchAdgroups(token, advertiserId) {
 
 // ---------- Ads ----------
 async function _fetchAds(token, advertiserId) {
+  // См. комментарий в _fetchCampaigns — поле 'status' удалено в v1.3.
+  // Остальные поля сверены с whitelist который TikTok возвращает в
+  // ошибке 40002 (логи 2026-05-26).
   const fields = JSON.stringify([
-    'ad_id', 'ad_name', 'adgroup_id', 'campaign_id', 'status',
-    'operation_status', 'ad_format', 'ad_text', 'call_to_action',
+    'ad_id', 'ad_name', 'adgroup_id', 'campaign_id',
+    'operation_status', 'secondary_status',
+    'ad_format', 'ad_text', 'call_to_action',
     'landing_page_url', 'display_name', 'video_id', 'image_ids',
     'identity_id', 'identity_type', 'create_time', 'modify_time',
   ]);
