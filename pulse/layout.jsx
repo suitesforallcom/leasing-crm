@@ -54,14 +54,28 @@ window.Sidebar = function Sidebar({ view, onNav, role }) {
             <NavItem id="hubspot"     view={view} onNav={onNav} icon="globe"    label="HubSpot" />
             <NavItem id="marketing"   view={view} onNav={onNav} icon="trendUp"  label="Channel mix" />
             <NavItem id="topads"      view={view} onNav={onNav} icon="star"     label="Top Ads" />
-            {/* Google Ads dimension pages — read from marketing_keywords /
-                _search_terms / _geo / _devices subcollections populated by
-                the Google Ads Apps Script (см. scripts/google-ads-script.js). */}
-            <NavItem id="keywords"    view={view} onNav={onNav} icon="search"   label="Keywords" />
-            <NavItem id="searchterms" view={view} onNav={onNav} icon="search"   label="Search Terms" />
-            <NavItem id="geo"         view={view} onNav={onNav} icon="globe"    label="Geography" />
-            <NavItem id="devices"     view={view} onNav={onNav} icon="building" label="Devices" />
-            <NavItem id="analytics"   view={view} onNav={onNav} icon="globe"    label="Analytics (GA4)" />
+
+            {/* Вложенная под-группа «Google Ads» — Tony 2026-05-26:
+                «то что относится к Google мне нужно как-то видеть что
+                это относится к Google». Четыре страницы (Keywords /
+                Search Terms / Geography / Devices) дёргают данные через
+                Google Ads Apps Script (см. scripts/google-ads-script.js)
+                — группируем их явно под брендом, чтобы operator видел
+                источник без префиксов в названиях. */}
+            <NavGroup
+              id="google-ads"
+              view={view}
+              icon="search"
+              label="Google Ads"
+              childIds={["keywords","searchterms","geo","devices"]}
+            >
+              <NavItem id="keywords"    view={view} onNav={onNav} icon="search"   label="Keywords" />
+              <NavItem id="searchterms" view={view} onNav={onNav} icon="search"   label="Search Terms" />
+              <NavItem id="geo"         view={view} onNav={onNav} icon="globe"    label="Geography" />
+              <NavItem id="devices"     view={view} onNav={onNav} icon="building" label="Devices" />
+            </NavGroup>
+
+            <NavItem id="analytics"   view={view} onNav={onNav} icon="globe"    label="Google Analytics (GA4)" />
             <NavItem id="connections" view={view} onNav={onNav} icon="settings" label="Connections" />
           </NavGroup>
 
@@ -191,7 +205,7 @@ window.Topbar = function Topbar({ view, employeeId, onNav, role, onRoleChange, m
 
   const titleMap = {
     overview: "Activity",  people: "People",   compare: "Compare",
-    hubspot: "HubSpot",  marketing: "Channel mix",  topads: "Top Ads",  analytics: "Analytics",  connections: "Connections",
+    hubspot: "HubSpot",  marketing: "Channel mix",  topads: "Top Ads",  analytics: "Google Analytics (GA4)",  connections: "Connections",
     keywords: "Keywords",  searchterms: "Search Terms",  geo: "Geography",  devices: "Devices",
     bonuses: "Bonuses",    bonusrules: "Bonus rules",
     alerts: "Alerts",   centers: "Centers",
