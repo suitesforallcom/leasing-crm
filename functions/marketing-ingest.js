@@ -424,7 +424,12 @@ function _buildGoogleUnifiedAd(payload, adRaw, ingestedAt) {
     },
     ad: {
       id: externalId,
-      name: String(adRaw.adName || '(unnamed ad)'),
+      // Google RSA / DSA часто без display name — оставляем null, чтобы
+      // клиент мог сделать fallback на campaign · adgroup. Литерал
+      // «(unnamed ad)» здесь ставить НЕЛЬЗЯ: он перекрывает fallback.
+      name: adRaw.adName && String(adRaw.adName).trim()
+            ? String(adRaw.adName).trim()
+            : null,
       status: _mapGoogleAdStatus(adRaw.adStatus),
       type: String(adRaw.adType || '') || null,
       createdAt: null,

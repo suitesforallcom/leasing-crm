@@ -255,12 +255,24 @@ function _runAdLevelIngest(customerId, startDate, endDate) {
     // server-side, либо через отдельный отчёт по video_performance_view.
 
     if (!adsMap[adId]) {
-      // Распаковка repeated fields из GAQL row strings. Google Ads Scripts
-      // возвращает RSA headlines/descriptions/finalUrls как stringified
-      // JSON-array («['Best ...', 'Hot ...']») — splitArray() парсит.
-      var headlines = _splitGaqlArray(r['ad_group_ad.ad.responsive_search_ad.headlines']);
+      // Распаковка repeated fields из GAQL row. Apps Script может вернуть
+      // их как stringified JSON-array, как уже-массив объектов, как один
+      // объект, либо как comma-separated string — _splitGaqlArray() всё
+      // нормализует к массиву строк.
+      var rawHeadlines = r['ad_group_ad.ad.responsive_search_ad.headlines'];
+      var headlines = _splitGaqlArray(rawHeadlines);
       var descriptions = _splitGaqlArray(r['ad_group_ad.ad.responsive_search_ad.descriptions']);
       var finalUrls = _splitGaqlArray(r['ad_group_ad.ad.final_urls']);
+      // Одноразовый дебаг — на первом ad'е залогируем тип сырого поля,
+      // чтобы при будущих фейлах сразу видеть формат от Apps Script.
+      if (Object.keys(adsMap).length === 0) {
+        var sample = rawHeadlines == null ? 'null'
+                   : Array.isArray(rawHeadlines) ? 'array(len=' + rawHeadlines.length + ',first=' + JSON.stringify(rawHeadlines[0]).slice(0, 80) + ')'
+                   : typeof rawHeadlines === 'object' ? 'object(' + JSON.stringify(rawHeadlines).slice(0, 80) + ')'
+                   : 'string(' + String(rawHeadlines).slice(0, 80) + ')';
+        Logger.log('  [debug] first RSA headlines raw = ' + sample +
+                   ' → parsed ' + headlines.length + ' items');
+      }
       var imageUrl = String(r['ad_group_ad.ad.image_ad.image_url'] || '');
       var videoAsset = String(r['ad_group_ad.ad.video_ad.video.asset'] || '');
       // Extract YouTube videoId from the asset resource name — last segment
@@ -359,29 +371,59 @@ function _runAdLevelIngest(customerId, startDate, endDate) {
   }
 }
 
-// Парсит GAQL repeated-field string (например «["Headline 1","Headline 2"]»)
-// в обычный массив. Google Ads Script возвращает такие поля сериализованной
-// JSON-строкой; если parse падает — fallback на split по запятой.
+// Нормализует GAQL repeated-field к массиву строк.
+// Apps Script для repeated struct-полей (RSA headlines/descriptions) может
+// вернуть ЛЮБОЕ из:
+//   • стрингифицированный JSON «[{"text":"Best","asset":"...",…},…]»
+//   • массив объектов напрямую [{text:"Best",…},…] (для некоторых версий API)
+//   • одиночный объект {text:"Best",…}
+//   • обычную строку с запятыми «Best, Hot, Premium» (final_urls)
+//   • «[object Object],[object Object]» — если код раньше делал String(obj)
+//     наивно (мусор; фильтруем).
+// Возвращает чистый массив строк; всегда без объектов и без «[object Object]».
 function _splitGaqlArray(raw) {
-  if (!raw) return [];
+  if (raw == null || raw === '') return [];
+
+  // Случай 1: уже массив (Apps Script сам распаковал)
+  if (Array.isArray(raw)) {
+    return raw.map(_extractAssetText)
+              .filter(function (x) { return x.length > 0 && x.indexOf('[object Object]') < 0; });
+  }
+
+  // Случай 2: одиночный объект
+  if (typeof raw === 'object') {
+    var t = _extractAssetText(raw);
+    return t && t.indexOf('[object Object]') < 0 ? [t] : [];
+  }
+
   var s = String(raw).trim();
   if (!s || s === '--') return [];
+
+  // Случай 3: stringified JSON-массив
   if (s.charAt(0) === '[') {
     try {
       var arr = JSON.parse(s);
       if (Array.isArray(arr)) {
-        return arr.map(function (x) {
-          if (x && typeof x === 'object') {
-            // RSA assets: {asset:'...', text:'Best ...', pinned_field:...}
-            return String(x.text || x.asset || x.value || '');
-          }
-          return String(x || '');
-        }).filter(function (x) { return x.length > 0; });
+        return arr.map(_extractAssetText)
+                  .filter(function (x) { return x.length > 0 && x.indexOf('[object Object]') < 0; });
       }
     } catch (e) { /* fall through */ }
   }
+
+  // Случай 4: comma-separated string (final_urls обычно так)
   return s.split(',').map(function (x) { return x.trim(); })
-    .filter(function (x) { return x.length > 0; });
+    .filter(function (x) { return x.length > 0 && x.indexOf('[object Object]') < 0; });
+}
+
+// Извлекает текст из AdTextAsset-подобного объекта.
+// Возможные ключи: text, asset, value, label.
+function _extractAssetText(x) {
+  if (x == null) return '';
+  if (typeof x === 'string') return x;
+  if (typeof x === 'object') {
+    return String(x.text || x.asset || x.value || x.label || '');
+  }
+  return String(x);
 }
 
 function _fmtDate(d) {

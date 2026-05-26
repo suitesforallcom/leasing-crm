@@ -94,10 +94,13 @@ function _cleanList(arr) {
 }
 
 // Composite display name — для Google RSA ad.name часто пустой; падаем на
-// campaign/adgroup; для всего остального — ad.name OR campaign.name.
+// campaign/adgroup. Legacy-данные могут содержать литерал «(unnamed ad)»
+// из старой версии сервера — трактуем его как пустую строку, чтобы
+// fallback работал и на старых документах.
 function _adTitle(ad) {
   const a = ad?.ad?.name;
-  if (a && String(a).trim()) return String(a);
+  const aTrim = a ? String(a).trim() : '';
+  if (aTrim && aTrim !== '(unnamed ad)' && aTrim !== '(untitled ad)') return aTrim;
   const c = ad?.campaign?.name;
   const g = ad?.adgroup?.name;
   if (c && g) return `${c} · ${g}`;
