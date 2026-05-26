@@ -220,8 +220,7 @@ function _runAdLevelIngest(customerId, startDate, endDate) {
       'metrics.cost_micros, ' +
       'metrics.clicks, ' +
       'metrics.impressions, ' +
-      'metrics.conversions, ' +
-      'metrics.video_views ' +
+      'metrics.conversions ' +
     'FROM ad_group_ad ' +
     'WHERE segments.date BETWEEN "' + startDate + '" AND "' + endDate + '" ' +
     '  AND ad_group_ad.status != "REMOVED"';
@@ -250,7 +249,10 @@ function _runAdLevelIngest(customerId, startDate, endDate) {
     var clicks = Number(r['metrics.clicks']) || 0;
     var impressions = Number(r['metrics.impressions']) || 0;
     var conversions = Number(r['metrics.conversions']) || 0;
-    var videoViews = Number(r['metrics.video_views']) || 0;
+    // metrics.video_views недоступен в Google Ads Scripts GAQL для
+    // ad_group_ad (UNRECOGNIZED_FIELD) — video views остаются 0.
+    // Если в будущем понадобятся — придётся либо через Google Ads API
+    // server-side, либо через отдельный отчёт по video_performance_view.
 
     if (!adsMap[adId]) {
       // Распаковка repeated fields из GAQL row strings. Google Ads Scripts
@@ -296,7 +298,6 @@ function _runAdLevelIngest(customerId, startDate, endDate) {
       clicks: clicks,
       impressions: impressions,
       conversions: conversions,
-      videoViews: videoViews,
     });
 
     totals.cost += cost;
