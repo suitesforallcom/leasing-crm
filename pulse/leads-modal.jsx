@@ -132,7 +132,40 @@
     return _channelKeyForContact({ src: c._origSrc, srcD: c._origSrcD });
   }
 
-  function ContractRow({ lease, currentKey, overrideKey, onSetOverride }) {
+  function BonusManagerPicker({ lease, employees, onSetBonusOverride }) {
+    // Текущее значение — е-mail recipient (override или auto). Селект
+    // показывает employees + опцию "— auto —" (clear). При onChange
+    // вызываем onSetBonusOverride(leaseKey, email|null).
+    const currentEmail = (lease.bonusManagerEmail || '').toLowerCase();
+    const isOverridden = !!lease.bonusOverridden;
+    const handleChange = (v) => {
+      onSetBonusOverride(lease.leaseKey, v || null);
+    };
+    return (
+      <select
+        value={isOverridden ? currentEmail : ''}
+        onChange={e => handleChange(e.target.value)}
+        title={isOverridden
+          ? 'Admin override — auto-detected was: ' + (lease.bonusAutoEmail || '(none)')
+          : 'Auto-detected from envelope sender / PDF uploader. Pick a name to override.'}
+        style={{
+          padding: '4px 6px', fontSize: 11, borderRadius: 4,
+          border: '1px solid ' + (isOverridden ? 'var(--accent-ink)' : 'var(--border)'),
+          background: isOverridden ? 'var(--accent-soft, #eef2ff)' : 'var(--surface)',
+          color: 'var(--ink)', cursor: 'pointer',
+          width: '100%',
+          fontWeight: isOverridden ? 700 : 400,
+        }}
+      >
+        <option value="">— auto —{lease.bonusManager && !isOverridden ? ' (' + lease.bonusManager + ')' : ''}</option>
+        {employees.map(e => (
+          <option key={e.email} value={e.email}>{e.fullName || e.email}</option>
+        ))}
+      </select>
+    );
+  }
+
+  function ContractRow({ lease, currentKey, overrideKey, onSetOverride, employees, onSetBonusOverride }) {
     const dt = lease.activatedMs
       ? new Date(lease.activatedMs).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
       : '—';
@@ -144,17 +177,10 @@
     if (lease.uploadedBy) actorChunks.push('uploaded by ' + lease.uploadedBy);
     const actorLine = actorChunks.join(' · ');
     const hasEmail = !!(lease.email && lease.email.trim());
-    // Bonus mgr = recipient of `ctr_signed` bonus per pulse/bonus-rules.jsx —
-    // «The agent who initiated the envelope receives the bonus». Имя
-    // приходит из data-shim._resolveBonusManager (state.employees lookup).
-    const bonusName = lease.bonusManager || '';
-    const bonusTooltip = lease.bonusManagerEmail
-      ? 'Bonus recipient · ' + lease.bonusManagerEmail + (lease.sentBy ? ' (via DocuSign sender)' : (lease.uploadedBy ? ' (via signed-PDF upload)' : ''))
-      : 'No envelope sender / uploader stamped — no bonus attribution yet';
     return (
       <div style={{
         display: 'grid',
-        gridTemplateColumns: '1.4fr 90px 80px 110px 130px',
+        gridTemplateColumns: '1.3fr 85px 70px 140px 130px',
         gap: 10, padding: '8px 14px',
         borderBottom: '1px solid var(--border)',
         alignItems: 'center', fontSize: 12.5,
@@ -175,16 +201,17 @@
           {monthlyLabel}
         </div>
         <div style={{ fontSize: 11, color: 'var(--muted)' }}>{dt}</div>
-        <div
-          title={bonusTooltip}
-          style={{
-            fontSize: 11.5,
-            color: bonusName ? 'var(--ink-2)' : 'var(--muted-2)',
-            fontStyle: bonusName ? 'normal' : 'italic',
-            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}
-        >
-          {bonusName || '—'}
+        <div>
+          <BonusManagerPicker
+            lease={lease}
+            employees={employees}
+            onSetBonusOverride={onSetBonusOverride}
+          />
+          {lease.bonusOverridden && (
+            <div style={{ fontSize: 9.5, color: 'var(--accent-ink)', marginTop: 2 }}>
+              admin-assigned
+            </div>
+          )}
         </div>
         <div>
           <SourcePicker
@@ -264,8 +291,51 @@
     React.useEffect(() => {
       function onChange() { setTick(t => t + 1); }
       window.addEventListener('pulseSourceOverridesChanged', onChange);
-      return () => window.removeEventListener('pulseSourceOverridesChanged', onChange);
+      window.addEventListener('pulseBonusOverridesChanged', onChange);
+      return () => {
+        window.removeEventListener('pulseSourceOverridesChanged', onChange);
+        window.removeEventListener('pulseBonusOverridesChanged', onChange);
+      };
     }, []);
+
+    // Employees list для picker — читаем напрямую из sfa_v5_state,
+    // чтобы не зависеть от DATA.USERS (последний может скрывать людей
+    // у которых trackInPulse=false, а для bonus reassignment админу
+    // нужен полный список). Sorted by fullName для UX.
+    const employeesForPicker = React.useMemo(() => {
+      try {
+        const raw = localStorage.getItem('sfa_v5_state');
+        if (!raw) return [];
+        const st = JSON.parse(raw);
+        const list = Array.isArray(st && st.employees) ? st.employees : [];
+        return list
+          .filter(e => e && e.email)
+          .map(e => ({ email: String(e.email).toLowerCase().trim(), fullName: e.fullName || e.email }))
+          .sort((a, b) => (a.fullName || '').localeCompare(b.fullName || ''));
+      } catch (e) { return []; }
+    }, [open]);
+
+    function setBonusOverride(leaseKey, employeeEmail) {
+      if (typeof window.setPulseBonusOverride !== 'function') return;
+      window.setPulseBonusOverride(leaseKey, employeeEmail);
+      if (window.toast) {
+        if (employeeEmail) {
+          const emp = employeesForPicker.find(e => e.email === String(employeeEmail).toLowerCase());
+          const lbl = emp ? (emp.fullName || emp.email) : employeeEmail;
+          window.toast('Bonus → ' + lbl, 'success');
+        } else {
+          window.toast('Bonus reset to auto-detect', 'success');
+        }
+      }
+    }
+    function clearAllBonusOverrides() {
+      if (typeof window.clearAllPulseBonusOverrides !== 'function') return;
+      window.clearAllPulseBonusOverrides();
+      if (window.toast) window.toast('All bonus overrides cleared', 'success');
+    }
+    const bonusOverrides = (typeof window.getPulseBonusOverrides === 'function')
+      ? window.getPulseBonusOverrides() : {};
+    const bonusOverrideCount = Object.keys(bonusOverrides).length;
 
     const { start: windowStart, end: windowEnd } = _windowRange(windowKind, customStart, customEnd);
     const windowStartMs = new Date(windowStart + 'T00:00:00').getTime();
@@ -389,12 +459,21 @@
             Contracts · {windowedContracts.length}
           </button>
           <div style={{ flex: 1 }} />
-          {overrideCount > 0 && (
+          {(overrideCount > 0 || bonusOverrideCount > 0) && (
             <span
-              style={{ fontSize: 11, color: 'var(--muted)', alignSelf: 'center' }}
-              title="Operator-assigned source overrides apply per-browser. Persist across reloads. Pick «— auto —» on a row to clear."
+              style={{ fontSize: 11, color: 'var(--muted)', alignSelf: 'center', display: 'inline-flex', gap: 10 }}
+              title="Operator-assigned overrides apply per-browser. Persist across reloads."
             >
-              {overrideCount} override{overrideCount === 1 ? '' : 's'} active
+              {overrideCount > 0 && (
+                <span title="Source overrides — pick «— auto —» on a row to clear.">
+                  {overrideCount} source override{overrideCount === 1 ? '' : 's'}
+                </span>
+              )}
+              {bonusOverrideCount > 0 && (
+                <span style={{ color: 'var(--accent-ink)' }} title="Bonus manager overrides — manage in footer panel.">
+                  {bonusOverrideCount} bonus override{bonusOverrideCount === 1 ? '' : 's'}
+                </span>
+              )}
             </span>
           )}
         </div>
@@ -519,7 +598,7 @@
           </div>
         ) : (
           <div style={{
-            display: 'grid', gridTemplateColumns: '1.4fr 90px 80px 110px 130px',
+            display: 'grid', gridTemplateColumns: '1.3fr 85px 70px 140px 130px',
             gap: 10, padding: '8px 14px',
             borderBottom: '1px solid var(--border)',
             background: 'var(--surface-2)',
@@ -529,7 +608,7 @@
             <div>Tenant · Suite · Sender</div>
             <div>MRR</div>
             <div>Activated</div>
-            <div title="Operator who receives the contract-signed bonus (envelope sender per pulse/bonus-rules.jsx ctr_signed). Fallback = signed-PDF uploader.">Bonus mgr</div>
+            <div title="Operator who receives the contract-signed bonus. Auto = envelope sender (per pulse/bonus-rules.jsx ctr_signed) → signed-PDF uploader fallback. Admin can pick a name to override.">Bonus mgr</div>
             <div>Source</div>
           </div>
         )}
@@ -566,6 +645,8 @@
                   currentKey={l.channel || 'other'}
                   overrideKey={overrides[(l.email || '').toLowerCase().trim()]}
                   onSetOverride={setOverride}
+                  employees={employeesForPicker}
+                  onSetBonusOverride={setBonusOverride}
                 />
               ))
             )
@@ -582,17 +663,160 @@
           </div>
         )}
 
+        {/* Manage bonus assignments — отдельная панель для админа.
+            Показываем когда есть хоть один override + кнопка clear-all.
+            Каждый override — строка с lease/employee + remove-button.
+            Сюда «вынесены» bonus settings per Tony 2026-05-26. */}
+        {tab === 'contracts' && bonusOverrideCount > 0 && (
+          <BonusOverridesPanel
+            overrides={bonusOverrides}
+            allLeases={allLeases}
+            employees={employeesForPicker}
+            onClear={(leaseKey) => setBonusOverride(leaseKey, null)}
+            onClearAll={clearAllBonusOverrides}
+          />
+        )}
+
         {/* Help footer */}
         <div style={{
           padding: '10px 14px', fontSize: 11, color: 'var(--muted)',
           background: 'var(--surface-2)', borderTop: '1px solid var(--border)',
         }}>
           <b>How edits work:</b> picking a source overrides HubSpot's attribution for that
-          email. Override persists per-browser and instantly re-buckets the Marketing
-          table + contracts. Pick «— auto —» to revert. Contracts without an email
-          can't be re-attributed — add an email to the tenant on the floor map first.
+          email. Picking a Bonus mgr overrides the auto-detected envelope-sender for that
+          contract (per <code>pulse/bonus-rules.jsx</code> <code>ctr_signed</code>).
+          Overrides persist per-browser and instantly re-bucket the Marketing
+          table + contracts + Bonuses leaderboard. Pick «— auto —» on a row to revert,
+          or use the panel above to clear all bonus overrides at once.
         </div>
       </FormDrawer>
     );
   };
+
+  // ----------------------------------------------------------------------
+  // BonusOverridesPanel — collapsible list всех active bonus overrides
+  // с remove-кнопкой на каждой строке и "Clear all" в шапке.
+  // Рендерится только когда есть хоть один override (sentinel в App).
+  // ----------------------------------------------------------------------
+  function BonusOverridesPanel({ overrides, allLeases, employees, onClear, onClearAll }) {
+    const [collapsed, setCollapsed] = React.useState(false);
+    const leaseByKey = React.useMemo(() => {
+      const m = new Map();
+      for (const l of (allLeases || [])) {
+        if (l && l.leaseKey) m.set(l.leaseKey, l);
+      }
+      return m;
+    }, [allLeases]);
+    const empByEmail = React.useMemo(() => {
+      const m = new Map();
+      for (const e of (employees || [])) m.set(e.email, e);
+      return m;
+    }, [employees]);
+    const rows = Object.entries(overrides).map(([leaseKey, email]) => {
+      const lease = leaseByKey.get(leaseKey);
+      const emp = empByEmail.get(String(email || '').toLowerCase());
+      return {
+        leaseKey,
+        email: String(email || '').toLowerCase(),
+        empName: emp ? (emp.fullName || emp.email) : email,
+        tenant: lease ? lease.tenant : '(lease not in current MTD window)',
+        unitId: lease ? lease.unitId : leaseKey.split(':')[1] || '',
+        autoEmail: lease ? lease.bonusAutoEmail : '',
+        inWindow: !!lease,
+      };
+    }).sort((a, b) => (a.tenant || '').localeCompare(b.tenant || ''));
+
+    return (
+      <div style={{
+        borderTop: '1px solid var(--border)',
+        background: 'var(--accent-soft, #eef2ff)',
+      }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '8px 14px',
+          borderBottom: collapsed ? 'none' : '1px solid var(--border)',
+          background: 'rgba(99, 102, 241, .08)',
+        }}>
+          <button
+            onClick={() => setCollapsed(c => !c)}
+            style={{
+              cursor: 'pointer', padding: '2px 8px', borderRadius: 4,
+              border: '1px solid var(--border)', background: 'var(--surface)',
+              fontSize: 11, color: 'var(--ink)',
+            }}
+            title={collapsed ? 'Expand panel' : 'Collapse panel'}
+          >{collapsed ? '▸' : '▾'}</button>
+          <b style={{ fontSize: 11.5, color: 'var(--ink)' }}>
+            Manage bonus assignments
+          </b>
+          <span style={{ fontSize: 11, color: 'var(--muted)' }}>
+            · {rows.length} active override{rows.length === 1 ? '' : 's'}
+          </span>
+          <span style={{ flex: 1 }} />
+          <button
+            onClick={onClearAll}
+            style={{
+              cursor: 'pointer', padding: '3px 10px', borderRadius: 4,
+              border: '1px solid var(--danger-border, #fca5a5)',
+              background: 'var(--danger-soft, #fef2f2)',
+              fontSize: 11, fontWeight: 600, color: 'var(--danger-ink, #b91c1c)',
+            }}
+            title="Reset every contract back to auto-detected envelope sender."
+          >Clear all</button>
+        </div>
+        {!collapsed && (
+          <div>
+            <div style={{
+              display: 'grid', gridTemplateColumns: '1.4fr 1.3fr 1fr 70px',
+              gap: 8, padding: '6px 14px',
+              borderBottom: '1px solid var(--border)',
+              fontSize: 10, fontWeight: 700, color: 'var(--muted)',
+              textTransform: 'uppercase', letterSpacing: '.04em',
+              background: 'var(--surface-2)',
+            }}>
+              <div>Contract</div>
+              <div>Assigned to</div>
+              <div>Was (auto)</div>
+              <div></div>
+            </div>
+            {rows.map(r => (
+              <div key={r.leaseKey} style={{
+                display: 'grid', gridTemplateColumns: '1.4fr 1.3fr 1fr 70px',
+                gap: 8, padding: '7px 14px',
+                borderBottom: '1px solid var(--border)',
+                alignItems: 'center', fontSize: 12,
+              }}>
+                <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <span style={{ fontWeight: 600 }}>{r.tenant}</span>
+                  <span style={{ color: 'var(--muted)', marginLeft: 6 }}>· Suite {r.unitId}</span>
+                  {!r.inWindow && (
+                    <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--muted-2)', fontStyle: 'italic' }}>
+                      (outside current window)
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontWeight: 600, color: 'var(--accent-ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {r.empName}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {r.autoEmail || <span style={{ fontStyle: 'italic' }}>(none)</span>}
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <button
+                    onClick={() => onClear(r.leaseKey)}
+                    style={{
+                      cursor: 'pointer', padding: '3px 8px', borderRadius: 4,
+                      border: '1px solid var(--border)', background: 'var(--surface)',
+                      fontSize: 11, color: 'var(--muted)',
+                    }}
+                    title="Reset this contract back to auto-detected envelope sender."
+                  >Reset</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
 })();

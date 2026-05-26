@@ -109,6 +109,46 @@
     }
     return applied;
   }
+  // 2026-05-26 Tony: «Добавь для администратора возможности менять
+  // кому бонус назначается». Per-contract bonus-recipient overrides.
+  // leaseKey = `${buildingId}:${unitId}` — стабильно для активной
+  // аренды на юните в текущем MTD. Значение = e-mail сотрудника или
+  // null (clear). Применяется в _computeFloorMapLeases ниже, ПОСЛЕ
+  // авто-резолва sentBy/uploadedBy — переписывает bonusManager на
+  // явный assignment админа.
+  const BONUS_OV_LS_KEY = 'sfa_pulse_bonus_overrides_v1';
+  function _readBonusOverrides() {
+    try { return JSON.parse(localStorage.getItem(BONUS_OV_LS_KEY) || '{}') || {}; }
+    catch (e) { return {}; }
+  }
+  function _writeBonusOverrides(map) {
+    try { localStorage.setItem(BONUS_OV_LS_KEY, JSON.stringify(map)); }
+    catch (e) { /* localStorage full — silent */ }
+  }
+  window.getPulseBonusOverrides = function () { return _readBonusOverrides(); };
+  window.setPulseBonusOverride = function (leaseKey, employeeEmail) {
+    const key = String(leaseKey || '').trim();
+    if (!key) return;
+    const overrides = _readBonusOverrides();
+    if (employeeEmail === null || employeeEmail === '' || employeeEmail === undefined) {
+      delete overrides[key];
+    } else {
+      overrides[key] = String(employeeEmail).toLowerCase().trim();
+    }
+    _writeBonusOverrides(overrides);
+    if (typeof window._recomputeFloorMapLeases === 'function') {
+      try { window._recomputeFloorMapLeases(); } catch (e) {}
+    }
+    try { window.dispatchEvent(new Event('pulseBonusOverridesChanged')); } catch (e) {}
+  };
+  window.clearAllPulseBonusOverrides = function () {
+    _writeBonusOverrides({});
+    if (typeof window._recomputeFloorMapLeases === 'function') {
+      try { window._recomputeFloorMapLeases(); } catch (e) {}
+    }
+    try { window.dispatchEvent(new Event('pulseBonusOverridesChanged')); } catch (e) {}
+  };
+
   window.getPulseSourceOverrides = function () { return _readSourceOverrides(); };
   window.setPulseSourceOverride = function (email, channelKey) {
     const key = String(email || '').toLowerCase().trim();
@@ -281,6 +321,13 @@
     // имя из state.employees) и `bonusManagerEmail` (raw email для
     // деталей). Если email не матчится ни одному employee — оставляем
     // email-fallback чтобы операторы видели хоть что-то.
+    //
+    // 2026-05-26 Tony (follow-up): «Добавь для администратора
+    // возможности менять кому бонус назначается». Per-contract
+    // admin override переписывает auto-recipient — берём из
+    // localStorage по ключу `${buildingId}:${unitId}`. `overridden`
+    // flag нужен модалке чтобы показать оператору что это ручное
+    // assignment.
     const _empByEmail = new Map();
     for (const e of (stNow.employees || [])) {
       const em = String(e && e.email || '').toLowerCase().trim();
@@ -293,6 +340,7 @@
       if (emp && emp.fullName) return { name: emp.fullName, email: em };
       return { name: em, email: em }; // fallback — display raw email
     }
+    const _bonusOverrides = _readBonusOverrides();
 
     for (const b of (stNow.buildings || [])) {
       for (const f of (b.floors || [])) {
@@ -386,7 +434,10 @@
             }
           }
 
-          const bonusRecipientEmail = sentBy || uploadedBy || '';
+          const leaseKey = (b.id || '') + ':' + (u.id || '');
+          const overrideEmail = _bonusOverrides[leaseKey];
+          const autoRecipientEmail = sentBy || uploadedBy || '';
+          const bonusRecipientEmail = overrideEmail || autoRecipientEmail;
           const bonusInfo = _resolveBonusManager(bonusRecipientEmail);
 
           const lease = {
@@ -405,6 +456,9 @@
             uploadedBy,
             bonusManager: bonusInfo.name,
             bonusManagerEmail: bonusInfo.email,
+            bonusOverridden: !!overrideEmail,
+            bonusAutoEmail: autoRecipientEmail, // для tooltip — что было автоматом
+            leaseKey,
           };
           all.push(lease);
           byChannel[channel].push(lease);
