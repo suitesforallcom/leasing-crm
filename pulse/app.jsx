@@ -73,6 +73,14 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  /* Зеркалим текущую role в window.__pulseRole — чтобы PageHelp
+     (pulse/page-docs.jsx) мог проверить «admin ли смотрит сейчас»
+     без проп-дриллинга через все 19 страниц. Только owner-view
+     видит кнопку «Edit» у «?»-описания страницы. */
+  React.useEffect(() => {
+    window.__pulseRole = role;
+  }, [role]);
+
   function pushRecent(id) {
     const next = [id, ...recentIds.filter(x => x !== id)].slice(0, 5);
     setRecentIds(next);
