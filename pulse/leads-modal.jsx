@@ -144,10 +144,17 @@
     if (lease.uploadedBy) actorChunks.push('uploaded by ' + lease.uploadedBy);
     const actorLine = actorChunks.join(' · ');
     const hasEmail = !!(lease.email && lease.email.trim());
+    // Bonus mgr = recipient of `ctr_signed` bonus per pulse/bonus-rules.jsx —
+    // «The agent who initiated the envelope receives the bonus». Имя
+    // приходит из data-shim._resolveBonusManager (state.employees lookup).
+    const bonusName = lease.bonusManager || '';
+    const bonusTooltip = lease.bonusManagerEmail
+      ? 'Bonus recipient · ' + lease.bonusManagerEmail + (lease.sentBy ? ' (via DocuSign sender)' : (lease.uploadedBy ? ' (via signed-PDF upload)' : ''))
+      : 'No envelope sender / uploader stamped — no bonus attribution yet';
     return (
       <div style={{
         display: 'grid',
-        gridTemplateColumns: '1.8fr 110px 100px 150px',
+        gridTemplateColumns: '1.4fr 90px 80px 110px 130px',
         gap: 10, padding: '8px 14px',
         borderBottom: '1px solid var(--border)',
         alignItems: 'center', fontSize: 12.5,
@@ -168,6 +175,17 @@
           {monthlyLabel}
         </div>
         <div style={{ fontSize: 11, color: 'var(--muted)' }}>{dt}</div>
+        <div
+          title={bonusTooltip}
+          style={{
+            fontSize: 11.5,
+            color: bonusName ? 'var(--ink-2)' : 'var(--muted-2)',
+            fontStyle: bonusName ? 'normal' : 'italic',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}
+        >
+          {bonusName || '—'}
+        </div>
         <div>
           <SourcePicker
             value={overrideKey || currentKey}
@@ -184,10 +202,50 @@
     );
   }
 
-  window.LeadsContractsModal = function LeadsContractsModal({ open, onClose, initialTab, initialChannel }) {
+  // Helper — formatYmd & windowRange зеркалят логику marketing.jsx чтобы
+  // окно дат в модалке совпадало с основной таблицей. Diverged copy is
+  // intentional — модалка может быть открыта без SpendSection в DOM.
+  function _fmtYmd(d) {
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+  function _windowRange(kind, customStart, customEnd) {
+    const today = new Date();
+    const todayYmd = _fmtYmd(today);
+    if (kind === 'custom') return { start: customStart, end: customEnd };
+    if (kind === 'today')  return { start: todayYmd, end: todayYmd };
+    if (kind === 'yesterday') {
+      const y = new Date(today.getTime() - 86400 * 1000);
+      const yYmd = _fmtYmd(y);
+      return { start: yYmd, end: yYmd };
+    }
+    if (kind === 'mtd') {
+      return {
+        start: today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-01',
+        end: todayYmd,
+      };
+    }
+    const days = kind === '7d' ? 7 : kind === '90d' ? 90 : 30;
+    const back = new Date(today.getTime() - (days - 1) * 86400 * 1000);
+    return { start: _fmtYmd(back), end: todayYmd };
+  }
+
+  window.LeadsContractsModal = function LeadsContractsModal({
+    open, onClose,
+    initialTab, initialChannel,
+    initialWindowKind, initialCustomStart, initialCustomEnd,
+  }) {
     const [tab, setTab] = React.useState(initialTab || 'leads');
     const [filter, setFilter] = React.useState(initialChannel || 'all');
     const [query, setQuery] = React.useState('');
+    // Window state — синхронизируется с пропсами от SpendSection при
+    // КАЖДОМ открытии модалки. Внутри модалки оператор может крутить
+    // окно независимо от основной таблицы — это локальная навигация
+    // в выборке, не глобальная (модалка закрывается → состояние сброс).
+    const _todayD = new Date();
+    const _twoWksAgoD = new Date(_todayD.getTime() - 14 * 86400 * 1000);
+    const [windowKind, setWindowKind] = React.useState(initialWindowKind || 'today');
+    const [customStart, setCustomStart] = React.useState(initialCustomStart || _fmtYmd(_twoWksAgoD));
+    const [customEnd, setCustomEnd] = React.useState(initialCustomEnd || _fmtYmd(_todayD));
     // tick — forces re-render when overrides change (HubSpot cache is
     // mutated in-place by data-shim, so React doesn't auto-detect).
     const [, setTick] = React.useState(0);
@@ -197,14 +255,28 @@
         setTab(initialTab || 'leads');
         setFilter(initialChannel || 'all');
         setQuery('');
+        setWindowKind(initialWindowKind || 'today');
+        if (initialCustomStart) setCustomStart(initialCustomStart);
+        if (initialCustomEnd)   setCustomEnd(initialCustomEnd);
       }
-    }, [open, initialTab, initialChannel]);
+    }, [open, initialTab, initialChannel, initialWindowKind, initialCustomStart, initialCustomEnd]);
 
     React.useEffect(() => {
       function onChange() { setTick(t => t + 1); }
       window.addEventListener('pulseSourceOverridesChanged', onChange);
       return () => window.removeEventListener('pulseSourceOverridesChanged', onChange);
     }, []);
+
+    const { start: windowStart, end: windowEnd } = _windowRange(windowKind, customStart, customEnd);
+    const windowStartMs = new Date(windowStart + 'T00:00:00').getTime();
+    const windowEndMs   = new Date(windowEnd   + 'T23:59:59').getTime();
+    const windowLabel = windowKind === 'today' ? 'Today'
+                      : windowKind === 'yesterday' ? 'Yesterday'
+                      : windowKind === '7d' ? 'Last 7 days'
+                      : windowKind === '30d' ? 'Last 30 days'
+                      : windowKind === '90d' ? 'Last 90 days'
+                      : windowKind === 'mtd' ? 'Month to date'
+                      : 'Custom';
 
     const overrides = (typeof window.getPulseSourceOverrides === 'function')
       ? window.getPulseSourceOverrides() : {};
@@ -219,13 +291,36 @@
     }
 
     // ---------- Leads dataset ----------
+    // c.c — это строка YYYY-MM-DD (HubSpot createDate). Сравниваем
+    // строковым lexicographic compare с windowStart/End — это работает
+    // потому что ISO даты сортируются лексикографически.
     const contactByEmail = (window._hsDataCache && window._hsDataCache.contactByEmail) || {};
     const leadEntries = Object.entries(contactByEmail).map(([email, c]) => ({
       email, c, key: _channelKeyForContact(c),
     }));
+    const windowedLeadEntries = leadEntries.filter(e => {
+      const created = (e.c && e.c.c) || '';
+      if (!created) return false;
+      return created >= windowStart && created <= windowEnd;
+    });
 
     // ---------- Contracts dataset ----------
+    // _floorMapLeases.all — MTD-scoped (или 7d на 1-е числа). Любой
+    // window уже narrower MTD дополнительно фильтрует, wider window
+    // (30d/90d) показывает ту же MTD-выборку. Это совпадает с
+    // поведением marketing.jsx Spend table — у которой _floorMapLeases
+    // тоже не пересчитывается под wide window.
     const allLeases = (window._floorMapLeases && window._floorMapLeases.all) || [];
+    const windowedContracts = allLeases.filter(l => {
+      const ts = l.activatedMs || 0;
+      return ts >= windowStartMs && ts <= windowEndMs;
+    });
+    // Hint когда оператор выбрал окно wider чем MTD — _floorMapLeases.all
+    // строится только под MTD, поэтому contracts > MTD physically нет.
+    const _mtdStartMs = new Date(_todayD.getFullYear(), _todayD.getMonth(), 1, 0, 0, 0, 0).getTime();
+    const showWindowHint = tab === 'contracts'
+      && (windowKind === '30d' || windowKind === '90d' ||
+          (windowKind === 'custom' && windowStartMs < _mtdStartMs));
 
     function passesFilter(key) {
       if (filter === 'all') return true;
@@ -237,20 +332,20 @@
       return fields.some(f => f && String(f).toLowerCase().includes(q));
     }
 
-    const filteredLeads = leadEntries
+    const filteredLeads = windowedLeadEntries
       .filter(e => passesFilter(e.key))
       .filter(e => passesQuery(e.email, e.c && e.c.n))
       .sort((a, b) => String((b.c && b.c.c) || '').localeCompare(String((a.c && a.c.c) || '')));
 
-    const filteredContracts = allLeases
+    const filteredContracts = windowedContracts
       .filter(l => passesFilter(l.channel || 'other'))
       .filter(l => passesQuery(l.email, l.tenant, l.unitId))
       .sort((a, b) => (b.activatedMs || 0) - (a.activatedMs || 0));
 
     const overrideCount = Object.keys(overrides).length;
     const tabLabel = tab === 'leads'
-      ? `Leads (${filteredLeads.length}` + (filter === 'all' ? ')' : ` of ${leadEntries.length})`)
-      : `Contracts (${filteredContracts.length}` + (filter === 'all' ? ')' : ` of ${allLeases.length})`);
+      ? `Leads (${filteredLeads.length}` + (filter === 'all' ? ')' : ` of ${windowedLeadEntries.length})`)
+      : `Contracts (${filteredContracts.length}` + (filter === 'all' ? ')' : ` of ${windowedContracts.length})`);
 
     // Cap to avoid mounting 5k+ <select> nodes for huge HubSpot caches
     const LEAD_CAP = 300;
@@ -279,7 +374,7 @@
               fontSize: 12, fontWeight: tab === 'leads' ? 700 : 500,
             }}
           >
-            Leads · {leadEntries.length}
+            Leads · {windowedLeadEntries.length}
           </button>
           <button
             onClick={() => setTab('contracts')}
@@ -291,7 +386,7 @@
               fontSize: 12, fontWeight: tab === 'contracts' ? 700 : 500,
             }}
           >
-            Contracts · {allLeases.length}
+            Contracts · {windowedContracts.length}
           </button>
           <div style={{ flex: 1 }} />
           {overrideCount > 0 && (
@@ -303,6 +398,68 @@
             </span>
           )}
         </div>
+
+        {/* Date window — точно такой же набор как в marketing.jsx SpendSection
+            (Today / Yesterday / 7d / 30d / 90d / MTD / Custom). При открытии
+            модалки берёт initialWindowKind от родителя. */}
+        <div style={{
+          display: 'flex', gap: 6, padding: '8px 14px',
+          borderBottom: '1px solid var(--border)',
+          alignItems: 'center', background: 'var(--surface)',
+          flexWrap: 'wrap',
+        }}>
+          <span style={{
+            fontSize: 11, fontWeight: 700, color: 'var(--muted)',
+            textTransform: 'uppercase', letterSpacing: '.04em',
+            marginRight: 4,
+          }}>Window</span>
+          {[['today','Today'],['yesterday','Yesterday'],['7d','7d'],['30d','30d'],['90d','90d'],['mtd','MTD'],['custom','Custom']].map(([k,l]) => (
+            <button
+              key={k}
+              onClick={() => setWindowKind(k)}
+              style={{
+                cursor: 'pointer', padding: '4px 10px', borderRadius: 4,
+                border: '1px solid ' + (windowKind === k ? 'var(--accent-ink)' : 'var(--border)'),
+                background: windowKind === k ? 'var(--surface-2)' : 'var(--surface)',
+                color: windowKind === k ? 'var(--ink)' : 'var(--muted)',
+                fontSize: 11.5, fontWeight: windowKind === k ? 700 : 500,
+              }}
+            >{l}</button>
+          ))}
+          {windowKind === 'custom' && (
+            <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', marginLeft: 4 }}>
+              <input
+                type="date"
+                value={customStart}
+                max={customEnd}
+                onChange={e => setCustomStart(e.target.value)}
+                style={{ padding: '3px 6px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)' }}
+              />
+              <span style={{ fontSize: 11, color: 'var(--muted)' }}>→</span>
+              <input
+                type="date"
+                value={customEnd}
+                min={customStart}
+                onChange={e => setCustomEnd(e.target.value)}
+                style={{ padding: '3px 6px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)' }}
+              />
+            </span>
+          )}
+          <span style={{ flex: 1 }} />
+          <span style={{ fontSize: 11, color: 'var(--muted-2)' }} title={`${windowStart} → ${windowEnd}`}>
+            {windowLabel}
+          </span>
+        </div>
+
+        {showWindowHint && (
+          <div style={{
+            padding: '6px 14px', fontSize: 11, color: '#854d0e',
+            background: 'rgba(250, 204, 21, .12)',
+            borderBottom: '1px solid rgba(250, 204, 21, .35)',
+          }}>
+            ⚠ Contracts snapshot is MTD-only — wider windows show the same set. Activations before <b>{new Date(_mtdStartMs).toISOString().slice(0, 10)}</b> aren't in this view.
+          </div>
+        )}
 
         {/* Filter + search */}
         <div style={{
@@ -323,9 +480,9 @@
               cursor: 'pointer', minWidth: 170,
             }}
           >
-            <option value="all">All sources ({tab === 'leads' ? leadEntries.length : allLeases.length})</option>
+            <option value="all">All sources ({tab === 'leads' ? windowedLeadEntries.length : windowedContracts.length})</option>
             {SOURCE_OPTIONS.map(o => {
-              const n = (tab === 'leads' ? leadEntries : allLeases)
+              const n = (tab === 'leads' ? windowedLeadEntries : windowedContracts)
                 .filter(x => (x.key || x.channel || 'other') === o.key).length;
               return (
                 <option key={o.key} value={o.key} disabled={n === 0}>
@@ -362,7 +519,7 @@
           </div>
         ) : (
           <div style={{
-            display: 'grid', gridTemplateColumns: '1.8fr 110px 100px 150px',
+            display: 'grid', gridTemplateColumns: '1.4fr 90px 80px 110px 130px',
             gap: 10, padding: '8px 14px',
             borderBottom: '1px solid var(--border)',
             background: 'var(--surface-2)',
@@ -372,6 +529,7 @@
             <div>Tenant · Suite · Sender</div>
             <div>MRR</div>
             <div>Activated</div>
+            <div title="Operator who receives the contract-signed bonus (envelope sender per pulse/bonus-rules.jsx ctr_signed). Fallback = signed-PDF uploader.">Bonus mgr</div>
             <div>Source</div>
           </div>
         )}

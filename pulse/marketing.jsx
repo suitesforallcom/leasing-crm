@@ -602,6 +602,9 @@ function SpendSection() {
         onClose={closeLeadsModal}
         initialTab={leadsModal.tab}
         initialChannel={leadsModal.channel}
+        initialWindowKind={windowKind}
+        initialCustomStart={customStart}
+        initialCustomEnd={customEnd}
       />
     )}
     <div className="card is-clean" style={{ marginBottom: 18, padding: 0, overflow: "hidden", borderLeft: "3px solid #16a34a" }}>

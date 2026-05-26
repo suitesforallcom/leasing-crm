@@ -273,6 +273,27 @@
     const all = [];
     const byChannel = { 'google-ads': [], 'meta': [], 'tiktok': [], 'other': [] };
 
+    // 2026-05-26 Tony: «Можно добавить колонку менеджеру которому выдан
+    // бонус за этот договор». Bonus rule `ctr_signed` — «The agent who
+    // initiated the envelope receives the bonus», поэтому recipient =
+    // sentBy (приоритет) → uploadedBy (fallback для ручной загрузки
+    // signed PDF). Лежит на каждом lease как `bonusManager` (полное
+    // имя из state.employees) и `bonusManagerEmail` (raw email для
+    // деталей). Если email не матчится ни одному employee — оставляем
+    // email-fallback чтобы операторы видели хоть что-то.
+    const _empByEmail = new Map();
+    for (const e of (stNow.employees || [])) {
+      const em = String(e && e.email || '').toLowerCase().trim();
+      if (em) _empByEmail.set(em, e);
+    }
+    function _resolveBonusManager(email) {
+      const em = String(email || '').toLowerCase().trim();
+      if (!em) return { name: '', email: '' };
+      const emp = _empByEmail.get(em);
+      if (emp && emp.fullName) return { name: emp.fullName, email: em };
+      return { name: em, email: em }; // fallback — display raw email
+    }
+
     for (const b of (stNow.buildings || [])) {
       for (const f of (b.floors || [])) {
         for (const u of (f.units || [])) {
@@ -365,6 +386,9 @@
             }
           }
 
+          const bonusRecipientEmail = sentBy || uploadedBy || '';
+          const bonusInfo = _resolveBonusManager(bonusRecipientEmail);
+
           const lease = {
             unitId: u.id,
             buildingId: b.id,
@@ -379,6 +403,8 @@
             channel,
             sentBy,
             uploadedBy,
+            bonusManager: bonusInfo.name,
+            bonusManagerEmail: bonusInfo.email,
           };
           all.push(lease);
           byChannel[channel].push(lease);
