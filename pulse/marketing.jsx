@@ -1,4 +1,4 @@
-/* global React, Icon */
+/* global React, Icon, PageHelp */
 
 /* ===================================================================
    Pulse — Marketing page (Phase 1: channel mix from HubSpot data)
@@ -153,7 +153,12 @@ window.MarketingPage = function MarketingPage() {
       {/* Header */}
       <div className="page-h">
         <div>
-          <h1 className="title">Marketing</h1>
+          <h1 className="title">
+            Marketing
+            {/* «?»-кнопка раскрывает подробное описание из PAGE_DOCS.
+                Tony 2026-05-26 — pattern будет накатан на все страницы. */}
+            <PageHelp pageId="marketing" />
+          </h1>
           <div className="subtitle">
             <span>Lead-source attribution from HubSpot CRM</span>
             <span>·</span>
