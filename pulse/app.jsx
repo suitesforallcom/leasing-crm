@@ -1,4 +1,4 @@
-/* global React, ReactDOM, Sidebar, Topbar, MobileMenu, OverviewPage, EmployeeDetail, ComparePage, AlertsPage, PeoplePage, BonusesPage, BonusRulesPage, CentersPage, HubspotPage, MarketingPage, TopAdsPage, AnalyticsPage, ConnectionsPage, MyDayPage, MyJourneyPage, EarnPage, EventDrawer, FilterDrawer, MessageDrawer, QuickActionDrawer, CommandPalette, NotificationPanel, KudosDrawer, useTweaks, TweaksPanel, TweakRadio, TweakToggle, TweakSection */
+/* global React, ReactDOM, Sidebar, Topbar, MobileMenu, OverviewPage, EmployeeDetail, ComparePage, AlertsPage, PeoplePage, BonusesPage, BonusRulesPage, CentersPage, HubspotPage, MarketingPage, TopAdsPage, AnalyticsPage, ConnectionsPage, KeywordsPage, SearchTermsPage, GeoPage, DevicesPage, MyDayPage, MyJourneyPage, EarnPage, EventDrawer, FilterDrawer, MessageDrawer, QuickActionDrawer, CommandPalette, NotificationPanel, KudosDrawer, useTweaks, TweaksPanel, TweakRadio, TweakToggle, TweakSection */
 
 /* ================================================================
    App root — view routing + global form/drawer state
@@ -23,7 +23,7 @@ function App() {
       const m = (window.location.hash || '').match(/view=([a-z]+)/i);
       if (m && m[1]) {
         const v = m[1].toLowerCase();
-        const allowed = ['overview','people','centers','employee','compare','hubspot','marketing','topads','analytics','connections','bonuses','bonusrules','alerts','myday','myjourney','earn'];
+        const allowed = ['overview','people','centers','employee','compare','hubspot','marketing','topads','analytics','connections','keywords','searchterms','geo','devices','bonuses','bonusrules','alerts','myday','myjourney','earn'];
         if (allowed.includes(v)) return v;
       }
     } catch (e) {}
@@ -220,6 +220,18 @@ function App() {
         )}
         {view === "topads" && role === "owner" && (
           <TopAdsPage />
+        )}
+        {view === "keywords" && role === "owner" && (
+          <KeywordsPage />
+        )}
+        {view === "searchterms" && role === "owner" && (
+          <SearchTermsPage />
+        )}
+        {view === "geo" && role === "owner" && (
+          <GeoPage />
+        )}
+        {view === "devices" && role === "owner" && (
+          <DevicesPage />
         )}
         {view === "analytics" && role === "owner" && (
           <AnalyticsPage />

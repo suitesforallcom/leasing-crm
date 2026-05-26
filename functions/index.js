@@ -7165,6 +7165,17 @@ exports.marketingGetData = _mk.marketingGetData;
 // Meta и TikTok ad-level. Auth: тот же X-Shared-Secret что и
 // marketingIngest. Источники whitelisted в коде: ['google-ads'].
 exports.marketingAdsIngest = _mk.marketingAdsIngest;
+// Phase H (2026-05-25) — Google Ads dimension ingest + list (Keywords,
+// Search Terms, Geo, Devices). Google Ads Apps Script POST-ит per-dimension
+// rows (criterion-id / search-term hash / location-id / device-type +
+// per-row daily breakdown) в подколлекции marketing_keywords /
+// marketing_search_terms / marketing_geo / marketing_devices.
+// Companion callable marketingDimensionList отдаёт страницы для
+// Pulse-страниц Keywords / Search Terms / Geo / Devices, отсортированных
+// по totals.spend desc. Auth ingest — тот же X-Shared-Secret; list —
+// root-admin gate (auth.token.root === true).
+exports.marketingDimensionIngest = _mk.marketingDimensionIngest;
+exports.marketingDimensionList = _mk.marketingDimensionList;
 
 // Phase 20 (Meta) — server-side Meta Marketing API sync. Discovers all
 // ad accounts under the System User and pulls daily-granular insights.

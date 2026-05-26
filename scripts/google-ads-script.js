@@ -50,6 +50,12 @@ var INGEST_URL = 'https://us-central1-suitesforall.cloudfunctions.net/marketingI
 // different schema — see marketingAdsIngest in functions/marketing-ingest.js.
 var ADS_INGEST_URL = 'https://us-central1-suitesforall.cloudfunctions.net/marketingAdsIngest';
 
+// Dimension-level endpoint (Phase H, 2026-05-25). Generic per-dimension
+// ingest (Keywords / Search Terms / Geo / Devices). Same auth header;
+// source field на payload'е разруливает таргет-коллекцию.
+// См. marketingDimensionIngest в functions/marketing-ingest.js.
+var DIMENSION_INGEST_URL = 'https://us-central1-suitesforall.cloudfunctions.net/marketingDimensionIngest';
+
 // Shared secret — must match the MARKETING_INGEST_SECRET secret in
 // Firebase Secret Manager. Anyone with this token can post spend data
 // to Pulse, so don't share or commit it elsewhere. If rotated, ping
@@ -184,6 +190,16 @@ function main() {
     _runAdLevelIngest(customerId, startDate, endDate);
   } catch (e) {
     Logger.log('✗ Ad-level ingest threw: ' + (e && e.message ? e.message : e));
+  }
+
+  // ============ DIMENSION PULLS (Phase H, 2026-05-25) ============
+  // 4 параллельных GAQL-запроса для страниц Pulse Keywords / Search Terms /
+  // Geo / Devices. Каждый — независимый POST в marketingDimensionIngest;
+  // одна ошибка не валит другие.
+  try {
+    _runDimensionIngests(customerId, startDate, endDate);
+  } catch (e) {
+    Logger.log('✗ Dimension ingests threw: ' + (e && e.message ? e.message : e));
   }
 }
 
@@ -431,4 +447,330 @@ function _fmtDate(d) {
   var m = String(d.getMonth() + 1).padStart(2, '0');
   var day = String(d.getDate()).padStart(2, '0');
   return y + '-' + m + '-' + day;
+}
+
+// ============ DIMENSION INGESTS (Phase H, 2026-05-25) ============
+//
+// Каждая функция:
+//   1) Запускает свой GAQL запрос (keyword_view / search_term_view /
+//      geographic_view / campaign + segments.device).
+//   2) Группирует строки по dimension-ключу, в каждой накапливает daily[].
+//   3) POST-ит payload {source, customerId, …, rows: [...]} в
+//      marketingDimensionIngest. Сервер пишет в подколлекцию, считает totals.
+//
+// Все 4 — независимы; одна упала — другие всё равно запускаются.
+
+function _runDimensionIngests(customerId, startDate, endDate) {
+  var customerName = '';
+  try { customerName = AdsApp.currentAccount().getName() || ''; } catch (e) { /* optional */ }
+  var currency = 'USD';
+  try { currency = AdsApp.currentAccount().getCurrencyCode() || 'USD'; } catch (e) { /* optional */ }
+
+  var common = {
+    customerId: customerId,
+    customerName: customerName,
+    currency: currency,
+    startDate: startDate,
+    endDate: endDate,
+  };
+
+  try { _runKeywordIngest(common); }
+  catch (e) { Logger.log('✗ keyword ingest threw: ' + (e && e.message ? e.message : e)); }
+  try { _runSearchTermIngest(common); }
+  catch (e) { Logger.log('✗ search-term ingest threw: ' + (e && e.message ? e.message : e)); }
+  try { _runGeoIngest(common); }
+  catch (e) { Logger.log('✗ geo ingest threw: ' + (e && e.message ? e.message : e)); }
+  try { _runDeviceIngest(common); }
+  catch (e) { Logger.log('✗ device ingest threw: ' + (e && e.message ? e.message : e)); }
+}
+
+// Generic POST для всех 4 dimension'ов. source-string определяет коллекцию.
+function _postDimension(source, common, rowsOut) {
+  if (!rowsOut || rowsOut.length === 0) {
+    Logger.log('  (no rows for ' + source + ' — skipping POST)');
+    return;
+  }
+  var payload = {
+    source: source,
+    customerId: common.customerId,
+    customerName: common.customerName,
+    currency: common.currency,
+    fetchedAt: new Date().toISOString(),
+    dateRange: { start: common.startDate, end: common.endDate },
+    daysBack: DAYS_BACK,
+    rows: rowsOut,
+  };
+  var resp = UrlFetchApp.fetch(DIMENSION_INGEST_URL, {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { 'X-Shared-Secret': SHARED_SECRET },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true,
+  });
+  var code = resp.getResponseCode();
+  var body = resp.getContentText();
+  if (code >= 200 && code < 300) {
+    Logger.log('✓ Pulse ' + source + ' ingest OK (HTTP ' + code + '): ' + String(body).slice(0, 200));
+  } else {
+    Logger.log('✗ Pulse ' + source + ' ingest FAILED (HTTP ' + code + '): ' + body);
+  }
+}
+
+function _runKeywordIngest(common) {
+  Logger.log('Pulse keyword ingest — ' + common.startDate + ' to ' + common.endDate);
+  var query =
+    'SELECT ' +
+      'ad_group_criterion.criterion_id, ' +
+      'ad_group_criterion.keyword.text, ' +
+      'ad_group_criterion.keyword.match_type, ' +
+      'ad_group_criterion.status, ' +
+      'ad_group_criterion.quality_info.quality_score, ' +
+      'ad_group.id, ' +
+      'ad_group.name, ' +
+      'ad_group.status, ' +
+      'campaign.id, ' +
+      'campaign.name, ' +
+      'campaign.status, ' +
+      'segments.date, ' +
+      'metrics.cost_micros, ' +
+      'metrics.clicks, ' +
+      'metrics.impressions, ' +
+      'metrics.conversions ' +
+    'FROM keyword_view ' +
+    'WHERE segments.date BETWEEN "' + common.startDate + '" AND "' + common.endDate + '" ' +
+    '  AND ad_group_criterion.status != "REMOVED"';
+
+  var rowsIter;
+  try { rowsIter = AdsApp.report(query).rows(); }
+  catch (e) { Logger.log('✗ keyword GAQL failed: ' + (e && e.message ? e.message : e)); return; }
+
+  var byKw = {};
+  while (rowsIter.hasNext()) {
+    var r = rowsIter.next();
+    var cid = String(r['ad_group_criterion.criterion_id'] || '');
+    if (!cid) continue;
+    var key = cid + '_' + String(r['ad_group.id'] || '');
+    if (!byKw[key]) {
+      byKw[key] = {
+        criterionId: cid,
+        id: cid,
+        text: String(r['ad_group_criterion.keyword.text'] || ''),
+        matchType: String(r['ad_group_criterion.keyword.match_type'] || ''),
+        status: String(r['ad_group_criterion.status'] || ''),
+        qualityScore: Number(r['ad_group_criterion.quality_info.quality_score']) || null,
+        campaignId: String(r['campaign.id'] || ''),
+        campaignName: String(r['campaign.name'] || ''),
+        campaignStatus: String(r['campaign.status'] || ''),
+        adGroupId: String(r['ad_group.id'] || ''),
+        adGroupName: String(r['ad_group.name'] || ''),
+        adGroupStatus: String(r['ad_group.status'] || ''),
+        daily: [],
+      };
+    }
+    byKw[key].daily.push({
+      date: String(r['segments.date'] || ''),
+      cost: (Number(r['metrics.cost_micros']) || 0) / 1000000,
+      clicks: Number(r['metrics.clicks']) || 0,
+      impressions: Number(r['metrics.impressions']) || 0,
+      conversions: Number(r['metrics.conversions']) || 0,
+    });
+  }
+
+  var arr = [];
+  for (var k in byKw) { if (byKw.hasOwnProperty(k)) arr.push(byKw[k]); }
+  Logger.log('  ' + arr.length + ' keywords');
+  _postDimension('google-ads-keywords', common, arr);
+}
+
+function _runSearchTermIngest(common) {
+  Logger.log('Pulse search-term ingest — ' + common.startDate + ' to ' + common.endDate);
+  var query =
+    'SELECT ' +
+      'search_term_view.search_term, ' +
+      'search_term_view.status, ' +
+      'segments.search_term_match_type, ' +
+      'ad_group.id, ' +
+      'ad_group.name, ' +
+      'campaign.id, ' +
+      'campaign.name, ' +
+      'segments.date, ' +
+      'metrics.cost_micros, ' +
+      'metrics.clicks, ' +
+      'metrics.impressions, ' +
+      'metrics.conversions ' +
+    'FROM search_term_view ' +
+    'WHERE segments.date BETWEEN "' + common.startDate + '" AND "' + common.endDate + '"';
+
+  var rowsIter;
+  try { rowsIter = AdsApp.report(query).rows(); }
+  catch (e) { Logger.log('✗ search-term GAQL failed: ' + (e && e.message ? e.message : e)); return; }
+
+  var bySt = {};
+  while (rowsIter.hasNext()) {
+    var r = rowsIter.next();
+    var text = String(r['search_term_view.search_term'] || '').trim();
+    if (!text) continue;
+    var adGroupId = String(r['ad_group.id'] || '');
+    var key = adGroupId + '|' + text.toLowerCase();
+    if (!bySt[key]) {
+      bySt[key] = {
+        text: text,
+        status: String(r['search_term_view.status'] || ''),
+        matchType: String(r['segments.search_term_match_type'] || ''),
+        adGroupId: adGroupId,
+        adGroupName: String(r['ad_group.name'] || ''),
+        campaignId: String(r['campaign.id'] || ''),
+        campaignName: String(r['campaign.name'] || ''),
+        daily: [],
+      };
+    }
+    bySt[key].daily.push({
+      date: String(r['segments.date'] || ''),
+      cost: (Number(r['metrics.cost_micros']) || 0) / 1000000,
+      clicks: Number(r['metrics.clicks']) || 0,
+      impressions: Number(r['metrics.impressions']) || 0,
+      conversions: Number(r['metrics.conversions']) || 0,
+    });
+  }
+
+  var arr = [];
+  for (var k in bySt) { if (bySt.hasOwnProperty(k)) arr.push(bySt[k]); }
+  Logger.log('  ' + arr.length + ' unique search terms');
+  _postDimension('google-ads-search-terms', common, arr);
+}
+
+function _runGeoIngest(common) {
+  Logger.log('Pulse geo ingest — ' + common.startDate + ' to ' + common.endDate);
+  // Country-level breakdown через geographic_view. country_criterion_id —
+  // GeoTargetConstant.id страны пользователя. Дальше делаем второй запрос
+  // к geo_target_constant для перевода id'ов в имена ("United States" и т.п.).
+  var query =
+    'SELECT ' +
+      'geographic_view.country_criterion_id, ' +
+      'geographic_view.location_type, ' +
+      'campaign.id, ' +
+      'campaign.name, ' +
+      'segments.date, ' +
+      'metrics.cost_micros, ' +
+      'metrics.clicks, ' +
+      'metrics.impressions, ' +
+      'metrics.conversions ' +
+    'FROM geographic_view ' +
+    'WHERE segments.date BETWEEN "' + common.startDate + '" AND "' + common.endDate + '"';
+
+  var rowsIter;
+  try { rowsIter = AdsApp.report(query).rows(); }
+  catch (e) { Logger.log('✗ geo GAQL failed: ' + (e && e.message ? e.message : e)); return; }
+
+  var byGeo = {};
+  while (rowsIter.hasNext()) {
+    var r = rowsIter.next();
+    var countryId = String(r['geographic_view.country_criterion_id'] || '');
+    if (!countryId) continue;
+    var locType = String(r['geographic_view.location_type'] || '');
+    var key = countryId + '|' + locType;
+    if (!byGeo[key]) {
+      byGeo[key] = {
+        locationId: countryId,
+        country: countryId,
+        resolution: locType,
+        daily: [],
+      };
+    }
+    byGeo[key].daily.push({
+      date: String(r['segments.date'] || ''),
+      cost: (Number(r['metrics.cost_micros']) || 0) / 1000000,
+      clicks: Number(r['metrics.clicks']) || 0,
+      impressions: Number(r['metrics.impressions']) || 0,
+      conversions: Number(r['metrics.conversions']) || 0,
+    });
+  }
+
+  var rowsOut = [];
+  for (var k in byGeo) { if (byGeo.hasOwnProperty(k)) rowsOut.push(byGeo[k]); }
+  Logger.log('  ' + rowsOut.length + ' geo rows (country × location_type)');
+
+  // Резолвинг location IDs в человеческие имена.
+  var uniqIds = {};
+  rowsOut.forEach(function (r) { uniqIds[r.locationId] = true; });
+  var idList = Object.keys(uniqIds);
+  if (idList.length > 0 && idList.length <= 100) {
+    try {
+      var nameMap = {};
+      var resourceList = idList.map(function (id) { return '"geoTargetConstants/' + id + '"'; }).join(',');
+      var gtq =
+        'SELECT geo_target_constant.id, geo_target_constant.name, ' +
+        'geo_target_constant.country_code, geo_target_constant.target_type, ' +
+        'geo_target_constant.canonical_name ' +
+        'FROM geo_target_constant ' +
+        'WHERE geo_target_constant.resource_name IN (' + resourceList + ')';
+      var gtRows = AdsApp.report(gtq).rows();
+      while (gtRows.hasNext()) {
+        var gr = gtRows.next();
+        var gid = String(gr['geo_target_constant.id'] || '');
+        nameMap[gid] = {
+          name: String(gr['geo_target_constant.name'] || ''),
+          countryCode: String(gr['geo_target_constant.country_code'] || ''),
+          targetType: String(gr['geo_target_constant.target_type'] || ''),
+          canonicalName: String(gr['geo_target_constant.canonical_name'] || ''),
+        };
+      }
+      rowsOut.forEach(function (r) {
+        var meta = nameMap[r.locationId];
+        if (meta) {
+          r.country = meta.canonicalName || meta.name || r.country;
+          if (meta.targetType === 'City') r.city = meta.name;
+          else if (meta.targetType === 'Region') r.region = meta.name;
+        }
+      });
+      Logger.log('  resolved ' + Object.keys(nameMap).length + '/' + idList.length + ' location names');
+    } catch (e) {
+      Logger.log('  (geo name resolution skipped: ' + (e && e.message ? e.message : e) + ')');
+    }
+  }
+
+  _postDimension('google-ads-geo', common, rowsOut);
+}
+
+function _runDeviceIngest(common) {
+  Logger.log('Pulse device ingest — ' + common.startDate + ' to ' + common.endDate);
+  // segments.device возвращает enum: MOBILE / DESKTOP / TABLET / CONNECTED_TV / OTHER.
+  var query =
+    'SELECT ' +
+      'segments.device, ' +
+      'campaign.id, ' +
+      'campaign.name, ' +
+      'segments.date, ' +
+      'metrics.cost_micros, ' +
+      'metrics.clicks, ' +
+      'metrics.impressions, ' +
+      'metrics.conversions ' +
+    'FROM campaign ' +
+    'WHERE segments.date BETWEEN "' + common.startDate + '" AND "' + common.endDate + '"';
+
+  var rowsIter;
+  try { rowsIter = AdsApp.report(query).rows(); }
+  catch (e) { Logger.log('✗ device GAQL failed: ' + (e && e.message ? e.message : e)); return; }
+
+  var byDev = {};
+  while (rowsIter.hasNext()) {
+    var r = rowsIter.next();
+    var dev = String(r['segments.device'] || '').toUpperCase();
+    if (!dev) continue;
+    if (!byDev[dev]) {
+      byDev[dev] = { device: dev, daily: [] };
+    }
+    byDev[dev].daily.push({
+      date: String(r['segments.date'] || ''),
+      cost: (Number(r['metrics.cost_micros']) || 0) / 1000000,
+      clicks: Number(r['metrics.clicks']) || 0,
+      impressions: Number(r['metrics.impressions']) || 0,
+      conversions: Number(r['metrics.conversions']) || 0,
+    });
+  }
+
+  var arr = [];
+  for (var k in byDev) { if (byDev.hasOwnProperty(k)) arr.push(byDev[k]); }
+  Logger.log('  ' + arr.length + ' device types');
+  _postDimension('google-ads-devices', common, arr);
 }

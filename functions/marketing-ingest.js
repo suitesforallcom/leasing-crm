@@ -40,10 +40,11 @@
  * etc.) to compute CPL/CPT/CAC/ROAS per channel in the Marketing page.
  */
 
-const {onRequest} = require('firebase-functions/v2/https');
+const {onRequest, onCall, HttpsError} = require('firebase-functions/v2/https');
 const {defineSecret} = require('firebase-functions/params');
 const logger = require('firebase-functions/logger');
 const admin = require('firebase-admin');
+const crypto = require('crypto');
 const shared = require('./marketing-ads-shared');
 
 const MARKETING_INGEST_SECRET = defineSecret('MARKETING_INGEST_SECRET');
@@ -582,5 +583,350 @@ exports.marketingAdsIngest = onRequest(
       logger.error(`[marketing-ads-ingest] crash: ${e.message}`, e);
       res.status(500).json({ ok: false, error: e.message });
     }
+  }
+);
+
+// =============================================================================
+// DIMENSION INGEST (Phase I, 2026-05-26) — keywords / search-terms / geo / device
+// =============================================================================
+// Unified endpoint для всех «не-ad» Google Ads dimension'ов. Google Ads
+// Script делает 4 дополнительных POST'а сюда (по одному на dimension),
+// сервер строит документы в нужной subcollection.
+//
+// Payload shape:
+//   {
+//     source: 'google-ads-keywords'      // determines kind + collection
+//           | 'google-ads-search-terms'
+//           | 'google-ads-geo'
+//           | 'google-ads-devices',
+//     customerId, customerName, currency,
+//     fetchedAt: ISO, dateRange: {start,end}, daysBack,
+//     rows: [
+//       // KEYWORDS — { criterionId, text, matchType, status, qualityScore,
+//       //              campaignId, campaignName, adGroupId, adGroupName,
+//       //              daily: [{date,cost,clicks,impressions,conversions}] }
+//       // SEARCH_TERMS — { text, matchType, status,
+//       //              campaignId, campaignName, adGroupId, adGroupName,
+//       //              daily: [...] }
+//       // GEO — { locationId, country, region, city, resolution,
+//       //              campaignId, campaignName, daily: [...] }
+//       // DEVICES — { device,    // MOBILE|DESKTOP|TABLET|CONNECTED_TV|OTHER
+//       //              campaignId, campaignName, daily: [...] }
+//     ],
+//     totals: { cost, clicks, impressions, conversions }
+//   }
+//
+// Storage: workspaces/default/<collection>/<docId>
+//   marketing_keywords      google_kw_<criterionId>
+//   marketing_search_terms  google_st_<adGroupId>_<sha1(text):16>
+//   marketing_geo           google_geo_<locationId>
+//   marketing_devices       google_dev_<device>
+// =============================================================================
+
+const DIMENSION_KIND_MAP = {
+  'google-ads-keywords':     { kind: 'keyword',    collection: 'marketing_keywords',     prefix: 'google_kw_'  },
+  'google-ads-search-terms': { kind: 'searchTerm', collection: 'marketing_search_terms', prefix: 'google_st_'  },
+  'google-ads-geo':          { kind: 'geo',        collection: 'marketing_geo',          prefix: 'google_geo_' },
+  'google-ads-devices':      { kind: 'device',     collection: 'marketing_devices',      prefix: 'google_dev_' },
+};
+const ALLOWED_DIMENSION_SOURCES = Object.keys(DIMENSION_KIND_MAP);
+const MAX_ROWS_PER_DIMENSION_INGEST = 2000;
+
+function _sha1Short(s) {
+  return crypto.createHash('sha1').update(String(s || '')).digest('hex').slice(0, 16);
+}
+
+function _normalizeDaily(raw) {
+  return (Array.isArray(raw) ? raw : [])
+    .map(d => ({
+      date: String(d.date || ''),
+      spend: Number(d.spend || d.cost) || 0,
+      clicks: Number(d.clicks) || 0,
+      impressions: Number(d.impressions) || 0,
+      conversions: Number(d.conversions) || 0,
+    }))
+    .filter(d => d.date)
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function _buildDimensionDoc(payload, raw, ingestedAt, source) {
+  const cfg = DIMENSION_KIND_MAP[source];
+  if (!cfg) return null;
+  const daily = _normalizeDaily(raw.daily);
+  const baseTotals = shared.rollupDaily(daily);
+  const totals = shared.computeDerivedMetrics(baseTotals);
+
+  let externalId = '';
+  let dimensionFields = {};
+  let displayLabel = '';
+
+  if (cfg.kind === 'keyword') {
+    externalId = String(raw.criterionId || raw.id || '');
+    if (!externalId) return null;
+    dimensionFields.keyword = {
+      text: String(raw.text || ''),
+      matchType: String(raw.matchType || '').toUpperCase() || null,
+      status: String(raw.status || '').toUpperCase() || null,
+      qualityScore: raw.qualityScore != null ? Number(raw.qualityScore) : null,
+    };
+    displayLabel = dimensionFields.keyword.text || externalId;
+  } else if (cfg.kind === 'searchTerm') {
+    const text = String(raw.text || '').trim();
+    if (!text) return null;
+    const adGroupId = String(raw.adGroupId || '');
+    externalId = `${adGroupId}_${_sha1Short(text.toLowerCase())}`;
+    dimensionFields.searchTerm = {
+      text,
+      matchType: String(raw.matchType || '').toUpperCase() || null,
+      status: String(raw.status || '').toUpperCase() || null,
+    };
+    displayLabel = text;
+  } else if (cfg.kind === 'geo') {
+    externalId = String(raw.locationId || raw.id || '');
+    if (!externalId) {
+      // fallback — composite key if locationId missing
+      externalId = _sha1Short([raw.country, raw.region, raw.city].filter(Boolean).join('|'));
+    }
+    dimensionFields.geo = {
+      country: String(raw.country || '') || null,
+      region: String(raw.region || '') || null,
+      city: String(raw.city || '') || null,
+      locationId: String(raw.locationId || '') || null,
+      resolution: String(raw.resolution || '') || null,
+    };
+    displayLabel = [dimensionFields.geo.city, dimensionFields.geo.region, dimensionFields.geo.country]
+      .filter(Boolean).join(', ') || externalId;
+  } else if (cfg.kind === 'device') {
+    const device = String(raw.device || '').toUpperCase();
+    if (!device) return null;
+    externalId = device;
+    dimensionFields.device = { type: device };
+    displayLabel = device;
+  }
+
+  const docId = cfg.prefix + externalId.replace(/[^A-Za-z0-9_-]/g, '_');
+
+  return {
+    id: docId,
+    platform: 'google',
+    kind: cfg.kind,
+    externalId,
+    label: displayLabel,
+    account: {
+      id: String(payload.customerId || ''),
+      name: String(payload.customerName || '(unknown customer)'),
+      currency: String(payload.currency || 'USD'),
+    },
+    campaign: raw.campaignId ? {
+      id: String(raw.campaignId || ''),
+      name: String(raw.campaignName || '(unknown campaign)'),
+      status: String(raw.campaignStatus || '') || null,
+    } : null,
+    adgroup: raw.adGroupId ? {
+      id: String(raw.adGroupId || ''),
+      name: String(raw.adGroupName || '(unknown ad group)'),
+      status: String(raw.adGroupStatus || '') || null,
+    } : null,
+    ...dimensionFields,
+    totals,
+    daily,
+    daysBack: Number(payload.daysBack) || 90,
+    fetchedAt: String(payload.fetchedAt || ingestedAt),
+    ingestedAt,
+  };
+}
+
+async function _upsertDimensionBatch(collection, docs) {
+  let written = 0;
+  let skipped = 0;
+  const errors = [];
+  // Firestore batch limit = 500 writes; split if needed
+  const CHUNK = 400;
+  for (let i = 0; i < docs.length; i += CHUNK) {
+    const batch = db.batch();
+    const slice = docs.slice(i, i + CHUNK);
+    for (const d of slice) {
+      try {
+        const ref = db.doc(`workspaces/${WORKSPACE_ID}/${collection}/${d.id}`);
+        batch.set(ref, d, { merge: false });
+        written++;
+      } catch (e) {
+        errors.push({ id: d.id, error: e.message });
+        skipped++;
+      }
+    }
+    await batch.commit();
+  }
+  return { written, skipped, errors };
+}
+
+async function _pruneStaleDimensionDocs(collection, presentIds) {
+  const snap = await db.collection(`workspaces/${WORKSPACE_ID}/${collection}`).get();
+  const stale = [];
+  snap.forEach(doc => { if (!presentIds.has(doc.id)) stale.push(doc.ref); });
+  if (stale.length === 0) return 0;
+  const CHUNK = 400;
+  for (let i = 0; i < stale.length; i += CHUNK) {
+    const batch = db.batch();
+    stale.slice(i, i + CHUNK).forEach(ref => batch.delete(ref));
+    await batch.commit();
+  }
+  return stale.length;
+}
+
+exports.marketingDimensionIngest = onRequest(
+  {
+    secrets: [MARKETING_INGEST_SECRET],
+    cors: false,
+    timeoutSeconds: 300,
+    memory: '512MiB',
+  },
+  async (req, res) => {
+    try {
+      if (req.method !== 'POST') {
+        res.status(405).json({ ok: false, error: 'POST only' });
+        return;
+      }
+      const got = req.get('x-shared-secret') || req.get('X-Shared-Secret') || '';
+      const expected = MARKETING_INGEST_SECRET.value();
+      if (!expected) {
+        res.status(500).json({ ok: false, error: 'server misconfigured' });
+        return;
+      }
+      if (got !== expected) {
+        logger.warn(`[marketing-dim-ingest] auth fail (ip=${req.ip})`);
+        res.status(401).json({ ok: false, error: 'unauthorized' });
+        return;
+      }
+      const body = req.body || {};
+      const source = String(body.source || '').toLowerCase();
+      if (!ALLOWED_DIMENSION_SOURCES.includes(source)) {
+        res.status(400).json({
+          ok: false,
+          error: `source must be one of ${ALLOWED_DIMENSION_SOURCES.join(',')}`,
+        });
+        return;
+      }
+      const cfg = DIMENSION_KIND_MAP[source];
+      const rowsRaw = Array.isArray(body.rows) ? body.rows : [];
+      if (rowsRaw.length === 0) {
+        res.status(400).json({ ok: false, error: 'rows[] must be non-empty' });
+        return;
+      }
+      const ingestedAt = new Date().toISOString();
+      const built = [];
+      for (const r of rowsRaw) {
+        const doc = _buildDimensionDoc(body, r, ingestedAt, source);
+        if (doc) built.push(doc);
+      }
+      built.sort((a, b) => (b.totals.spend || 0) - (a.totals.spend || 0));
+      const capped = built.slice(0, MAX_ROWS_PER_DIMENSION_INGEST);
+      const presentIds = new Set(capped.map(d => d.id));
+      const totalSpend = capped.reduce((s, d) => s + (d.totals.spend || 0), 0);
+
+      const writeRes = await _upsertDimensionBatch(cfg.collection, capped);
+      let pruned = 0;
+      try {
+        pruned = await _pruneStaleDimensionDocs(cfg.collection, presentIds);
+      } catch (e) {
+        logger.warn(`[marketing-dim-ingest] prune ${cfg.collection} failed: ${e.message}`);
+      }
+      try {
+        await db.doc(`workspaces/${WORKSPACE_ID}/data/marketing`).set({
+          sources: {
+            [source]: {
+              dimensionLastSyncedAt: ingestedAt,
+              dimensionTotalRows: writeRes.written,
+              dimensionTotalSpend: totalSpend,
+              dimensionPruned: pruned,
+              dimensionCustomerId: String(body.customerId || ''),
+            },
+          },
+        }, { merge: true });
+        await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+          action: `marketing.${cfg.kind}-ingest`,
+          ts: Date.now(),
+          actor: `external:${source}`,
+          note: `${source}: ${writeRes.written} rows written, $${totalSpend.toFixed(2)} spend, ${pruned} pruned`,
+          counts: { received: rowsRaw.length, written: writeRes.written, pruned },
+          totals: { spend: totalSpend },
+        });
+      } catch (e) {
+        logger.warn(`[marketing-dim-ingest] summary/audit failed: ${e.message}`);
+      }
+      logger.info(`[marketing-dim-ingest] OK: ${source} ${writeRes.written}/${rowsRaw.length} rows $${totalSpend.toFixed(2)}`);
+      res.status(200).json({
+        ok: true,
+        source,
+        kind: cfg.kind,
+        collection: cfg.collection,
+        received: rowsRaw.length,
+        written: writeRes.written,
+        skipped: writeRes.skipped,
+        pruned,
+        totals: { spend: totalSpend },
+        errors: writeRes.errors,
+        ingestedAt,
+      });
+    } catch (e) {
+      logger.error(`[marketing-dim-ingest] crash: ${e.message}`, e);
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+);
+
+// =============================================================================
+// DIMENSION LIST (callable) — generic reader for Pulse pages.
+// =============================================================================
+// Auth: same root-admin gate as marketingAdsList (auth.token.root === true).
+// Args: { kind: 'keyword'|'searchTerm'|'geo'|'device', limit, cursor, sort? }
+// Returns: { rows: [...], nextCursor: docId|null }
+//
+// Sort: server-side по totals.spend DESC. Cursor — последний docId предыдущей
+// страницы (Firestore startAfter). Limit капается в [1, 200].
+// =============================================================================
+
+const KIND_TO_COLLECTION = {
+  keyword:    'marketing_keywords',
+  searchTerm: 'marketing_search_terms',
+  geo:        'marketing_geo',
+  device:     'marketing_devices',
+};
+
+// ROOT_ADMINS — single source of truth in marketing-ads-shared.js. Re-import
+// here so dimension callable share's the gate с marketingAdsList. Если в
+// будущем нужно расширить — менять там, а не здесь.
+const _DIM_ROOT_ADMINS = ['tony@al-en.com'];
+
+exports.marketingDimensionList = onCall(
+  { cors: true, timeoutSeconds: 30, memory: '256MiB' },
+  async (request) => {
+    const email = (request.auth?.token?.email || '').toLowerCase();
+    if (!_DIM_ROOT_ADMINS.includes(email)) {
+      throw new HttpsError('permission-denied', 'Root admin only');
+    }
+    const data = request.data || {};
+    const kind = String(data.kind || '');
+    const collection = KIND_TO_COLLECTION[kind];
+    if (!collection) {
+      throw new HttpsError('invalid-argument', `kind must be one of ${Object.keys(KIND_TO_COLLECTION).join(',')}`);
+    }
+    const limit = Math.max(1, Math.min(200, Number(data.limit) || 50));
+    const cursorId = data.cursor ? String(data.cursor) : null;
+
+    let q = db.collection(`workspaces/${WORKSPACE_ID}/${collection}`)
+      .orderBy('totals.spend', 'desc')
+      .limit(limit + 1);
+    if (cursorId) {
+      const cursorDoc = await db.doc(`workspaces/${WORKSPACE_ID}/${collection}/${cursorId}`).get();
+      if (cursorDoc.exists) q = q.startAfter(cursorDoc);
+    }
+    const snap = await q.get();
+    const docs = [];
+    snap.forEach(d => docs.push({ id: d.id, ...d.data() }));
+    const hasMore = docs.length > limit;
+    const rows = hasMore ? docs.slice(0, limit) : docs;
+    const nextCursor = hasMore ? rows[rows.length - 1].id : null;
+    return { rows, nextCursor, kind, collection };
   }
 );

@@ -36,6 +36,13 @@ window.Sidebar = function Sidebar({ view, onNav, role }) {
           <NavItem id="hubspot"  view={view} onNav={onNav} icon="globe"    label="HubSpot" />
           <NavItem id="marketing" view={view} onNav={onNav} icon="trendUp" label="Marketing" />
           <NavItem id="topads" view={view} onNav={onNav} icon="star" label="Top Ads" />
+          {/* Google Ads dimension pages — read from marketing_keywords /
+              _search_terms / _geo / _devices subcollections populated by
+              the Google Ads Apps Script (см. scripts/google-ads-script.js). */}
+          <NavItem id="keywords"    view={view} onNav={onNav} icon="search"   label="Keywords" />
+          <NavItem id="searchterms" view={view} onNav={onNav} icon="search"   label="Search Terms" />
+          <NavItem id="geo"         view={view} onNav={onNav} icon="globe"    label="Geography" />
+          <NavItem id="devices"     view={view} onNav={onNav} icon="building" label="Devices" />
           <NavItem id="analytics" view={view} onNav={onNav} icon="globe" label="Analytics (GA4)" />
           <NavItem id="connections" view={view} onNav={onNav} icon="settings" label="Connections" />
           <NavItem id="bonuses"  view={view} onNav={onNav} icon="star"     label="Bonuses" />
@@ -94,6 +101,7 @@ window.Topbar = function Topbar({ view, employeeId, onNav, role, onRoleChange, m
   const titleMap = {
     overview: "Activity",  people: "People",   compare: "Compare",
     hubspot: "HubSpot",  marketing: "Marketing",  topads: "Top Ads",  analytics: "Analytics",  connections: "Connections",
+    keywords: "Keywords",  searchterms: "Search Terms",  geo: "Geography",  devices: "Devices",
     bonuses: "Bonuses",    bonusrules: "Bonus rules",
     alerts: "Alerts",   centers: "Centers",
     myday: "My Day",       myjourney: "My Journey",   earn: "How to earn",
