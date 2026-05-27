@@ -25,7 +25,7 @@ const admin = require('firebase-admin');
 const WORKSPACE_ID = 'default';
 const ROOT_ADMINS = ['tony@al-en.com'];
 
-const PROVIDER_IDS = ['anthropic', 'openai', 'grok', 'google'];
+const PROVIDER_IDS = ['anthropic', 'openai', 'grok', 'google', 'openrouter'];
 
 // pdf-parse loaded lazily so cold-start is fast for callables that never
 // touch PDFs. Same with the four provider SDKs.
@@ -52,15 +52,28 @@ async function _requireMember(auth, db) {
 // ----------------------------------------------------------- key + active ---
 
 async function _readKeys(db) {
-  const snap = await db.doc(`workspaces/${WORKSPACE_ID}/secrets/aiExtraction`).get();
-  return (snap.exists ? snap.data() : null) || {};
+  // Источник истины — secrets/aiServices (unified AI Services, 2026-05-27).
+  // Фоллбек на legacy secrets/aiExtraction для миграционного периода —
+  // не перезаписывает уже заполненные поля нового doc.
+  const merged = {};
+  const snapNew = await db.doc(`workspaces/${WORKSPACE_ID}/secrets/aiServices`).get();
+  if (snapNew.exists) Object.assign(merged, snapNew.data() || {});
+  const snapOld = await db.doc(`workspaces/${WORKSPACE_ID}/secrets/aiExtraction`).get();
+  if (snapOld.exists) {
+    const old = snapOld.data() || {};
+    for (const k of Object.keys(old)) if (!merged[k]) merged[k] = old[k];
+  }
+  return merged;
 }
 
 async function _readActiveProvider(db) {
   const snap = await db.doc(`workspaces/${WORKSPACE_ID}/data/state`).get();
   const data = snap.data() || {};
   const state = data.state && typeof data.state === 'object' ? data.state : data;
-  const active = state?.settings?.aiExtraction?.active;
+  // settings.aiServices.extractionProvider — приоритет (unified, 2026-05-27).
+  // Фоллбек на legacy settings.aiExtraction.active.
+  const active = state?.settings?.aiServices?.extractionProvider
+              || state?.settings?.aiExtraction?.active;
   return PROVIDER_IDS.includes(active) ? active : 'anthropic';
 }
 
@@ -211,11 +224,32 @@ async function _runGoogle(apiKey, pdfText) {
   return _parseJsonStrict(raw);
 }
 
+async function _runOpenRouter(apiKey, pdfText) {
+  // OpenRouter exposes an OpenAI-compatible API at openrouter.ai/api/v1 —
+  // используем openai SDK с переопределённым baseURL. Default-модель
+  // Claude Sonnet 4.5 (соответствует первой опции в UI detectionModels).
+  const OpenAI = require('openai');
+  const client = new OpenAI({
+    apiKey,
+    baseURL: 'https://openrouter.ai/api/v1',
+  });
+  const res = await client.chat.completions.create({
+    model: 'anthropic/claude-sonnet-4.5',
+    messages: [
+      {role: 'system', content: EXTRACTION_PROMPT},
+      {role: 'user', content: pdfText},
+    ],
+  });
+  const raw = res.choices?.[0]?.message?.content || '';
+  return _parseJsonStrict(raw);
+}
+
 const PROVIDER_RUNNERS = {
   anthropic: _runAnthropic,
   openai: _runOpenAI,
   grok: _runGrok,
   google: _runGoogle,
+  openrouter: _runOpenRouter,
 };
 
 // ------------------------------------------------------------- normalize ---
@@ -331,7 +365,7 @@ const extractLeaseSignedDate = onCall(async (req) => {
   if (!apiKey) {
     throw new HttpsError('failed-precondition',
       `No API key configured for provider '${activeProvider}'. ` +
-      `Ask an admin to set it in Settings → AI Document Extraction.`);
+      `Ask an admin to set it in Settings → AI Services.`);
   }
 
   // Locate the document so we can grab the PDF before doing AI work.
