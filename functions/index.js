@@ -7239,3 +7239,12 @@ exports.adminPullAircall = _aircall.adminPullAircall;
 exports.syncTenantsToAircall = _aircall.syncTenantsToAircall;
 exports.getAircallRecording = _aircall.getAircallRecording;
 
+// Phase 2b (Tony 2026-05-27) — AI lease metadata extraction. Operator
+// uploads a lease PDF, clicks «Extract with AI» on the Leases table,
+// CF runs pdf-parse + chosen provider (Anthropic / OpenAI / Grok /
+// Gemini), persists {signedAt, tenantName, leaseTerm, monthlyRent}
+// onto u.leaseDocuments[idx].extracted and backfills u.signed when
+// empty. Keys live admin-only at workspaces/{wid}/secrets/aiExtraction.
+const _leaseExtract = require('./lease-extract');
+exports.extractLeaseSignedDate = _leaseExtract.extractLeaseSignedDate;
+

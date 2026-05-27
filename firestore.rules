@@ -284,6 +284,18 @@ service cloud.firestore {
         allow write: if isAdmin(wid);
       }
 
+      // AI extraction provider API keys (Tony 2026-05-27).
+      // Reason: keys grant access to paid AI APIs (Anthropic / OpenAI /
+      // Grok / Gemini) — leaking them = billing exposure. Workspace
+      // members CAN USE the «Extract with AI» button (extractLeaseSignedDate
+      // CF reads keys via admin SDK and bypasses rules), but only admins
+      // may read/write the raw keys themselves. The active provider
+      // choice lives in state.settings.aiExtraction.active so all members
+      // know which provider is current; only the keys are gated.
+      match /secrets/{name} {
+        allow read, write: if isAdmin(wid);
+      }
+
       // DocuSign action audit log (FIXES_LOG Entry 20).
       // Written ONLY by Cloud Functions via admin SDK (bypasses rules).
       // Admin can read for compliance review; nobody can mutate from clients.
