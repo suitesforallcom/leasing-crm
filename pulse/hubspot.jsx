@@ -664,8 +664,11 @@ function ContactsTable() {
           {/* Header row */}
           <ContactsHeaderRow sortKey={sortKey} sortDir={sortDir} flipSort={flipSort} />
           {/* Body */}
-          {visible.map((r) => (
-            <ContactsRow key={r.email} row={r} hubspotBase={hubspotBase} />
+          {/* 2026-05-27 — ключ = contactId (стабильный, уникальный); раньше
+              брали r.email, но в schema v4 у части контактов нет email
+              (SOCIAL/Messenger) → React ругался на одинаковые пустые ключи. */}
+          {visible.map((r, idx) => (
+            <ContactsRow key={r.contactId || `noid-${idx}`} row={r} hubspotBase={hubspotBase} />
           ))}
         </div>
       </div>

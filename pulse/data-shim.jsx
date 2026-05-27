@@ -44,16 +44,45 @@
   // 2026-05-27 — единый helper выбора contactMap для всех Pulse pages.
   // Раньше использовали `hs.contactById || hs.contactByEmail` — но JS
   // считает пустой `{}` truthy, поэтому если бэкенд закэшировал пустой
-  // contactById (incremental sync пишет {} когда не fetch'ил contacts),
-  // fallback на contactByEmail не срабатывал и Pulse показывал 0 контактов.
-  // Здесь явно проверяем «есть ли ключи» прежде чем выбрать индекс.
-  // contactById — primary (включает no-email лидов из SOCIAL/Messenger,
-  // schemaVersion >= 3). contactByEmail — back-compat (schemaVersion 2).
+  // contactById, fallback на contactByEmail не срабатывал и Pulse
+  // показывал 0 контактов. Здесь явно проверяем «есть ли ключи».
+  //
+  // schemaVersion 4 (2026-05-27) — contactByEmail удалён из бэкенда
+  // (дублировал contactById для контактов с email; вдвоём превышали
+  // 1 MB cap). contactByEmail остаётся в коде только для back-compat
+  // чтения старых кэшей (schemaVersion 2/3).
   window._pulsePickContactMap = function (hs) {
     if (!hs) return null;
     if (hs.contactById && Object.keys(hs.contactById).length > 0) return hs.contactById;
     if (hs.contactByEmail && Object.keys(hs.contactByEmail).length > 0) return hs.contactByEmail;
     return null;
+  };
+
+  // Lazy email→contact index из contactById. Кэшируется на hs объекте
+  // чтобы повторные lookups в одной сессии шли O(1). Сбрасывается когда
+  // _hsDataCache переписывается (новая ссылка на hs).
+  window._pulseEmailIndex = function (hs) {
+    if (!hs) return {};
+    if (hs._byEmailIndex) return hs._byEmailIndex;
+    const idx = {};
+    const map = window._pulsePickContactMap(hs) || {};
+    for (const c of Object.values(map)) {
+      if (!c) continue;
+      // c.e — новое поле (schema v3+). Для back-compat если итерируем
+      // contactByEmail, ключ объекта = email (получаем через Object.entries).
+      const em = ((c && c.e) || '').toLowerCase().trim();
+      if (em) idx[em] = c;
+    }
+    // Дополнительная заливка для schema v2 (contactByEmail без c.e):
+    // итерируем ключи map как email если ни один не залило c.e путём.
+    if (Object.keys(idx).length === 0 && hs.contactByEmail) {
+      for (const [k, c] of Object.entries(hs.contactByEmail)) {
+        if (k && c) idx[String(k).toLowerCase().trim()] = c;
+      }
+    }
+    try { Object.defineProperty(hs, '_byEmailIndex', { value: idx, enumerable: false }); }
+    catch (e) { hs._byEmailIndex = idx; }
+    return idx;
   };
 
   // Sync load from localStorage.
@@ -96,8 +125,9 @@
   }
   function _resetOverrideOnContact(email) {
     const hs = window._hsDataCache;
-    if (!hs || !hs.contactByEmail) return;
-    const c = hs.contactByEmail[email];
+    if (!hs) return;
+    const idx = window._pulseEmailIndex(hs);
+    const c = idx[String(email || '').toLowerCase().trim()];
     if (!c || c._origSrc === undefined) return;
     c.src = c._origSrc;
     c.srcD = c._origSrcD;
@@ -106,11 +136,12 @@
   }
   function _applyOverridesToContacts() {
     const hs = window._hsDataCache;
-    if (!hs || !hs.contactByEmail) return 0;
+    if (!hs) return 0;
+    const idx = window._pulseEmailIndex(hs);
     const overrides = _readSourceOverrides();
     let applied = 0;
     for (const [email, channelKey] of Object.entries(overrides)) {
-      const c = hs.contactByEmail[email];
+      const c = idx[String(email || '').toLowerCase().trim()];
       if (!c) continue;
       const map = _CHANNEL_TO_SRC[channelKey];
       if (!map) continue;
@@ -416,13 +447,14 @@
       ? (now - 7 * 24 * 60 * 60 * 1000)
       : _monthStart;
 
-    // HubSpot lookup for channel attribution
+    // HubSpot lookup for channel attribution. Email-keyed index строится
+    // лениво на первое обращение и кэшируется на hs объекте.
     const hs = window._hsDataCache;
-    const contactByEmail = (hs && hs.contactByEmail) || {};
+    const emailIndex = hs ? window._pulseEmailIndex(hs) : {};
 
     function _attributeChannel(email) {
       if (!email) return 'other';
-      const c = contactByEmail[String(email).toLowerCase().trim()];
+      const c = emailIndex[String(email).toLowerCase().trim()];
       if (!c) return 'other';
       // Tag mapping + auto-classify через единую публичную функцию.
       // Per-email override уже мутировал c.src/srcD в _applyOverrides,
@@ -662,12 +694,16 @@
   // Phase 19 rev — contact lookup. Used by floor-map prospect cards to
   // show «In HubSpot · owned by <manager>» badge. Returns null when no
   // match or when contacts haven't been synced yet.
-  // contactByEmail entries use compact form: { i, o, s, n, p, c }
-  //   i=contactId, o=ownerId, s=lifecycleStage, n=name, p=phone, c=createdate
+  // contactById entries use compact form: { i, o, s, n, p, c, e }
+  //   i=contactId, o=ownerId, s=lifecycleStage, n=name, p=phone, c=createdate, e=email
+  // schemaVersion 4 (2026-05-27): contactByEmail dropped from backend
+  // payload; используем ленивый email-index из contactById через
+  // window._pulseEmailIndex() — кэш строится один раз на загрузку.
   window._hsContactForEmail = function (email) {
     if (!window._hsDataCache || !email) return null;
     const e = String(email).toLowerCase().trim();
-    const c = (window._hsDataCache.contactByEmail || {})[e];
+    const idx = window._pulseEmailIndex(window._hsDataCache);
+    const c = idx[e];
     if (!c) return null;
     const owner = c.o ? (window._hsDataCache.owners || {})[c.o] : null;
     return {

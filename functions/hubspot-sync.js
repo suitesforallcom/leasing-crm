@@ -546,17 +546,16 @@ async function _runSync({fullSync = false} = {}) {
     stageMeta: aggregates.stageMeta || prevHs.stageMeta || {},
   };
   // Contacts — fullSync replaces, incremental keeps previous (we don't
-  // re-fetch contacts on incremental). Falls back to {} so the UI helper
-  // never throws on lookup.
-  merged.contactByEmail = (effectiveFullSync && contactByEmail) ? contactByEmail : (prevHs.contactByEmail || {});
-  // contactById добавлен 2026-05-27 — основной индекс, включает no-email
-  // SOCIAL/Messenger лидов.
-  // КРИТИЧНО (fix 2026-05-27 #2): на incremental sync если prevHs не имеет
-  // contactById (старая v2 схема) — НЕ записываем пустой {} в Firestore.
-  // Иначе frontend получает empty truthy {} и фолбэк `||` на contactByEmail
-  // не срабатывает → UI показывает 0 контактов. Оставляем field undefined
-  // — serialize step ниже пропустит его, contactByIdJson не появится в
-  // Firestore, и frontend корректно фолбэчит на contactByEmail.
+  // re-fetch contacts on incremental).
+  //
+  // 2026-05-27 (schemaVersion 4) — храним ТОЛЬКО contactById. Раньше
+  // одновременно писали contactByEmail (~2876 × ~150 байт ≈ 430 KB) И
+  // contactById (~3315 × ~150 байт ≈ 500 KB) — суммарно doc вырастал до
+  // ~1.25 MB и Firestore (1 MB cap) отказывал в записи. Контакт с email
+  // сидел в обоих индексах = дубликат данных.
+  //
+  // Сейчас email доступен через c.e field на compact объекте, frontend
+  // итерирует contactById и фильтрует по c.e когда нужен email-lookup.
   if (effectiveFullSync && contactById && Object.keys(contactById).length > 0) {
     merged.contactById = contactById;
   } else if (prevHs.contactById && Object.keys(prevHs.contactById).length > 0) {
@@ -591,7 +590,8 @@ async function _runSync({fullSync = false} = {}) {
   // of length. Drawback: can't query server-side, but we always read the
   // whole doc anyway (Pulse data-shim grabs it via hubspotGetData).
   const heavyKeys = [
-    'contactByEmail',
+    // contactByEmail удалён 2026-05-27 (schemaVersion 4) — был дубликатом
+    // contactById для контактов с email; вдвоём превышали 1 MB cap.
     'contactById',         // добавлен 2026-05-27 (см. _fetchContacts)
     'dealsByOwner',
     'meetingsByOwner',
@@ -614,7 +614,7 @@ async function _runSync({fullSync = false} = {}) {
     syncedAt: new Date().toISOString(),
     syncedFromMs: sinceMs,
     syncDurationMs: Date.now() - t0,
-    schemaVersion: 3, // v3 — добавлен contactById (включает no-email лидов)
+    schemaVersion: 4, // v4 — contactByEmail удалён, единственный индекс = contactById
     owners,            // small: ~15 entries
     pipelines,         // small: 3 pipelines with stage arrays
     ...serialized,     // contactByEmailJson, contactByIdJson, dealsByOwnerJson, etc.
@@ -624,13 +624,11 @@ async function _runSync({fullSync = false} = {}) {
       deals: deals.length,
       meetings: meetings.length,
       tourMeetings: meetings.filter(m => m.isTour).length,
-      // contactsTotal — основная цифра (все контакты, включая no-email).
-      // contactsWithEmail оставлен для логов чтобы видеть размер back-compat
-      // индекса. Раньше счёт = contactByEmail.length и систематически
-      // занижался на ~10-20% потому что SOCIAL/Messenger лиды без email
-      // дропались на загрузке.
-      contacts: Object.keys(merged.contactById || merged.contactByEmail || {}).length,
-      contactsWithEmail: Object.keys(merged.contactByEmail || {}).length,
+      // contacts — все контакты включая no-email лидов из SOCIAL/Messenger.
+      // contactsWithEmail вычисляем on-the-fly из contactById для логов
+      // (раньше был отдельный индекс, теперь — фильтр).
+      contacts: Object.keys(merged.contactById || {}).length,
+      contactsWithEmail: Object.values(merged.contactById || {}).filter(c => c && c.e).length,
     },
   };
 

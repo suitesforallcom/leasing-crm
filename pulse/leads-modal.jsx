@@ -634,9 +634,13 @@
                 No leads match the current filter.
               </div>
             ) : (
-              visibleLeads.map(e => (
+              visibleLeads.map((e, idx) => (
+                /* 2026-05-27 — key = contactId (стабильный, уникальный).
+                   Раньше брали e.email, но в schema v4 у части лидов
+                   (SOCIAL/Messenger) email пустой → React выдавал
+                   warning «Encountered two children with the same key, ``». */
                 <LeadRow
-                  key={e.email}
+                  key={(e.c && e.c.i) || `noid-${idx}`}
                   email={e.email}
                   contact={e.c}
                   currentKey={e.key}
