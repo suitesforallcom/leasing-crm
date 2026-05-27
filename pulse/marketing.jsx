@@ -811,30 +811,120 @@ function SpendSection() {
           onOpenContracts={openContracts}
         />
       ))}
+      {/* 2026-05-27 Tony: «Добавь эту строку органический трафик. Возьми
+          эту дату и статистики Google Edwards». Organic вынесен в
+          отдельную строку (раньше попадал в Other + терялся в общем
+          месиве). Spend = 0 (organic бесплатен), leads/contracts —
+          реальные HubSpot контакты с group=organic (Organic Search +
+          Organic Social) + floor-map leases где channel='organic'.
+          Other row ниже теперь EXCLUDES organic — не double-count. */}
+      {(() => {
+        const organicRows = rows.filter(r => r.group === "organic");
+        const organicLeads = organicRows.reduce((s, r) => s + r.leads, 0);
+        const organicQualified = organicRows.reduce((s, r) => s + r.qualified, 0);
+        const organicLeadsForCPL = qualityLeadsOnly ? organicQualified : organicLeads;
+        // Contracts — фильтруем _floorMapLeases.all по lease.channel === 'organic'
+        // (byChannel нормализован в 4 ведра, organic попадает в 'other' →
+        // .all сохраняет оригинальный channel).
+        const allLeases = (window._floorMapLeases && window._floorMapLeases.all) || [];
+        const organicLeases = allLeases.filter(l => l.channel === "organic");
+        const organicContracts = organicLeases.length;
+        const organicMRR = organicLeases.reduce((s, l) => s + (l.monthly || 0), 0);
+        // Подканалы для tooltip (Organic Search vs Organic Social)
+        const subLabel = organicRows.sort((a, b) => b.leads - a.leads).map(r => r.label).join(", ") || "Organic Search, Organic Social";
+        if (organicLeads === 0 && organicContracts === 0) return null;
+        return (
+          <div style={{ display: "grid", gridTemplateColumns: "1.4fr 90px 90px 90px 90px 90px 90px 90px 140px", gap: 8, padding: "10px 14px", borderTop: "1px dashed var(--border)", alignItems: "center", fontSize: 12.5 }}>
+            <div>
+              <div style={{ fontWeight: 700 }}>Organic <span className="muted" style={{ fontSize: 11, fontWeight: 400 }}>(unpaid traffic)</span></div>
+              <div style={{ fontSize: 10.5, color: "var(--muted)" }} title={organicRows.map(r => `${r.label}: ${r.leads} leads (${r.qualified} MQL+)`).join("\n")}>
+                {subLabel}
+              </div>
+            </div>
+            <div className="mono" style={{ textAlign: "right", color: "var(--muted-2)" }} title="Organic не имеет рекламного бюджета — spend = $0 by definition.">$0</div>
+            <div className="mono" style={{ textAlign: "right", color: "var(--muted-2)" }} title="Click-данные organic трафика берутся из GA4 (пока не интегрировано в это окно — см. Analytics страницу).">—</div>
+            <div
+              className="mono"
+              style={{
+                textAlign: "right",
+                color: organicLeadsForCPL > 0 ? "var(--accent-ink)" : "var(--muted)",
+                cursor: organicLeadsForCPL > 0 ? "pointer" : "default",
+                textDecoration: organicLeadsForCPL > 0 ? "underline dotted" : "none",
+              }}
+              title={organicLeadsForCPL > 0 ? `Click — open organic lead list.\n${organicQualified} MQL+ of ${organicLeads} total contacts.` : ""}
+              onClick={(e) => {
+                if (organicLeadsForCPL > 0) {
+                  e.stopPropagation();
+                  openLeads('all');
+                }
+              }}
+            >
+              {organicLeadsForCPL.toLocaleString()}
+              {organicQualified !== organicLeads && (
+                <div style={{ fontSize: 9.5, fontWeight: 400, color: "var(--muted)", marginTop: 1 }}>of {organicLeads.toLocaleString()} total</div>
+              )}
+            </div>
+            <div
+              className="mono"
+              style={{
+                textAlign: "right", fontWeight: 700,
+                color: organicContracts > 0 ? "var(--success-ink)" : "var(--muted)",
+                cursor: organicContracts > 0 ? "pointer" : "default",
+                textDecoration: organicContracts > 0 ? "underline dotted" : "none",
+              }}
+              title={organicContracts > 0
+                ? `Click — open organic contracts.\n${organicContracts} signed lease${organicContracts === 1 ? "" : "s"} attributed to organic:\n` + organicLeases.slice(0, 8).map(l => `· Suite ${l.unitId} — ${l.tenant} — +$${l.monthly}/mo`).join("\n") + (organicLeases.length > 8 ? `\n... +${organicLeases.length - 8} more` : "")
+                : "No organic-attributed contracts this month"}
+              onClick={(e) => {
+                if (organicContracts > 0) {
+                  e.stopPropagation();
+                  openContracts('all');
+                }
+              }}
+            >
+              {organicContracts || "—"}
+              {organicMRR > 0 && (
+                <div style={{ fontSize: 9.5, fontWeight: 400, color: "var(--success-ink)", marginTop: 1 }}>
+                  +${organicMRR.toLocaleString()}/mo
+                </div>
+              )}
+            </div>
+            <div className="mono" style={{ textAlign: "right", color: "var(--muted-2)" }} title="CPL = Spend ÷ Leads → $0 ÷ N = $0. Organic не имеет cost-per-lead — он буквально бесплатный.">$0</div>
+            <div className="mono" style={{ textAlign: "right", color: "var(--muted-2)" }}>—</div>
+            <div className="mono" style={{ textAlign: "right", color: "var(--muted-2)" }} title="CAC = Spend ÷ Contracts → $0 ÷ N = $0. Organic = бесплатный acquisition.">$0</div>
+            <div style={{ textAlign: "right", fontSize: 11, color: "var(--muted)" }}>—</div>
+          </div>
+        );
+      })()}
       {/* 2026-05-24 Tony: «Other» row — контракты и leads из каналов
           которые HubSpot не атрибуирует к Google/Meta/TikTok (Direct,
-          Unknown, Organic, Email, Referral, Offline и т.д.). Это
-          обычно walk-in'ы, прямые звонки, рекомендации, или просто
-          сломанная UTM-атрибуция. Spend = 0 потому что не от ad-platform. */}
+          Unknown, Email, Referral, Offline и т.д.). Это обычно
+          walk-in'ы, прямые звонки, рекомендации, или просто сломанная
+          UTM-атрибуция. Spend = 0 потому что не от ad-platform.
+          2026-05-27 — organic вынесен в свою строку выше, here exclude. */}
       {(() => {
-        // Sum non-paid channel rows: anything not paid-search / paid-social
-        const otherLeads = rows.filter(r => r.group !== "paid-search" && r.group !== "paid-social")
+        // Non-paid AND non-organic — Direct, Referral, Email, Offline, Unknown, Other
+        function _isNonPaidNonOrganic(g) {
+          return g !== "paid-search" && g !== "paid-social" && g !== "organic";
+        }
+        const otherLeads = rows.filter(r => _isNonPaidNonOrganic(r.group))
                                .reduce((s, r) => s + r.leads, 0);
-        const otherQualified = rows.filter(r => r.group !== "paid-search" && r.group !== "paid-social")
+        const otherQualified = rows.filter(r => _isNonPaidNonOrganic(r.group))
                                    .reduce((s, r) => s + r.qualified, 0);
         const otherLeadsForCPL = qualityLeadsOnly ? otherQualified : otherLeads;
-        // 2026-05-24 Tony: contracts из floor-map state — для row «Other»
-        // берём channel = 'other' (любой email который не в HubSpot или
-        // src не paid-search/paid-social). Так Tony видит сколько новых
-        // лиз пришло НЕ от платных каналов.
-        const otherFmLeases = (window._floorMapLeases && window._floorMapLeases.byChannel)
-                              ? (window._floorMapLeases.byChannel['other'] || [])
-                              : [];
+        // Contracts для Other — берём byChannel['other'] МИНУС organic,
+        // потому что byChannel нормализовался в 4 ведра (organic тоже
+        // лежит в 'other'). Аналогично исключаем double-count с Organic
+        // row выше.
+        const otherBucket = (window._floorMapLeases && window._floorMapLeases.byChannel)
+                            ? (window._floorMapLeases.byChannel['other'] || [])
+                            : [];
+        const otherFmLeases = otherBucket.filter(l => l.channel !== 'organic');
         const otherContracts = otherFmLeases.length;
         const otherMRR = otherFmLeases.reduce((s, l) => s + (l.monthly || 0), 0);
         if (otherLeads === 0 && otherContracts === 0) return null;
-        // Build label listing top non-paid channels (e.g. "Direct, Organic Search, Referrals · ...")
-        const sortedOther = rows.filter(r => r.group !== "paid-search" && r.group !== "paid-social")
+        // Build label listing top non-paid non-organic channels
+        const sortedOther = rows.filter(r => _isNonPaidNonOrganic(r.group))
                                 .sort((a, b) => b.leads - a.leads);
         const topNames = sortedOther.slice(0, 3).map(r => r.label).join(", ");
         const moreCount = Math.max(0, sortedOther.length - 3);
