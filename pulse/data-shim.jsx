@@ -149,6 +149,111 @@
     try { window.dispatchEvent(new Event('pulseBonusOverridesChanged')); } catch (e) {}
   };
 
+  // 2026-05-26 Tony: «выдай настройку в которой будет написано все
+  // варианты тегов с которых приходят заказ. А я бы руками из
+  // выпадающего списка выбирал к чему это относится».
+  //
+  // Global tag→channel mapping. Применяется ПОСЛЕ per-email override
+  // и ДО default auto-classify. Key = `${src}|${srcD}` (lowercased,
+  // raw HubSpot Drill-Down 1 + Drill-Down 2). Например для проблемы
+  // TikTok Lead Syncing — `integration|tiktok lead syncing` → `tiktok`.
+  // Storage = sfa_pulse_tag_mappings_v1 (per-browser localStorage).
+  const TAG_MAP_LS_KEY = 'sfa_pulse_tag_mappings_v1';
+  function _readTagMappings() {
+    try { return JSON.parse(localStorage.getItem(TAG_MAP_LS_KEY) || '{}') || {}; }
+    catch (e) { return {}; }
+  }
+  function _writeTagMappings(map) {
+    try { localStorage.setItem(TAG_MAP_LS_KEY, JSON.stringify(map)); }
+    catch (e) { /* localStorage full — silent */ }
+  }
+  function _tagKey(src, srcD) {
+    return String(src || '').toLowerCase().trim() + '|' + String(srcD || '').toLowerCase().trim();
+  }
+  // Pure auto-classify from raw HubSpot category + platform. Без tag
+  // mapping и без per-email override — фолбэк для случаев когда нет
+  // ни того, ни другого.
+  function _autoClassifyChannel(src, srcD) {
+    const cat = String(src || '').toUpperCase();
+    const platform = String(srcD || '').toLowerCase();
+    if (cat === 'PAID_SEARCH') return 'google-ads';
+    if (cat === 'PAID_SOCIAL') {
+      if (platform.includes('facebook') || platform.includes('instagram') || platform.includes('meta')) return 'meta';
+      if (platform.includes('tiktok')) return 'tiktok';
+      return 'other';
+    }
+    if (cat === 'ORGANIC_SEARCH' || cat === 'SOCIAL_MEDIA') return 'organic';
+    if (cat === 'DIRECT_TRAFFIC') return 'direct';
+    if (cat === 'REFERRALS') return 'referral';
+    if (cat === 'EMAIL_MARKETING') return 'email';
+    if (cat === 'OFFLINE') return 'offline';
+    return 'other';
+  }
+  // Публичная функция — используется leads-modal _channelKeyForContact
+  // и _attributeChannel ниже. Per-email override НЕ проверяется здесь —
+  // он уже применён mutating contact'а в _applyOverridesToContacts,
+  // так что c.src/srcD уже патченные.
+  window._classifyContactChannel = function (c) {
+    if (!c) return 'other';
+    const mappings = _readTagMappings();
+    const k = _tagKey(c.src, c.srcD);
+    if (mappings[k]) return mappings[k];
+    return _autoClassifyChannel(c.src, c.srcD);
+  };
+  window.getPulseTagMappings = function () { return _readTagMappings(); };
+  window.setPulseTagMapping = function (srcKey, channelKey) {
+    const k = String(srcKey || '').toLowerCase().trim();
+    if (!k) return;
+    const mappings = _readTagMappings();
+    if (channelKey === null || channelKey === '' || channelKey === undefined) {
+      delete mappings[k];
+    } else {
+      mappings[k] = channelKey;
+    }
+    _writeTagMappings(mappings);
+    if (typeof window._recomputeFloorMapLeases === 'function') {
+      try { window._recomputeFloorMapLeases(); } catch (e) {}
+    }
+    try { window.dispatchEvent(new Event('pulseTagMappingsChanged')); } catch (e) {}
+  };
+  window.clearAllPulseTagMappings = function () {
+    _writeTagMappings({});
+    if (typeof window._recomputeFloorMapLeases === 'function') {
+      try { window._recomputeFloorMapLeases(); } catch (e) {}
+    }
+    try { window.dispatchEvent(new Event('pulseTagMappingsChanged')); } catch (e) {}
+  };
+  // Returns unique (src, srcD) pairs from HubSpot cache, with counts,
+  // auto-classify result, and current mapping override (if any).
+  // Sorted by count desc. Используется source-rules.jsx UI.
+  window.getPulseHubspotSourceTags = function () {
+    const hs = window._hsDataCache;
+    if (!hs || !hs.contactByEmail) return [];
+    const mappings = _readTagMappings();
+    const seen = new Map();
+    for (const c of Object.values(hs.contactByEmail)) {
+      if (!c) continue;
+      // Используем _origSrc/_origSrcD если контакт был переопределён
+      // per-email — Tony должен видеть RAW HubSpot tags, не уже
+      // патченные значения, иначе настройка показывает фейковые.
+      const rawSrc  = (c._origSrc  !== undefined) ? c._origSrc  : c.src;
+      const rawSrcD = (c._origSrcD !== undefined) ? c._origSrcD : c.srcD;
+      const k = _tagKey(rawSrc, rawSrcD);
+      if (!seen.has(k)) {
+        seen.set(k, {
+          srcKey: k,
+          src: rawSrc || '',
+          srcD: rawSrcD || '',
+          count: 0,
+          autoChannel: _autoClassifyChannel(rawSrc, rawSrcD),
+          mappedChannel: mappings[k] || null,
+        });
+      }
+      seen.get(k).count++;
+    }
+    return Array.from(seen.values()).sort((a, b) => b.count - a.count);
+  };
+
   window.getPulseSourceOverrides = function () { return _readSourceOverrides(); };
   window.setPulseSourceOverride = function (email, channelKey) {
     const key = String(email || '').toLowerCase().trim();
@@ -299,13 +404,22 @@
       if (!email) return 'other';
       const c = contactByEmail[String(email).toLowerCase().trim()];
       if (!c) return 'other';
+      // Tag mapping + auto-classify через единую публичную функцию.
+      // Per-email override уже мутировал c.src/srcD в _applyOverrides,
+      // так что верхний приоритет — фактически зашит в самих полях.
+      if (typeof window._classifyContactChannel === 'function') {
+        return window._classifyContactChannel(c);
+      }
+      // Fallback на legacy логику если по какой-то причине publish
+      // function ещё не доступна (data-shim loads itself так что
+      // это не должно произойти, но защитимся).
       const cat = String(c.src || '').toUpperCase();
       const platform = String(c.srcD || '').toLowerCase();
       if (cat === 'PAID_SEARCH') return 'google-ads';
       if (cat === 'PAID_SOCIAL') {
         if (platform.includes('facebook') || platform.includes('instagram') || platform.includes('meta')) return 'meta';
         if (platform.includes('tiktok')) return 'tiktok';
-        return 'other'; // paid-social other (LinkedIn, Twitter, etc.)
+        return 'other';
       }
       return 'other';
     }

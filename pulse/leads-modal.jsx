@@ -47,6 +47,13 @@
   // contact row so the SourcePicker shows it as selected.
   function _channelKeyForContact(c) {
     if (!c) return 'other';
+    // Делегируем единой публичной функции в data-shim, чтобы tag
+    // mapping (settings → Source rules) применился и здесь. Fallback
+    // на локальную auto-classify только если по какой-то причине
+    // data-shim не загрузился.
+    if (typeof window._classifyContactChannel === 'function') {
+      return window._classifyContactChannel(c);
+    }
     const cat = String(c.src || '').toUpperCase();
     const platform = String(c.srcD || '').toLowerCase();
     if (cat === 'PAID_SEARCH') return 'google-ads';
@@ -292,9 +299,11 @@
       function onChange() { setTick(t => t + 1); }
       window.addEventListener('pulseSourceOverridesChanged', onChange);
       window.addEventListener('pulseBonusOverridesChanged', onChange);
+      window.addEventListener('pulseTagMappingsChanged', onChange);
       return () => {
         window.removeEventListener('pulseSourceOverridesChanged', onChange);
         window.removeEventListener('pulseBonusOverridesChanged', onChange);
+        window.removeEventListener('pulseTagMappingsChanged', onChange);
       };
     }, []);
 

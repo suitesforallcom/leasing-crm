@@ -1,4 +1,4 @@
-/* global React, Icon, PageHelp, LeadsContractsModal */
+/* global React, Icon, PageHelp, LeadsContractsModal, SourceRulesDrawer */
 
 /* ===================================================================
    Pulse — Marketing page (Phase 1: channel mix from HubSpot data)
@@ -389,13 +389,21 @@ function SpendSection() {
   function openContracts(channelKey) { setLeadsModal({ open: true, tab: 'contracts', channel: channelKey || 'all' }); }
   function closeLeadsModal() { setLeadsModal(prev => Object.assign({}, prev, { open: false })); }
 
+  // Source-rules drawer — глобальный tag→channel mapping. Открывается
+  // из шапки SpendSection (кнопка "Source rules"). Tony 2026-05-26.
+  const [sourceRulesOpen, setSourceRulesOpen] = React.useState(false);
+
   // Re-render when overrides change so the SpendSection table reflects
   // the new bucketing (HubSpot cache mutated in-place by data-shim).
   const [, _rerenderTick] = React.useState(0);
   React.useEffect(() => {
     function onChange() { _rerenderTick(t => t + 1); }
     window.addEventListener('pulseSourceOverridesChanged', onChange);
-    return () => window.removeEventListener('pulseSourceOverridesChanged', onChange);
+    window.addEventListener('pulseTagMappingsChanged', onChange);
+    return () => {
+      window.removeEventListener('pulseSourceOverridesChanged', onChange);
+      window.removeEventListener('pulseTagMappingsChanged', onChange);
+    };
   }, []);
 
   if (sourceKeys.length === 0) {
@@ -607,6 +615,12 @@ function SpendSection() {
         initialCustomEnd={customEnd}
       />
     )}
+    {typeof SourceRulesDrawer === "function" && (
+      <SourceRulesDrawer
+        open={sourceRulesOpen}
+        onClose={() => setSourceRulesOpen(false)}
+      />
+    )}
     <div className="card is-clean" style={{ marginBottom: 18, padding: 0, overflow: "hidden", borderLeft: "3px solid #16a34a" }}>
       <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
         <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
@@ -614,6 +628,23 @@ function SpendSection() {
           <span className="chip is-success" style={{ height: 18 }}>
             <span className="dot" style={{ background: "var(--success)" }} /> {sourceCount} {sourceCount === 1 ? "source" : "sources"} live
           </span>
+          {/* Source rules — глобальная настройка mapping HubSpot tag pair
+              → channel. Решает проблему «TikTok Lead Syncing» tagged
+              as INTEGRATION → never классифицируется как 'tiktok'.
+              Tony 2026-05-26. */}
+          <button
+            onClick={() => setSourceRulesOpen(true)}
+            title="Map HubSpot source tags (Drill-Down 1 + 2) to channels — fixes TikTok Lead Syncing not bucketing into TikTok, etc."
+            style={{
+              cursor: "pointer", padding: "3px 10px", borderRadius: 4,
+              border: "1px solid var(--border)", background: "var(--surface)",
+              fontSize: 11, fontWeight: 600, color: "var(--ink)",
+              display: "inline-flex", alignItems: "center", gap: 4, height: 22,
+            }}
+          >
+            <span style={{ fontSize: 12, lineHeight: 1 }}>⚙</span>
+            Source rules
+          </button>
           <div className="spacer" />
           <span style={{ fontSize: 11, color: "var(--muted)" }} title={`Spend, clicks, leads — все цифры считаются за окно ${windowStart} → ${windowEnd} (inclusive). HubSpot leads counted by createDate within this range.`}>
             Window: <b style={{ color: "var(--ink)" }}>{windowLabel}</b>
