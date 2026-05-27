@@ -338,7 +338,18 @@
         try {
           localStorage.setItem(HS_LS_KEY, JSON.stringify({ cachedAt: Date.now(), data: d }));
         } catch (e) { /* localStorage full — give up silently */ }
-        const wasEmpty = !window._hsDataCache;
+        // 2026-05-27 — расширили wasEmpty: триггерим reload не только
+        // когда `_hsDataCache` был null, но и когда contactMap был
+        // пустой (старый кэш v3 с битым contactById после 1MB-cap
+        // обрыва записи). React-компоненты читают `_hsDataCache` на
+        // render-time, на mutations не подписаны, поэтому если они уже
+        // отрендерились с placeholder «Loading HubSpot data...», шим
+        // обязан перезагрузить страницу чтобы они перерисовались с
+        // настоящими данными. Иначе оператор видит вечную «загрузку»
+        // и думает что страница висит.
+        const _hadEmptyContactMap = !window._hsDataCache
+          || !(window._pulsePickContactMap && window._pulsePickContactMap(window._hsDataCache));
+        const wasEmpty = _hadEmptyContactMap;
         window._hsDataCache = d;
         // 2026-05-26 — applyOverrides ДО recompute, чтобы leases
         // тоже учли operator-assigned каналы при первом проходе.
