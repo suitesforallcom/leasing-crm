@@ -373,9 +373,13 @@
     // c.c — это строка YYYY-MM-DD (HubSpot createDate). Сравниваем
     // строковым lexicographic compare с windowStart/End — это работает
     // потому что ISO даты сортируются лексикографически.
-    const contactByEmail = (window._hsDataCache && window._hsDataCache.contactByEmail) || {};
-    const leadEntries = Object.entries(contactByEmail).map(([email, c]) => ({
-      email, c, key: _channelKeyForContact(c),
+    // 2026-05-27 — основной источник contactById (включает no-email лидов
+    // из SOCIAL/Messenger); fallback на contactByEmail для cached docs
+    // со старой схемой v2. Email достаём из c.e (новое поле).
+    const hsCache = window._hsDataCache || {};
+    const contactMap = hsCache.contactById || hsCache.contactByEmail || {};
+    const leadEntries = Object.values(contactMap).map(c => ({
+      email: c.e || '', c, key: _channelKeyForContact(c),
     }));
     const windowedLeadEntries = leadEntries.filter(e => {
       const created = (e.c && e.c.c) || '';

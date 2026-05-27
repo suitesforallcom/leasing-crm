@@ -228,10 +228,15 @@
   // Sorted by count desc. Используется source-rules.jsx UI.
   window.getPulseHubspotSourceTags = function () {
     const hs = window._hsDataCache;
-    if (!hs || !hs.contactByEmail) return [];
+    // 2026-05-27 — берём contactById (включает no-email лидов из
+    // SOCIAL/Messenger чтобы их теги тоже появлялись в Source rules
+    // drawer); fallback на contactByEmail для cached docs со старой
+    // схемой v2.
+    const contactMap = hs && (hs.contactById || hs.contactByEmail);
+    if (!contactMap) return [];
     const mappings = _readTagMappings();
     const seen = new Map();
-    for (const c of Object.values(hs.contactByEmail)) {
+    for (const c of Object.values(contactMap)) {
       if (!c) continue;
       // Используем _origSrc/_origSrcD если контакт был переопределён
       // per-email — Tony должен видеть RAW HubSpot tags, не уже

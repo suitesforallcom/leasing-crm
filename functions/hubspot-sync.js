@@ -209,15 +209,28 @@ async function _fetchContacts(token, {maxPages = 60} = {}) {
   // contacts by acquisition channel without touching ad-platform APIs.
   const props = 'email,firstname,lastname,phone,createdate,hubspot_owner_id,lifecyclestage,hs_analytics_source,hs_analytics_source_data_1';
   const raw = await _hsPaginate(token, `/crm/v3/objects/contacts?properties=${props}`, {limit: 100, maxPages, throttleMs: 200});
+  // Двойной индекс (Tony 2026-05-27):
+  //   byId    — основной, ключ = contactId; включает ВСЕ контакты (даже
+  //             без email). Лиды из FB Messenger / SOCIAL в HubSpot часто
+  //             приходят без email — раньше они молча дропались на этапе
+  //             загрузки потому что map ключевался по email. Pulse Marketing
+  //             за 30 дней показывал 319 вместо 387 — ровно 68 no-email
+  //             SOCIAL лидов терялись.
+  //   byEmail — back-compat индекс, ключ = email; только with-email контакты
+  //             (как раньше). Используется в местах где ищут конкретного
+  //             контакта по email тенанта (data-shim join, floor-map).
+  // Оба индекса ссылаются на ОДИН И ТОТ ЖЕ compact-объект — мутации
+  // (._origSrc override) видны через оба ключа.
   const byEmail = {};
+  const byId = {};
   for (const c of raw) {
     const p = c.properties || {};
+    const id = String(c.id);
     const email = (p.email || '').toLowerCase().trim();
-    if (!email) continue;
     const name = [p.firstname, p.lastname].filter(Boolean).join(' ').trim() || null;
     const created = p.createdate ? String(p.createdate).slice(0, 10) : null;
-    byEmail[email] = {
-      i: String(c.id),
+    const compact = {
+      i: id,
       o: p.hubspot_owner_id ? String(p.hubspot_owner_id) : null,
       s: p.lifecyclestage || null,
       n: name,
@@ -225,9 +238,12 @@ async function _fetchContacts(token, {maxPages = 60} = {}) {
       c: created,
       src: p.hs_analytics_source || null,
       srcD: p.hs_analytics_source_data_1 || null,
+      e: email || null,   // NEW field: email встроен в value (раньше был только ключом)
     };
+    byId[id] = compact;
+    if (email) byEmail[email] = compact;
   }
-  return byEmail;
+  return { byEmail, byId };
 }
 
 // =========================================================================
@@ -473,14 +489,18 @@ async function _runSync({fullSync = false} = {}) {
   // = up to 6000 contacts, ~15s of wall-clock time at 200ms throttle).
   // Floor-map uses these for prospect→HubSpot deal-owner attribution.
   let contactByEmail = null;
+  let contactById = null;
   if (fullSync) {
     await _sleep(200);
     try {
-      contactByEmail = await _fetchContacts(token);
-      logger.info(`[hubspot-sync] fetched ${Object.keys(contactByEmail).length} contacts`);
+      const fetched = await _fetchContacts(token);
+      contactByEmail = fetched.byEmail;
+      contactById = fetched.byId;
+      logger.info(`[hubspot-sync] fetched ${Object.keys(contactById).length} contacts (${Object.keys(contactByEmail).length} with email, ${Object.keys(contactById).length - Object.keys(contactByEmail).length} without email)`);
     } catch (e) {
       logger.warn(`[hubspot-sync] contacts fetch failed (non-fatal): ${e.message}`);
       contactByEmail = {};
+      contactById = {};
     }
   }
   const aggregates = _buildAggregates(owners, pipelines, deals, meetings);
@@ -512,6 +532,11 @@ async function _runSync({fullSync = false} = {}) {
   // re-fetch contacts on incremental). Falls back to {} so the UI helper
   // never throws on lookup.
   merged.contactByEmail = (fullSync && contactByEmail) ? contactByEmail : (prevHs.contactByEmail || {});
+  // contactById добавлен 2026-05-27 — основной индекс, включает no-email
+  // SOCIAL/Messenger лидов. Back-compat: если prevHs со старой схемой
+  // (только contactByEmail) — на incremental syncs до следующего fullSync
+  // contactById будет {} ; UI должен фолбэчить на contactByEmail.
+  merged.contactById = (fullSync && contactById) ? contactById : (prevHs.contactById || {});
   // Stage diagnostics — computed from merged dealsByStage + stageMeta so
   // the counts reflect every pipeline stage we've seen, not just deals
   // modified in the last 24h.
@@ -541,6 +566,7 @@ async function _runSync({fullSync = false} = {}) {
   // whole doc anyway (Pulse data-shim grabs it via hubspotGetData).
   const heavyKeys = [
     'contactByEmail',
+    'contactById',         // добавлен 2026-05-27 (см. _fetchContacts)
     'dealsByOwner',
     'meetingsByOwner',
     'toursByMonth',
@@ -562,17 +588,23 @@ async function _runSync({fullSync = false} = {}) {
     syncedAt: new Date().toISOString(),
     syncedFromMs: sinceMs,
     syncDurationMs: Date.now() - t0,
-    schemaVersion: 2, // v2 — heavy maps moved to *Json siblings
+    schemaVersion: 3, // v3 — добавлен contactById (включает no-email лидов)
     owners,            // small: ~15 entries
     pipelines,         // small: 3 pipelines with stage arrays
-    ...serialized,     // contactByEmailJson, dealsByOwnerJson, etc.
+    ...serialized,     // contactByEmailJson, contactByIdJson, dealsByOwnerJson, etc.
     counts: {
       owners: Object.keys(owners).length,
       pipelines: Object.keys(pipelines).length,
       deals: deals.length,
       meetings: meetings.length,
       tourMeetings: meetings.filter(m => m.isTour).length,
-      contacts: Object.keys(merged.contactByEmail || {}).length,
+      // contactsTotal — основная цифра (все контакты, включая no-email).
+      // contactsWithEmail оставлен для логов чтобы видеть размер back-compat
+      // индекса. Раньше счёт = contactByEmail.length и систематически
+      // занижался на ~10-20% потому что SOCIAL/Messenger лиды без email
+      // дропались на загрузке.
+      contacts: Object.keys(merged.contactById || merged.contactByEmail || {}).length,
+      contactsWithEmail: Object.keys(merged.contactByEmail || {}).length,
     },
   };
 
@@ -605,7 +637,8 @@ async function _runSync({fullSync = false} = {}) {
 function _expandHubspotData(hs) {
   if (!hs || typeof hs !== 'object') return hs;
   const heavyKeys = [
-    'contactByEmail', 'dealsByOwner', 'meetingsByOwner',
+    'contactByEmail', 'contactById',
+    'dealsByOwner', 'meetingsByOwner',
     'toursByMonth', 'signsByMonth', 'dealsByStage',
     'stageMeta', 'stageDiagnostics',
   ];

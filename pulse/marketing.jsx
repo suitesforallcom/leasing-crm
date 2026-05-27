@@ -127,7 +127,11 @@ window.MarketingPage = function MarketingPage() {
   const hs = window._hsDataCache;
   const [windowKind, setWindowKind] = React.useState('all'); // 'all' / 'mtd' / '30d' / '90d'
 
-  if (!hs || !hs.contactByEmail) {
+  // 2026-05-27 — основной источник contactById (включает no-email лидов
+  // из SOCIAL/Messenger). contactByEmail остаётся как back-compat fallback
+  // для cached docs со старой схемой v2.
+  const contactMap = (hs && (hs.contactById || hs.contactByEmail)) || null;
+  if (!contactMap) {
     return (
       <div className="page">
         <div className="page-h">
@@ -137,7 +141,7 @@ window.MarketingPage = function MarketingPage() {
           </div>
         </div>
         <div className="card is-clean" style={{ padding: 16, color: 'var(--muted)', fontSize: 13 }}>
-          Loading HubSpot data… (no contactByEmail cache yet). Use the «Sync now» button on the HubSpot page if this persists.
+          Loading HubSpot data… (no contact cache yet). Use the «Sync now» button on the HubSpot page if this persists.
         </div>
       </div>
     );
@@ -149,9 +153,9 @@ window.MarketingPage = function MarketingPage() {
                 : windowKind === '30d'  ? (now - 30 * 86400 * 1000)
                 : windowKind === '90d'  ? (now - 90 * 86400 * 1000)
                 : 0;
-  const allContacts = Object.entries(hs.contactByEmail);
+  const allContacts = Object.values(contactMap);
   const contacts = cutoffMs > 0
-    ? allContacts.filter(([_, c]) => c.c && new Date(c.c).getTime() >= cutoffMs)
+    ? allContacts.filter(c => c.c && new Date(c.c).getTime() >= cutoffMs)
     : allContacts;
 
   // Bucket by channel + lifecycle stage
@@ -163,7 +167,7 @@ window.MarketingPage = function MarketingPage() {
     }
     return buckets.get(label);
   }
-  for (const [, c] of contacts) {
+  for (const c of contacts) {
     const ch = _resolveChannelForContact(c);
     const lvl = stageLevel(c.s);
     const b = getBucket(ch.label, ch.group);
@@ -327,7 +331,7 @@ function HeaderTip({ label, hint }) {
 // на «загрузка» когда нет HubSpot кэша. Used by My Day owner view.
 window.SpendSectionStandalone = function SpendSectionStandalone() {
   const hs = window._hsDataCache;
-  if (!hs || !hs.contactByEmail) {
+  if (!hs || !(hs.contactById || hs.contactByEmail)) {
     return (
       <div className="card is-clean" style={{ padding: 14, fontSize: 12, color: "var(--muted)" }}>
         Loading HubSpot data… (open «HubSpot» page once if this persists).
@@ -355,8 +359,11 @@ function _channelRowsForWindow(hsContacts, windowStart, windowEnd) {
     if (!buckets.has(label)) buckets.set(label, { label, group, leads: 0, qualified: 0, opportunity: 0, customer: 0 });
     return buckets.get(label);
   }
-  for (const [, c] of hsContacts) {
-    if (!c.c) continue;
+  // hsContacts — массив compact-объектов (после миграции 2026-05-27,
+  // см. data-shim.jsx и hubspot-sync.js). Раньше принимал [email, c]
+  // entries, но теперь email встроен в c.e, а итерируем сразу values.
+  for (const c of hsContacts) {
+    if (!c || !c.c) continue;
     // Same parsing strategy as window bounds — LOCAL midnight of the date.
     const tMs = new Date(c.c + "T00:00:00").getTime();
     if (!isFinite(tMs)) continue;
@@ -512,7 +519,9 @@ function SpendSection() {
   // 30 дней с leads за всю историю, отсюда нереальные 2,335 leads
   // для Meta и CPL $4.
   const hs = window._hsDataCache;
-  const hsContacts = hs && hs.contactByEmail ? Object.entries(hs.contactByEmail) : [];
+  // 2026-05-27 — берём contactById (основной индекс, includes no-email лидов);
+  // fallback на contactByEmail для кэшей со старой схемой v2.
+  const hsContacts = hs ? Object.values(hs.contactById || hs.contactByEmail || {}) : [];
   const { rows, totals } = React.useMemo(
     () => _channelRowsForWindow(hsContacts, windowStart, windowEnd),
     [hs, windowStart, windowEnd]

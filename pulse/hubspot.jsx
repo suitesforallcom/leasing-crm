@@ -468,15 +468,23 @@ function ContactsTable() {
 
   // Build flat row list ONCE (memo-ish via useMemo would be cleaner but
   // re-renders only fire on state change — and we're already cheap).
+  // 2026-05-27 — итерируем contactById (включает no-email лидов из
+  // SOCIAL/Messenger); fallback на contactByEmail для cached docs со
+  // старой схемой v2. Email достаём из c.e (новое поле, см.
+  // hubspot-sync.js _fetchContacts).
   const allRows = React.useMemo(() => {
-    if (!hs?.contactByEmail) return [];
+    const contactMap = hs && (hs.contactById || hs.contactByEmail);
+    if (!contactMap) return [];
     const owners = hs.owners || {};
     const out = [];
-    for (const [email, c] of Object.entries(hs.contactByEmail)) {
+    for (const c of Object.values(contactMap)) {
+      const email = c.e || '';
       const owner = c.o ? owners[c.o] : null;
       out.push({
         email,
-        name: c.n || email.split('@')[0],
+        // Без email используем имя как display fallback, иначе берём
+        // email-локалпарт (как раньше).
+        name: c.n || (email ? email.split('@')[0] : '(no email)'),
         phone: c.p || null,
         createDate: c.c || null,
         ownerId: c.o || null,
@@ -581,7 +589,7 @@ function ContactsTable() {
   const visible = sorted.slice(0, pageSize);
   const hubspotBase = 'https://app-na2.hubspot.com/contacts/243651196';
 
-  if (!hs?.contactByEmail || allRows.length === 0) {
+  if (!(hs?.contactById || hs?.contactByEmail) || allRows.length === 0) {
     return (
       <div className="card is-clean" style={{ marginTop: 18, padding: 16 }}>
         <div style={{ fontSize: 13, color: 'var(--muted)' }}>

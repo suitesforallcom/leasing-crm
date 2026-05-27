@@ -128,15 +128,20 @@ function _aggregateDailyForWindow(daily, windowStart, windowEnd) {
   }, { cost: 0, clicks: 0, impressions: 0, conversions: 0, rows: 0 });
 }
 
-// Count HubSpot contacts created within a window (uses contactByEmail.c)
+// Count HubSpot contacts created within a window (uses contact.c date).
+// 2026-05-27 — итерируем contactById (включает no-email лидов из
+// SOCIAL/Messenger); fallback на contactByEmail для cached docs со
+// старой схемой v2.
 function _countHsContactsForWindow(hs, windowStart, windowEnd) {
-  if (!hs || !hs.contactByEmail) return null;
-  const entries = Object.entries(hs.contactByEmail);
-  if (!windowStart || !windowEnd) return entries.length;
+  if (!hs) return null;
+  const contactMap = hs.contactById || hs.contactByEmail;
+  if (!contactMap) return null;
+  const values = Object.values(contactMap);
+  if (!windowStart || !windowEnd) return values.length;
   const startMs = new Date(windowStart + "T00:00:00").getTime();
   const endMs = new Date(windowEnd + "T23:59:59").getTime();
   let n = 0;
-  for (const [, c] of entries) {
+  for (const c of values) {
     if (!c.c) continue;
     const tMs = new Date(c.c + "T00:00:00").getTime();
     if (!isFinite(tMs)) continue;
