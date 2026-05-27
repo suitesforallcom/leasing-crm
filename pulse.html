@@ -97,7 +97,7 @@
        from floor-map's state in localStorage. Cache-busted because the
        prototype's .jsx files get a default 1h CDN cache; bump the v=
        query when shim logic changes. -->
-  <script type="text/babel" src="/pulse/data-shim.jsx?v=20260527c"></script>
+  <script type="text/babel" src="/pulse/data-shim.jsx?v=20260527d"></script>
   <script type="text/babel" src="/pulse/components.jsx?v=20260520b"></script>
   <script type="text/babel" src="/pulse/forms.jsx"></script>
   <!-- PageHelp — переиспользуемая «?»-кнопка с описанием страницы.
@@ -112,12 +112,12 @@
   <!-- HubSpot insights — standalone page (extracted from overview 2026-05-24).
        Must load BEFORE app.jsx so `window.HubspotPage` is defined when App
        references it in its global declaration. -->
-  <script type="text/babel" src="/pulse/hubspot.jsx?v=20260527a"></script>
+  <script type="text/babel" src="/pulse/hubspot.jsx?v=20260527b"></script>
   <!-- Leads/Contracts modal — drawer with tabs + filter + per-row source
        picker, opened by clicking Leads/Contracts cells on Marketing /
        owner dashboard (Tony 2026-05-26). Must load BEFORE marketing.jsx
        so `window.LeadsContractsModal` exists when SpendSection renders. -->
-  <script type="text/babel" src="/pulse/leads-modal.jsx?v=20260527a"></script>
+  <script type="text/babel" src="/pulse/leads-modal.jsx?v=20260527b"></script>
   <!-- Source rules — global HubSpot tag→channel mapping drawer.
        Opened from Marketing SpendSection header (Tony 2026-05-26).
        Must load BEFORE marketing.jsx so window.SourceRulesDrawer
@@ -125,14 +125,14 @@
   <script type="text/babel" src="/pulse/source-rules.jsx?v=20260526a"></script>
   <!-- Marketing — channel-mix dashboard (Phase 1: HubSpot source data;
        Phase 2: Google Ads / Meta / TikTok / GA4 spend). -->
-  <script type="text/babel" src="/pulse/marketing.jsx?v=20260527c"></script>
+  <script type="text/babel" src="/pulse/marketing.jsx?v=20260527d"></script>
   <!-- Analytics — dedicated GA4 page with summary KPIs, source/medium,
        landing pages, events, device + geo, daily timeseries. -->
   <script type="text/babel" src="/pulse/analytics.jsx?v=20260526a"></script>
   <!-- Connections — unified Settings page for all integrations
        (HubSpot, Google Ads, Meta, TikTok, GA4). Operator manages
        accounts + notes from here. -->
-  <script type="text/babel" src="/pulse/connections.jsx?v=20260527a"></script>
+  <script type="text/babel" src="/pulse/connections.jsx?v=20260527b"></script>
   <!-- Top Ads — cross-platform creative leaderboard (TikTok / Meta /
        Google), reads workspaces/default/marketing_ads subcollection
        via marketingAdsList callable. -->

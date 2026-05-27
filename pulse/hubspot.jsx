@@ -473,7 +473,7 @@ function ContactsTable() {
   // старой схемой v2. Email достаём из c.e (новое поле, см.
   // hubspot-sync.js _fetchContacts).
   const allRows = React.useMemo(() => {
-    const contactMap = hs && (hs.contactById || hs.contactByEmail);
+    const contactMap = window._pulsePickContactMap ? window._pulsePickContactMap(hs) : ((hs && (hs.contactById || hs.contactByEmail)) || null);
     if (!contactMap) return [];
     const owners = hs.owners || {};
     const out = [];
@@ -589,7 +589,8 @@ function ContactsTable() {
   const visible = sorted.slice(0, pageSize);
   const hubspotBase = 'https://app-na2.hubspot.com/contacts/243651196';
 
-  if (!(hs?.contactById || hs?.contactByEmail) || allRows.length === 0) {
+  const _pickedHs = window._pulsePickContactMap ? window._pulsePickContactMap(hs) : ((hs && (hs.contactById || hs.contactByEmail)) || null);
+  if (!_pickedHs || allRows.length === 0) {
     return (
       <div className="card is-clean" style={{ marginTop: 18, padding: 16 }}>
         <div style={{ fontSize: 13, color: 'var(--muted)' }}>

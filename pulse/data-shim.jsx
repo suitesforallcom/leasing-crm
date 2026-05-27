@@ -41,6 +41,21 @@
   const HS_TTL_MS = 60 * 60 * 1000; // 1h
   window._hsDataCache = null;
 
+  // 2026-05-27 — единый helper выбора contactMap для всех Pulse pages.
+  // Раньше использовали `hs.contactById || hs.contactByEmail` — но JS
+  // считает пустой `{}` truthy, поэтому если бэкенд закэшировал пустой
+  // contactById (incremental sync пишет {} когда не fetch'ил contacts),
+  // fallback на contactByEmail не срабатывал и Pulse показывал 0 контактов.
+  // Здесь явно проверяем «есть ли ключи» прежде чем выбрать индекс.
+  // contactById — primary (включает no-email лидов из SOCIAL/Messenger,
+  // schemaVersion >= 3). contactByEmail — back-compat (schemaVersion 2).
+  window._pulsePickContactMap = function (hs) {
+    if (!hs) return null;
+    if (hs.contactById && Object.keys(hs.contactById).length > 0) return hs.contactById;
+    if (hs.contactByEmail && Object.keys(hs.contactByEmail).length > 0) return hs.contactByEmail;
+    return null;
+  };
+
   // Sync load from localStorage.
   try {
     const raw = localStorage.getItem(HS_LS_KEY);
@@ -231,8 +246,8 @@
     // 2026-05-27 — берём contactById (включает no-email лидов из
     // SOCIAL/Messenger чтобы их теги тоже появлялись в Source rules
     // drawer); fallback на contactByEmail для cached docs со старой
-    // схемой v2.
-    const contactMap = hs && (hs.contactById || hs.contactByEmail);
+    // схемой v2. Helper защищает от пустого `{}` (truthy в JS).
+    const contactMap = window._pulsePickContactMap(hs);
     if (!contactMap) return [];
     const mappings = _readTagMappings();
     const seen = new Map();

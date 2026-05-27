@@ -134,7 +134,7 @@ function _aggregateDailyForWindow(daily, windowStart, windowEnd) {
 // старой схемой v2.
 function _countHsContactsForWindow(hs, windowStart, windowEnd) {
   if (!hs) return null;
-  const contactMap = hs.contactById || hs.contactByEmail;
+  const contactMap = window._pulsePickContactMap ? window._pulsePickContactMap(hs) : (hs.contactById || hs.contactByEmail);
   if (!contactMap) return null;
   const values = Object.values(contactMap);
   if (!windowStart || !windowEnd) return values.length;

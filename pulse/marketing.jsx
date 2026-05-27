@@ -129,8 +129,10 @@ window.MarketingPage = function MarketingPage() {
 
   // 2026-05-27 — основной источник contactById (включает no-email лидов
   // из SOCIAL/Messenger). contactByEmail остаётся как back-compat fallback
-  // для cached docs со старой схемой v2.
-  const contactMap = (hs && (hs.contactById || hs.contactByEmail)) || null;
+  // для cached docs со старой схемой v2. Используем helper —
+  // `hs.contactById || hs.contactByEmail` ломается когда contactById пустой
+  // объект {} (truthy в JS) → fallback не срабатывал.
+  const contactMap = window._pulsePickContactMap ? window._pulsePickContactMap(hs) : ((hs && (hs.contactById || hs.contactByEmail)) || null);
   if (!contactMap) {
     return (
       <div className="page">
@@ -331,7 +333,8 @@ function HeaderTip({ label, hint }) {
 // на «загрузка» когда нет HubSpot кэша. Used by My Day owner view.
 window.SpendSectionStandalone = function SpendSectionStandalone() {
   const hs = window._hsDataCache;
-  if (!hs || !(hs.contactById || hs.contactByEmail)) {
+  const contactMap = window._pulsePickContactMap ? window._pulsePickContactMap(hs) : ((hs && (hs.contactById || hs.contactByEmail)) || null);
+  if (!contactMap) {
     return (
       <div className="card is-clean" style={{ padding: 14, fontSize: 12, color: "var(--muted)" }}>
         Loading HubSpot data… (open «HubSpot» page once if this persists).
@@ -520,8 +523,10 @@ function SpendSection() {
   // для Meta и CPL $4.
   const hs = window._hsDataCache;
   // 2026-05-27 — берём contactById (основной индекс, includes no-email лидов);
-  // fallback на contactByEmail для кэшей со старой схемой v2.
-  const hsContacts = hs ? Object.values(hs.contactById || hs.contactByEmail || {}) : [];
+  // fallback на contactByEmail для кэшей со старой схемой v2. Helper
+  // защищает от пустого `{}` который truthy в JS.
+  const _picked = window._pulsePickContactMap ? window._pulsePickContactMap(hs) : ((hs && (hs.contactById || hs.contactByEmail)) || null);
+  const hsContacts = _picked ? Object.values(_picked) : [];
   const { rows, totals } = React.useMemo(
     () => _channelRowsForWindow(hsContacts, windowStart, windowEnd),
     [hs, windowStart, windowEnd]

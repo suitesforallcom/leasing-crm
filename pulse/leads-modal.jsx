@@ -377,7 +377,7 @@
     // из SOCIAL/Messenger); fallback на contactByEmail для cached docs
     // со старой схемой v2. Email достаём из c.e (новое поле).
     const hsCache = window._hsDataCache || {};
-    const contactMap = hsCache.contactById || hsCache.contactByEmail || {};
+    const contactMap = window._pulsePickContactMap ? (window._pulsePickContactMap(hsCache) || {}) : (hsCache.contactById || hsCache.contactByEmail || {});
     const leadEntries = Object.values(contactMap).map(c => ({
       email: c.e || '', c, key: _channelKeyForContact(c),
     }));

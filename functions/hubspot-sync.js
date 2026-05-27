@@ -533,10 +533,19 @@ async function _runSync({fullSync = false} = {}) {
   // never throws on lookup.
   merged.contactByEmail = (fullSync && contactByEmail) ? contactByEmail : (prevHs.contactByEmail || {});
   // contactById добавлен 2026-05-27 — основной индекс, включает no-email
-  // SOCIAL/Messenger лидов. Back-compat: если prevHs со старой схемой
-  // (только contactByEmail) — на incremental syncs до следующего fullSync
-  // contactById будет {} ; UI должен фолбэчить на contactByEmail.
-  merged.contactById = (fullSync && contactById) ? contactById : (prevHs.contactById || {});
+  // SOCIAL/Messenger лидов.
+  // КРИТИЧНО (fix 2026-05-27 #2): на incremental sync если prevHs не имеет
+  // contactById (старая v2 схема) — НЕ записываем пустой {} в Firestore.
+  // Иначе frontend получает empty truthy {} и фолбэк `||` на contactByEmail
+  // не срабатывает → UI показывает 0 контактов. Оставляем field undefined
+  // — serialize step ниже пропустит его, contactByIdJson не появится в
+  // Firestore, и frontend корректно фолбэчит на contactByEmail.
+  if (fullSync && contactById && Object.keys(contactById).length > 0) {
+    merged.contactById = contactById;
+  } else if (prevHs.contactById && Object.keys(prevHs.contactById).length > 0) {
+    merged.contactById = prevHs.contactById;
+  }
+  // else — leave undefined; serialize step skips it
   // Stage diagnostics — computed from merged dealsByStage + stageMeta so
   // the counts reflect every pipeline stage we've seen, not just deals
   // modified in the last 24h.
