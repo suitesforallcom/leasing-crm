@@ -7147,6 +7147,7 @@ exports.adminRunSnapshot = _snap.adminRunSnapshot;
 // Pulls into state.hubspotData for per-manager analytics in Pulse.
 const _hs = require('./hubspot-sync');
 exports.hubspotSync = _hs.hubspotSync;
+exports.hubspotFullSync = _hs.hubspotFullSync;
 exports.hubspotSyncNow = _hs.hubspotSyncNow;
 exports.hubspotGetData = _hs.hubspotGetData;
 

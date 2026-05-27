@@ -701,6 +701,44 @@ exports.hubspotSync = onSchedule(
 );
 
 // =========================================================================
+// Scheduled — every 4 hours, full sync (refreshes contacts too).
+// ---------------------------------------------------------------------------
+// 2026-05-27 — incremental cron (hubspotSync, 30-min) does NOT fetch contacts
+// (контакты ~2900, ~30 paginated calls, ~6s wall-clock per run — слишком
+// heavy для каждых 30 минут). Раньше fullSync вызывался только вручную
+// через `hubspotSyncNow` callable (ROOT_ADMINS gated), поэтому новые
+// no-email лиды из SOCIAL/Messenger «зависали» в HubSpot и не появлялись
+// в Pulse Marketing dashboard.
+//
+// Этот cron каждые 4 часа делает fullSync: подтягивает свежий contactById
+// (включает no-email лидов) и contactByEmail (back-compat). 6 запусков/день
+// × ~30 HubSpot API calls = 180 calls/day, well within HubSpot's
+// 100 req/10s rate-limit (864K req/day budget).
+//
+// Если когда-нибудь захотим ужать — выставить «every 12 hours» или «every
+// day 09:00». Если расширить — «every 1 hours» (24 fullSync/день, ~720
+// API calls/day — всё ещё <0.1% бюджета).
+// =========================================================================
+exports.hubspotFullSync = onSchedule(
+  {
+    schedule: 'every 4 hours',
+    timeZone: 'UTC',
+    timeoutSeconds: 540,
+    memory: '256MiB',
+    secrets: [HUBSPOT_TOKEN],
+  },
+  async () => {
+    try {
+      const counts = await _runSync({ fullSync: true });
+      logger.info('[hubspot-fullsync] OK', counts);
+    } catch (e) {
+      logger.error('[hubspot-fullsync] FAIL: ' + e.message, e);
+      throw e;
+    }
+  }
+);
+
+// =========================================================================
 // Manual — admin-only. Body: { fullSync?: bool }.
 // =========================================================================
 exports.hubspotSyncNow = onCall(
