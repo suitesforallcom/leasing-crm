@@ -425,6 +425,17 @@
     }
 
     const all = [];
+    // _classifyContactChannel может вернуть один из 9 ключей. SpendSection
+    // в Marketing-таблице сейчас читает только google-ads / meta / tiktok
+    // (Phase 2 ad-spend каналов), а остальное сваливаем в 'other'. Если
+    // оператор замапит «integration | TikTok Lead Syncing» → tiktok через
+    // Source rules — попадёт в правильный bucket. Без этой нормализации
+    // organic / direct / referral / email / offline крашили `.push` по
+    // undefined bucket (regression risk).
+    const _PAID_BUCKETS = new Set(['google-ads', 'meta', 'tiktok']);
+    function _normalizeBucketKey(k) {
+      return _PAID_BUCKETS.has(k) ? k : 'other';
+    }
     const byChannel = { 'google-ads': [], 'meta': [], 'tiktok': [], 'other': [] };
 
     // 2026-05-26 Tony: «Можно добавить колонку менеджеру которому выдан
@@ -575,7 +586,7 @@
             leaseKey,
           };
           all.push(lease);
-          byChannel[channel].push(lease);
+          byChannel[_normalizeBucketKey(channel)].push(lease);
         }
       }
     }

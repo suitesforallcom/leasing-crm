@@ -81,6 +81,48 @@ const GROUP_ORDER = {
   'unknown':     9,
 };
 
+// Map data-shim's channel KEY (one of 9) → {label, group} понятный
+// SpendSection-таблице. Используется ТОЛЬКО когда оператор задал
+// явный tag→channel override в Source rules drawer; auto-classify
+// идёт через `classifyChannel` который сохраняет детальные ярлыки
+// (Microsoft Ads, LinkedIn Ads, X Ads).
+const CHANNEL_KEY_TO_LABEL = {
+  'google-ads': { label: 'Google Ads',          group: 'paid-search' },
+  'meta':       { label: 'Meta Ads (FB / IG)',  group: 'paid-social' },
+  'tiktok':     { label: 'TikTok Ads',          group: 'paid-social' },
+  'organic':    { label: 'Organic',             group: 'organic'     },
+  'direct':     { label: 'Direct',              group: 'direct'      },
+  'referral':   { label: 'Referral',            group: 'referral'    },
+  'email':      { label: 'Email Marketing',     group: 'email'       },
+  'offline':    { label: 'Offline',             group: 'offline'     },
+  'other':      { label: 'Other Campaign',      group: 'other'       },
+};
+
+// Резолвер канала для одного HubSpot-контакта в SpendSection-таблице.
+// Приоритет:
+//   1. Per-email source override — уже мутировал c.src/c.srcD в shim'е,
+//      так что попадает в auto-classify ниже автоматически.
+//   2. Глобальный tag→channel mapping из Source rules drawer
+//      (sfa_pulse_tag_mappings_v1) — оператор сам матчит «integration +
+//      TikTok Lead Syncing» → TikTok.
+//   3. Auto-classify — детальные ярлыки (Google/Meta/TikTok/Microsoft/
+//      LinkedIn/X/Organic/Referral/Email/Offline/Other) через legacy
+//      `classifyChannel`.
+// Tony 2026-05-26: маппинг шёл только в leads-модалку — главная таблица
+// Marketing продолжала считать TikTok Lead Syncing как Other → 0 leads.
+function _resolveChannelForContact(c) {
+  try {
+    if (typeof window.getPulseTagMappings === 'function') {
+      const mappings = window.getPulseTagMappings() || {};
+      const k = String(c && c.src || '').toLowerCase().trim() + '|' +
+                String(c && c.srcD || '').toLowerCase().trim();
+      const mapped = mappings[k];
+      if (mapped && CHANNEL_KEY_TO_LABEL[mapped]) return CHANNEL_KEY_TO_LABEL[mapped];
+    }
+  } catch (e) { /* fallthrough to auto-classify */ }
+  return classifyChannel(c && c.src, c && c.srcD);
+}
+
 window.MarketingPage = function MarketingPage() {
   const hs = window._hsDataCache;
   const [windowKind, setWindowKind] = React.useState('all'); // 'all' / 'mtd' / '30d' / '90d'
@@ -122,7 +164,7 @@ window.MarketingPage = function MarketingPage() {
     return buckets.get(label);
   }
   for (const [, c] of contacts) {
-    const ch = classifyChannel(c.src, c.srcD);
+    const ch = _resolveChannelForContact(c);
     const lvl = stageLevel(c.s);
     const b = getBucket(ch.label, ch.group);
     b.leads++;                       // every contact = a lead
@@ -319,7 +361,7 @@ function _channelRowsForWindow(hsContacts, windowStart, windowEnd) {
     const tMs = new Date(c.c + "T00:00:00").getTime();
     if (!isFinite(tMs)) continue;
     if (tMs < startMs || tMs > endMs) continue;
-    const ch = classifyChannel(c.src, c.srcD);
+    const ch = _resolveChannelForContact(c);
     const lvl = stageLevel(c.s);
     const b = getBucket(ch.label, ch.group);
     b.leads++;
