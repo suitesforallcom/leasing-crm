@@ -448,15 +448,23 @@
         return raw ? JSON.parse(raw) : null;
       } catch (e) { return null; }
     })();
-    if (!stNow) return { byChannel: {}, all: [], windowStart: null, windowEnd: null };
+    if (!stNow) return { byChannel: {}, all: [] };
 
+    // 2026-05-27 — было: cutoff = MTD-start (или 7d на 1-е числа). Это
+    // было задумано чтобы шим сразу отдавал «leases этого месяца», но
+    // marketing.jsx + leads-modal позже добавили окна Today / Yesterday
+    // / 7d / 30d / 90d / 90d / MTD / Custom, а сам шим под них НЕ
+    // пересчитывался. Результат: contracts/MRR в Marketing-таблице и в
+    // модали показывали одно и то же число для любого окна (всегда
+    // MTD). Tony 2026-05-27: «выбрал разное количество дней а
+    // показывает одно и то же количество контрактов».
+    //
+    // Теперь _floorMapLeases.all = ВСЕ leases с валидной триггер-датой
+    // (signed или depositPaid). Окно применяется downstream:
+    // marketing.jsx фильтрует byChannel-массивы по lease.activatedMs ∈
+    // [windowStartMs, windowEndMs], leads-modal делает аналогичный
+    // фильтр.
     const now = Date.now();
-    const _today = new Date(now);
-    const _isFirstOfMonth = _today.getDate() === 1;
-    const _monthStart = new Date(_today.getFullYear(), _today.getMonth(), 1, 0, 0, 0, 0).getTime();
-    const cutoff = _isFirstOfMonth
-      ? (now - 7 * 24 * 60 * 60 * 1000)
-      : _monthStart;
 
     // HubSpot lookup for channel attribution. Email-keyed index строится
     // лениво на первое обращение и кэшируется на hs объекте.
@@ -557,19 +565,22 @@
             ? _depMs1
             : (Number.isFinite(_depMs2) && _depMs2 > 0 ? _depMs2 : null);
 
-          const signedInWindow = signedMs != null && signedMs >= cutoff && signedMs <= now;
-          const depositInWindow = depositPaidAt != null && depositPaidAt >= cutoff && depositPaidAt <= now;
-          if (!signedInWindow && !depositInWindow) continue;
+          // Триггер валиден если signedMs или depositPaidAt существует и
+          // не в будущем (защита от bad data). Cutoff убран — окно
+          // применяется downstream в marketing.jsx / leads-modal.jsx.
+          const signedValid = signedMs != null && signedMs <= now;
+          const depositValid = depositPaidAt != null && depositPaidAt <= now;
+          if (!signedValid && !depositValid) continue;
 
           const triggerMs = Math.max(
-            signedInWindow ? signedMs : 0,
-            depositInWindow ? depositPaidAt : 0
+            signedValid ? signedMs : 0,
+            depositValid ? depositPaidAt : 0
           );
 
           // Sanity-gate against back-fill (Suite 101 NUHS case in floor-map)
           const _earliestTriggerMs = Math.min(
-            signedInWindow ? signedMs : Infinity,
-            depositInWindow ? depositPaidAt : Infinity
+            signedValid ? signedMs : Infinity,
+            depositValid ? depositPaidAt : Infinity
           );
           const _trigDate = new Date(_earliestTriggerMs);
           const triggerYm = `${_trigDate.getFullYear()}-${String(_trigDate.getMonth()+1).padStart(2,'0')}`;
@@ -658,18 +669,13 @@
     for (const k of Object.keys(byChannel)) {
       byChannel[k].sort((a, b) => b.activatedMs - a.activatedMs);
     }
-    return {
-      byChannel,
-      all,
-      windowStart: new Date(cutoff).toISOString().slice(0, 10),
-      windowEnd: new Date(now).toISOString().slice(0, 10),
-      windowKind: _isFirstOfMonth ? '7d-fallback' : 'mtd',
-    };
+    return { byChannel, all };
   }
 
   // Initial compute + expose to globals so SpendSection can read.
   window._floorMapLeases = _computeFloorMapLeases();
-  console.info('[pulse-shim] floor-map leases:', window._floorMapLeases.all.length,
+  console.info('[pulse-shim] floor-map leases (all-time, downstream-windowed):',
+    window._floorMapLeases.all.length,
     'total —', Object.keys(window._floorMapLeases.byChannel)
       .map(k => k + ':' + window._floorMapLeases.byChannel[k].length).join(' · '));
 

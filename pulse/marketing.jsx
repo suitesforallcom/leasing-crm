@@ -516,6 +516,19 @@ function SpendSection() {
                     : windowKind === "mtd" ? "Month to date"
                     : "Custom range";
 
+  // 2026-05-27 — окно для contracts. _floorMapLeases.all теперь все-time
+  // (см. data-shim.jsx комментарий 2026-05-27), окно применяется здесь
+  // по lease.activatedMs. Раньше шим был MTD-scoped и любое окно
+  // показывало одни и те же 9 контрактов независимо от выбора Today /
+  // Yesterday / 7d / 30d / 90d (Tony 2026-05-27: «выбрал разное
+  // количество дней а показывает одно и то же»).
+  const _windowStartMs = new Date(windowStart + "T00:00:00").getTime();
+  const _windowEndMs   = new Date(windowEnd   + "T23:59:59").getTime();
+  function _inWindow(l) {
+    const ts = (l && l.activatedMs) || 0;
+    return ts >= _windowStartMs && ts <= _windowEndMs;
+  }
+
   // 2026-05-24 Tony fix: пересчитываем HubSpot leads/qualified ДЛЯ
   // того же окна что и spend. Раньше rows/totals приходили от
   // MarketingPage (default 'all time') — CPL смешивал spend за
@@ -609,7 +622,7 @@ function SpendSection() {
     // _floorMapLeases.byChannel[sourceKey] — массив leases для этого
     // канала. Длина = число контрактов. monthly суммируется → +$XXX/mo.
     const fmLeases = (window._floorMapLeases && window._floorMapLeases.byChannel)
-                     ? (window._floorMapLeases.byChannel[sourceKey] || [])
+                     ? (window._floorMapLeases.byChannel[sourceKey] || []).filter(_inWindow)
                      : [];
     const customers = fmLeases.length;
     const customersMRR = fmLeases.reduce((s, l) => s + (l.monthly || 0), 0);
@@ -841,7 +854,7 @@ function SpendSection() {
         // (byChannel нормализован в 4 ведра, organic попадает в 'other' →
         // .all сохраняет оригинальный channel).
         const allLeases = (window._floorMapLeases && window._floorMapLeases.all) || [];
-        const organicLeases = allLeases.filter(l => l.channel === "organic");
+        const organicLeases = allLeases.filter(l => l.channel === "organic" && _inWindow(l));
         const organicContracts = organicLeases.length;
         const organicMRR = organicLeases.reduce((s, l) => s + (l.monthly || 0), 0);
         // Подканалы для tooltip (Organic Search vs Organic Social)
@@ -933,7 +946,7 @@ function SpendSection() {
         const otherBucket = (window._floorMapLeases && window._floorMapLeases.byChannel)
                             ? (window._floorMapLeases.byChannel['other'] || [])
                             : [];
-        const otherFmLeases = otherBucket.filter(l => l.channel !== 'organic');
+        const otherFmLeases = otherBucket.filter(l => l.channel !== 'organic' && _inWindow(l));
         const otherContracts = otherFmLeases.length;
         const otherMRR = otherFmLeases.reduce((s, l) => s + (l.monthly || 0), 0);
         if (otherLeads === 0 && otherContracts === 0) return null;
@@ -1017,7 +1030,7 @@ function SpendSection() {
         const otherQualified = rows.filter(r => r.group !== "paid-search" && r.group !== "paid-social")
                                    .reduce((s, r) => s + r.qualified, 0);
         const otherFmLeases = (window._floorMapLeases && window._floorMapLeases.byChannel)
-                              ? (window._floorMapLeases.byChannel['other'] || []) : [];
+                              ? (window._floorMapLeases.byChannel['other'] || []).filter(_inWindow) : [];
         const totalLeadsTotal = spendRows.reduce((s, r) => s + (r.totalContacts || 0), 0) + otherLeads;
         const totalLeadsQuality = spendRows.reduce((s, r) => s + (r.qualifiedLeads || 0), 0) + otherQualified;
         const totalLeadsForCPL = qualityLeadsOnly ? totalLeadsQuality : totalLeadsTotal;

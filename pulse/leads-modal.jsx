@@ -242,25 +242,29 @@
   function _fmtYmd(d) {
     return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
   }
+  // 2026-05-27 — выровнено с marketing.jsx windowRange (HubSpot / GA4
+  // convention): «Last N days» = N preceding days, today EXCLUDED.
+  // Раньше модал считал today INCLUDED — отсюда сдвиг на 1 день между
+  // KPI в marketing и кол-вом контрактов в модале при одинаковом окне.
   function _windowRange(kind, customStart, customEnd) {
     const today = new Date();
     const todayYmd = _fmtYmd(today);
+    const yesterday = new Date(today.getTime() - 86400 * 1000);
+    const yesterdayYmd = _fmtYmd(yesterday);
     if (kind === 'custom') return { start: customStart, end: customEnd };
     if (kind === 'today')  return { start: todayYmd, end: todayYmd };
-    if (kind === 'yesterday') {
-      const y = new Date(today.getTime() - 86400 * 1000);
-      const yYmd = _fmtYmd(y);
-      return { start: yYmd, end: yYmd };
-    }
+    if (kind === 'yesterday') return { start: yesterdayYmd, end: yesterdayYmd };
     if (kind === 'mtd') {
+      // MTD = Month-to-Date — today INCLUDED (стандарт для finance).
       return {
         start: today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-01',
         end: todayYmd,
       };
     }
+    // 7d / 30d / 90d — N preceding days, today EXCLUDED.
     const days = kind === '7d' ? 7 : kind === '90d' ? 90 : 30;
-    const back = new Date(today.getTime() - (days - 1) * 86400 * 1000);
-    return { start: _fmtYmd(back), end: todayYmd };
+    const back = new Date(today.getTime() - days * 86400 * 1000);
+    return { start: _fmtYmd(back), end: yesterdayYmd };
   }
 
   window.LeadsContractsModal = function LeadsContractsModal({
@@ -388,22 +392,13 @@
     });
 
     // ---------- Contracts dataset ----------
-    // _floorMapLeases.all — MTD-scoped (или 7d на 1-е числа). Любой
-    // window уже narrower MTD дополнительно фильтрует, wider window
-    // (30d/90d) показывает ту же MTD-выборку. Это совпадает с
-    // поведением marketing.jsx Spend table — у которой _floorMapLeases
-    // тоже не пересчитывается под wide window.
+    // 2026-05-27 — _floorMapLeases.all теперь all-time (см. data-shim.jsx
+    // комментарий 2026-05-27). Окно применяется здесь по lease.activatedMs.
     const allLeases = (window._floorMapLeases && window._floorMapLeases.all) || [];
     const windowedContracts = allLeases.filter(l => {
       const ts = l.activatedMs || 0;
       return ts >= windowStartMs && ts <= windowEndMs;
     });
-    // Hint когда оператор выбрал окно wider чем MTD — _floorMapLeases.all
-    // строится только под MTD, поэтому contracts > MTD physically нет.
-    const _mtdStartMs = new Date(_todayD.getFullYear(), _todayD.getMonth(), 1, 0, 0, 0, 0).getTime();
-    const showWindowHint = tab === 'contracts'
-      && (windowKind === '30d' || windowKind === '90d' ||
-          (windowKind === 'custom' && windowStartMs < _mtdStartMs));
 
     // 2026-05-27 — filter 'other' = catch-all для всего что не paid и не
     // organic (direct / referral / email / offline / other / undefined).
@@ -550,16 +545,6 @@
             {windowLabel}
           </span>
         </div>
-
-        {showWindowHint && (
-          <div style={{
-            padding: '6px 14px', fontSize: 11, color: '#854d0e',
-            background: 'rgba(250, 204, 21, .12)',
-            borderBottom: '1px solid rgba(250, 204, 21, .35)',
-          }}>
-            ⚠ Contracts snapshot is MTD-only — wider windows show the same set. Activations before <b>{new Date(_mtdStartMs).toISOString().slice(0, 10)}</b> aren't in this view.
-          </div>
-        )}
 
         {/* Filter + search */}
         <div style={{
