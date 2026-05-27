@@ -473,6 +473,30 @@ async function _runSync({fullSync = false} = {}) {
   // Contacts STAY gated behind fullSync since they're heavy (~2871 = 30
   // calls + 200ms throttle = ~6s and they rarely change ownership).
   const t0 = Date.now();
+
+  // 2026-05-27 — читаем prevHs ПЕРЕД фетчем, чтобы можно было
+  // авто-промотировать incremental в fullSync если кэш контактов
+  // пуст/отсутствует. Self-healing: если cron впервые столкнулся с
+  // workspace где contactById ещё не было — он сам пойдёт за контактами.
+  // Цена: один read на Firestore до fetch, который мы всё равно делали
+  // позже. Это перенос, не дублирование.
+  const hsRef = db.doc(`workspaces/${WORKSPACE_ID}/data/hubspot`);
+  const prevDoc = (await hsRef.get()).data() || {};
+  const prevHsRaw = prevDoc.hubspotData || {};
+  const prevHs = _expandHubspotData(prevHsRaw);
+
+  // Auto-promote incremental → fullSync если кэш контактов пуст. Это
+  // самоисцеление: один раз заполнит contactById на новой workspace,
+  // дальше incremental остаётся incremental (т.к. contactById уже >0).
+  let effectiveFullSync = !!fullSync;
+  if (!effectiveFullSync) {
+    const hasContactById = prevHs.contactById && Object.keys(prevHs.contactById).length > 0;
+    if (!hasContactById) {
+      logger.info('[hubspot-sync] auto-promoting to fullSync: prevHs.contactById is empty/missing');
+      effectiveFullSync = true;
+    }
+  }
+
   // Sequential — Promise.all hammered the rate-limit (15K req/5s per
   // service is generous but 4 parallel paginated loops collide).
   const owners = await _fetchOwners(token);
@@ -484,13 +508,13 @@ async function _runSync({fullSync = false} = {}) {
   const meetings = await _fetchMeetings(token, { sinceMs: null });
   // Kept for legacy logging / contacts gating; previously also fed the
   // deals/meetings filter (no longer).
-  const sinceMs = fullSync ? null : (Date.now() - 24 * 60 * 60 * 1000);
+  const sinceMs = effectiveFullSync ? null : (Date.now() - 24 * 60 * 60 * 1000);
   // Contacts — only on fullSync to limit API hits (60 paginated pages
   // = up to 6000 contacts, ~15s of wall-clock time at 200ms throttle).
   // Floor-map uses these for prospect→HubSpot deal-owner attribution.
   let contactByEmail = null;
   let contactById = null;
-  if (fullSync) {
+  if (effectiveFullSync) {
     await _sleep(200);
     try {
       const fetched = await _fetchContacts(token);
@@ -511,16 +535,9 @@ async function _runSync({fullSync = false} = {}) {
   // + meetings into state blew the cap (1.1MB) on the very first sync.
   // Separate doc → independent size budget. Pulse data-shim reads it
   // alongside state.
-  const hsRef = db.doc(`workspaces/${WORKSPACE_ID}/data/hubspot`);
-  const prevDoc = (await hsRef.get()).data() || {};
-  const prevHsRaw = prevDoc.hubspotData || {};
-  // Inflate the v2-serialized heavy keys back into objects so the merge
-  // logic below sees the rich shape. v1 docs (with raw objects) still
-  // work — _expandHubspotData is a no-op when the *Json siblings are
-  // absent.
-  const prevHs = _expandHubspotData(prevHsRaw);
+  // (prevHs уже прочитан в начале функции для auto-promote check.)
 
-  const merged = fullSync ? aggregates : {
+  const merged = effectiveFullSync ? aggregates : {
     dealsByOwner: { ...(prevHs.dealsByOwner || {}), ...aggregates.dealsByOwner },
     meetingsByOwner: { ...(prevHs.meetingsByOwner || {}), ...aggregates.meetingsByOwner },
     toursByMonth: _mergeToursByMonth(prevHs.toursByMonth || {}, aggregates.toursByMonth),
@@ -531,7 +548,7 @@ async function _runSync({fullSync = false} = {}) {
   // Contacts — fullSync replaces, incremental keeps previous (we don't
   // re-fetch contacts on incremental). Falls back to {} so the UI helper
   // never throws on lookup.
-  merged.contactByEmail = (fullSync && contactByEmail) ? contactByEmail : (prevHs.contactByEmail || {});
+  merged.contactByEmail = (effectiveFullSync && contactByEmail) ? contactByEmail : (prevHs.contactByEmail || {});
   // contactById добавлен 2026-05-27 — основной индекс, включает no-email
   // SOCIAL/Messenger лидов.
   // КРИТИЧНО (fix 2026-05-27 #2): на incremental sync если prevHs не имеет
@@ -540,7 +557,7 @@ async function _runSync({fullSync = false} = {}) {
   // не срабатывает → UI показывает 0 контактов. Оставляем field undefined
   // — serialize step ниже пропустит его, contactByIdJson не появится в
   // Firestore, и frontend корректно фолбэчит на contactByEmail.
-  if (fullSync && contactById && Object.keys(contactById).length > 0) {
+  if (effectiveFullSync && contactById && Object.keys(contactById).length > 0) {
     merged.contactById = contactById;
   } else if (prevHs.contactById && Object.keys(prevHs.contactById).length > 0) {
     merged.contactById = prevHs.contactById;
@@ -620,7 +637,7 @@ async function _runSync({fullSync = false} = {}) {
   await hsRef.set({
     hubspotData,
     _updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    _updatedBy: fullSync ? 'hubspot-sync-full' : 'hubspot-sync',
+    _updatedBy: effectiveFullSync ? 'hubspot-sync-full' : 'hubspot-sync',
   });
 
   // Audit row so Activity log shows the sync ran.
@@ -628,7 +645,7 @@ async function _runSync({fullSync = false} = {}) {
     await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
       action: 'hubspot.sync',
       ts: Date.now(),
-      actor: fullSync ? 'system:hubspot-sync-full' : 'system:hubspot-sync',
+      actor: effectiveFullSync ? 'system:hubspot-sync-full' : 'system:hubspot-sync',
       note: `HubSpot sync: ${meetings.length} meetings (${hubspotData.counts.tourMeetings} tours), ${deals.length} deals, ${Object.keys(owners).length} owners`,
       counts: hubspotData.counts,
     });
