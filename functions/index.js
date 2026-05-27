@@ -5039,15 +5039,117 @@ async function _ensureTransactionRefresh(stripe, fcAccountId) {
   }
 }
 
+// Proactive refresh helper (Tony 2026-05-27).
+//
+// Background: Stripe FC `transactions.list` returns ONLY what Stripe has
+// already cached locally — it does NOT proactively pull fresh data from
+// the bank. Without a periodic `accounts.refresh({features:['transactions']})`
+// call, `list` keeps returning 0 new rows even though the cron is running
+// hourly. The "9 days behind" symptom Tony saw on 2026-05-27 was exactly
+// this — sync looked alive (lastPolledAt was fresh, 0 new) but no fresh
+// data was being pulled because nothing was triggering refresh after the
+// initial connect.
+//
+// This function:
+//   1. Retrieves the account to inspect `transaction_refresh` state.
+//   2. Decides whether a fresh refresh is needed (status/cooldown-aware).
+//   3. Optionally waits for the refresh to complete (manual-trigger path
+//      so the UI's "Refresh now" returns fresh data on first try; cron
+//      skips waiting and lets the next tick pick up the fresh data).
+//
+// Returns:
+//   {
+//     triggered: bool,     // did we call refresh()
+//     status: string|null, // final transaction_refresh.status seen
+//     cooldownUntil: number|null,  // unix sec, only when in cooldown
+//     waitedMs: number,    // ms spent polling for completion
+//   }
+async function _ensureFreshTransactions(stripe, fcAccountId, opts = {}) {
+  const waitForCompletion = opts.waitForCompletion === true;
+  const MAX_WAIT_MS = 60 * 1000;           // 60s — generous; Stripe usually 5-30s
+  const POLL_INTERVAL_MS = 2 * 1000;
+  const startMs = Date.now();
+  // Step 1: retrieve current state.
+  let acc;
+  try {
+    acc = await stripe.financialConnections.accounts.retrieve(fcAccountId);
+  } catch (err) {
+    logger.warn(`[bank-feed] retrieve ${fcAccountId} for refresh-check failed: ${err?.message || err}`);
+    return { triggered: false, status: null, cooldownUntil: null, waitedMs: 0 };
+  }
+  const tr = acc.transaction_refresh || null;
+  const nowUnix = Math.floor(Date.now() / 1000);
+  // Step 2: already pending — Stripe is working on it, don't re-trigger.
+  if (tr?.status === 'pending') {
+    if (!waitForCompletion) {
+      logger.info(`[bank-feed] refresh ${fcAccountId}: already pending, skipping wait (cron path)`);
+      return { triggered: false, status: 'pending', cooldownUntil: null, waitedMs: 0 };
+    }
+    // Wait for completion.
+    while (Date.now() - startMs < MAX_WAIT_MS) {
+      await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+      try {
+        acc = await stripe.financialConnections.accounts.retrieve(fcAccountId);
+        if (acc.transaction_refresh?.status !== 'pending') break;
+      } catch {}
+    }
+    return {
+      triggered: false,
+      status: acc.transaction_refresh?.status || 'pending',
+      cooldownUntil: null,
+      waitedMs: Date.now() - startMs,
+    };
+  }
+  // Step 3: in cooldown — Stripe will reject a refresh call. Use whatever
+  // is cached and bail. Next cron tick after cooldown expires will refresh.
+  if (tr?.status === 'succeeded' && tr.next_refresh_available_at && tr.next_refresh_available_at > nowUnix) {
+    logger.info(`[bank-feed] refresh ${fcAccountId}: in cooldown until ${tr.next_refresh_available_at} (${tr.next_refresh_available_at - nowUnix}s remaining)`);
+    return { triggered: false, status: 'cooldown', cooldownUntil: tr.next_refresh_available_at, waitedMs: 0 };
+  }
+  // Step 4: trigger refresh (status was null, succeeded+available, or failed).
+  const r = await _ensureTransactionRefresh(stripe, fcAccountId);
+  if (!r.ok) {
+    return { triggered: false, status: null, cooldownUntil: null, waitedMs: Date.now() - startMs };
+  }
+  if (!waitForCompletion) {
+    logger.info(`[bank-feed] refresh ${fcAccountId}: triggered (cron path, not waiting)`);
+    return { triggered: true, status: r.status, cooldownUntil: null, waitedMs: 0 };
+  }
+  // Wait for completion (manual path).
+  let finalStatus = r.status;
+  while (Date.now() - startMs < MAX_WAIT_MS) {
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+    try {
+      const a = await stripe.financialConnections.accounts.retrieve(fcAccountId);
+      finalStatus = a.transaction_refresh?.status || finalStatus;
+      if (finalStatus && finalStatus !== 'pending') break;
+    } catch {}
+  }
+  logger.info(`[bank-feed] refresh ${fcAccountId}: completed waited=${Date.now() - startMs}ms final=${finalStatus}`);
+  return { triggered: true, status: finalStatus, cooldownUntil: null, waitedMs: Date.now() - startMs };
+}
+
 // Pull every transaction Stripe FC has for an account since `sinceUnix`
 // (or all-time if sinceUnix is null). Returns the count actually written
 // to Firestore (excluding dedup hits). When `state` is supplied, the
 // matcher runs inline against each new credit transaction.
-async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, state}) {
+//
+// opts.manual=true → proactively refresh AND wait for completion before list
+// (UI path, operator is watching the spinner).
+// opts.manual=false → proactively refresh (cooldown-aware) but don't wait;
+// list returns whatever's cached now, next cron tick picks up the fresh data.
+async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, state, manual}) {
   const col = db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`);
   let written = 0, skipped = 0, scanned = 0, suggested = 0;
   let startingAfter = undefined;
   let refreshTriggered = false;
+  // Proactive refresh — без этого Stripe FC будет вечно отдавать кэш
+  // и list() возвращать 0 new даже когда в банке появились новые транзакции
+  // (баг «9 days behind» 2026-05-27).
+  const proactive = await _ensureFreshTransactions(stripe, fcAccountId, {
+    waitForCompletion: manual === true,
+  });
+  if (proactive.triggered) refreshTriggered = true;
   for (;;) {
     const params = {
       account: fcAccountId,
@@ -5160,6 +5262,10 @@ exports.pollBankTransactions = onCall(
     const stripe = getStripe();
     const targetFcId = req.data?.stripeFcAccountId || null;  // null = poll all
     const isBackfill = req.data?.backfill === true;
+    // manual=true → operator clicked «Refresh now», proactive refresh
+    // должен ждать completion чтобы UI вернулся с fresh data.
+    // Default true для on-demand callable; cron явно ставит false.
+    const isManual = req.data?.manual !== false;
     const state = await readWorkspaceState();
     const conns = (state.bankConnections || [])
       .filter(c => c.status === 'active')
@@ -5183,6 +5289,7 @@ exports.pollBankTransactions = onCall(
           fcAccountId: c.stripeFcAccountId,
           sinceUnix: since,
           state,                         // enables inline matching
+          manual: isManual,              // wait-for-refresh-completion gate
         });
         await _markAccountPolled({
           fcAccountId: c.stripeFcAccountId,
@@ -5320,6 +5427,7 @@ exports.bankFeedScheduledPoll = onSchedule(
           fcAccountId: c.stripeFcAccountId,
           sinceUnix,
           state,                         // enables inline matching
+          manual: false,                 // cron — refresh без ожидания, list возвращает что есть, следующий tick подберёт
         });
         await _markAccountPolled({
           fcAccountId: c.stripeFcAccountId,
