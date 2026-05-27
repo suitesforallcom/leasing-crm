@@ -38,7 +38,7 @@
     { key: 'email',      label: 'Email' },
     { key: 'referral',   label: 'Referral' },
     { key: 'offline',    label: 'Offline' },
-    { key: 'other',      label: 'Other / Unknown' },
+    { key: 'other',      label: 'Other / Unknown (non-paid catch-all)' },
   ];
 
   // Mirrors classifyChannel in marketing.jsx + _attributeChannel in
@@ -405,8 +405,16 @@
       && (windowKind === '30d' || windowKind === '90d' ||
           (windowKind === 'custom' && windowStartMs < _mtdStartMs));
 
+    // 2026-05-27 — filter 'other' = catch-all для всего что не paid и не
+    // organic (direct / referral / email / offline / other / undefined).
+    // Это совпадает с агрегацией «Other» строки в marketing.jsx (line
+    // 936: byChannel.other.filter(channel !== 'organic')). До этого
+    // фикса модал показывал строго l.channel === 'other' → 7 в KPI и
+    // 5 в модале (2 direct/referral/email/offline пропадали с глаз).
+    const _SPECIFIC_KEYS = new Set(['google-ads', 'meta', 'tiktok', 'organic']);
     function passesFilter(key) {
       if (filter === 'all') return true;
+      if (filter === 'other') return !_SPECIFIC_KEYS.has(key);
       return key === filter;
     }
     function passesQuery(...fields) {
