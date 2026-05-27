@@ -461,9 +461,22 @@ function SpendSection() {
 
   // Date-range cutoffs for daily aggregation. Returns {start,end} YYYY-MM-DD
   // strings (end inclusive). 'custom' uses the user-picked dates.
+  //
+  // 2026-05-27 Tony: «На HubSpot показывает 20 контактов а у нас 14
+  // разбирайся». Root cause — Pulse считал «7d» как today + 6 days back
+  // (May 21-27), а HubSpot/GA4/Search Console «Last 7 days» = 7 дней
+  // ПЕРЕД today (May 20-26, today excluded). Из-за этого терялись
+  // контакты с самого старого дня окна. Now aligned to industry standard
+  // marketing-analytics semantics: «Last N days» = N preceding days,
+  // today excluded. «Today» preset остаётся для сегодняшней visibility.
+  // Side effect: CPL/CPC/CAC в этих окнах сместятся на 1 день — это
+  // ожидаемо (раньше spend за частичный today разводился на partial
+  // today leads, теперь окно closed = более точный CPL).
   function windowRange(kind) {
     const today = new Date();
     const todayYmd = fmtYmd(today);
+    const yesterday = new Date(today.getTime() - 86400 * 1000);
+    const yesterdayYmd = fmtYmd(yesterday);
     if (kind === "custom") {
       return { start: customStart, end: customEnd };
     }
@@ -471,16 +484,18 @@ function SpendSection() {
       return { start: todayYmd, end: todayYmd };
     }
     if (kind === "yesterday") {
-      const y = new Date(today.getTime() - 86400 * 1000);
-      const yYmd = fmtYmd(y);
-      return { start: yYmd, end: yYmd };
+      return { start: yesterdayYmd, end: yesterdayYmd };
     }
     if (kind === "mtd") {
+      // MTD = Month-to-Date — explicitly до today inclusive (стандарт
+      // для finance). Не trogem.
       return { start: today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0") + "-01", end: todayYmd };
     }
+    // 7d / 30d / 90d — HubSpot / GA4 semantics: N preceding days,
+    // today excluded. May 27 today + kind=7d → start = May 20, end = May 26.
     const days = kind === "7d" ? 7 : kind === "90d" ? 90 : 30;
-    const back = new Date(today.getTime() - (days - 1) * 86400 * 1000);
-    return { start: fmtYmd(back), end: todayYmd };
+    const back = new Date(today.getTime() - days * 86400 * 1000);
+    return { start: fmtYmd(back), end: yesterdayYmd };
   }
   const { start: windowStart, end: windowEnd } = windowRange(windowKind);
   const windowLabel = windowKind === "today" ? "Today"
@@ -694,14 +709,12 @@ function SpendSection() {
             {` · $${totalSpend.toFixed(2)} spend · ${totalClicks.toLocaleString()} clicks · ${totals.leads.toLocaleString()} leads created`}
           </span>
         </div>
-        {/* Cross-check hint — если выбрано 7d / 30d / 90d, окно НЕ совпадает
-            с «This month» в Meta Ads Manager / Google Ads UI → числа будут
-            расходиться. Tony 2026-05-24: «у нас на сайте $11342 vs $8185 в
-            Meta UI» — это разница между «last 30 days» (включает 6 дней
-            прошлого месяца) и «May 1-24». Hint предлагает переключиться. */}
+        {/* Cross-check hint — 7d/30d/90d теперь HubSpot/GA4-совместимы
+            (today excluded). MTD и Today/Yesterday включают сегодня —
+            это другая семантика, операторы должны это понимать. */}
         {(windowKind === "7d" || windowKind === "30d" || windowKind === "90d") && (
           <div style={{ marginTop: 6, padding: "6px 10px", background: "rgba(59,130,246,.06)", border: "1px solid rgba(59,130,246,.2)", borderRadius: 6, fontSize: 11, color: "#1e40af" }}>
-            💡 Чтобы сравнить с <b>Meta Ads Manager / Google Ads UI</b> («This month» = {new Date().toLocaleString("en-US", { month: "long" })} 1 → today), переключи на <button onClick={() => setWindowKind("mtd")} style={{ background: "transparent", border: "none", color: "#1e40af", fontWeight: 700, textDecoration: "underline", cursor: "pointer", padding: 0, fontSize: 11, fontFamily: "inherit" }}>MTD</button>. Окно «{windowLabel}» включает дни предыдущего месяца → числа в Pulse будут больше.
+            💡 «{windowLabel}» = <b>{windowKind === "7d" ? "7" : windowKind === "30d" ? "30" : "90"} preceding days, today excluded</b> ({windowStart} → {windowEnd}). Это совпадает с фильтром «Last {windowKind === "7d" ? "7" : windowKind === "30d" ? "30" : "90"} days» в HubSpot / GA4. Чтобы включить сегодняшнюю активность, используй <button onClick={() => setWindowKind("mtd")} style={{ background: "transparent", border: "none", color: "#1e40af", fontWeight: 700, textDecoration: "underline", cursor: "pointer", padding: 0, fontSize: 11, fontFamily: "inherit" }}>MTD</button> или <button onClick={() => setWindowKind("today")} style={{ background: "transparent", border: "none", color: "#1e40af", fontWeight: 700, textDecoration: "underline", cursor: "pointer", padding: 0, fontSize: 11, fontFamily: "inherit" }}>Today</button>.
           </div>
         )}
         {/* Date-range selector + Site-leads-only toggle */}
