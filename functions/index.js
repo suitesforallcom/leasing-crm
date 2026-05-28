@@ -483,6 +483,13 @@ exports.createStripeInvoice = onCall(
       // populates this from operator-added rows; legacy single-purpose
       // callers leave it undefined and the existing path runs unchanged.
       extraLineItems,
+      // Phase 4 (roll-late-fee project): id standalone late-fee invoice'а
+      // который backend должен (a) добавить как extra line на новый rent
+      // invoice и (b) void'нуть после успешного finalize+send. ТОЛЬКО для
+      // purpose='rent'. Validation ниже проверяет что это open late_fee
+      // invoice того же customer + same unit + ym = effectiveYm − 1
+      // календарно. Невалидный id → throw до создания нового invoice.
+      rollInLateFeeInvoiceId,
       // System-initiated send flag — when the catch-up trigger
       // (_triggerAutoInvoiceNowIfNeeded) calls this, it passes auto:true
       // so buildCustomInvoiceNumber tags the result with the "RA-"
@@ -765,6 +772,63 @@ exports.createStripeInvoice = onCall(
       logger.warn(`[createStripeInvoice] dup-check failed (continuing): ${err.message}`);
     }
 
+    // ---- Phase 4 (roll-late-fee): валидация carryover candidate -------
+    // Если клиент передал rollInLateFeeInvoiceId, проверяем что это open
+    // late_fee invoice того же customer + same unit + correct prevYm.
+    // Невалидные id → throw HttpsError (а не silent skip), чтобы оператор
+    // сразу увидел проблему. ТОЛЬКО для purpose='rent'. После создания
+    // нового invoice (ниже) добавится synthetic line item + сам standalone
+    // void'нётся после finalize + send.
+    let _rollInRecord = null;
+    if (rollInLateFeeInvoiceId && invPurpose === 'rent') {
+      if (typeof rollInLateFeeInvoiceId !== 'string' || !/^in_[A-Za-z0-9]+$/.test(rollInLateFeeInvoiceId)) {
+        throw new HttpsError('invalid-argument',
+          'rollInLateFeeInvoiceId must be a Stripe invoice id (in_…)');
+      }
+      // prevYm = effectiveYm − 1 календарно (UTC-safe).
+      const _ey = +effectiveYm.slice(0, 4);
+      const _em = +effectiveYm.slice(5, 7);
+      const _pd = new Date(Date.UTC(_ey, _em - 2, 1));
+      const _prevYm = `${_pd.getUTCFullYear()}-${String(_pd.getUTCMonth() + 1).padStart(2, '0')}`;
+      let _rollInInv;
+      try {
+        _rollInInv = await stripe.invoices.retrieve(rollInLateFeeInvoiceId);
+      } catch (e) {
+        throw new HttpsError('not-found',
+          `Roll-in late-fee invoice ${rollInLateFeeInvoiceId} not found in Stripe: ${e.message}`);
+      }
+      const _meta = _rollInInv.metadata || {};
+      const _rollInCustomer = typeof _rollInInv.customer === 'string'
+        ? _rollInInv.customer
+        : (_rollInInv.customer && _rollInInv.customer.id);
+      if (_rollInCustomer !== customerId) {
+        throw new HttpsError('permission-denied',
+          `Roll-in invoice ${_rollInInv.id} belongs to a different customer (${_rollInCustomer} vs ${customerId})`);
+      }
+      if (String(_meta.unitId || '') !== String(unitId)) {
+        throw new HttpsError('failed-precondition',
+          `Roll-in invoice ${_rollInInv.id} is for unit ${_meta.unitId || '(none)'}, not ${unitId}`);
+      }
+      if (_meta.purpose !== 'late_fee') {
+        throw new HttpsError('failed-precondition',
+          `Roll-in invoice ${_rollInInv.id} has purpose '${_meta.purpose || '(none)'}', expected 'late_fee'`);
+      }
+      if (_meta.ym !== _prevYm) {
+        throw new HttpsError('failed-precondition',
+          `Roll-in invoice ${_rollInInv.id} is for month '${_meta.ym || '(none)'}', expected '${_prevYm}' (anchor ${effectiveYm} − 1)`);
+      }
+      if (_rollInInv.status !== 'open') {
+        throw new HttpsError('failed-precondition',
+          `Roll-in invoice ${_rollInInv.id} has status '${_rollInInv.status}', expected 'open' (paid / void / uncollectible cannot be rolled in)`);
+      }
+      _rollInRecord = {
+        id: _rollInInv.id,
+        amountCents: _rollInInv.total || 0,
+        prevYm: _prevYm,
+      };
+      logger.info(`[roll-late-fee] validated rollin ${_rollInInv.id} for unit=${unitId} prevYm=${_prevYm} amount=${_rollInInv.total} cents`);
+    }
+
     // ---- Human-readable invoice copy ----------------------------------
     // Three separate fields on the Stripe invoice end up in different
     // spots on the tenant-facing PDF + email. Purpose (rent/late_fee/...)
@@ -963,6 +1027,10 @@ exports.createStripeInvoice = onCall(
         // Private note is kept in metadata only — visible to the operator
         // in Stripe Dashboard, NEVER rendered on the tenant's PDF/email.
         ...(privateNote ? {privateNote: String(privateNote).slice(0, 500)} : {}),
+        // Phase 4 (roll-late-fee): cross-reference на standalone invoice,
+        // late-fee которого был перенесён сюда. Reporting (Phase 5) и
+        // operator-debug используют этот линк.
+        ...(_rollInRecord ? { rolledInLateFeeFrom: _rollInRecord.id } : {}),
       },
     }, stripeReqOpts);
 
@@ -1072,6 +1140,47 @@ exports.createStripeInvoice = onCall(
       if (added > 0) logger.info(`[createStripeInvoice] added ${added} extra line items to ${invoice.id}`);
     }
 
+    // Phase 4 (roll-late-fee): synthetic late-fee line для carryover.
+    // Creates ТОЛЬКО после успешной валидации (_rollInRecord set above).
+    // Если invoiceItems.create fails — abort'аем весь invoice (delete draft)
+    // и throw — operator ожидал carryover, неполный invoice = misleading
+    // PDF. Original standalone остаётся untouched (мы НЕ void'нули его
+    // ни на этой ветке, ни выше — void произойдёт ниже только после
+    // успешного finalize+send).
+    if (_rollInRecord) {
+      try {
+        const _prevLabel = new Date(`${_rollInRecord.prevYm}-01T00:00:00Z`)
+          .toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+        await stripe.invoiceItems.create({
+          customer: customerId,
+          invoice: invoice.id,
+          amount: _rollInRecord.amountCents,
+          currency: 'usd',
+          description: `Late fee carryover — ${_prevLabel}`.slice(0, 250),
+          metadata: {
+            source: 'suitesforall',
+            purpose: 'late_fee',
+            suite: String(unitId),
+            billingMonth: _rollInRecord.prevYm,
+            ym: _rollInRecord.prevYm,
+            rolledInFromInvoiceId: _rollInRecord.id,
+            extraLine: 'true',
+          },
+        });
+        logger.info(`[roll-late-fee] added carryover line $${(_rollInRecord.amountCents / 100).toFixed(2)} from ${_rollInRecord.id} to draft ${invoice.id}`);
+      } catch (rollErr) {
+        logger.error(`[roll-late-fee] failed to add carryover line to ${invoice.id}: ${rollErr.message}`);
+        try {
+          await stripe.invoices.del(invoice.id);
+          logger.info(`[roll-late-fee] deleted draft ${invoice.id} after carryover-line failure`);
+        } catch (delErr) {
+          logger.warn(`[roll-late-fee] post-rollback delete of ${invoice.id} also failed: ${delErr.message}`);
+        }
+        throw new HttpsError('internal',
+          `Failed to add late-fee carryover line. New invoice voided. Original standalone ${_rollInRecord.id} untouched. Error: ${rollErr.message}`);
+      }
+    }
+
     // Set the custom number. If it collides (extremely unlikely because of
     // the 2-char random suffix), regenerate once with a fresh suffix.
     try {
@@ -1102,6 +1211,38 @@ exports.createStripeInvoice = onCall(
         sent = await stripe.invoices.sendInvoice(finalized.id);
       } catch (err) {
         logger.warn(`[stripe] sendInvoice for ${finalized.id} failed: ${err.message}`);
+      }
+    }
+
+    // Phase 4 (roll-late-fee): после успешного finalize+send консолидатора
+    // void'им исходный standalone late-fee инвойс — он теперь дубль.
+    // Если void упадёт (редкий API outage), НЕ роняем всю операцию:
+    // консолидатор уже разослан/снят, иначе оператор увидит late fee
+    // дважды. _rollInVoidStatus прокидывается в return — клиент покажет
+    // предупреждение если void не удался.
+    let _rollInVoidStatus = null;
+    if (_rollInRecord) {
+      try {
+        await stripe.invoices.voidInvoice(_rollInRecord.id);
+        try {
+          // Stripe metadata.update делает partial-merge — добавляем
+          // cross-reference на консолидатор без затирания исходных
+          // metadata (suite/ym/purpose/source).
+          await stripe.invoices.update(_rollInRecord.id, {
+            metadata: {
+              rolledIntoInvoiceId: sent.id,
+              rolledIntoYm: effectiveYm,
+              rolledIntoAt: new Date().toISOString(),
+            },
+          });
+        } catch (_metaErr) {
+          logger.warn(`[roll-late-fee] void succeeded for ${_rollInRecord.id} but metadata stamp failed: ${_metaErr.message}`);
+        }
+        _rollInVoidStatus = {ok: true};
+        logger.info(`[roll-late-fee] voided standalone ${_rollInRecord.id}, rolled into ${sent.id}`);
+      } catch (voidErr) {
+        _rollInVoidStatus = {ok: false, error: voidErr.message};
+        logger.error(`[roll-late-fee] void FAILED for ${_rollInRecord.id} (consolidator ${sent.id} already sent): ${voidErr.message}`);
       }
     }
 
@@ -1150,6 +1291,19 @@ exports.createStripeInvoice = onCall(
       status: sent.status,
       amount: rentCents,
       customerId,
+      // Phase 4 (roll-late-fee): возвращаем результат void'а исходного
+      // standalone late-fee инвойса, чтобы клиент мог показать
+      // «Late fee carryover applied · standalone N voided» или, если
+      // void не удался, предупреждение «consolidator sent but standalone
+      // N still open — review manually».
+      ...(_rollInRecord ? {
+        rolledInLateFee: {
+          fromInvoiceId: _rollInRecord.id,
+          amount: _rollInRecord.amountCents,
+          voided: _rollInVoidStatus?.ok === true,
+          voidError: _rollInVoidStatus?.error || null,
+        },
+      } : {}),
     };
   }
 );
