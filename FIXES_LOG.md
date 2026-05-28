@@ -105,6 +105,25 @@ to the replacement entry) if a fix is intentionally rewritten.
 - **Regression test:** none — manual UI verification only. Reproduce State B by hand-editing localStorage `state.buildings[].floors[].units[].stripe.moveInRent.invoiceId = state...depositInvoice.invoiceId`, reload, verify Move-in card no longer says PAID.
 - **Related PR / issue:** none (direct commit on `claude/modest-curie-8a50ad`)
 
+#### Phase 2 — `lastInvoiceId` cross-stamp + diagnostic helper (2026-05-28, same-day second pass)
+
+After first-pass fix deployed, Suite 401 still rendered wrong: green «Sent» (blue actually — the function returns `state:'sent'`) instead of the real Stripe status. Diagnostic showed `moveInRent: null` (Phase 1 heal cleared it) but `u.stripe.lastInvoiceId === u.stripe.depositInvoice.invoiceId` — cross-stamp had also landed on `lastInvoiceId/Ym` independently. Phase 1 heal only cleared `lastInvoiceId` as a side-effect of clearing `moveInRent` (line `if (u.stripe.lastInvoiceId === miAfter.invoiceId)`), so when `moveInRent` was already null at heal time, `lastInvoiceId` survived.
+
+- **Additional invariants:**
+  1. `_healStaleStripeStamps` MUST inspect `u.stripe.lastInvoiceId` independently of `u.stripe.moveInRent`. Both paths can carry the cross-stamp; the heal must cover the case where one is cleared but the other isn't.
+  2. The same three deposit-detector conditions apply to `lastInvoiceId`: direct equality with `depositInvoice.invoiceId`, `metadata.purpose === 'deposit'`, or `description` matches `/\bdeposit\b/i`.
+- **Diagnostic helper added** — `window.sfaDiagnoseSuitePaid(suiteId, ym?)` in `floor-map-editor.html`. Pure read-only. Prints:
+  - Unit + stamps + paymentForYm + paymentForDeposit
+  - `crossStamps` block (explicit deposit ↔ moveInRent ↔ lastInvoice collision detector)
+  - All `_invoicesCache` rows matching the suite (by email/description/metadata)
+  - `_stampPointsToDeposit` per id with sub-conditions
+  - `_isMonthSettled` branch trace + `_findRentInvoiceInCache` result + final `_moveInRentStatus`
+  - DOM badges inside `.move-in-card` + stale-render mismatch flag
+  - Human VERDICT line naming the source of the rendered label
+  - `suggestedFix` when applicable
+- **How to invoke:** `sfaDiagnoseSuitePaid('401')` from browser console. `copy(sfaDiagnoseSuitePaid('401'))` puts the full JSON in clipboard for sharing.
+- **Use it:** if any future regression surfaces a wrong Move-in card status, run this BEFORE attempting another fix. The VERDICT line tells you which code path produced the label.
+
 ---
 
 ### 33. Auto-invoice cron — cascade gate (workspace ← building ← floor ← unit) (2026-05-28)
