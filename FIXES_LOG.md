@@ -60,6 +60,37 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 32. Bank-sync watermark — safety margin on incremental polls (2026-05-28)
+
+- **Status:** active
+- **Branch / commit:** `claude/modest-curie-8a50ad`
+- **Area:** Bank reconciliation / Stripe Financial Connections / cron polling
+- **Files:**
+  - `functions/index.js` — `BANK_FEED_WATERMARK_SAFETY_DAYS` constant; `_pullTransactionsForAccount`; `pollBankTransactions`; `bankFeedScheduledPoll`
+- **Functions / invariants:**
+  - `BANK_FEED_WATERMARK_SAFETY_DAYS = 14` — incremental polls MUST subtract this many days from `lastPolledAt` when computing the `transacted_at >= since` filter passed to `stripe.financialConnections.transactions.list`. Without the margin, Stripe FC transactions published with `transacted_at < lastPolledAt < publish_time` (bank settles same-day, Stripe receives next day) silently fall through the gap between polls and are lost forever. 14 days covers observed worst-case bank-publishing lag (~7 days) with ~2× buffer.
+  - `_pullTransactionsForAccount` — before each batch `set(merge:true)` MUST pre-read existing docs via `db.getAll(...refs)` and preserve operator match decisions on re-poll. Specifically: when `existing.matchState === 'confirmed' || existing.matchState === 'dismissed'` the `matchState`, `matchedTenantId`, `matchedUnitId`, `matchedYm` fields MUST NOT be included in baseDoc (merge:true would otherwise reset them to `'unmatched'`/`null`). `checkImageUrl: null` MUST only be written for genuinely new docs (operator-uploaded check images on existing docs must survive re-polls). `written` counter increments ONLY for new docs (`isNew = !existing`); rewrites count as `skipped` instead — otherwise the operator's «X new transactions pulled» message inflates on every overlap.
+  - `pollBankTransactions` (callable, line ~5407) — backfill branch (`isBackfill || !c.backfillCompleted || !c.lastPolledAt`) keeps 365-day window; incremental branch subtracts safety margin.
+  - `bankFeedScheduledPoll` (cron `7 * * * *`, line ~5547) — same window logic mirrors the callable.
+- **Bug it fixed:**
+  Operator-visible symptom: red banner «Bank sync is N days behind» (currently 10d for Capital One ....5709). Cron at `:07` every hour reported `scanned=0 written=0` for an active connection even though Stripe FC's `/diagnose` modal confirmed fresh transactions (5/26 ACH-withdrawal + 5/26 STRIPE-deposit) were available. Root cause: `since = lastPolledAt` queried only `transacted_at >= 2026-05-27 07:07:00 UTC`, but the missing transactions had `transacted_at` between 5/18 and 5/26 and got published by Stripe FC AFTER 5/17's cron tick had advanced `lastPolledAt` past their dates. With the 14-day safety margin, the next cron tick queries `transacted_at >= (lastPolledAt - 14d) ≈ 2026-05-13` and recaptures the 11-day gap on first run (Stripe txn-id dedup makes re-fetching idempotent).
+- **Invariant — DO NOT BREAK:**
+  1. **Never use bare `lastPolledAt` as the `transacted_at` filter** for incremental polls. Always subtract `BANK_FEED_WATERMARK_SAFETY_DAYS * 86400` seconds.
+  2. **Never write `matchState` / `matchedTenantId` / `matchedUnitId` / `matchedYm` to baseDoc when an existing doc has `matchState === 'confirmed' || 'dismissed'`** — operator's manual decision wins over re-poll matcher output.
+  3. **Never include `checkImageUrl: null` in baseDoc for existing docs** — would wipe operator-uploaded check images. New docs only.
+  4. **Never count rewrites in `written`** — operator UI message «X new transactions pulled» relies on this counter being new-only. Use `skipped` for overlap rewrites.
+  5. **Pre-read pattern (`db.getAll(...refs)`) is one batched RTT per page, not 100 individual gets** — preserve this when refactoring.
+- **Verification:**
+  1. Open Settings → Integrations → Bank Connections → Capital One → click «Refresh now». Within ≤5s, the inline banner should say «✓ N new transaction(s) pulled (M scanned)» where N corresponds to the missed 5/18–5/26 window (~10 transactions). Subsequent clicks should report «✓ Up to date — no new transactions».
+  2. Open Settings → Integrations → Bank Connections → Capital One → click «Diagnose». The newest cached transaction date should match the newest Stripe sample date (no longer 9 days behind).
+  3. The red top-banner «Bank sync is N days behind» should disappear after `_checkBankSyncHealth` re-runs (auto-triggered on refresh completion).
+  4. Open Bank Activity panel. Any transaction operator previously marked `confirmed` or `dismissed` MUST retain that status after the refresh (regression test for operator-decision-preservation invariant).
+  5. Cloud Functions logs: `[bank-feed] poll fca_XXX: scanned=N written=M` — `scanned` ≥ `written`; on stable accounts (no new bank activity since last poll) `written=0` and `scanned > 0` (re-scan of safety-margin overlap), NOT `scanned=0 written=0`.
+- **Regression test:** none — bank-feed integration relies on live Stripe FC + Capital One sandbox. `scripts/check-invariants.sh` could add greppable checks for `BANK_FEED_WATERMARK_SAFETY_DAYS` constant + `preserveMatchDecision` guard but not currently gated.
+- **Related PR / issue:** none (direct commit on `claude/modest-curie-8a50ad`)
+
+---
+
 ### 31. HubSpot sync — funnel/qualified/owner detection invariants (2026-05-24)
 
 - **Status:** active

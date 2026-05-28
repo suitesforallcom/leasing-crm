@@ -5144,6 +5144,19 @@ exports.syncBankConnections = onCall(
 // =========================================================================
 
 const BANK_FEED_BACKFILL_DAYS = 365;
+// Safety-margin watermark для incremental polls (FIXES_LOG Entry 32, Tony 2026-05-28).
+// Stripe FC публикует транзакции с реальной датой `transacted_at`, которая
+// может быть в прошлом относительно момента публикации — банк settle-ит
+// позже, Stripe получает с задержкой. Если использовать `lastPolledAt` как
+// `since`-фильтр напрямую, поздно опубликованные транзакции проваливаются
+// в окно между опросами и теряются навсегда (баг «10 days behind» для
+// Capital One: cron каждый час видит 0 new, а в Stripe есть свежие txn-ы).
+// Поэтому каждый incremental poll смотрит на 14 дней НАЗАД от lastPolledAt
+// — типичный publishing-lag у банков ≤7 дней, 14d даёт запас. Дубли
+// безопасны: `bankTransactions` ключуется по Stripe txn-id с merge:true,
+// а operator-match decisions защищены отдельным guard'ом в
+// `_pullTransactionsForAccount` (см. preserveMatchDecision).
+const BANK_FEED_WATERMARK_SAFETY_DAYS = 14;
 
 // Stripe FC requires an explicit transaction-feature refresh before
 // `transactions.list` will return data on a freshly-connected account.
@@ -5302,10 +5315,24 @@ async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, stat
       throw err;
     }
     scanned += page.data.length;
+    // Pre-read existing doc'и для preserving operator-set match decisions.
+    // С safety-margin watermark (FIXES_LOG Entry 32) poll-окна перекрываются,
+    // и тот же txn может прийти в нескольких подряд опросах. Без этого guard'а
+    // merge:true перезаписал бы 'confirmed'/'dismissed' обратно в 'unmatched'.
+    // Один batched read на страницу (100 doc'ов = 1 RTT, не 100).
+    const refs = page.data.map(t => col.doc(t.id));
+    const existingSnaps = refs.length ? await db.getAll(...refs) : [];
+    const existingMap = new Map();
+    existingSnaps.forEach((snap, i) => {
+      if (snap.exists) existingMap.set(refs[i].id, snap.data());
+    });
     // Batched writes — Firestore caps at 500 ops per batch; we use 100.
     const batch = db.batch();
     for (const t of page.data) {
       const ref = col.doc(t.id);
+      const existing = existingMap.get(t.id);
+      const isNew = !existing;
+      // Facts — всегда пишем актуальные данные Stripe (идемпотентно).
       const baseDoc = {
         id: t.id,
         accountId: t.account,
@@ -5316,23 +5343,35 @@ async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, stat
         statusTransitions: t.status_transitions || null,
         status: t.status,                       // 'pending' | 'posted' | 'void'
         seenAt: admin.firestore.FieldValue.serverTimestamp(),
-        matchState: 'unmatched',
-        matchedTenantId: null,
-        matchedUnitId: null,
-        matchedYm: null,
-        checkImageUrl: null,
       };
-      // Run matcher inline if state was supplied. Skip if the txn is
-      // already confirmed/dismissed (merge:true preserves those fields).
-      if (state) {
-        const m = _matchTransaction(state, baseDoc);
-        if (m) {
-          Object.assign(baseDoc, m, { matchState: 'suggested' });
-          suggested++;
+      // Match-state — НЕ перезаписываем decisions оператора при re-poll.
+      // 'confirmed' / 'dismissed' = оператор принял решение, сохраняем
+      // как есть. 'unmatched' / 'suggested' / новый doc = можно (пере)матчить.
+      const preserveMatchDecision = existing &&
+        (existing.matchState === 'confirmed' || existing.matchState === 'dismissed');
+      if (!preserveMatchDecision) {
+        baseDoc.matchState = 'unmatched';
+        baseDoc.matchedTenantId = null;
+        baseDoc.matchedUnitId = null;
+        baseDoc.matchedYm = null;
+        // Run matcher inline if state was supplied.
+        if (state) {
+          const m = _matchTransaction(state, baseDoc);
+          if (m) {
+            Object.assign(baseDoc, m, { matchState: 'suggested' });
+            suggested++;
+          }
         }
       }
+      // checkImageUrl — только для новых doc'ов; existing уже мог иметь
+      // загруженное operator'ом изображение чека, перезаписывать null нельзя.
+      if (isNew) baseDoc.checkImageUrl = null;
       batch.set(ref, baseDoc, { merge: true });
-      written++;
+      // «written» = реально новые транзакции (для operator UI «X new pulled»).
+      // Re-writes existing doc'ов overlap-окна не считаем как «new» — иначе
+      // safety margin будет каждый poll показывать N≥1 ложных «new».
+      if (isNew) written++;
+      else skipped++;
     }
     if (page.data.length) await batch.commit();
     if (!page.has_more) break;
@@ -5404,9 +5443,14 @@ exports.pollBankTransactions = onCall(
       // initial poll that happens before Stripe finishes its first refresh
       // would advance lastPolledAt to "now" and the next incremental poll
       // would query `transacted_at >= now`, missing every historical txn.
+      //
+      // Incremental mode: смотрим на BANK_FEED_WATERMARK_SAFETY_DAYS
+      // назад от lastPolledAt — чтобы поздно опубликованные Stripe FC
+      // транзакции (`transacted_at < lastPolledAt < publish_time`)
+      // не проваливались в gap между опросами (FIXES_LOG Entry 32).
       const since = isBackfill || !c.backfillCompleted || !c.lastPolledAt
         ? Math.floor(Date.now() / 1000) - (BANK_FEED_BACKFILL_DAYS * 86400)
-        : Math.floor(new Date(c.lastPolledAt).getTime() / 1000);
+        : Math.floor(new Date(c.lastPolledAt).getTime() / 1000) - (BANK_FEED_WATERMARK_SAFETY_DAYS * 86400);
       try {
         const r = await _pullTransactionsForAccount({
           stripe,
@@ -5541,10 +5585,12 @@ exports.bankFeedScheduledPoll = onSchedule(
     for (const c of due) {
       // Same window logic as the on-demand poller: stay in 365-day backfill
       // mode until backfillCompleted=true (set by _markAccountPolled when the
-      // first poll actually writes data).
+      // first poll actually writes data). Incremental polls используют
+      // BANK_FEED_WATERMARK_SAFETY_DAYS-day safety margin от lastPolledAt
+      // чтобы поздно опубликованные txn-ы не проваливались (FIXES_LOG 32).
       const sinceUnix = (!c.backfillCompleted || !c.lastPolledAt)
         ? Math.floor(now / 1000) - (BANK_FEED_BACKFILL_DAYS * 86400)
-        : Math.floor(new Date(c.lastPolledAt).getTime() / 1000);
+        : Math.floor(new Date(c.lastPolledAt).getTime() / 1000) - (BANK_FEED_WATERMARK_SAFETY_DAYS * 86400);
       try {
         const r = await _pullTransactionsForAccount({
           stripe,
