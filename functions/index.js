@@ -6697,6 +6697,37 @@ exports.listBankTransactionsForUnit = onCall(
 );
 
 // =========================================================================
+// Lightweight bank-sync health summary (Tony 2026-05-28, FIXES_LOG Entry 32)
+// =========================================================================
+// Возвращает newestUnix = transacted_at самой свежей кэшированной
+// транзакции (по всем accountId, всем matchState, всем суммам).
+// Используется клиентским `_checkBankSyncHealth` для расчёта daysStale
+// и решения показывать ли red banner «Bank sync is N days behind».
+//
+// Раньше клиент звал `listBankTransactionsForUnit` с дефолтами, и тот
+// фильтровал по matchState ∈ {unmatched, suggested}, по credit-only,
+// сортировал по «closest to amount» (не по дате) и обрезал limit=5.
+// После того как auto-apply auto-confirmed часть новых транзакций,
+// они выпадали из выборки → health-check видел старую дату → banner
+// не исчезал даже после удачного poll'а.
+//
+// Этот CF делает простой `orderBy('transactedAt','desc').limit(1)` —
+// один документ из Firestore (single-field index = автоматический,
+// composite не нужен). Дёшево и корректно.
+// =========================================================================
+exports.getBankSyncHealthSummary = onCall(
+  {timeoutSeconds: 30, memory: '256MiB'},
+  async (req) => {
+    await requireEditor(req.auth);
+    const col = db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`);
+    const snap = await col.orderBy('transactedAt', 'desc').limit(1).get();
+    if (snap.empty) return { newestUnix: 0 };
+    const t = snap.docs[0].data() || {};
+    return { newestUnix: +t.transactedAt || 0 };
+  }
+);
+
+// =========================================================================
 // Cleanup orphan bank transactions (Tony 2026-05-21 phantom incident)
 // =========================================================================
 // КРИТИЧЕСКАЯ ФИНАНСОВАЯ КОМАНДА. После reconnect'а банка (Stripe
