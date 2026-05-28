@@ -3267,6 +3267,31 @@ exports.runAutoInvoices = onSchedule(
               logger.warn(`[auto-invoice] ${u.id}: dup-search failed (${searchErr.message}); proceeding without cross-flow dedupe`);
             }
 
+            // === Phase 2 dry-run: roll-late-fee-into-next-rent ============
+            // Никаких Stripe-write'ов, никаких state-mutations — только
+            // observability того, что Phase 3 бы сделала. Gate: late-fee
+            // cascade resolves rollIntoNextRent === true. Если off — silent.
+            // Failure isolation: любая ошибка в этом блоке НЕ блокирует
+            // создание рент-инвойса (try/catch ниже).
+            try {
+              const _lfCfg = _resolveLateFeeConfigServer(state, b, f, u);
+              if (_lfCfg && _lfCfg.rollIntoNextRent === true) {
+                const [_ty, _tm] = nextYm.split('-').map(Number);
+                // _tm 1-indexed; _tm-2 даёт 0-indexed prev month
+                const _pd = new Date(Date.UTC(_ty, _tm - 2, 1));
+                const _prevYm = `${_pd.getUTCFullYear()}-${String(_pd.getUTCMonth() + 1).padStart(2, '0')}`;
+                const _cand = await _findUnpaidLateFeeForServer(stripe, customerId, u.id, _prevYm, logger);
+                if (_cand) {
+                  const _amt = ((_cand.total || 0) / 100).toFixed(2);
+                  logger.info(`[roll-late-fee:dry-run] unit=${u.id} targetYm=${nextYm} prevYm=${_prevYm} candidate=${_cand.id} total=$${_amt} status=${_cand.status} → WOULD-ROLL-IN`);
+                } else {
+                  logger.info(`[roll-late-fee:dry-run] unit=${u.id} targetYm=${nextYm} prevYm=${_prevYm} candidate=(none) → SKIP-no-candidate`);
+                }
+              }
+            } catch (_rollErr) {
+              logger.warn(`[roll-late-fee:dry-run] unit=${u.id} dry-run threw (continuing rent flow): ${_rollErr.message}`);
+            }
+
             const description = `Monthly rent — ${nm.toLocaleString('en-US', {month:'long', year:'numeric', timeZone:'UTC'})} · Suite ${u.id}`;
             const due = Math.floor((Date.now() + dueDays * 86400_000) / 1000);
 
@@ -3467,6 +3492,12 @@ function _resolveLateFeeConfigServer(state, b, f, u) {
     frequency: 'monthly', applyTo: 'total',
     requireGuaranteedPayment: true, suspendAccessAfterLate: false,
     autoSend: false,
+    // rollIntoNextRent — Phase 2 dry-run / Phase 3 live. Default false:
+    // включается только если оператор явно опт-инит на workspace / building
+    // / floor / unit уровне. См. client helper _resolveRollIntoNextRent
+    // (floor-map-editor.html). Cascade автоматически работает через
+    // Object.assign ниже — никаких отдельных полей не добавляем.
+    rollIntoNextRent: false,
   };
   let cfg = Object.assign({}, def, (state && state.settings && state.settings.lateFee) || {});
   // Building override
@@ -3497,6 +3528,34 @@ function _resolveLateFeeConfigServer(state, b, f, u) {
     cfg = Object.assign({}, cfg, { enabled: false });
   }
   return cfg;
+}
+
+// Phase 2 dry-run / Phase 3 live helper: ищет в Stripe незаплаченный late-fee
+// инвойс за prevYm для customer'а. Возвращает {id, total, status, created}
+// первого найденного (от свежего к старому) или null если ничего не нашлось /
+// search упал. НЕ кидает наверх — ошибка search'а не должна блокировать
+// создание рент-инвойса. Зеркало client-side cache search в sfaInspectRollIn.
+//
+// status:"open" покрывает И not-yet-due, И past_due — Stripe не выделяет
+// past_due в отдельный статус, это вычисляется на клиенте по due_date.
+// Поэтому query достаточно фильтра по status:"open".
+async function _findUnpaidLateFeeForServer(stripe, customerId, unitId, prevYm, logger) {
+  if (!stripe || !customerId || !unitId || !prevYm) return null;
+  try {
+    const q = `customer:"${customerId}" AND metadata["unitId"]:"${unitId}" `
+            + `AND metadata["purpose"]:"late_fee" AND metadata["ym"]:"${prevYm}" `
+            + `AND status:"open"`;
+    const res = await stripe.invoices.search({ query: q, limit: 5 });
+    const candidates = (res.data || []).filter(inv =>
+      !['void', 'uncollectible', 'deleted'].includes(inv.status)
+    );
+    if (candidates.length === 0) return null;
+    candidates.sort((a, b) => (b.created || 0) - (a.created || 0));
+    return candidates[0];
+  } catch (err) {
+    if (logger) logger.warn(`[roll-late-fee:dry-run] search failed for unit=${unitId} prev=${prevYm}: ${err.message}`);
+    return null;
+  }
 }
 
 // Server-side mirror of _firstTenancyYm (floor-map-editor.html L71096).
