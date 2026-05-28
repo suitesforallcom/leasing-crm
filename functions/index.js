@@ -2341,6 +2341,9 @@ async function handleInvoicePaid(invoice) {
   // ✉ Sent. For other custom charges (late fees, keys) we still just
   // log, since there's no per-month matrix to update.
   if (purpose && purpose !== 'rent') {
+    let shouldAuditNonRent = false;
+    let depositFlipped = false;
+    const nonRentAmount = (invoice.amount_paid || invoice.total || 0) / 100;
     await mutateWorkspaceState((s) => {
       const f = findUnit(s, {buildingId, floorId, unitId});
       if (!f) return;
@@ -2352,14 +2355,40 @@ async function handleInvoicePaid(invoice) {
       const isDepositByStamp = u.stripe.depositInvoice?.invoiceId === invoice.id;
       const isDepositByDesc = /\bdeposit\b/i.test(invoice.description || '');
       if (isDepositByStamp || isDepositByDesc) {
+        const priorDepStatus = u.stripe.depositInvoice?.status || null;
         u.stripe.depositInvoice = {
           ...(u.stripe.depositInvoice || {}),
           invoiceId: invoice.id,
-          amount: (invoice.amount_paid || invoice.total || 0) / 100,
+          amount: nonRentAmount,
           status: 'paid',
           paidAt: (invoice.status_transitions?.paid_at || Math.floor(Date.now() / 1000)) * 1000,
         };
         delete u.stripe._sendingDepositAt;
+        depositFlipped = priorDepStatus !== 'paid';
+        // Activity-trail (Tony 2026-05-28) — webhook flipped deposit
+        // status='paid' раньше молча. Пушим в u.outreach[] чтобы Unit
+        // Activity tab показал событие. Idempotency через scan по
+        // invoiceId — защита от Stripe Smart Retry.
+        u.outreach = u.outreach || [];
+        const hasPriorOutreach = u.outreach.some(
+          e => e && e.kind === 'payment' && e.invoiceId === invoice.id
+        );
+        if (!hasPriorOutreach && depositFlipped) {
+          u.outreach.push({
+            ts: new Date().toISOString(),
+            kind: 'payment',
+            note: `Stripe payment received · deposit · $${nonRentAmount.toLocaleString()} (invoice ${invoice.number || invoice.id})`,
+            by: 'stripe-webhook',
+            byEmail: null,
+            ym: 'deposit',
+            amount: nonRentAmount,
+            invoiceId: invoice.id,
+            invoiceNumber: invoice.number || null,
+            paidVia: 'stripe',
+          });
+          while (u.outreach.length > 100) u.outreach.shift();
+          shouldAuditNonRent = true;
+        }
       }
       // Broadcast signal for non-rent invoices too, so the Invoices page
       // and right-panel history flip the row to "paid" without a refresh.
@@ -2369,11 +2398,35 @@ async function handleInvoicePaid(invoice) {
         ym: ym || null,
         purpose: purpose || 'custom',
         unitId, buildingId, floorId,
-        amountPaid: (invoice.amount_paid || invoice.total || 0) / 100,
+        amountPaid: nonRentAmount,
         amountRemaining: 0,
         at: Date.now(),
       };
     });
+    // Audit write — same pattern as rent path, fires только после commit.
+    if (shouldAuditNonRent) {
+      try {
+        await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+          ts: admin.firestore.FieldValue.serverTimestamp(),
+          actor: 'stripe-webhook',
+          action: 'payment.mark-paid',
+          source: 'stripeWebhook',
+          unitId,
+          buildingId,
+          floorId,
+          ym: 'deposit',
+          amount: nonRentAmount,
+          before: { status: null, amount: 0 },
+          after: { status: 'paid', amount: nonRentAmount },
+          invoiceId: invoice.id,
+          invoiceNumber: invoice.number || null,
+          paidVia: 'stripe',
+          note: `Stripe ${purpose} invoice paid: ${invoice.number || invoice.id} ($${nonRentAmount})`,
+        });
+      } catch (e) {
+        logger.warn(`[stripe] non-rent audit-write failed for invoice ${invoice.id}: ${e.message}`);
+      }
+    }
     logger.info(`[stripe] non-rent invoice ${invoice.id} paid (purpose=${purpose}); stamp updated for ${unitId}`);
     return;
   }
@@ -2386,6 +2439,16 @@ async function handleInvoicePaid(invoice) {
   const chargeId = invoice.charge || null;
   const paidAt = (invoice.status_transitions?.paid_at || Math.floor(Date.now() / 1000)) * 1000;
   const paymentMethod = await inferPaymentMethod(invoice);
+
+  // Activity-trail closure flags (Tony 2026-05-28). Webhook раньше молча
+  // флипал u.payments[ym].status='paid' — Unit Activity tab не показывал
+  // событие. Теперь фиксируем приход платежа В u.outreach[] (атомарно
+  // с payments-flip'ом, внутри txn) и в workspaces/default/audit (после
+  // успешного commit'а txn). Idempotency: outreach push защищён ранним
+  // return'ом по `prior.status='paid'+invoiceId`, audit write защищён
+  // флагом `shouldAuditPayment`.
+  let shouldAuditPayment = false;
+  let priorStatusForAudit = null;
 
   await mutateWorkspaceState((s) => {
     const f = findUnit(s, {buildingId, floorId, unitId});
@@ -2520,6 +2583,38 @@ async function handleInvoicePaid(invoice) {
     if (f.unit.stripe.moveInRent?.invoiceId === invoice.id) {
       f.unit.stripe.moveInRent.status = 'paid';
     }
+    // Activity-trail (Tony 2026-05-28). Push в u.outreach[] чтобы Unit
+    // Activity tab показал «Stripe payment received» c suммой, ym,
+    // invoice id. Защищаемся от дублей при retries вебхука — Stripe
+    // делает Smart Retry 4 раза за 3 недели; ранний return выше уже
+    // блокирует второй проход когда prior.status='paid'+stripe.invoiceId
+    // совпадает, но дополнительная проверка outreach по invoiceId
+    // покрывает edge-кейс когда state был восстановлен из backup'а.
+    f.unit.outreach = f.unit.outreach || [];
+    const hasPriorOutreach = f.unit.outreach.some(
+      e => e && e.kind === 'payment' && e.invoiceId === invoice.id
+    );
+    if (!hasPriorOutreach) {
+      const methodLbl = paymentMethod
+        ? ({card:'Card', ach:'Bank transfer', us_bank_account:'Bank transfer', wire:'Wire', cash:'Cash'})[paymentMethod] || paymentMethod
+        : 'Stripe';
+      f.unit.outreach.push({
+        ts: new Date().toISOString(),
+        kind: 'payment',
+        note: `Stripe payment received · ${ym} rent · $${amount.toLocaleString()} · ${methodLbl} (invoice ${invoice.number || invoice.id})`,
+        by: 'stripe-webhook',
+        byEmail: null,
+        ym,
+        amount,
+        invoiceId: invoice.id,
+        invoiceNumber: invoice.number || null,
+        paidVia: paymentMethod || 'stripe',
+        chargeId: chargeId || null,
+      });
+      while (f.unit.outreach.length > 100) f.unit.outreach.shift();
+      shouldAuditPayment = true;
+      priorStatusForAudit = prior.status || null;
+    }
     // Broadcast a slim signal so the client's onSnapshot handler can
     // patch the matching row in _invoicesCache in real time (without
     // re-fetching the whole Stripe list). Lives on state root — not
@@ -2535,6 +2630,35 @@ async function handleInvoicePaid(invoice) {
       at: Date.now(),
     };
   });
+  // Audit write — fires только после успешного commit'а txn и только
+  // если outreach push был выполнен (shouldAuditPayment=true). Pattern
+  // зеркалит client'ский recordAuditClient('payment.mark-paid', …)
+  // из submitManualPayment, чтобы Settings → Audit log показывал все
+  // mark-paid события из обоих источников одинаково.
+  if (shouldAuditPayment) {
+    try {
+      await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+        ts: admin.firestore.FieldValue.serverTimestamp(),
+        actor: 'stripe-webhook',
+        action: 'payment.mark-paid',
+        source: 'stripeWebhook',
+        unitId,
+        buildingId,
+        floorId,
+        ym,
+        amount,
+        before: { status: priorStatusForAudit, amount: 0 },
+        after: { status: 'paid', amount },
+        invoiceId: invoice.id,
+        invoiceNumber: invoice.number || null,
+        chargeId: chargeId || null,
+        paidVia: paymentMethod || 'stripe',
+        note: `Stripe rent invoice paid: ${invoice.number || invoice.id} ($${amount} for ${ym})`,
+      });
+    } catch (e) {
+      logger.warn(`[stripe] audit-write failed for invoice ${invoice.id}: ${e.message}`);
+    }
+  }
   logger.info(`[stripe] ✓ paid: ${unitId}/${ym} via invoice ${invoice.id} ($${amount})`);
 }
 
@@ -6097,10 +6221,11 @@ async function _autoApplyAfterPoll(fcAccountId) {
       const transactedDate = txn.transactedAt
         ? new Date(txn.transactedAt * 1000).toISOString().slice(0, 10)
         : new Date().toISOString().slice(0, 10);
+      const paidVia = _guessMethodFromDescServer(txn.description);
       u.payments[candidate.ym] = {
         status: 'paid',
         amount: amountDollars,
-        paidVia: _guessMethodFromDescServer(txn.description),
+        paidVia,
         paidReference: String(txn.description || '').replace(/\s+/g, ' ').trim().slice(0, 80),
         paidAt: transactedDate,
         recordedBy: 'auto-match',
@@ -6114,6 +6239,32 @@ async function _autoApplyAfterPoll(fcAccountId) {
         autoMatchDeltaCents: candidate.delta,
         autoMatchRentCents: candidate.rentCents,
       };
+      // Activity-trail (Tony 2026-05-28). Push в u.outreach[] чтобы Unit
+      // Activity tab показал auto-apply event рядом с manual-payment
+      // событиями. Audit collection write уже происходит ниже в batch
+      // (line ~6266) — здесь только outreach. Idempotency через
+      // existing-check выше + дополнительный scan по bankTxnId на случай
+      // если cron перезапустился после partial commit'а.
+      u.outreach = u.outreach || [];
+      const hasPriorOutreach = u.outreach.some(
+        e => e && e.kind === 'payment' && e.bankTxnId === txn.id
+      );
+      if (!hasPriorOutreach) {
+        u.outreach.push({
+          ts: new Date().toISOString(),
+          kind: 'payment',
+          note: `Bank payment auto-applied · ${candidate.ym} rent · $${amountDollars.toLocaleString()} · ${paidVia} (txn ${(txn.description || '').slice(0, 40)})`,
+          by: 'auto-match',
+          byEmail: null,
+          ym: candidate.ym,
+          amount: amountDollars,
+          bankTxnId: txn.id,
+          bankAccountId: txn.accountId || null,
+          paidVia,
+          autoApplied: true,
+        });
+        while (u.outreach.length > 100) u.outreach.shift();
+      }
     }
     // Weekly counter для UI badge «Auto-applied N this week».
     if (!s.autoApplyStats) s.autoApplyStats = { totalApplied: 0, last7d: [] };
