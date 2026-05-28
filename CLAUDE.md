@@ -419,22 +419,23 @@ The KPI's tooltip and subtitle show `cashReceivedInMonth` (sum of all paid where
 
 ---
 
-### 15. Scroll-Reveal Sticky Header (Tony 2026-05-22)
+### 15. Top Navigation Visibility (Tony 2026-05-28 — REVERSAL of 2026-05-22)
 
-Top navigation / menu bars must follow the **scroll-reveal-on-up** pattern (Twitter / Linear / GitHub-mobile style):
+**Main `.topbar` (app switcher / Building selector / Map / Rent Roll / Floor tabs / Search / overdue + pending pills) must ALWAYS remain visible.**
 
-- **At top of page (scrollY < 10px):** menu always visible in natural position.
-- **Scrolling DOWN past ~80px:** menu slides off-screen via CSS `transform: translateY(-100%)` (frees vertical real estate for content).
-- **Scrolling UP (any direction reversal):** menu slides back into view and **sticks at the top** (position: sticky).
-- **Threshold against jitter:** delta < 8px ignored (trackpad micro-scrolls).
-- **Implementation:** CSS `position: sticky; top: 0; transition: transform 220ms` + JS scroll handler with `requestAnimationFrame` throttling + class toggle `.topbar-hidden` for translate-off.
+- **Implementation:** `position: sticky; top: 0; z-index: 50;` — that's it. No JS scroll handler, no `.topbar-hidden` class, no transform.
+- The main topbar carries business-critical actions (building selector, overdue indicator, pending invoices, new-leases pill, quick-add) that the operator must reach at any scroll position without a scroll-back gesture.
 
-This is now the default for `.topbar` (main top bar). Apply the same pattern to any new top-level menu / nav strip / sticky toolbar that takes vertical space and isn't critical to keep on-screen during downward reading.
+**History:**
+- 2026-05-22: Scroll-reveal-on-up pattern (Twitter / Linear / GitHub-mobile style) was adopted for `.topbar`. JS handler toggled `.topbar-hidden` → `transform: translateY(-100%)`.
+- 2026-05-28: Tony reversed the rule («Самые верхние меню никуда не должно уезжать и всегда должно оставаться»). CSS rule + JS handler + transition were removed. Main topbar is now always-sticky.
 
-**Anti-patterns** (do NOT use):
-- Always-fixed bar that covers content (eats permanent vertical space).
-- Hide-on-scroll-only without reveal-on-scroll-up (operator must scroll back to top to see menu again — slow).
-- No transition (jarring snap).
+**Scope:** This applies to the **main** `.topbar` only. Scroll-reveal-on-up remains an acceptable pattern for secondary nav strips (e.g. a sub-page filter bar) where vertical real estate matters more than instant access. But the very top nav must stay put.
+
+**Anti-patterns** (do NOT reintroduce):
+- Adding a JS scroll listener that hides `.topbar`.
+- Re-adding a `.topbar.topbar-hidden { transform: translateY(-100%); }` CSS rule.
+- Replacing `position: sticky` with `position: fixed` (causes layout-shift issues with the page content).
 
 ---
 
