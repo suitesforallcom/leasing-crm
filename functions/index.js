@@ -2947,7 +2947,37 @@ exports.runAutoInvoices = onSchedule(
     if (!snap.exists) { logger.info('[auto-invoice] no state doc, skipping'); return; }
     const state = snap.data().state || {};
     const cfg = (state.settings && state.settings.autoInvoice) || {};
-    if (!cfg.enabled) { logger.info('[auto-invoice] workspace disabled, skipping'); return; }
+    // Каскадный gate: workspace ← building ← floor ← unit. Если ни на
+    // одном уровне auto-invoice НЕ включён — выходим (быстрый путь
+    // для случая когда оператор сознательно выключил автосчёт везде).
+    // Иначе идём в per-unit loop, где каскад проверяется на каждом
+    // юните (FIXES_LOG Entry 33 — синхронизация каскада cron'а с
+    // клиентским isAutoInvoiceEnabledFor + getEffectiveAutoInvoiceConfig).
+    let anyAutoEnabledAnywhere = !!cfg.enabled;
+    if (!anyAutoEnabledAnywhere) {
+      outer: for (const b of (state.buildings || [])) {
+        if (b?.billingRulesOverride?.autoInvoice?.enabled === true) {
+          anyAutoEnabledAnywhere = true; break;
+        }
+        for (const f of (b.floors || [])) {
+          if (f?.billingRulesOverride?.autoInvoice?.enabled === true) {
+            anyAutoEnabledAnywhere = true; break outer;
+          }
+          for (const u of (f.units || [])) {
+            if (u?.autoInvoice === 'on') {
+              anyAutoEnabledAnywhere = true; break outer;
+            }
+          }
+        }
+      }
+    }
+    if (!anyAutoEnabledAnywhere) {
+      logger.info('[auto-invoice] no auto-invoice enabled anywhere (workspace + per-building + per-floor + per-unit all off), skipping');
+      return;
+    }
+    if (!cfg.enabled) {
+      logger.info('[auto-invoice] workspace toggle off — walking cascade for per-building/floor/unit overrides');
+    }
 
     // CHECKPOINT — track progress in /workspaces/{ws}/cronProgress/auto-invoice
     // so a mid-run timeout (540s cap) doesn't leave half the units invoiced
@@ -3021,7 +3051,7 @@ exports.runAutoInvoices = onSchedule(
     } else {
       globalBefore = 10;
     }
-    const dueDays = Math.max(1, Math.min(30, +cfg.daysUntilDue || 10));
+    const globalDueDays = Math.max(1, Math.min(30, +cfg.daysUntilDue || 10));
 
     // Target = 1st of NEXT month in UTC. nextYm is the YYYY-MM key.
     // The "should we fire today?" check moved INTO the per-unit loop
@@ -3071,21 +3101,64 @@ exports.runAutoInvoices = onSchedule(
         for (const u of f.units || []) {
           if (u.deletedAt) { skipped++; continue; }
           if (u.status !== 'occupied') { skipped++; continue; }
-          // Per-unit override beats global
-          const explicit = u.autoInvoice;
-          if (explicit === 'off') { skipped++; continue; }
-          // Inherit path: global enabled (checked above), so 'inherit' = on
+          // Каскад auto-invoice — зеркалит isAutoInvoiceEnabledFor +
+          // getEffectiveAutoInvoiceConfig на клиенте. Приоритет:
+          //   1. building.paused === true → off (pause бьёт всё)
+          //   2. u.autoInvoice = 'on'/'off' — явный override юнита
+          //   3. floor.billingRulesOverride.autoInvoice.enabled
+          //   4. building.billingRulesOverride.autoInvoice.enabled
+          //   5. workspace cfg.enabled (fallback)
+          const bAi = b?.billingRulesOverride?.autoInvoice;
+          const fAi = f?.billingRulesOverride?.autoInvoice;
+          let effectiveEnabled;
+          if (b?.billingRulesOverride?.paused === true) {
+            effectiveEnabled = false;
+          } else if (u.autoInvoice === 'on') {
+            effectiveEnabled = true;
+          } else if (u.autoInvoice === 'off') {
+            effectiveEnabled = false;
+          } else if (fAi && typeof fAi.enabled === 'boolean') {
+            effectiveEnabled = fAi.enabled;
+          } else if (bAi && typeof bAi.enabled === 'boolean') {
+            effectiveEnabled = bAi.enabled;
+          } else {
+            effectiveEnabled = !!cfg.enabled;
+          }
+          if (!effectiveEnabled) { skipped++; continue; }
           if (!u.tenant && !u.company) { skipped++; continue; }
           if (!u.email || !/@/.test(u.email || '')) { skipped++; continue; }
           const rent = +u.contractRent || +u.rent || 0;
           if (rent <= 0) { skipped++; continue; }
-          // Per-unit "send N days before 1st" override (falls back to
-          // workspace globalBefore). Skip this unit unless today
-          // matches its computed send date for the upcoming cycle.
+          // sendBeforeDays cascade — workspace ← building ← floor ← unit.
+          // Юнит-level через u.autoInvoiceBeforeDays (legacy, не
+          // billingRulesOverride). Building/floor могут переопределить
+          // workspace globalBefore. Skip unit unless today matches its
+          // computed send date for the upcoming cycle.
+          let cascadedBefore = globalBefore;
+          if (bAi && bAi.sendBeforeDays != null) {
+            const v = Math.max(1, Math.min(28, +bAi.sendBeforeDays || 0));
+            if (v) cascadedBefore = v;
+          }
+          if (fAi && fAi.sendBeforeDays != null) {
+            const v = Math.max(1, Math.min(28, +fAi.sendBeforeDays || 0));
+            if (v) cascadedBefore = v;
+          }
           const unitBefore = (u.autoInvoiceBeforeDays != null && u.autoInvoiceBeforeDays !== '')
             ? Math.max(1, Math.min(28, +u.autoInvoiceBeforeDays || 0))
             : 0;
-          const beforeDays = unitBefore || globalBefore;
+          const beforeDays = unitBefore || cascadedBefore;
+          // daysUntilDue cascade — используется ниже в Stripe payload
+          // (due_date + description). Аналогично enabled/sendBeforeDays:
+          // building/floor override могут поменять workspace дефолт.
+          let dueDays = globalDueDays;
+          if (bAi && bAi.daysUntilDue != null) {
+            const v = Math.max(1, Math.min(30, +bAi.daysUntilDue || 0));
+            if (v) dueDays = v;
+          }
+          if (fAi && fAi.daysUntilDue != null) {
+            const v = Math.max(1, Math.min(30, +fAi.daysUntilDue || 0));
+            if (v) dueDays = v;
+          }
           const unitSendDate = new Date(nm.getTime() - beforeDays * 86400_000);
           if (today.getUTCFullYear() !== unitSendDate.getUTCFullYear()
            || today.getUTCMonth()    !== unitSendDate.getUTCMonth()

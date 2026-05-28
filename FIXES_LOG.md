@@ -60,6 +60,41 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 33. Auto-invoice cron — cascade gate (workspace ← building ← floor ← unit) (2026-05-28)
+
+- **Status:** active
+- **Branch / commit:** `claude/modest-curie-8a50ad`
+- **Area:** Auto-billing / Stripe invoicing / Cloud Functions cron
+- **Files:**
+  - `functions/index.js` — `runAutoInvoices` cron handler (`exports.runAutoInvoices`, schedule `0 9 * * *` UTC)
+- **Functions / invariants:**
+  - `runAutoInvoices` cron must walk the SAME cascade as the client-side `isAutoInvoiceEnabledFor` (`floor-map-editor.html:85290`) and `getEffectiveAutoInvoiceConfig` (`floor-map-editor.html:85313`). Priority order, highest to lowest:
+    1. `building.billingRulesOverride.paused === true` → OFF (pause beats all)
+    2. `unit.autoInvoice === 'on'` → ON
+    3. `unit.autoInvoice === 'off'` → OFF
+    4. `floor.billingRulesOverride.autoInvoice.enabled` (if boolean) wins
+    5. `building.billingRulesOverride.autoInvoice.enabled` (if boolean) wins
+    6. `state.settings.autoInvoice.enabled` (workspace fallback)
+  - Same cascade applies to `sendBeforeDays` and `daysUntilDue` (building/floor override → unit `autoInvoiceBeforeDays` for sendBefore only → workspace).
+  - Pre-loop fast-exit: if `cfg.enabled === false` AND no `b.billingRulesOverride.autoInvoice.enabled === true` anywhere AND no `f.billingRulesOverride.autoInvoice.enabled === true` anywhere AND no `u.autoInvoice === 'on'` anywhere → return early (avoids walking hundreds of units when truly nothing is enabled). Otherwise the per-unit loop runs and lets the cascade decide each unit.
+- **Bug it fixed:**
+  Operator-visible symptom: Tony confirmed via Settings → Billing screen that workspace-level `Enable auto-invoicing workspace-wide` checkbox was OFF, but cron also ignored building-level overrides. Firebase logs from 2026-05-20 through 2026-05-28 (8 consecutive cron runs at 09:00 UTC) all logged `[auto-invoice] workspace disabled, skipping` with zero per-unit processing — even on days when building-level overrides existed and units appeared in the client `Auto-billing Coverage` matrix as «Auto-rent ON». No June invoices were sent (trigger date 2026-05-22 = June 1 − sendBeforeDays 10). Root cause: cron checked only `cfg.enabled` and returned at line 2950, never walking the per-building/floor/unit cascade that the client UI already supported.
+- **Invariant — DO NOT BREAK:**
+  1. **Cron cascade order must mirror client.** If a future edit changes the client priority (e.g. unit override drops below floor), the cron MUST be updated in lockstep — otherwise UI shows units as «ON» while cron silently skips them (or vice versa).
+  2. **No early-return solely on `cfg.enabled === false`.** Workspace toggle OFF is no longer sufficient to skip the run — only the workspace + per-building + per-floor + per-unit pre-scan returning «nothing enabled anywhere» justifies early-exit.
+  3. **Per-cycle skip-list intact** (FIXES_LOG Entry 24 — Stripe-advance prepayment). When `u.payments[nextYm].status === 'open' && stripeInvoiceId && paidVia === 'stripe-advance'`, cron MUST still skip even if cascade enables the unit. This entry's cascade gate runs BEFORE the skip-list — order is enabled-check → tenant/email/rent-check → today-trigger-check → prepayment-skip-list. Don't move the prepayment skip-list above the cascade.
+  4. **`globalDueDays` rename** — outer-scope `const dueDays` was renamed to `globalDueDays`. Inner per-unit loop declares its own `let dueDays = cascade(globalDueDays, bAi, fAi)`. Later references inside the loop to `dueDays` (Stripe `due_date` payload at ~line 3271, description string at ~line 3360, `days_until_due` at ~line 3369) all resolve to the inner per-unit value via block-scope shadowing.
+- **Verification:**
+  1. **State A — workspace OFF, all overrides OFF.** Cron logs `[auto-invoice] no auto-invoice enabled anywhere ..., skipping` and returns without walking units. Equivalent to old behavior.
+  2. **State B — workspace ON, no overrides.** Per-unit loop runs as before; `effectiveEnabled = !!cfg.enabled === true` for every unit. Existing behavior preserved.
+  3. **State C — workspace OFF, building X has `billingRulesOverride.autoInvoice.enabled === true`.** Cron logs `workspace toggle off — walking cascade ...`. Per-unit loop walks ALL units in ALL buildings. Units in building X get `effectiveEnabled = true` via cascade step 5. Units in other buildings get `effectiveEnabled = false` (workspace fallback). Only building X units proceed to today-trigger check.
+  4. **State D — building paused.** Even if workspace + override say ON, `b.billingRulesOverride.paused === true` short-circuits `effectiveEnabled = false`. Verify by setting `paused: true` on a building with prior auto-invoice ON; expect zero invoices for that building, others unaffected.
+  5. **State E — unit `autoInvoice: 'off'` inside a building with override ON.** Unit-level OFF beats building-level ON (priority 3 > priority 5). Verify by toggling one unit's auto-invoice pill in Auto-billing Coverage matrix.
+- **Regression test:** none — relies on cron firing in a Firebase project. After deploy, set workspace OFF + one building override ON, manually trigger via `▶ Run cron now` in Settings → Billing & Late Fees, check `firebase functions:log --only runAutoInvoices` for `walking cascade for per-building/floor/unit overrides` line.
+- **Related PR / issue:** none (direct commit on `claude/modest-curie-8a50ad`)
+
+---
+
 ### 32. Bank-sync watermark — safety margin on incremental polls (2026-05-28)
 
 - **Status:** active
