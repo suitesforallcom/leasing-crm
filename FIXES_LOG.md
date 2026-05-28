@@ -60,6 +60,53 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 34. Move-in rent stamp — deposit cross-stamp guard + self-heal (2026-05-28)
+
+- **Status:** active
+- **Branch / commit:** `claude/modest-curie-8a50ad`
+- **Area:** Finance display / Move-in invoices badge / Suite header pill / Stripe stamp integrity
+- **Files:**
+  - `floor-map-editor.html`
+    - `_stampPointsToDeposit` (new helper, near `_isMonthSettled`)
+    - `_isMonthSettled`
+    - `_unitRentCurrentStatus`
+    - `_healStaleStripeStamps`
+    - unit-detail panel pill render (where `pillLabel = 'Paid'` was hardcoded)
+- **Functions / invariants:**
+  - `_stampPointsToDeposit(u, invoiceId)` returns true when ANY of these hold:
+    1. `u.stripe.depositInvoice.invoiceId === invoiceId` (direct cross-stamp).
+    2. `_lookupInvoiceRow(invoiceId).metadata.purpose === 'deposit'` (Cloud-Function-stamped meta).
+    3. `_lookupInvoiceRow(invoiceId).description` matches `/\bdeposit\b/i` (Stripe-Dashboard-issued fallback).
+  - `_isMonthSettled` MUST NOT return `'stripe-paid'` for a ym when the stamp's invoiceId points to a deposit. Both branches (`u.stripe.moveInRent` and `u.stripe.lastInvoiceYm` paths) must guard.
+  - `_unitRentCurrentStatus` MUST NOT use deposit-bucket as rent-bucket. Same guard on both `mi` and `lastInvoiceYm` paths.
+  - `_healStaleStripeStamps` MUST self-heal cross-pointing stamps: if `u.stripe.moveInRent.invoiceId === u.stripe.depositInvoice?.invoiceId` OR the cached row is a deposit, delete `u.stripe.moveInRent` and (if matched) `u.stripe.lastInvoiceId`/`lastInvoiceYm`. NEVER touch `manualLink === true` stamps (operator-chosen).
+  - Unit-detail pill label MUST distinguish three flavors of `_rentState === 'paid'`:
+    1. `_rentLabel.startsWith('Deposit')` → `'Deposit paid'` (future-lease short-circuit)
+    2. `_rentLabel.includes('waived')` → `'Waived'`
+    3. otherwise → `'Paid'` (true rent paid)
+- **Bug it fixed:**
+  Operator-visible symptom: Suite 401 (Brittany Cratic, lease Jun 1 2026, viewed 2026-05-28) showed three contradictory states in one panel:
+    - Move-in invoices card: «First month rent — June 2026 · $900.00 · **PAID**» (green pill)
+    - Invoice History: «May 1, 26 · Jun · $900 · **PAST DUE**» (red pill, same invoice subject)
+    - Payment History calendar: «No payments on record yet»
+    - Suite header pill: «**Paid**»
+  Root cause: `u.stripe.moveInRent.invoiceId` was stamped on the **deposit** invoice ID by an earlier sync glitch (both rent and deposit were $900 — same tenant, same suite). `_lookupInvoiceBucket(moveInRent.invoiceId)` correctly returned `'paid'` for that deposit row, which `_isMonthSettled` then returned as `'stripe-paid'` for ym=2026-06. Move-in card displayed PAID; Invoice History rendered directly from `_invoicesCache` and saw the real past-due June rent invoice; the two diverged. Suite header pill compounded the confusion: future-lease + deposit-paid short-circuit returned `state:'paid'` with label «Deposit paid · lease starts 2026-06-01», but render code collapsed all `_rentState === 'paid'` branches to a single «Paid» label, so operator could not tell whether rent or deposit was paid.
+- **Invariant — DO NOT BREAK:**
+  1. Any function that decides «is this rent paid» based on a Stripe stamp's invoice ID must first check `_stampPointsToDeposit(u, invoiceId)`. Bucket of a deposit invoice is not authoritative for rent.
+  2. `_healStaleStripeStamps` MUST keep its cross-stamp self-heal step. Without it, `_findRentInvoiceInCache` / `_backfillRentStamp` can never re-stamp on the real rent invoice while the bad pointer persists.
+  3. Pill label MUST stay distinguishable. If a future edit re-collapses to plain «Paid», operator regression returns: deposit-paid-during-future-lease looks identical to actual rent paid.
+  4. `manualLink === true` is sacred. Never auto-clear a stamp the operator chose explicitly (FIXES_LOG Entry 3 invariant — preserved).
+- **Verification:**
+  1. **State A — clean tenant, no cross-stamp.** Move-in card shows PAID when rent is genuinely paid (either local `u.payments[ym].status='paid'` or `_lookupInvoiceBucket(rentInvId)==='paid'` where that invoice is NOT a deposit). Behavior unchanged from before fix.
+  2. **State B — cross-stamped tenant (the Suite 401 scenario).** With `u.stripe.moveInRent.invoiceId === u.stripe.depositInvoice.invoiceId`: on next render `_healStaleStripeStamps` clears the bad pointer; `_findRentInvoiceInCache` re-stamps on the real rent invoice; Move-in card shows the real status (OPEN / PAST DUE) instead of PAID.
+  3. **State C — future-lease tenant, deposit paid, rent not invoiced yet.** Suite header pill shows «Deposit paid» (not bare «Paid»). Move-in card shows «First month rent — Jun … — Not sent» (no rent invoice exists). No contradiction.
+  4. **State D — rent waived for current month.** Pill shows «Waived». Existing free-month color (green) preserved.
+  5. **State E — manualLink deposit stamp.** Operator-attached deposit stamp not touched by self-heal. Move-in rent stamp on a separate real rent invoice continues to work.
+- **Regression test:** none — manual UI verification only. Reproduce State B by hand-editing localStorage `state.buildings[].floors[].units[].stripe.moveInRent.invoiceId = state...depositInvoice.invoiceId`, reload, verify Move-in card no longer says PAID.
+- **Related PR / issue:** none (direct commit on `claude/modest-curie-8a50ad`)
+
+---
+
 ### 33. Auto-invoice cron — cascade gate (workspace ← building ← floor ← unit) (2026-05-28)
 
 - **Status:** active
