@@ -1647,6 +1647,131 @@ exports.voidOrDeleteStripeInvoice = onCall(
 );
 
 // =========================================================================
+// ===== Stripe — Mark invoice paid out of band ===========================
+// Когда оператор отметил оплату нестрайповым методом (чек / cash / wire /
+// ACH вне Stripe) через Manual Payment Modal, и для этого месяца ЕСТЬ
+// open Stripe-инвойс — нужно сказать Stripe «этот invoice оплачен другим
+// способом, статус paid, но money через Stripe не пришли».
+//
+// Без этого вызова получаем drift: local ledger (u.payments[ym].paid=true)
+// и Stripe ledger (invoice.status='open') расходятся, что ломает Invoice
+// report KPIs, collection rate, и payment receipts клиенту.
+//
+// Stripe API: stripe.invoices.pay(id, {paid_out_of_band: true})
+// Поведение: invoice статус → paid, Stripe рассылает receipt-email, no
+// money movement through Stripe, no fee charged. Это industry-standard
+// способ (Yardi / AppFolio / QuickBooks / Xero все делают так же).
+//
+// Idempotent: если invoice уже paid — возвращает {action:'noop'} без
+// повторного API-вызова. Если void/uncollectible — fails-loud (нельзя
+// «оплатить» voided invoice — оператор должен resend новый).
+//
+// Audit: пишет в /workspaces/{id}/audit с action='invoice.mark-paid-oob'.
+// =========================================================================
+exports.markInvoicePaidOutOfBand = onCall(
+  {secrets: [STRIPE_SECRET_KEY]},
+  async (req) => {
+    await requireEditor(req.auth);
+    const {invoiceId, suiteId, ym, paymentMethod, paidAt, note} = req.data || {};
+    if (!invoiceId) {
+      throw new HttpsError('invalid-argument', 'invoiceId is required');
+    }
+    const stripe = getStripe();
+    const actor = req.auth?.token?.email || req.auth?.uid || 'unknown';
+
+    const writeAudit = async (action, payload) => {
+      try {
+        await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+          ts: admin.firestore.FieldValue.serverTimestamp(),
+          actor,
+          actorUid: req.auth?.uid || null,
+          action: 'invoice.' + action,
+          source: 'markInvoicePaidOutOfBand',
+          invoiceId,
+          ...payload,
+        });
+      } catch (e) {
+        logger.warn('[markPaidOOB] audit write failed: ' + e.message);
+      }
+    };
+
+    try {
+      const inv = await stripe.invoices.retrieve(invoiceId);
+      const status = inv.status;
+      const meta = inv.metadata || {};
+      const auditCtx = {
+        unitId: meta.unitId || suiteId || '',
+        ym: meta.ym || ym || '',
+        amount: ((inv.total || 0) / 100),
+        paymentMethod: paymentMethod || 'unknown',
+        before: { status, amountPaid: ((inv.amount_paid || 0) / 100) },
+      };
+
+      // Idempotent — already paid, just confirm.
+      if (status === 'paid') {
+        await writeAudit('mark-paid-oob-noop', {
+          ...auditCtx,
+          note: `Invoice already paid (idempotent noop)` + (note ? ` · ${note}` : ''),
+        });
+        return {invoiceId, action: 'noop', status: 'paid', alreadyPaid: true};
+      }
+
+      // Cannot mark paid: voided invoices are dead, uncollectible is
+      // semantically already-written-off (mark-paid would un-resolve it).
+      if (status === 'void') {
+        throw new HttpsError('failed-precondition',
+          'Voided invoice cannot be marked paid — issue a new invoice instead.');
+      }
+      if (status === 'uncollectible') {
+        throw new HttpsError('failed-precondition',
+          'Uncollectible invoice cannot be marked paid — restore it first or issue a new one.');
+      }
+
+      // Draft: finalize first so it has a number + becomes a real invoice.
+      // Then pay. (Stripe rejects pay() on draft.)
+      let payTarget = inv;
+      if (status === 'draft') {
+        logger.info(`[markPaidOOB] ${invoiceId} was draft — finalizing first`);
+        payTarget = await stripe.invoices.finalizeInvoice(invoiceId);
+      }
+
+      // Mark paid out of band: invoice → status='paid', no Stripe fee, no
+      // money movement through Stripe. The receipt-email behaviour is
+      // controlled by the customer's email_settings on the invoice (Stripe
+      // sends receipt automatically when paid event fires).
+      const paid = await stripe.invoices.pay(invoiceId, {
+        paid_out_of_band: true,
+      });
+
+      logger.info(`[markPaidOOB] ${invoiceId} marked paid (was ${status}, method=${paymentMethod || 'unknown'})`);
+      await writeAudit('mark-paid-oob', {
+        ...auditCtx,
+        after: { status: paid.status || 'paid', amountPaid: ((paid.amount_paid || 0) / 100) },
+        note: `Marked paid OOB · Suite ${meta.unitId || suiteId || '?'}` +
+          (meta.ym || ym ? ` · ${meta.ym || ym}` : '') +
+          (paymentMethod ? ` · via ${paymentMethod}` : '') +
+          (paidAt ? ` · paidAt=${paidAt}` : '') +
+          (note ? ` · ${note}` : ''),
+      });
+
+      return {
+        invoiceId,
+        action: 'marked-paid-oob',
+        status: paid.status,
+        wasStatus: status,
+        amount: ((paid.total || 0) / 100),
+        amountPaid: ((paid.amount_paid || 0) / 100),
+      };
+    } catch (err) {
+      if (err.httpErrorCode) throw err;
+      logger.error('[markPaidOOB] failed:', err.message, err.stack);
+      await writeAudit('mark-paid-oob-failed', { note: 'Failure: ' + err.message });
+      throw new HttpsError('internal', `Mark paid OOB failed: ${err.message || err}`);
+    }
+  }
+);
+
+// =========================================================================
 // ===== Stripe — Bulk auto-connect customers =============================
 // Walks every occupied unit that has an email, tries to find a matching
 // Stripe Customer by email, and links it. One button in the UI adopts all
