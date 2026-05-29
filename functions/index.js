@@ -3421,29 +3421,34 @@ exports.runAutoInvoices = onSchedule(
               logger.warn(`[auto-invoice] ${u.id}: dup-search failed (${searchErr.message}); proceeding without cross-flow dedupe`);
             }
 
-            // === Phase 2 dry-run: roll-late-fee-into-next-rent ============
-            // Никаких Stripe-write'ов, никаких state-mutations — только
-            // observability того, что Phase 3 бы сделала. Gate: late-fee
-            // cascade resolves rollIntoNextRent === true. Если off — silent.
-            // Failure isolation: любая ошибка в этом блоке НЕ блокирует
-            // создание рент-инвойса (try/catch ниже).
+            // === Phase 5 LIVE: roll-late-fee-into-next-rent (Tony 2026-05-28) ===
+            // Детектор: ищем в Stripe незаплаченный late-fee инвойс за prevYm.
+            // Если найден И rollIntoNextRent cascade === true (default ON) —
+            // ниже добавляем синтетическую late-fee line к next-rent invoice,
+            // а после успешного sendInvoice void'им standalone late-fee и
+            // стампим metadata.rolledIntoInvoiceId для traceability.
+            // Failure isolation: ошибка детектора НЕ блокирует rent flow —
+            // _rollInCandidate остаётся null, rent шлётся как обычно.
+            let _rollInCandidate = null;
+            let _rollInPrevYm = null;
             try {
               const _lfCfg = _resolveLateFeeConfigServer(state, b, f, u);
               if (_lfCfg && _lfCfg.rollIntoNextRent === true) {
                 const [_ty, _tm] = nextYm.split('-').map(Number);
                 // _tm 1-indexed; _tm-2 даёт 0-indexed prev month
                 const _pd = new Date(Date.UTC(_ty, _tm - 2, 1));
-                const _prevYm = `${_pd.getUTCFullYear()}-${String(_pd.getUTCMonth() + 1).padStart(2, '0')}`;
-                const _cand = await _findUnpaidLateFeeForServer(stripe, customerId, u.id, _prevYm, logger);
-                if (_cand) {
-                  const _amt = ((_cand.total || 0) / 100).toFixed(2);
-                  logger.info(`[roll-late-fee:dry-run] unit=${u.id} targetYm=${nextYm} prevYm=${_prevYm} candidate=${_cand.id} total=$${_amt} status=${_cand.status} → WOULD-ROLL-IN`);
+                _rollInPrevYm = `${_pd.getUTCFullYear()}-${String(_pd.getUTCMonth() + 1).padStart(2, '0')}`;
+                _rollInCandidate = await _findUnpaidLateFeeForServer(stripe, customerId, u.id, _rollInPrevYm, logger);
+                if (_rollInCandidate) {
+                  const _amt = ((_rollInCandidate.total || 0) / 100).toFixed(2);
+                  logger.info(`[roll-late-fee:live] unit=${u.id} targetYm=${nextYm} prevYm=${_rollInPrevYm} candidate=${_rollInCandidate.id} total=$${_amt} status=${_rollInCandidate.status} → WILL-ROLL-IN`);
                 } else {
-                  logger.info(`[roll-late-fee:dry-run] unit=${u.id} targetYm=${nextYm} prevYm=${_prevYm} candidate=(none) → SKIP-no-candidate`);
+                  logger.info(`[roll-late-fee:live] unit=${u.id} targetYm=${nextYm} prevYm=${_rollInPrevYm} candidate=(none) → SKIP-no-candidate`);
                 }
               }
             } catch (_rollErr) {
-              logger.warn(`[roll-late-fee:dry-run] unit=${u.id} dry-run threw (continuing rent flow): ${_rollErr.message}`);
+              logger.warn(`[roll-late-fee:live] unit=${u.id} detector threw (continuing rent flow without roll-in): ${_rollErr.message}`);
+              _rollInCandidate = null;
             }
 
             const description = `Monthly rent — ${nm.toLocaleString('en-US', {month:'long', year:'numeric', timeZone:'UTC'})} · Suite ${u.id}`;
@@ -3487,6 +3492,37 @@ exports.runAutoInvoices = onSchedule(
                 } catch (svcErr) {
                   logger.warn(`[runAutoInvoices] service line "${svc.name}" for ${u.id} failed: ${svcErr.message}`);
                 }
+              }
+            }
+
+            // Phase 5 LIVE: roll-in late-fee invoice item. Создаём ДО
+            // invoices.create — Stripe автоматически подцепит pending
+            // invoice_item к новому invoice того же customer'а. Описание
+            // включает оригинальный месяц для прозрачности тенанту.
+            // Idempotency: -rollin суффикс на ключ same as services pattern.
+            // Если invoiceItems.create упал — отключаем void ниже (иначе
+            // получим void standalone без roll-in line = тенант теряет
+            // обязательство).
+            if (_rollInCandidate) {
+              try {
+                const _rollInLabel = new Date(`${_rollInPrevYm}-01T00:00:00Z`)
+                  .toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+                await stripe.invoiceItems.create({
+                  customer: customerId,
+                  amount: _rollInCandidate.total,
+                  currency: 'usd',
+                  description: `Late fee carry-over from ${_rollInLabel}`,
+                  metadata: {
+                    unitId: u.id, buildingId: b.id, floorId: f.id,
+                    ym: nextYm, purpose: 'late_fee_rollin', source: 'auto',
+                    originalInvoiceId: _rollInCandidate.id,
+                    originalYm: _rollInPrevYm,
+                  },
+                }, { idempotencyKey: idempotencyKey + '-rollin' });
+                logger.info(`[roll-late-fee:live] unit=${u.id} added rollin line amount=${_rollInCandidate.total} cents from ${_rollInCandidate.id}`);
+              } catch (rollErr) {
+                logger.error(`[roll-late-fee:live] unit=${u.id} invoiceItems.create FAILED, skipping roll-in (standalone stays): ${rollErr.message}`);
+                _rollInCandidate = null;
               }
             }
 
@@ -3564,6 +3600,34 @@ exports.runAutoInvoices = onSchedule(
               logger.info(`[auto-invoice] ${u.id}: auto-charging saved card (charge_automatically)`);
             }
 
+            // Phase 5 LIVE: void standalone late-fee после успешной отправки
+            // consolidator-инвойса. Failure isolation: void упал — НЕ роняем
+            // cron. Следующий run попробует снова через детектор (он найдёт
+            // standalone если ещё open) или оператор увидит дубль и закроет
+            // вручную через UI. Metadata-стамп пишем отдельным update —
+            // если он упадёт, void уже произошёл, traceability теряем но
+            // деньги корректны.
+            if (_rollInCandidate) {
+              try {
+                await stripe.invoices.voidInvoice(_rollInCandidate.id);
+                try {
+                  await stripe.invoices.update(_rollInCandidate.id, {
+                    metadata: {
+                      rolledIntoInvoiceId: inv.id,
+                      rolledIntoYm: nextYm,
+                      rolledIntoAt: new Date().toISOString(),
+                      rolledInBy: 'auto-billing-cron',
+                    },
+                  });
+                } catch (metaErr) {
+                  logger.warn(`[roll-late-fee:live] unit=${u.id} void OK but metadata stamp failed for ${_rollInCandidate.id}: ${metaErr.message}`);
+                }
+                logger.info(`[roll-late-fee:live] unit=${u.id} voided standalone ${_rollInCandidate.id} → consolidator ${inv.id}`);
+              } catch (voidErr) {
+                logger.error(`[roll-late-fee:live] unit=${u.id} void FAILED for ${_rollInCandidate.id} (consolidator ${inv.id} sent OK; manual cleanup needed): ${voidErr.message}`);
+              }
+            }
+
             // Stamp u.stripe so next run skips
             u.stripe = u.stripe || {};
             u.stripe.autoSentYm = nextYm;
@@ -3575,14 +3639,26 @@ exports.runAutoInvoices = onSchedule(
             // Activity tab shows «Auto-invoice sent» events alongside manual
             // sends. Fire-and-forget — never block the cron if audit fails.
             try {
+              const _rollInAmt = _rollInCandidate ? +(((_rollInCandidate.total||0)/100).toFixed(2)) : 0;
+              const _totalAmt = rent + _rollInAmt;
               await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
                 action: 'invoice.auto-sent',
                 ts: Date.now(),
                 buildingId: b.id, floorId: f.id, unitId: u.id,
                 invoiceId: inv.id, ym: nextYm,
-                amount: rent,
+                amount: _totalAmt,
+                rentAmount: rent,
                 actor: 'system:auto-billing-cron',
-                note: `Auto-invoice sent for ${nextYm} · $${rent}`,
+                note: _rollInCandidate
+                  ? `Auto-invoice sent for ${nextYm} · rent $${rent} + late-fee carryover $${_rollInAmt} from ${_rollInPrevYm}`
+                  : `Auto-invoice sent for ${nextYm} · $${rent}`,
+                ...(_rollInCandidate ? {
+                  rolledInLateFee: {
+                    fromInvoiceId: _rollInCandidate.id,
+                    fromYm: _rollInPrevYm,
+                    amount: _rollInAmt,
+                  },
+                } : {}),
               });
             } catch (auditErr) {
               logger.warn(`[auto-invoice] audit-write failed for ${u.id}: ${auditErr.message}`);
@@ -3646,12 +3722,13 @@ function _resolveLateFeeConfigServer(state, b, f, u) {
     frequency: 'monthly', applyTo: 'total',
     requireGuaranteedPayment: true, suspendAccessAfterLate: false,
     autoSend: false,
-    // rollIntoNextRent — Phase 2 dry-run / Phase 3 live. Default false:
-    // включается только если оператор явно опт-инит на workspace / building
-    // / floor / unit уровне. См. client helper _resolveRollIntoNextRent
-    // (floor-map-editor.html). Cascade автоматически работает через
-    // Object.assign ниже — никаких отдельных полей не добавляем.
-    rollIntoNextRent: false,
+    // rollIntoNextRent — Phase 5 live (Tony 2026-05-28). Default TRUE:
+    // оператор явно опт-инул на workspace-wide включение для всех юнитов.
+    // Per-unit/floor/building override может выключить через
+    // billingRulesOverride.lateFee.rollIntoNextRent: false. Cascade автомат.
+    // через Object.assign ниже. См. client helper _resolveRollIntoNextRent
+    // (floor-map-editor.html).
+    rollIntoNextRent: true,
   };
   let cfg = Object.assign({}, def, (state && state.settings && state.settings.lateFee) || {});
   // Building override
