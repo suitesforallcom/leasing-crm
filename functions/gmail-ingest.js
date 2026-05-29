@@ -60,7 +60,12 @@ const WORKSPACE_ID = 'default';
 // (96% of 1MB Firestore limit), gmailActivity was 220KB at 561 items.
 // 500 max × ~400 bytes = ~200KB ceiling. Combined со slimming записей
 // (subject truncated, messageIdHeader dropped) — реальный потолок ~150KB.
-const GMAIL_ACTIVITY_CAP = 500;
+//
+// Phase 19 (2026-05-29) — cap reduced 500 → 50. State пришлось урезать
+// в Console на 137KB (953→814). Pulse activity feed читает топ-50
+// строк, остальные 450 просто наполняли state бессмысленно. 50 max ×
+// ~400 байт = ~20KB потолок — устойчиво.
+const GMAIL_ACTIVITY_CAP = 50;
 const GMAIL_SUBJECT_TRIM = 120;
 
 // Root admin allowlist (синхронно с index.js — single source of truth там,
