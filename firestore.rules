@@ -312,6 +312,18 @@ service cloud.firestore {
         allow read:  if isMember(wid);
         allow write: if request.auth != null && request.auth.uid == uid;
       }
+
+      // Per-payment documents (SCALING Phase 1 — см. SCALING_PLAN.md).
+      // Каждый платёж — отдельный крошечный док /workspaces/{wid}/payments/{unitId__ym}.
+      // Зачем: операторы, правящие РАЗНЫЕ юниты, пишут в разные документы и
+      // больше не конфликтуют за один 804KB-монолит; ~195KB истории платежей
+      // уезжают из горячего state-дока (снимает и стену 1MB). Контракт доступа
+      // тот же, что у state-дока: member читает, editor пишет. Серверные
+      // auto-invoice / auto-late-fee идут через admin SDK и эти правила обходят.
+      match /payments/{payId} {
+        allow read:  if isMember(wid);
+        allow write: if isEditor(wid);
+      }
     }
 
     // ----- Legacy per-user state (pre-Stage-2 storage) --------------------
