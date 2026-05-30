@@ -8072,3 +8072,85 @@ exports.getAircallRecording = _aircall.getAircallRecording;
 const _leaseExtract = require('./lease-extract');
 exports.extractLeaseSignedDate = _leaseExtract.extractLeaseSignedDate;
 
+// =========================================================================
+// SCALING — Phase 1: серверный dual-write платежей (см. SCALING_PLAN.md).
+//
+// Изолированный Firestore-триггер: срабатывает ПОСЛЕ коммита state-дока и
+// зеркалит изменившиеся платежи в плоскую коллекцию
+//   workspaces/{wid}/payments/{unitId__ym}
+// Почему триггер, а не правка денежных функций: он развязан с путём записи
+// денег — НЕ может его заблокировать/сломать (бежит после коммита, в своём
+// контексте). Пишет ТОЛЬКО в коллекцию payments, НЕ в state-док → сам себя
+// не триггерит (нет петли).
+//
+// Гейт: zеркалирование работает только когда state.settings.syncV2 === true.
+// Пока флаг выключен — мгновенный no-op. Включение флага лишь НАПОЛНЯЕТ
+// shadow-коллекцию (что читают клиенты — не меняется), поэтому включать
+// безопасно глобально. id и канонический stable-hash совпадают с клиентским
+// PaymentsRepo, так что sfaReconcilePayments() остаётся валиден.
+const {onDocumentWritten} = require('firebase-functions/v2/firestore');
+
+function _mp_stableStr(v) {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v);
+  if (Array.isArray(v)) return '[' + v.map(_mp_stableStr).join(',') + ']';
+  return '{' + Object.keys(v).filter(k => v[k] !== undefined).sort()
+    .map(k => JSON.stringify(k) + ':' + _mp_stableStr(v[k])).join(',') + '}';
+}
+function _mp_collect(state) {
+  const m = new Map();
+  if (!state || !Array.isArray(state.buildings)) return m;
+  for (const b of state.buildings)
+    for (const f of (b.floors || []))
+      for (const u of (f.units || [])) {
+        const p = u.payments || {};
+        for (const ym of Object.keys(p)) {
+          const rec = p[ym];
+          m.set(`${u.id}__${ym}`, { bId: b.id, fId: f.id, unitId: u.id, ym, rec, hash: _mp_stableStr(rec) });
+        }
+      }
+  return m;
+}
+
+exports.mirrorPaymentsOnStateWrite = onDocumentWritten(
+  'workspaces/{wid}/data/{docId}',
+  async (event) => {
+    if (event.params.docId !== 'state') return;
+    const after = event.data && event.data.after && event.data.after.data();
+    if (!after || !after.state) return;
+    // Гейт: только при включённом флаге.
+    if (!(after.state.settings && after.state.settings.syncV2 === true)) return;
+
+    const before = event.data && event.data.before && event.data.before.data();
+    const beforeMap = _mp_collect(before && before.state);
+    const afterMap = _mp_collect(after.state);
+    const wid = event.params.wid;
+    const col = db.collection(`workspaces/${wid}/payments`);
+
+    let batch = db.batch(), ops = 0, upserts = 0, deletes = 0;
+    const commits = [];
+    const flush = () => { if (ops) { commits.push(batch.commit()); batch = db.batch(); ops = 0; } };
+
+    // Upsert новых / изменившихся.
+    for (const [id, v] of afterMap) {
+      const prev = beforeMap.get(id);
+      if (prev && prev.hash === v.hash) continue; // не менялся
+      batch.set(col.doc(id), {
+        buildingId: v.bId, floorId: v.fId, unitId: v.unitId, ym: v.ym,
+        rec: v.rec, _mirroredAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      upserts++;
+      if (++ops >= 450) flush();
+    }
+    // Удаление исчезнувших.
+    for (const [id] of beforeMap) {
+      if (!afterMap.has(id)) { batch.delete(col.doc(id)); deletes++; if (++ops >= 450) flush(); }
+    }
+    flush();
+    try { await Promise.all(commits); } catch (e) {
+      logger.error('[mirror-payments] batch commit failed', e && e.message);
+      return;
+    }
+    if (upserts || deletes) logger.info(`[mirror-payments] wid=${wid} upserts=${upserts} deletes=${deletes}`);
+  }
+);
+
