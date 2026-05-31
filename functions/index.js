@@ -200,6 +200,61 @@ function findUnit(state, {buildingId, floorId, unitId}) {
   return {building, floor, unit};
 }
 
+// ─── Phase 1 dual-write — server-side mirror to v2 payments collection ───
+// Mirrors floor-map-editor.html:31966 (client _mirrorSet/_mirrorDel). Each
+// per-payment doc lives at workspaces/{ws}/payments/{buildingId__unitId__ym}
+// with _schema:'v2'. Gate-checked by state.settings.syncV2 — when false the
+// whole block no-ops, so prod can roll back via flag without redeploying CF.
+// Fire-and-forget pattern: errors are logged but never propagate to the
+// caller — monolith write remains source of truth during soak (per
+// SCALING_PLAN_v2.md). Mismatches are caught by sfaReconcilePaymentsV2().
+
+// Reads state, returns it only when syncV2 is enabled; otherwise null.
+// Callers use the truthy state both as a gate AND as the fresh post-mutate
+// snapshot for grabbing the just-written u.payments[ym] record.
+async function _stateIfSyncV2() {
+  try {
+    const state = await readWorkspaceState();
+    return state && state.settings && state.settings.syncV2 ? state : null;
+  } catch (e) {
+    logger.warn(`[mirror-v2:gate] state read failed: ${e.message}`);
+    return null;
+  }
+}
+
+// Точечная запись одного per-payment дока. Caller уже проверил gate.
+async function _writePaymentV2(buildingId, floorId, unitId, ym, rec) {
+  try {
+    const key = `${buildingId}__${unitId}__${ym}`;
+    const ref = db.doc(`workspaces/${WORKSPACE_ID}/payments/${key}`);
+    await ref.set({
+      _schema: 'v2',
+      buildingId: buildingId || '',
+      floorId: floorId || '',
+      unitId,
+      ym,
+      rec: rec || {},
+      _mirroredAt: admin.firestore.FieldValue.serverTimestamp(),
+      _mirroredBy: 'cloud-function',
+    });
+  } catch (e) {
+    logger.warn(`[mirror-v2:write] ${buildingId}/${unitId}/${ym}: ${e.message}`);
+  }
+}
+
+// Точечное удаление одного per-payment дока. Только по явному событию
+// (move-out / undo / explicit delete) — НИКОГДА по diff'у (см. v1 incident
+// 2026-05-30, SCALING_PLAN_v2.md §0). Caller уже проверил gate.
+async function _deletePaymentV2(buildingId, unitId, ym) {
+  try {
+    const key = `${buildingId}__${unitId}__${ym}`;
+    const ref = db.doc(`workspaces/${WORKSPACE_ID}/payments/${key}`);
+    await ref.delete();
+  } catch (e) {
+    logger.warn(`[mirror-v2:del] ${buildingId}/${unitId}/${ym}: ${e.message}`);
+  }
+}
+
 // Pull rent amount to invoice. Contract rent (signed) wins over asking rent.
 function unitRentCents(unit) {
   const r = Number(unit.contractRent) || Number(unit.rent) || 0;
@@ -2462,6 +2517,21 @@ async function handleInvoiceVoided(invoice, eventType) {
       at: Date.now(),
     };
   });
+  // Phase 1 dual-write — зеркалим обновлённый u.payments[ym] в v2-коллекцию.
+  // Только rent-purpose (deposit/move-in лежат в u.stripe.*, не в payments).
+  if (purpose === 'rent' && ym) {
+    try {
+      const syncState = await _stateIfSyncV2();
+      if (syncState) {
+        const f = findUnit(syncState, {buildingId, floorId, unitId});
+        if (f && f.unit.payments && f.unit.payments[ym]) {
+          await _writePaymentV2(buildingId, floorId, unitId, ym, f.unit.payments[ym]);
+        }
+      }
+    } catch (e) {
+      logger.warn(`[mirror-v2:invoice-voided] ${invoice.id}: ${e.message}`);
+    }
+  }
   logger.info(`[stripe] invoice ${invoice.id} marked ${newStatus} for ${unitId}/${ym || '-'}`);
 }
 
@@ -2513,6 +2583,20 @@ async function handleChargeRefunded(charge) {
       at: Date.now(),
     };
   });
+  // Phase 1 dual-write — зеркалим refunded/partial-record в v2-коллекцию.
+  if (purpose === 'rent' && ym) {
+    try {
+      const syncState = await _stateIfSyncV2();
+      if (syncState) {
+        const f = findUnit(syncState, {buildingId, floorId, unitId});
+        if (f && f.unit.payments && f.unit.payments[ym]) {
+          await _writePaymentV2(buildingId, floorId, unitId, ym, f.unit.payments[ym]);
+        }
+      }
+    } catch (e) {
+      logger.warn(`[mirror-v2:charge-refunded] ${charge.id}: ${e.message}`);
+    }
+  }
   logger.info(`[stripe] charge ${charge.id} refunded $${refundedAmt} for invoice ${invoiceId}`);
 }
 
@@ -2937,6 +3021,31 @@ async function handleInvoicePaid(invoice) {
     } catch (e) {
       logger.warn(`[stripe] audit-write failed for invoice ${invoice.id}: ${e.message}`);
     }
+  }
+  // Phase 1 dual-write — зеркалим anchor + advance-prepay siblings в v2.
+  // Sibling-сигнатура: paidVia='stripe-advance' + stripe.invoiceId совпадает
+  // с invoice.id, что мы только что выставили внутри mutate (см. строки выше).
+  // Sibling-deposit намеренно исключаем — он лежит в u.stripe.depositInvoice,
+  // не в payments коллекции (v2 zerкало только per-month rent).
+  try {
+    const syncState = await _stateIfSyncV2();
+    if (syncState) {
+      const f = findUnit(syncState, {buildingId, floorId, unitId});
+      if (f && f.unit.payments) {
+        if (f.unit.payments[ym]) {
+          await _writePaymentV2(buildingId, floorId, unitId, ym, f.unit.payments[ym]);
+        }
+        for (const sibYm of Object.keys(f.unit.payments)) {
+          if (sibYm === ym || sibYm === 'deposit') continue;
+          const sib = f.unit.payments[sibYm];
+          if (sib && sib.paidVia === 'stripe-advance' && sib.stripe && sib.stripe.invoiceId === invoice.id) {
+            await _writePaymentV2(buildingId, floorId, unitId, sibYm, sib);
+          }
+        }
+      }
+    }
+  } catch (e) {
+    logger.warn(`[mirror-v2:invoice-paid] ${invoice.id}: ${e.message}`);
   }
   logger.info(`[stripe] ✓ paid: ${unitId}/${ym} via invoice ${invoice.id} ($${amount})`);
 }
@@ -7019,6 +7128,18 @@ exports.undoAutoAppliedPayment = onCall(
         unitId, buildingId, floorId, ym,
       });
     }
+    // Phase 1 dual-write — удаляем зеркало из v2-коллекции (explicit event,
+    // НЕ diff-on-push). Только если undone — иначе монолит не менялся.
+    if (undone) {
+      try {
+        const syncState = await _stateIfSyncV2();
+        if (syncState) {
+          await _deletePaymentV2(buildingId, unitId, ym);
+        }
+      } catch (e) {
+        logger.warn(`[mirror-v2:undo] ${buildingId}/${unitId}/${ym}: ${e.message}`);
+      }
+    }
     return { undone, bankTxnId };
   }
 );
@@ -7504,12 +7625,21 @@ exports.confirmBankMatch = onCall(
     const txn = snap.data();
     const operatorEmail = (req.auth?.token?.email || '').toLowerCase();
 
+    // Захватываем buildingId/floorId внутри mutate для последующего v2-mirror
+    // (исходный цикл искал юнит ТОЛЬКО по unitId — building/floor не были в
+    // области видимости снаружи). Сбрасываем в начале каждой попытки txn —
+    // Firestore транзакции могут повториться при contention.
+    let capturedB = null;
+    let capturedF = null;
     if (recordPayment) {
       await mutateWorkspaceState((s) => {
+        capturedB = null; capturedF = null;
         outer: for (const b of s.buildings || []) {
           for (const f of b.floors || []) {
             for (const u of f.units || []) {
               if (u.id !== unitId) continue;
+              capturedB = b.id;
+              capturedF = f.id;
               u.payments = u.payments || {};
               const existing = u.payments[ym] || {};
               u.payments[ym] = {
@@ -7536,6 +7666,21 @@ exports.confirmBankMatch = onCall(
       confirmedAt: admin.firestore.FieldValue.serverTimestamp(),
       confirmedBy: operatorEmail,
     }, { merge: true });
+
+    // Phase 1 dual-write — зеркалим bank-confirmed payment в v2-коллекцию.
+    if (recordPayment && capturedB) {
+      try {
+        const syncState = await _stateIfSyncV2();
+        if (syncState) {
+          const f = findUnit(syncState, {buildingId: capturedB, floorId: capturedF, unitId});
+          if (f && f.unit.payments && f.unit.payments[ym]) {
+            await _writePaymentV2(capturedB, capturedF, unitId, ym, f.unit.payments[ym]);
+          }
+        }
+      } catch (e) {
+        logger.warn(`[mirror-v2:bank-feed] ${unitId}/${ym}: ${e.message}`);
+      }
+    }
 
     logger.info(`[bank-feed] confirmed txn ${txnId} → unit ${unitId} ym ${ym} (paymentRecorded=${recordPayment})`);
     return { ok: true };
