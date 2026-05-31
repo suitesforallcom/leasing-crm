@@ -60,6 +60,19 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 35. `loadPaymentsData` must be FILL-ONLY — static seed must never overwrite live payments (2026-05-31)
+
+- **Status:** active
+- **Branch / commit:** `claude/modest-curie-8a50ad` — fix `5a0b44d`
+- **Area:** Finance / payment records / b1 seed bootstrap / false-overdue
+- **Files:** `floor-map-editor.html` — `loadPaymentsData()` (~:25855), `PAYMENTS_DATA` static seed (~:25777)
+- **Invariant:** `loadPaymentsData()` must apply `PAYMENTS_DATA` **fill-only** — only set `u.payments[ym]` for months NOT already present. It must **NEVER** `Object.assign(u.payments, seed)` (which overwrites live records).
+- **Why (incident 2026-05-31):** `PAYMENTS_DATA` (static seed, baseline 2026-05-01) hardcodes some suites' months as stale `{status:'late', amount:0}` (e.g. 433/413/408/449 `2026-04`, note `"…+late fee"`). The old `Object.assign(u.payments, seed)` ran on **every** load that triggered `loadPaymentsData` (via `fixFloorAssignments` step 4, or the `restored>0` fill-merge path → `loadPaymentsData(); saveState()`), **clobbering real synced `paid` records back to the stale seed value and persisting it**. Suites 408/413/433 (real Stripe-paid April, receipts, "client paid April rent on 10th") flipped to false-overdue. Proof: live record became byte-identical to the bare seed (no `stripe`/`history`/`date`), while the real payment survived only in the adjacent month. Data restored from `backups/2026-05-30`.
+- **How to verify:** `grep -A25 "function loadPaymentsData(" floor-map-editor.html | grep "Object.assign(u.payments"` must return **nothing**. The loop must be `for (const ym of Object.keys(p.payments)) if (!(ym in u.payments)) u.payments[ym] = p.payments[ym]`. Enforced by `scripts/check-invariants.sh` (Entry 35 gate).
+- **Note:** the seed is a one-time historical bootstrap; the synced live state is the source of truth. Same fill-only contract as `mergeTenantDataIntoFloor`.
+
+---
+
 ### 34. Move-in rent stamp — deposit cross-stamp guard + self-heal (2026-05-28)
 
 - **Status:** active

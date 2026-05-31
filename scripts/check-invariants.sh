@@ -165,6 +165,21 @@ else
 fi
 
 echo
+
+# ─── Entry 35: loadPaymentsData fill-only (no static-seed clobber) ──────
+# Object.assign(u.payments, seed) ПЕРЕЗАПИСЫВАЛ живые оплаты статическим
+# сидом PAYMENTS_DATA на загрузке → реальные paid затирались в stale
+# `late $0` и сохранялись (инцидент 433/413/408 2026-05-31). Должно быть
+# fill-only (только дозаполнять отсутствующие месяцы). См. FIXES_LOG Entry 35.
+echo "Entry 35 — loadPaymentsData is fill-only (no Object.assign over u.payments):"
+if grep -A 25 "^function loadPaymentsData(" "$HTML" | grep -qE "Object\.assign\(u\.payments"; then
+  echo "  ✗ loadPaymentsData uses Object.assign(u.payments…) — REGRESSION: static seed clobbers live payments (FIXES_LOG Entry 35)"
+  FAIL=1
+else
+  echo "  ✓ loadPaymentsData fill-only"
+fi
+
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."
