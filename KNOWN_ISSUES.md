@@ -40,6 +40,19 @@
 **Fix path**: Tony confirms void. Claude must NOT void Stripe invoices autonomously.
 **Tony decision needed**: confirm void.
 
+### #11. State size 902KB — approaching Firestore 1MB document limit ⚠️ PROD ISSUE 2026-05-28
+**Severity**: 🔴 — when state crosses the 950KB threshold `fbPushNow` REFUSES all writes (floor-map-editor.html:31158), stranding edits in localStorage forever. Below 900KB it only warns.
+**Symptom**: red toast «Warning: state size 902KB — approaching 1MB Firestore limit» observed 2026-05-28 on page load (b1 floor 3 stacking view).
+**Where**: hard-guard at floor-map-editor.html:31158 (`json.length > 950 * 1024` → error toast + refuse push); warn at :31167 (`json.length > 900 * 1024` → toast at :31169). The Synced-state-size panel mirrors the same thresholds at :55968.
+**Operator impact**: ~50KB headroom left. The next big push (Stripe webhook burst, batch invoice run, photo upload, lease draft) could trip the 950KB ceiling and silently strand subsequent saves in localStorage until the operator archives data.
+**Workaround now**: archive an old building OR trim large photos in Settings → Archive. The app already prompts for this in the toast.
+**Fix path** (proper — requires Tony approval; schema / storage migration):
+1. Per-field breakdown via `sfaSyncStats()` (already prints a state-size breakdown at :31541).
+2. Migrate large blobs out of the state doc into Firestore subcollections OR Firebase Storage (same pattern as `_tplBackfillInlineToStorage`, already done for templates).
+3. Candidate targets: `state.leaseDraftsHistory[*].bodyHtmlOverride`, `u.photos[*]` (suite photo blobs), `state.contracts[*].pdfDataUrl`.
+4. Guard rail: per-field size budget + Sentry telemetry when any field crosses N KB.
+**Status note**: state-size optimization is on **HALT** (set 2026-05-29 after a payment-archive error). This entry is documentation only — do NOT start the migration without Tony's explicit re-request.
+
 ---
 
 ## 🟡 MEDIUM
