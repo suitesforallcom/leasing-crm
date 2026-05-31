@@ -106,6 +106,14 @@
 **Workaround**: `git log origin/<branch>..HEAD` shows unpushed commits. SESSION_LOG.md captures shipping intent but not push state.
 **Fix path**: when local-only mode activated 2026-05-11, all commits up through `5d01adc` were already pushed. Future commits will pile up. Tony decides when to manually push.
 
+### #12. «N units on wrong floors — auto-fixing» recurs every load (benign false-positive) 🔵 INVESTIGATED 2026-05-31
+**Severity**: 🔵 — misleading console log only; verified NO data churn.
+**Symptom**: `[init] Detected ~109 units on wrong floors — auto-fixing` on every load (count drifts 108–110).
+**Root cause**: the init detection loop (floor-map-editor.html `ensureRealDataSeeded`, ~:145454) scans **ALL buildings**, counting units whose suite-hundreds ≠ floor.number (`Math.floor(sn/100) !== f.number`). But the fix it triggers — `fixFloorAssignments(true)` (~:145324) — operates **only on `currentBuilding()`**. The mismatches live in NON-current buildings (Bay Vista / Crane Nest, whose suite numbering doesn't follow b1's hundreds=floor convention). The fix runs on b1, finds it clean → early-returns (~:145354) with no moves and no saveState. Nothing is relocated; the count recurs because detection over-counts buildings the fix never touches.
+**Why NOT fixed**: this auto-heal path caused TWO prior data-loss incidents (phantom 20th floor 2026-04-30; phantom-units 2026-05-01). `fixFloorAssignments` creates floors + moves units by suite number — load-bearing + incident-prone. Silencing a cosmetic log isn't worth the regression risk.
+**If ever fixed**: scope the init detection to the fix's scope (`currentBuilding`, or only buildings that follow the hundreds convention) so the false alarm stops — WITHOUT touching the unit-moving logic. Verify first with a read-only diagnostic listing flagged units per building (needs operator live data — non-b1 floor structure unknown).
+**Possibly related**: the intermittent 525× `<g>/polygon/text` SVG NaN render errors (units with geometry not matching their floor) — separate confirmation needed.
+
 ---
 
 ## 🚧 RESOLVED but worth remembering (don't re-introduce)
