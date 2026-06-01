@@ -69,11 +69,10 @@
 **Mitigation (2026-05-12)**: added defensive telemetry in `fbApplyRemote` — if cloud `_rev > 1e12` we now log a console warning + send Sentry breadcrumb (`cloud_sync._rev_poisoned`). Recovery via «↑ Force push» banner button is unchanged and known to work.
 **Status**: closed pending fresh recurrence. If telemetry fires in production, treat as a new issue with the breadcrumb metadata as evidence.
 
-### #5. `mode='label'` doesn't persist across page reload 🔵 (intentional?) but could surprise
-**Severity**: 🔵 — but could be 🟡 depending on operator preference.
-**Issue**: After Cmd+Shift+R, `mode` resets to `pan` (default per `let mode = 'pan'`). Operator's last-used tool is forgotten.
-**Operator impact**: if operator was using «123» label-drag tool before refresh, they need to re-click it after.
-**Tony decision**: should `mode` persist via `state.ui.mode`? If yes, ~5 min change.
+### #5. `mode='label'` doesn't persist across page reload ✅ FIXED 2026-05-31
+**Severity**: 🔵 → resolved.
+**Issue (historical)**: After Cmd+Shift+R, `mode` reset to `pan` (module default). Operator's last-used tool was forgotten — particularly biting on the «123» label-drag tool during long drawing sessions.
+**Fix (commit `77a3b9f`)**: `setMode(m)` writes `state.ui.mode = m` + `saveLocalOnly()` (per-device persistence, no Firestore push). `loadState()` reads `state.ui.mode` at the end of the load path and re-applies via `setMode()`. Gated by `!== 'pan'` to skip the default no-op. `setMode`'s editMode guard still wins — view-mode managers who reload with a drawing tool persisted are auto-downgraded to 'select' with the existing toast.
 
 ### #6. PASS 2 internal walls now uniform with perimeter (legacy «building outline thick / divisions thin» lost) 🟡
 **Severity**: 🟡 — design tradeoff, deliberate.
