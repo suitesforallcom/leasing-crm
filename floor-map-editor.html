@@ -17799,12 +17799,18 @@
                 </div>
                 <div style="display:grid; grid-template-columns: 90px 1fr auto; gap: 10px; align-items: center;">
                   <label for="hvFcstRentStep" style="font-size:11px; color:var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700; cursor: help;"
-                         title="Manual rent growth: extra dollars per month added to continuing-lease revenue, compounding linearly each forecast month (Mo 1 = baseline, Mo 2 = +$step, Mo 3 = +2×$step, …). Lifts the revenue line, Total and Avg only — Potential value (proforma) is unchanged.">Rent step-up</label>
-                  <input type="number" id="hvFcstRentStep" min="0" step="50" value="0" placeholder="0 $/mo"
-                         oninput="writePref('sfa_inv_fcst_rentStepUsd', this.value); renderHomeForecast();"
-                         style="width: 100%; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font-size: 13px; font-variant-numeric: tabular-nums;">
-                  <span style="display:flex; align-items:center; gap:8px; font-variant-numeric: tabular-nums; white-space: nowrap;">
-                    <span id="hvFcstRentStepLabel" style="color:var(--text); font-size: 12px; font-weight: 600; min-width: 36px; text-align: right;">$0</span>
+                         title="Manual rent growth: extra dollars per month added to continuing-lease revenue, compounding linearly each forecast month (Mo 1 = baseline, Mo 2 = +$step, Mo 3 = +2×$step, …). Drag the slider for a quick value, or type an exact amount in the box on the right when the slider range isn't enough. Lifts the revenue line, Total and Avg only — Potential value (proforma) is unchanged.">Rent step-up</label>
+                  <input type="range" id="hvFcstRentStepRange" min="0" max="2000" step="50" value="0"
+                         oninput="_onFcstRentStepInput(this.value)"
+                         style="width: 100%; accent-color: #7c3aed;">
+                  <span style="display:flex; align-items:center; gap:6px; font-variant-numeric: tabular-nums; white-space: nowrap;">
+                    <span style="color:var(--muted); font-size:12px;">$</span>
+                    <input type="number" id="hvFcstRentStep" min="0" step="10" value="0" placeholder="0"
+                           oninput="_onFcstRentStepInput(this.value)"
+                           title="Type an exact $/mo step-up — use this when the slider's range isn't enough."
+                           style="width: 74px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font-size: 13px; font-variant-numeric: tabular-nums; text-align: right;">
+                    <span style="color:var(--muted); font-size:11px;">/mo</span>
+                    <span id="hvFcstRentStepLabel" style="color:#7c3aed; font-size: 11px; font-weight: 600;"></span>
                   </span>
                 </div>
               </div>
@@ -52168,6 +52174,17 @@ function _fcstSetRentStart(bId, val) {
   renderHomeForecast();
 }
 
+// Req1 — общий обработчик слайдера И ручного ввода rent step-up: оба пишут
+// один pref и пере-рендерят прогноз. Слайдер — быстрый грубый выбор; поле
+// справа — точный/большой ввод, когда диапазона слайдера не хватает
+// (значение > max слайдера просто прижимает ползунок к максимуму, но
+// реальная величина = введённой). Отрицательное / NaN → 0.
+function _onFcstRentStepInput(val) {
+  const n = Math.max(0, Math.round(+val || 0));
+  try { writePref('sfa_inv_fcst_rentStepUsd', String(n)); } catch (e) {}
+  renderHomeForecast();
+}
+
 function renderHomeForecast() {
   const section = document.getElementById('hvForecastSection');
   if (!section) return;
@@ -52218,18 +52235,27 @@ function renderHomeForecast() {
       _k++;
     }
   }
-  // --- Req1 UI: подставляем значение step-up из pref + лейбл «итог к Mo12».
+  // --- Req1 UI: синхронизируем И слайдер, И ручной ввод $/мес из pref.
+  // Слайдер даёт быстрый грубый выбор; поле числа справа — точный/большой
+  // ввод, когда диапазона слайдера не хватает. activeElement-гард не даёт
+  // перебить ввод во время drag'а / печати.
   const rentStepEl = document.getElementById('hvFcstRentStep');
   if (rentStepEl && document.activeElement !== rentStepEl) {
     rentStepEl.value = _rentStepUsd > 0 ? String(_rentStepUsd) : '';
   }
+  const rentStepRangeEl = document.getElementById('hvFcstRentStepRange');
+  if (rentStepRangeEl && document.activeElement !== rentStepRangeEl) {
+    rentStepRangeEl.value = String(_rentStepUsd);   // браузер сам clamp'ит к max
+  }
   const rentStepLblEl = document.getElementById('hvFcstRentStepLabel');
   if (rentStepLblEl) {
-    rentStepLblEl.textContent = _rentStepUsd > 0
-      ? `+$${Math.round(11 * _rentStepUsd).toLocaleString()} by Mo12` : '$0';
+    // Σ прироста за 12 прогнозных месяцев = step × (0+1+…+11) = step×66.
+    const _cum12 = Math.round(66 * _rentStepUsd);
+    const _mo12  = Math.round(11 * _rentStepUsd);
+    rentStepLblEl.textContent = _rentStepUsd > 0 ? `≈ +$${_cum12.toLocaleString()}/12mo` : '';
     rentStepLblEl.title = _rentStepUsd > 0
-      ? `Each forecast month adds $${_rentStepUsd.toLocaleString()} more to continuing-lease revenue than the previous one. By month 12 the cumulative lift is +$${Math.round(11 * _rentStepUsd).toLocaleString()}/mo. Affects the revenue line, Total and Avg only — Potential value (proforma) is unchanged.`
-      : 'No manual rent step-up applied. Enter $/mo to model linear rent growth on continuing leases.';
+      ? `Each forecast month adds $${_rentStepUsd.toLocaleString()} more to continuing-lease revenue than the previous one (Mo12 is +$${_mo12.toLocaleString()}/mo). Summed across the 12-month window that is ≈ +$${_cum12.toLocaleString()}. Affects the revenue line, Total and Avg only — Potential value (proforma) is unchanged.`
+      : '';
   }
   // --- Req2 UI: дата старта аренды для ТЕКУЩЕГО прогнозируемого здания.
   // Map хранит даты для всех зданий; показываем поле для того, что в scope.
