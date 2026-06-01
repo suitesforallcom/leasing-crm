@@ -32324,9 +32324,55 @@ function _buildingForV2(b) {
   for (const f of (clone.floors || [])) {
     for (const u of (f.units || [])) {
       delete u.payments;  // payments живут в коллекции payments
+      // Polygon points flattening — Firestore не принимает nested arrays.
+      // Тот же паттерн что fbSanitizeState (lines 33672+): [[x,y],[x,y]]
+      // → pointsFlat=[x,y,x,y]. Восстанавливается в листенере (см.
+      // _v2BuildingsAttachListener — unflatten на доке incoming).
+      if (Array.isArray(u.points) && u.points.length > 0 && Array.isArray(u.points[0])) {
+        const flat = [];
+        for (const pt of u.points) flat.push(+pt[0] || 0, +pt[1] || 0);
+        u.pointsFlat = flat;
+        delete u.points;
+      }
+    }
+    // Floor outline polygon — same flattening
+    if (f.outline && Array.isArray(f.outline.points) && f.outline.points.length > 0 && Array.isArray(f.outline.points[0])) {
+      const flat = [];
+      for (const pt of f.outline.points) flat.push(+pt[0] || 0, +pt[1] || 0);
+      f.outline.pointsFlat = flat;
+      delete f.outline.points;
     }
   }
   return clone;
+}
+
+// Reverse the flattening when reading a v2 building doc from collection —
+// converts u.pointsFlat back to u.points (nested array form) so all the
+// polygon-aware UI code finds the shape it expects. Mirror of the
+// loadState / fbApplyRemote restoration pattern. Mutates the doc in place.
+function _buildingFromV2Restore(doc) {
+  if (!doc || typeof doc !== 'object') return doc;
+  for (const f of (doc.floors || [])) {
+    for (const u of (f.units || [])) {
+      if (Array.isArray(u.pointsFlat) && u.pointsFlat.length >= 6 && !Array.isArray(u.points)) {
+        const pts = [];
+        for (let i = 0; i + 1 < u.pointsFlat.length; i += 2) {
+          pts.push([+u.pointsFlat[i] || 0, +u.pointsFlat[i + 1] || 0]);
+        }
+        u.points = pts;
+        delete u.pointsFlat;
+      }
+    }
+    if (f.outline && Array.isArray(f.outline.pointsFlat) && f.outline.pointsFlat.length >= 6 && !Array.isArray(f.outline.points)) {
+      const pts = [];
+      for (let i = 0; i + 1 < f.outline.pointsFlat.length; i += 2) {
+        pts.push([+f.outline.pointsFlat[i] || 0, +f.outline.pointsFlat[i + 1] || 0]);
+      }
+      f.outline.points = pts;
+      delete f.outline.pointsFlat;
+    }
+  }
+  return doc;
 }
 
 // Stable string serialization для change-detection. Sort keys recursively
@@ -32477,6 +32523,12 @@ function _v2BuildingsAttachListener() {
             }
             return;
           }
+          // Restore polygon points from pointsFlat (Firestore-flat form) →
+          // nested array form expected by UI code (renderUnits, polygon
+          // edge-snap, sfaFitToContent, etc.). Mirror of _buildingForV2's
+          // flatten step. См. fbApplyRemote line ~32295 для того же rev
+          // на монолит-стороне.
+          _buildingFromV2Restore(incoming);
           // Preserve u.payments through the building swap. The Phase 2
           // mirror strips payments before write (those live in the payments
           // collection), so the incoming doc has no payments. The Phase 1.2
@@ -32712,33 +32764,36 @@ window.sfaRehydrateMonolithBuildings = async function () {
 // workspaces/{ws}/buildings/. Stable-hash compare через _stableStringifyBld
 // + _buildingForV2 (trim payments).
 window.sfaReconcileBuildingsV2 = async function () {
-  if (!fbSync || !fbSync.enabled || !fbSync.sdk || !fbSync.db) {
-    console.warn('[reconcile-buildings] Firestore не готов'); return;
+  // Routes через CF callable runReconcileBuildingsV2Now — workspaces/{ws}/
+  // buildings/ subcollection не имеет client-read rule (firestore.rules
+  // обновятся отдельным gated commit'ом). CF uses admin SDK bypass так же
+  // как для scaling history (f6926ad). Тот же паттерн что fbListBackups.
+  if (typeof stripeCallable !== 'function') {
+    console.warn('[reconcile-buildings] stripeCallable not ready'); return;
   }
-  const expected = new Map();
-  for (const b of (state.buildings || [])) {
-    if (!b || !b.id) continue;
-    expected.set(b.id, _stableStringifyBld(_buildingForV2(b)));
+  let r;
+  try {
+    const fn = stripeCallable('runReconcileBuildingsV2Now');
+    const res = await fn({});
+    r = res?.data || {};
+  } catch (e) {
+    console.warn('[reconcile-buildings] CF call failed:', e?.message || e);
+    console.log('Альтернатива: добавить match /buildings/{bid} в firestore.rules для прямого read.');
+    return;
   }
-  const { sdk, db } = fbSync;
-  const snap = await sdk.getDocs(sdk.collection(db, 'workspaces', WORKSPACE_ID, 'buildings'));
-  const actual = new Map();
-  snap.forEach(d => {
-    const x = d.data() || {};
-    if (x._schema === 'v2' && x.doc) actual.set(d.id, _stableStringifyBld(x.doc));
-  });
-  const missingInCloud = [...expected.keys()].filter(k => !actual.has(k));
-  const extraInCloud = [...actual.keys()].filter(k => !expected.has(k));
-  const mismatched = [...expected.keys()].filter(k => actual.has(k) && actual.get(k) !== expected.get(k));
-  const clean = !missingInCloud.length && !extraInCloud.length && !mismatched.length;
-  console.log('%c=== reconcile buildings v2 (read-only, ws=' + WORKSPACE_ID + ') ===',
+  const missingInCloud = r.missingInCloud || [];
+  const extraInCloud = r.extraInCloud || [];
+  const mismatched = r.mismatched || [];
+  const clean = !!r.clean;
+  console.log('%c=== reconcile buildings v2 (via CF, ws=' + WORKSPACE_ID + ') ===',
               'font-weight:bold;font-size:13px');
-  console.log('state buildings:', expected.size, '| v2-docs in collection:', actual.size);
+  console.log('state buildings:', r.stateCount, '| v2-docs in collection:', r.cloudCount);
   console.log('missingInCloud:', missingInCloud.length, missingInCloud);
   console.log('extraInCloud:', extraInCloud.length, extraInCloud);
   console.log('mismatched:', mismatched.length, mismatched);
+  console.log('non-v2 docs (legacy):', r.nonV2Count ?? 0);
   console.log(clean ? '✓ ЧИСТО — коллекция совпадает с state' : '⚠ есть расхождения');
-  return { stateCount: expected.size, cloudCount: actual.size, missingInCloud, extraInCloud, mismatched, clean };
+  return { stateCount: r.stateCount, cloudCount: r.cloudCount, missingInCloud, extraInCloud, mismatched, clean };
 };
 
 // ── Combined status dashboard for all scaling V2 phases ──────────────────
