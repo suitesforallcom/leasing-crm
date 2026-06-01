@@ -256,8 +256,63 @@ async function _deletePaymentV2(buildingId, unitId, ym) {
 }
 
 // Pull rent amount to invoice. Contract rent (signed) wins over asking rent.
-function unitRentCents(unit) {
+// ─── Waiver pro-rate helpers (KNOWN_ISSUES #1, FINANCIAL_MODEL_REFERENCE §EQ-5) ───
+// Server-side mirror of floor-map-editor.html's `_unitProrationCredit` +
+// `_mpmComputeWaiverCoverage` (lines ~141557-141694). Same algorithm, no DOM
+// dependency, no state lookup — caller passes the unit (whose `payments`
+// already contains the waiver records). Returns 0..1 fraction of `ym` rent
+// to credit. Matches Kiwi §EQ-5 / CN1 spirit — waiver classified upfront,
+// applied to billing math at every callsite (auto-invoice cron, manual
+// invoice, UI A/R Aging). Clamped 0..1 so overlapping waivers can't push
+// the credit above the rent amount.
+
+function _waiverCoverageCF(startIso, endIso) {
+  if (!startIso || !endIso || startIso >= endIso) return [];
+  const out = [];
+  const start = new Date(startIso + 'T12:00:00');
+  const end = new Date(endIso + 'T12:00:00');
+  let cursor = new Date(start.getFullYear(), start.getMonth(), 1);
+  while (cursor < end) {
+    const y = cursor.getFullYear(), m = cursor.getMonth();
+    const ym = `${y}-${String(m + 1).padStart(2, '0')}`;
+    const monthDays = new Date(y, m + 1, 0).getDate();
+    const monthStart = new Date(y, m, 1);
+    const monthEnd = new Date(y, m + 1, 1);
+    const intersectStart = start > monthStart ? start : monthStart;
+    const intersectEnd = end < monthEnd ? end : monthEnd;
+    const daysCovered = Math.max(0, Math.round((intersectEnd - intersectStart) / 86400000));
+    if (daysCovered > 0) {
+      out.push({ ym, daysCovered, monthDays, fractionCovered: daysCovered / monthDays });
+    }
+    cursor = new Date(y, m + 1, 1);
+  }
+  return out;
+}
+
+function _unitProrationCreditCF(unit, ym) {
+  if (!unit || !unit.payments) return 0;
+  let totalFraction = 0;
+  for (const k of Object.keys(unit.payments)) {
+    const p = unit.payments[k];
+    if (!p || p.status !== 'free') continue;
+    if (!p.waiverStart || !p.waiverEnd) continue;
+    const cov = _waiverCoverageCF(p.waiverStart, p.waiverEnd);
+    const match = cov.find(c => c.ym === ym);
+    if (match) totalFraction += match.fractionCovered;
+  }
+  return Math.max(0, Math.min(1, totalFraction));
+}
+
+function unitRentCents(unit, ym) {
   const r = Number(unit.contractRent) || Number(unit.rent) || 0;
+  // Опциональный ym — когда передан, применяем waiver-credit (см.
+  // _unitProrationCreditCF). Без ym fallback на сырую ставку для
+  // обратной совместимости (subscriptions, reports без месячного
+  // контекста и т.д.).
+  if (ym && r > 0) {
+    const credit = _unitProrationCreditCF(unit, ym);
+    if (credit > 0) return Math.round(r * (1 - credit) * 100);
+  }
   return Math.round(r * 100);
 }
 
@@ -656,7 +711,10 @@ exports.createStripeInvoice = onCall(
     // rent (but non-rent can theoretically be any positive amount).
     let rentCents;
     if (invPurpose === 'rent') {
-      rentCents = unitRentCents(unit);
+      // Pass ym so unitRentCents applies the waiver-credit (KNOWN_ISSUES #1).
+      // Без ym старое поведение — full rent. amountOverride всё ещё имеет
+      // приоритет если оператор явно указал сумму.
+      rentCents = unitRentCents(unit, ym);
       if (amountOverride && Number(amountOverride) > 0) {
         rentCents = Math.round(Number(amountOverride) * 100);
       }
@@ -3515,7 +3573,14 @@ exports.runAutoInvoices = onSchedule(
           if (!effectiveEnabled) { skipped++; continue; }
           if (!u.tenant && !u.company) { skipped++; continue; }
           if (!u.email || !/@/.test(u.email || '')) { skipped++; continue; }
-          const rent = +u.contractRent || +u.rent || 0;
+          // Waiver pro-rate (KNOWN_ISSUES #1, FINANCIAL_MODEL_REFERENCE §EQ-5).
+          // Если на этот месяц зафиксирован status='free' с waiverStart/End —
+          // credit > 0 уменьшит rent (и invoiceItems.create ниже автоматически
+          // получит правильный amount). Без waiver — credit=0, поведение
+          // идентично прежнему.
+          const rawRent = +u.contractRent || +u.rent || 0;
+          const _waiverCredit = _unitProrationCreditCF(u, nextYm);
+          const rent = rawRent * (1 - _waiverCredit);
           if (rent <= 0) { skipped++; continue; }
           // sendBeforeDays cascade — workspace ← building ← floor ← unit.
           // Юнит-level через u.autoInvoiceBeforeDays (legacy, не
