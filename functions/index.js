@@ -8595,3 +8595,53 @@ exports.runReconcileBuildingsV2Now = onCall(
   }
 );
 
+// ─── Reconcile history accessor (admin-side, bypasses firestore.rules) ────
+// Client reads of workspaces/{wid}/scaling/ are blocked by firestore.rules
+// (the scaling subcollection has no client-read rule). This CF gives Editor-
+// gated client access via the same pattern as listBackups / fbListBackups:
+// admin SDK reads the collection, returns a trimmed payload to the client.
+// Mirrors the runReconcile*Now contract — no schema or rules change needed.
+//
+// Args: { workspaceId?, kind: 'payments' | 'buildings', limit?: number = 24 }
+// Returns: { ok, items: [{ id, ts, ...result }] }
+exports.getScalingReconcileHistory = onCall(
+  { timeoutSeconds: 30, memory: '256MiB' },
+  async (req) => {
+    await requireEditor(req.auth);
+    const wid = (req.data && req.data.workspaceId) || WORKSPACE_ID;
+    const kind = (req.data && req.data.kind === 'buildings') ? 'buildings' : 'payments';
+    const limit = Math.min(Math.max(1, Math.floor(+(req.data?.limit) || 24)), 200);
+    const prefix = (kind === 'buildings') ? 'buildingsReconcile_' : 'reconcile_';
+    const snap = await db.collection(`workspaces/${wid}/scaling`).get();
+    const all = [];
+    snap.forEach(d => {
+      if (!d.id.startsWith(prefix)) return;
+      const data = d.data();
+      if (!data || typeof data.clean !== 'boolean') return;
+      all.push({ id: d.id, ts: d.id.slice(prefix.length), ...data });
+    });
+    all.sort((a, b) => a.id < b.id ? -1 : 1);
+    const items = all.slice(-limit).map(r => {
+      // Trim payload — drop the bulky array fields if they're too big.
+      // Keep totals + flag fields + small samples.
+      const t = { ...r };
+      if (Array.isArray(t.missingInCloud) && t.missingInCloud.length > 50) {
+        t.missingInCloud = t.missingInCloud.slice(0, 50);
+      }
+      if (Array.isArray(t.extraInCloud) && t.extraInCloud.length > 50) {
+        t.extraInCloud = t.extraInCloud.slice(0, 50);
+      }
+      if (Array.isArray(t.mismatched) && t.mismatched.length > 50) {
+        t.mismatched = t.mismatched.slice(0, 50);
+      }
+      // computedAt timestamp may be non-serializable Firestore Timestamp —
+      // convert to ms for client.
+      if (t.computedAt && typeof t.computedAt.toMillis === 'function') {
+        t.computedAt = t.computedAt.toMillis();
+      }
+      return t;
+    });
+    return { ok: true, kind, limit, totalFound: all.length, items };
+  }
+);
+
