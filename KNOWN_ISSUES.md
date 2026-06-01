@@ -37,6 +37,17 @@
 **Resolution**: operator ran `voidOrDeleteStripeInvoice` CF via console 2026-05-31; CF returned `{action: 'noop', status: 'void'}` — confirming the invoice was already in `void` state (Tony had voided it manually via Stripe Dashboard at some earlier point, or a prior CF invocation took effect). Idempotent CF correctly detected the pre-voided state and short-circuited.
 **Lesson**: when carrying over an open Stripe item across sessions, run the idempotent CF first to verify current Stripe-side state — `noop` confirms no action needed without risking double-action.
 
+### #13. Legacy `mirrorPaymentsOnStateWrite` CF writes v1-schema docs (cross-building collision risk) 📌 OPEN — surfaced 2026-05-31 autonomous run
+**Severity**: 🟡 — silent accumulation; reconcile filter (`_schema='v2'`) hides it. Operator-visible only after suite-id collision corrupts a same-numbered suite in a second building.
+**Where**: `functions/index.js:8324` `exports.mirrorPaymentsOnStateWrite` (added commit `042885f` 2026-05-30 as part of the original v1 Phase 1 dual-write design). Gate: `state.settings.syncV2 === true`.
+**Issue**: trigger writes payment docs with v1-style ID `${unitId}__${ym}` (no building prefix, no `_schema:'v2'` marker) and includes a delete-by-diff loop ("`for (const [id] of beforeMap) if (!afterMap.has(id)) batch.delete(...)`"). Both anti-patterns are the exact mechanisms the v1 mass-delete incidents arose from (SCALING_PLAN_v2.md §0 rules 1 + 2). Today `syncV2` is on in prod → trigger is firing → v1-keyed docs silently accumulate in `workspaces/default/payments/`. The v2 reconcile filter ignores them so drift looks clean (1276/1276) but the collection has TWO id schemes living side-by-side.
+**Why it's not auto-fixed**: outside the «D» scope Tony approved for the autonomous run. Disabling a running CF is a separate decision.
+**Surfaced by**: `reconcilePaymentsV2Scheduled` CF (added commit `e184d83`) — `v1OrphanCount` + `v1OrphanSample` fields in `workspaces/default/scaling/reconcileLatest`.
+**Fix path (Tony decision required)**:
+  1. **Recommended**: disable `mirrorPaymentsOnStateWrite` (early-return). The in-handler mirrors from commit `ba68a4d` cover the same writes correctly: building-aware keys + `_schema:'v2'` + delete-by-event only.
+  2. After disable: run `sfaCleanV1OrphanPayments({apply: true})` once to purge the accumulated v1 docs.
+  3. Verify via next hourly `reconcileLatest` snapshot — `v1OrphanCount` should drop to 0.
+
 ### #11. Monolithic state doc ~841KB — Firestore 1MB ceiling + write contention ⚠️ ARCHITECTURE CEILING
 **Severity**: 🔴 — the whole workspace lives in ONE Firestore doc `workspaces/default/data/state`. Two walls: (1) hard 1MB/doc limit — ~841KB now (82%); was 927KB before the 2026-05-31 phantom cleanup. `fbPushNow` refuses writes >950KB (floor-map-editor.html:31158), warns >900KB (:31167); Synced-state-size panel mirrors thresholds at :55968. (2) Every edit rewrites the whole doc under an optimistic lock → write-contention / version-conflict banner-storm as operators grow.
 **Status**: actively addressed by the **SCALING initiative** (document-per-entity decomposition). NOT halted — this is the sanctioned forward path. Active source of truth: [`SCALING_PLAN_v2.md`](SCALING_PLAN_v2.md) (full plan, safety rules, phase status). Earlier draft: [`SCALING_PLAN.md`](SCALING_PLAN.md) (v1, superseded).

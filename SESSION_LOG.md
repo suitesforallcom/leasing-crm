@@ -37,6 +37,16 @@ Per «делай все вместе» the panel got four enhancements + four de
 
 ---
 
+## 2026-05-31 → 2026-06-01
+
+### Autonomous 12h run #2 (Tony away)
+
+Tony explicit scope approval: «A + B + C + D и все остальное делай что перечислил». Reference plan in the earlier turn of session — A = Phase 1 read-switch infra DORMANT, B = Phase 2 building DAO + dual-write DORMANT, C = audit u.payments / state.buildings read sites + docs, D = reconcile-monitor CF (gated approval covered by «все остальное»). Stop conditions: parse-check fail, quota >95%, deploy error 2x in row, push auth fail, DORMANT code accidentally crossing to active. All commits under auto-deploy mode (functions deploys for D explicitly approved; firestore.rules / indexes still GATED — will surface but not edit). State at start: 850 KB, reconcile 1276/1276 clean.
+
+(commits added below as they ship — newest first)
+
+---
+
 ## 2026-05-12
 
 ### Autonomous 12h run (Tony away)
