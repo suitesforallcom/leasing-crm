@@ -277,6 +277,12 @@ To rebuild collection from monolith (if collection got corrupted somehow):
 - Buildings: `sfaMirrorBuildingsV2()` — re-runs full backfill
 - Both idempotent, both root-admin gated
 
+To rebuild monolith from collection (Phase 1.2 / Phase 2.4 listener corruption recovery):
+- Payments: `sfaRehydrateMonolithPayments()` — reads collection, writes back into state, saveState pushes (commit `0b6bc3b`)
+- Buildings: `sfaRehydrateMonolithBuildings()` — same for buildings; preserves in-memory u.payments through swap (commit `0b6bc3b`)
+- Both root-admin gated, confirm dialog with workspace warning
+- Safer than full backup restore — only touches the affected layer
+
 If you genuinely need to roll back POST-STRIP (Stage 5 or 6 went wrong): the rehydrate helpers (when built) read from collection back to monolith. Until those exist, restore from a daily Firestore backup via `fbListBackups()` + `fbRestoreBackup(dateId)` — that's the nuclear option, takes a pre-restore snapshot automatically.
 
 ---
