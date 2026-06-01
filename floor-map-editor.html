@@ -17958,6 +17958,11 @@
                 <button data-orient="rows" class="active" onclick="_pfSetOrient('rows')">Standard</button>
                 <button data-orient="cols" onclick="_pfSetOrient('cols')">Transposed</button>
               </span>
+              <button type="button" id="pfUnderwriteBtn" onclick="_pfOpenUnderwriting()"
+                      style="display:flex; align-items:center; gap:6px; padding:6px 11px; font-size:11px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); cursor:pointer; font-weight:600;"
+                      title="Edit each building's saved underwriting inputs (Operating Expenses, Vacancy, Cap rate, Refi…) — the same fields as the per-building Financial Analytics page. Opens the editable Transposed view.">
+                ✎ Underwriting
+              </button>
               <input id="pfSearch" type="text" placeholder="Filter buildings…" oninput="renderPortfolioDash()"
                      style="padding:6px 10px; font-size:12px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); min-width:160px;">
             </div>
@@ -45647,6 +45652,7 @@ function _investUpdateCashFlow(r, bm, inv) {
 function _investRenderWaterfall(r, inv) {
   const el = document.getElementById('hvInvestCfWaterfall');
   if (!el) return;
+  _investWfLast = { r, inv };   // запоминаем для перерисовки после скрытия/возврата строк
   const gpr = r.stabilizedGPR_annual || 0;
   if (gpr <= 0) {
     el.innerHTML = `<div style="padding: 24px; text-align: center; color: var(--muted); font-size: 12px;">No rentable units with set rent. Add tenants or set asking rent to see waterfall.</div>`;
@@ -45654,15 +45660,24 @@ function _investRenderWaterfall(r, inv) {
   }
   const cf = (r.NOI_annual || 0) - (r.debtService_annual || 0);
   const rows = [
-    { label: 'Gross Potential Rent',                                      value:  gpr,                       color: '#0284c7', kind: 'in'  },
-    { label: `Vacancy (${(+inv.vacancyPct||0).toFixed(0)}%)`,             value: -(r.vacancyLoss_annual||0), color: '#dc2626', kind: 'out' },
-    { label: 'Effective Gross Income',                                    value:  r.EGI_annual||0,           color: '#0284c7', kind: 'sub' },
-    { label: `Operating Expenses (${(+inv.opexPct||0).toFixed(0)}% EGI)`, value: -(r.opex_annual||0),        color: '#dc2626', kind: 'out' },
-    { label: 'Net Operating Income',                                      value:  r.NOI_annual||0,           color: '#16a34a', kind: 'sub' },
-    { label: 'Debt Service (annual)',                                     value: -(r.debtService_annual||0), color: '#dc2626', kind: 'out' },
-    { label: 'Cash Flow (post-debt)',                                     value:  cf,                        color: cf>=0?'#16a34a':'#dc2626', kind: 'final' },
+    { key:'gpr',     label: 'Gross Potential Rent',                                      value:  gpr,                       color: '#0284c7', kind: 'in'  },
+    { key:'vacancy', label: `Vacancy (${(+inv.vacancyPct||0).toFixed(0)}%)`,             value: -(r.vacancyLoss_annual||0), color: '#dc2626', kind: 'out' },
+    { key:'egi',     label: 'Effective Gross Income',                                    value:  r.EGI_annual||0,           color: '#0284c7', kind: 'sub' },
+    { key:'opex',    label: `Operating Expenses (${(+inv.opexPct||0).toFixed(0)}% EGI)`, value: -(r.opex_annual||0),        color: '#dc2626', kind: 'out' },
+    { key:'noi',     label: 'Net Operating Income',                                      value:  r.NOI_annual||0,           color: '#16a34a', kind: 'sub' },
+    { key:'debt',    label: 'Debt Service (annual)',                                     value: -(r.debtService_annual||0), color: '#dc2626', kind: 'out' },
+    { key:'cf',      label: 'Cash Flow (post-debt)',                                     value:  cf,                        color: cf>=0?'#16a34a':'#dc2626', kind: 'final' },
   ];
-  const html = rows.map(row => {
+  // Скрытые строки — чисто визуальная настройка (pref sfa_inv_wf_hidden). Ширина
+  // баров считается от gpr (отдельная переменная), поэтому скрытие любой строки —
+  // включая саму GPR — не искажает пропорции остальных.
+  const hSet = _investWfHiddenSet();
+  const visible = rows.filter(row => !hSet.has(row.key));
+  if (!visible.length){
+    el.innerHTML = `<div style="padding: 18px; text-align: center; color: var(--muted); font-size: 12px;">All rows hidden. <button type="button" onclick="_investWfShowAll()" style="font-size: 11px; padding: 3px 10px; margin-left: 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--card); color: var(--text); cursor: pointer;">↺ Show all</button></div>`;
+    return;
+  }
+  const html = visible.map(row => {
     const w = gpr > 0 ? Math.min(100, Math.abs(row.value) / gpr * 100) : 0;
     const isHeavy = row.kind === 'sub' || row.kind === 'final';
     const labelStyle = isHeavy ? 'font-weight: 700; color: var(--text);' : 'color: var(--muted);';
@@ -45671,7 +45686,7 @@ function _investRenderWaterfall(r, inv) {
     const barH = isHeavy ? 22 : 16;
     const barOpacity = isHeavy ? 0.85 : 0.7;
     return `
-      <div style="display: grid; grid-template-columns: 240px 1fr 110px; gap: 12px; align-items: center; ${borderTop}">
+      <div oncontextmenu="return _investWfHideRow(event,'${row.key}')" title="Right-click to hide this row" style="display: grid; grid-template-columns: 240px 1fr 110px; gap: 12px; align-items: center; cursor: context-menu; ${borderTop}">
         <div style="${labelStyle} font-size: 11.5px;">${esc(row.label)}</div>
         <div style="position: relative; height: ${barH}px; background: rgba(0,0,0,0.03); border-radius: 3px;">
           <div style="position: absolute; left: 0; top: 0; bottom: 0; width: ${w.toFixed(2)}%; background: ${row.color}; opacity: ${barOpacity}; border-radius: 3px; transition: width 0.15s;"></div>
@@ -45680,7 +45695,37 @@ function _investRenderWaterfall(r, inv) {
       </div>
     `;
   }).join('');
-  el.innerHTML = `<div style="display: grid; grid-template-columns: 1fr; gap: 6px;">${html}</div>`;
+  const showAll = hSet.size > 0
+    ? `<button type="button" onclick="_investWfShowAll()" style="font-size: 10.5px; padding: 3px 9px; border: 1px solid var(--border); border-radius: 5px; background: var(--card); color: var(--text); cursor: pointer;">↺ Show all (${hSet.size} hidden)</button>`
+    : '';
+  const footer = `<div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px;"><span style="color: var(--muted); font-size: 10px;">Right-click a row to hide it</span>${showAll}</div>`;
+  el.innerHTML = `<div style="display: grid; grid-template-columns: 1fr; gap: 6px;">${html}</div>${footer}`;
+}
+
+// --- NOI Waterfall: скрытие строк по правому клику (R1) ---
+// Скрытые ключи строк хранятся в pref sfa_inv_wf_hidden (JSON-массив). Префикс
+// sfa_inv_ → авто-синк в Firestore по _SYNC_PREF_PATTERN. Это чисто UI-настройка:
+// ни одного поля state.* / формулы движка не трогает.
+let _investWfLast = null;
+function _investWfHiddenSet(){
+  try { const a = JSON.parse(readPref('sfa_inv_wf_hidden') || '[]'); return new Set(Array.isArray(a) ? a : []); }
+  catch(e){ return new Set(); }
+}
+function _investWfHideRow(ev, key){
+  if (ev && ev.preventDefault) ev.preventDefault();
+  const s = _investWfHiddenSet(); s.add(key);
+  try { writePref('sfa_inv_wf_hidden', JSON.stringify([...s])); } catch(e){}
+  _investWfRepaint();
+  return false;   // подавляем нативное контекстное меню браузера
+}
+function _investWfShowAll(){
+  try { writePref('sfa_inv_wf_hidden', '[]'); } catch(e){}
+  _investWfRepaint();
+}
+// Перерисовка без пересчёта движка: r/inv при скрытии не меняются (чистое UI),
+// поэтому переиспользуем последние переданные значения.
+function _investWfRepaint(){
+  if (_investWfLast) _investRenderWaterfall(_investWfLast.r, _investWfLast.inv);
 }
 
 // Loan Balance Curve — SVG line chart с двумя trajectories.
@@ -124302,7 +124347,7 @@ function _pfRenderTableTransposed(rows, tbl){
     // --- Секция настроек андеррайтинга (point #4): сворачиваемая, редактируемая ---
     // Каждая строка = одно существующее поле investments[bId]; колонка = здание.
     // Свёрнута по умолчанию («не мозолить глаза»). Ввод → _pfTxOnAssume.
-    const aOpen = readPref('sfa_pf_tx_assume_open') === '1';
+    const aOpen = readPref('sfa_pf_tx_assume_open') !== '0';   // по умолчанию РАЗВЁРНУТО — поля должны быть видны сразу (R3)
     tbody += `<tr class="pf-tx-secrow"><th class="pf-tx-sechead" colspan="${nB + 2}" onclick="_pfTxToggleAssume()" title="Per-building underwriting inputs — type a value and it saves to that building's Financial Analytics record and recomputes the results below">${aOpen ? '▾' : '▸'} Underwriting assumptions <span class="pf-tx-sechint">· ${aOpen ? 'editable · each building independent · synced to Financial Analytics' : 'click to edit each building'}</span></th></tr>`;
     if (aOpen){
       // Гарантируем hold-поля у записей (как делает страница Financial Analytics на
@@ -124499,7 +124544,7 @@ const _PF_TX_ASSUME = [
   { field:'renoCost',          label:'Renovation cost',     step:10000 },
   { field:'renoMonths',        label:'Reno months',         step:1 },
   { field:'vacancyPct',        label:'Vacancy %',           step:0.5 },
-  { field:'opexPct',           label:'OpEx %',              step:0.5 },
+  { field:'opexPct',           label:'Operating Expenses %', step:0.5 },
   { field:'capRatePct',        label:'Cap rate %',          step:0.05 },
   { field:'refiAmount',        label:'Refi loan amount',    step:10000 },
   { field:'refiRatePct',       label:'Refi rate %',         step:0.05 },
@@ -124514,9 +124559,23 @@ const _PF_TX_ASSUME = [
 
 // Свернуть/развернуть секцию настроек. По умолчанию свёрнуто.
 function _pfTxToggleAssume(){
-  const open = readPref('sfa_pf_tx_assume_open') === '1';
+  const open = readPref('sfa_pf_tx_assume_open') !== '0';   // дефолт = развёрнуто (R3); согласовано с _pfRenderTableTransposed
   try { writePref('sfa_pf_tx_assume_open', open ? '0' : '1'); } catch(e){}
   renderPortfolioDash();
+}
+
+// Точка входа из тулбара (R3): открыть редактор настроек андеррайтинга по зданию.
+// Редактор Phase 2 живёт только в транспонированном виде (колонка = здание), поэтому
+// переключаем ориентацию на 'cols', разворачиваем секцию и подматываем к ней.
+// Данные НЕ меняем — это навигация к уже существующему редактору, не новая логика.
+function _pfOpenUnderwriting(){
+  try { writePref('sfa_pf_tx_assume_open', '1'); } catch(e){}
+  if (typeof _pfSetOrient === 'function') _pfSetOrient('cols');
+  else { _pfOrient = 'cols'; renderPortfolioDash(); }
+  setTimeout(() => {
+    const row = document.querySelector('#pfTable .pf-tx-arow') || document.querySelector('#pfTable .pf-tx-secrow');
+    if (row && row.scrollIntoView) row.scrollIntoView({ behavior:'smooth', block:'center' });
+  }, 80);
 }
 
 // Создаёт investments[bId] со SMART-defaults — точная копия _investSeedCurrentBuilding,
