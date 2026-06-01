@@ -17926,6 +17926,9 @@
                      style="padding:6px 10px; font-size:12px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); min-width:160px;">
             </div>
             <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <button id="pfGlossaryBtn" onclick="_pfToggleGlossary()"
+                      style="padding:6px 13px; font-size:11px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:5px; cursor:pointer; font-weight:700; letter-spacing:0.04em; text-transform:uppercase;"
+                      title="Show the metric glossary — what every column and figure means, grouped by category">Glossary</button>
               <button id="pfExportCsvBtn" onclick="_pfExportCSV()"
                       style="padding:6px 13px; font-size:11px; background:#0f172a; color:#fff; border:none; border-radius:5px; cursor:pointer; font-weight:700; letter-spacing:0.04em; text-transform:uppercase;"
                       title="Download the comparison table (current view, current sort) as CSV — opens in Excel / Google Sheets">Export CSV</button>
@@ -17974,6 +17977,9 @@
 
         <!-- Charts (filled by JS) -->
         <div id="pfCharts" style="margin-top:14px;"></div>
+
+        <!-- Metric glossary (toggled, filled by JS) -->
+        <div id="pfGlossary" style="margin-top:14px; display:none;"></div>
 
         <!-- Comparison table -->
         <div class="hv-card" style="padding:16px 18px; margin-top:14px;">
@@ -123854,15 +123860,22 @@ function _pfScenarioActive(){
       || _pfNum(s.rentGrowthPct) > 0 || _pfNum(s.renoDelayMonths) > 0;
 }
 
-// 5-летний IRR из hold-period модели (saved-предположения здания).
-function _pfBuildingIRR(bId){
+// 5-летний hold-период: IRR + equity multiple (saved-предположения здания).
+// Scenario-слайдеры на это НЕ влияют (как и в Investment Analysis) — hold-модель
+// читает сохранённые holdYears / exitCap / growth.
+function _pfBuildingHold(bId){
   const inv = state.investments && state.investments[bId];
   const bm  = (typeof _investBuildingMetrics === 'function') ? _investBuildingMetrics(bId) : null;
-  if (!inv || !bm || typeof _investHoldPeriodModel !== 'function') return NaN;
+  const out = { irr:NaN, em:NaN };
+  if (!inv || !bm || typeof _investHoldPeriodModel !== 'function') return out;
   try {
     const hp = _investHoldPeriodModel(inv, bm, {});
-    return (hp && hp.totals && Number.isFinite(hp.totals.irr_pct)) ? hp.totals.irr_pct : NaN;
-  } catch { return NaN; }
+    if (hp && hp.totals){
+      if (Number.isFinite(hp.totals.irr_pct))        out.irr = hp.totals.irr_pct;
+      if (Number.isFinite(hp.totals.equityMultiple)) out.em  = hp.totals.equityMultiple;
+    }
+  } catch {}
+  return out;
 }
 
 // Метрики одного здания: current + proforma. Оба через investComputeAll.
@@ -123882,7 +123895,7 @@ function _pfComputeBuilding(bId){
     mrr:           _pfNum(bm.currentMRR_monthly),
     stabGPR:       _pfNum(bm.stabilizedGPR_annual),
     vacMonthly, vacAnnual: vacMonthly * 12,
-    cur:null, pf:null, irr:NaN, noiPerDay:NaN, grossPerDay:NaN, carryPerDay:NaN,
+    cur:null, pf:null, irr:NaN, em:NaN, noiPerDay:NaN, grossPerDay:NaN, carryPerDay:NaN,
   };
   if (inv && typeof investComputeAll === 'function'){
     // CURRENT — фактический in-place доход, без доп. vacancy.
@@ -123913,7 +123926,8 @@ function _pfComputeBuilding(bId){
         row.carryPerDay = _pfNum(row.pf.debtService_annual) / 365;
       }
     } catch(e){ row.pf = null; }
-    row.irr = _pfBuildingIRR(bId);
+    const hold = _pfBuildingHold(bId);
+    row.irr = hold.irr; row.em = hold.em;
   }
   return row;
 }
@@ -123935,19 +123949,33 @@ function _pfBuildRows(){
 
 function _pfAggregate(rows){
   const a = { units:0, occ:0, mrr:0, vacMo:0, vacYr:0, curVal:0, pfVal:0,
-              pfNoi:0, pfDebt:0, allIn:0, noiDay:0, nInv:0, nVacSuites:0, nBldgVac:0 };
+              pfNoi:0, pfDebt:0, allIn:0, noiDay:0, nInv:0, nVacSuites:0, nBldgVac:0,
+              pfEGI:0, pfCF:0, pfRefi:0, pfEquity:0 };
+  const emV=[], sprV=[], beoV=[];
   for (const r of rows){
     a.units += r.unitCount; a.occ += r.occupiedCount; a.mrr += r.mrr;
     a.vacMo += r.vacMonthly; a.vacYr += r.vacAnnual;
     a.nVacSuites += r.vacantCount; if (r.vacantCount > 0) a.nBldgVac++;
     if (r.cur) a.curVal += _pfNum(r.cur.incomeValuation);
     if (r.pf){ a.pfVal += _pfNum(r.pf.incomeValuation); a.pfNoi += _pfNum(r.pf.NOI_annual);
-               a.pfDebt += _pfNum(r.pf.debtService_annual); a.allIn += _pfNum(r.pf.allInBasis); a.nInv++; }
+               a.pfDebt += _pfNum(r.pf.debtService_annual); a.allIn += _pfNum(r.pf.allInBasis); a.nInv++;
+               a.pfEGI += _pfNum(r.pf.EGI_annual); a.pfCF += _pfNum(r.pf.cashFlow_annual);
+               a.pfRefi += _pfNum(r.pf.refiAmount); a.pfEquity += _pfNum(r.pf.cashEquityRemaining);
+               if (Number.isFinite(r.pf.yieldSpread_pct)) sprV.push(r.pf.yieldSpread_pct);
+               if (Number.isFinite(r.pf.breakEvenOccupancy_pct)) beoV.push(r.pf.breakEvenOccupancy_pct); }
+    if (Number.isFinite(r.em)) emV.push(r.em);
     if (Number.isFinite(r.noiPerDay)) a.noiDay += r.noiPerDay;
   }
   a.occupancyPct = a.units > 0 ? (a.occ / a.units * 100) : 0;
   a.weightedDSCR = a.pfDebt > 0 ? (a.pfNoi / a.pfDebt) : (a.pfNoi > 0 ? Infinity : NaN);
   a.weightedYoC  = a.allIn  > 0 ? (a.pfNoi / a.allIn * 100) : 0;
+  a.weightedDebtYield = a.pfRefi   > 0 ? (a.pfNoi / a.pfRefi * 100) : NaN;
+  a.weightedCoC       = a.pfEquity > 0 ? (a.pfCF  / a.pfEquity * 100) : (a.pfCF > 0 ? Infinity : NaN);
+  a.weightedNoiMargin = a.pfEGI    > 0 ? (a.pfNoi / a.pfEGI * 100) : NaN;
+  a.ppu    = (a.units > 0 && a.allIn > 0) ? (a.allIn / a.units) : NaN;
+  a.avgEM     = emV.length  ? emV.reduce((s,x)=>s+x,0) / emV.length   : NaN;
+  a.avgSpread = sprV.length ? sprV.reduce((s,x)=>s+x,0) / sprV.length : NaN;
+  a.avgBEO    = beoV.length ? beoV.reduce((s,x)=>s+x,0) / beoV.length : NaN;
   a.upside = a.pfVal - a.curVal;
   return a;
 }
@@ -123959,24 +123987,45 @@ function _pfAvgIRRStr(rows){
 }
 
 // --- Column model (Section 14 UX standard) -------------------------------
+// Каждая колонка несёт: label (шапка), title (hover-tooltip), cat (группа для
+// глоссария), def (развёрнутое объяснение что это и откуда). Все значения —
+// ТОЛЬКО чтение из investComputeAll / hold-модели; новых формул нет.
 const PF_COLUMNS = {
-  bldg:    { label:'Building',       fixed:true,  defaultDir:'asc',  sortValue:r=>(r.name||'').toLowerCase(), title:'Building name' },
-  occ:     { label:'Occ %',                       defaultDir:'desc', sortValue:r=>r.occupancyPct,             title:'Occupancy — leased suites ÷ rentable suites' },
-  units:   { label:'Leased',                      defaultDir:'desc', sortValue:r=>r.occupiedCount,            title:'Occupied / total rentable suites' },
-  mrr:     { label:'In-place MRR',                defaultDir:'desc', sortValue:r=>r.mrr,                      title:'Current monthly recurring rent (occupied suites)' },
-  vacYr:   { label:'Vacancy $/yr',                defaultDir:'desc', sortValue:r=>r.vacAnnual,                title:'Annual asking rent of vacant suites — money left on the table' },
-  curVal:  { label:'Current value',               defaultDir:'desc', sortValue:r=>r.cur?_pfNum(r.cur.incomeValuation):NaN, title:'Income-approach value on in-place NOI' },
-  pfVal:   { label:'Proforma value',              defaultDir:'desc', sortValue:r=>r.pf?_pfNum(r.pf.incomeValuation):NaN,   title:'Income-approach value on stabilized NOI' },
-  upside:  { label:'Upside Δ',                     defaultDir:'desc', sortValue:r=>_pfUpside(r),               title:'Proforma value − current value' },
-  pfNoi:   { label:'Proforma NOI',                defaultDir:'desc', sortValue:r=>r.pf?_pfNum(r.pf.NOI_annual):NaN,        title:'Stabilized net operating income / yr' },
-  dscr:    { label:'DSCR',                        defaultDir:'desc', sortValue:r=>r.pf?_pfNum(r.pf.DSCR):NaN,             title:'Debt-service coverage ratio (proforma)' },
-  yoc:     { label:'YoC %',                       defaultDir:'desc', sortValue:r=>r.pf?_pfNum(r.pf.yieldOnCost_pct):NaN,  title:'Yield-on-cost = NOI ÷ all-in basis' },
-  ltv:     { label:'LTV %',       defaultHidden:true, defaultDir:'desc', sortValue:r=>r.pf?_pfNum(r.pf.LTV_pct):NaN,      title:'Loan-to-value' },
-  irr:     { label:'5yr IRR %',                   defaultDir:'desc', sortValue:r=>Number.isFinite(r.irr)?r.irr:NaN,      title:'5-year hold internal rate of return' },
-  payoff:  { label:'Payoff',      defaultHidden:true, defaultDir:'asc',  sortValue:r=>r.pf?_pfNum(r.pf.payoffAggressive_months):NaN, title:'Aggressive payoff — all NOI to debt service (months)' },
-  renoDay: { label:'Reno $/day',                  defaultDir:'desc', sortValue:r=>Number.isFinite(r.noiPerDay)?r.noiPerDay:NaN, title:'Stabilized NOI forgone per extra day of renovation delay' },
-  actions: { label:'',            fixed:true, sortable:false,                                                  title:'Open this building in Financial Analytics' },
+  bldg:    { label:'Building',       fixed:true,  defaultDir:'asc',  sortValue:r=>(r.name||'').toLowerCase(), cat:'id',        title:'Building name', def:'The building. A "no underwriting" pill means it has occupancy data but no saved BRRRR record yet — add one in Financial Analytics to unlock value, return and debt columns.' },
+  occ:     { label:'Occ %',                       defaultDir:'desc', sortValue:r=>r.occupancyPct,             cat:'occupancy', title:'Physical occupancy — leased suites ÷ rentable suites', def:'Physical occupancy = occupied rentable office suites ÷ total rentable office suites. Same suite filter as Rent Roll (rentable, type=office).' },
+  units:   { label:'Leased',                      defaultDir:'desc', sortValue:r=>r.occupiedCount,            cat:'occupancy', title:'Occupied / total rentable suites', def:'Count of leased suites over total rentable suites. The raw counts behind Occ %.' },
+  mrr:     { label:'In-place MRR',                defaultDir:'desc', sortValue:r=>r.mrr,                      cat:'income',    title:'Current monthly recurring rent (occupied suites)', def:'In-place Monthly Recurring Revenue = sum of contract rent on currently-occupied suites. What actually bills today.' },
+  vacYr:   { label:'Vacancy $/yr',                defaultDir:'desc', sortValue:r=>r.vacAnnual,                cat:'occupancy', title:'Annual asking rent of vacant suites — money left on the table', def:'Annualised asking rent of every empty suite (gross potential − in-place). The income you forgo by not leasing — the "loss-to-lease from vacancy".' },
+  egi:     { label:'EGI /yr',     defaultHidden:true, defaultDir:'desc', sortValue:r=>r.pf?_pfNum(r.pf.EGI_annual):NaN,        cat:'income',  title:'Effective gross income = gross potential rent − vacancy & credit loss (proforma)', def:'Effective Gross Income = stabilized gross potential rent minus the vacancy/credit-loss allowance. The top of the NOI waterfall after vacancy.' },
+  curVal:  { label:'Current value',               defaultDir:'desc', sortValue:r=>r.cur?_pfNum(r.cur.incomeValuation):NaN,     cat:'value',   title:'Income-approach value on in-place NOI', def:'Income-approach valuation (NOI ÷ cap rate) using TODAY\'s in-place income. What the asset is worth as it stands.' },
+  pfVal:   { label:'Proforma value',              defaultDir:'desc', sortValue:r=>r.pf?_pfNum(r.pf.incomeValuation):NaN,       cat:'value',   title:'Income-approach value on stabilized NOI', def:'Income-approach valuation once every suite is leased at asking rent (stabilized NOI ÷ cap rate). The target value.' },
+  upside:  { label:'Upside Δ',                     defaultDir:'desc', sortValue:r=>_pfUpside(r),               cat:'value',     title:'Proforma value − current value', def:'Value creation = proforma value − current value. The equity you unlock by stabilizing the building.' },
+  pfNoi:   { label:'Proforma NOI',                defaultDir:'desc', sortValue:r=>r.pf?_pfNum(r.pf.NOI_annual):NaN,            cat:'income',  title:'Stabilized net operating income / yr', def:'Net Operating Income at stabilization = EGI − operating expenses, before debt service. The engine of value and the numerator of cap-rate valuation.' },
+  nmar:    { label:'NOI margin %', defaultHidden:true, defaultDir:'desc', sortValue:r=>r.pf?(_pfNum(r.pf.EGI_annual)>0?_pfNum(r.pf.NOI_annual)/_pfNum(r.pf.EGI_annual)*100:NaN):NaN, cat:'income', title:'NOI ÷ EGI — operating efficiency', def:'NOI margin = NOI ÷ effective gross income. How much of collected revenue survives operating expenses. Higher = leaner operations.' },
+  dscr:    { label:'DSCR',                        defaultDir:'desc', sortValue:r=>r.pf?_pfNum(r.pf.DSCR):NaN,                  cat:'debt',    title:'Debt-service coverage ratio (proforma)', def:'Debt-Service Coverage Ratio = NOI ÷ annual debt service. Lenders want ≥1.25×. Below 1.0× the building doesn\'t cover its loan.' },
+  dy:      { label:'Debt yield %',                defaultDir:'desc', sortValue:r=>r.pf?_pfNum(r.pf.debtYield_pct):NaN,        cat:'debt',    title:'NOI ÷ loan amount — lender risk metric', def:'Debt yield = NOI ÷ loan balance. The lender\'s return if they foreclosed today, independent of rate or amortization. Banks typically want ≥9-10%.' },
+  yoc:     { label:'YoC %',                       defaultDir:'desc', sortValue:r=>r.pf?_pfNum(r.pf.yieldOnCost_pct):NaN,      cat:'returns', title:'Yield-on-cost = NOI ÷ all-in basis', def:'Yield-on-Cost = stabilized NOI ÷ all-in basis (purchase + reno + closing). The development yield. It must beat the exit cap rate for value-add to make sense.' },
+  spr:     { label:'Yield spread %', defaultHidden:true, defaultDir:'desc', sortValue:r=>r.pf?_pfNum(r.pf.yieldSpread_pct):NaN, cat:'returns', title:'Yield-on-cost − cap rate (value created)', def:'Development spread = yield-on-cost − exit cap rate. Positive spread is the value you create over simply buying at market. ~150-200bps is a healthy value-add target.' },
+  coc:     { label:'Cash-on-cash %',              defaultDir:'desc', sortValue:r=>r.pf?_pfNum(r.pf.cashOnCash_pct):NaN,       cat:'returns', title:'Annual cash flow ÷ equity left in the deal', def:'Cash-on-cash = annual cash flow after debt service ÷ equity remaining after refinance. The cash return on the dollars you still have invested. ∞ = full cash-out (no equity left in).' },
+  em:      { label:'Equity mult',                 defaultDir:'desc', sortValue:r=>Number.isFinite(r.em)?r.em:NaN,            cat:'returns', title:'Total cash returned ÷ equity invested (5yr hold)', def:'Equity multiple = total cash returned over the hold ÷ equity invested. 2.0× means you get back twice your money. Uses saved hold assumptions (sliders don\'t change it).' },
+  irr:     { label:'5yr IRR %',                   defaultDir:'desc', sortValue:r=>Number.isFinite(r.irr)?r.irr:NaN,          cat:'returns', title:'5-year hold internal rate of return', def:'Internal Rate of Return over the 5-year hold = the annualised return that sets the net present value of all cash flows to zero. Uses saved hold assumptions (sliders don\'t change it).' },
+  cf:      { label:'Cash flow /yr',               defaultDir:'desc', sortValue:r=>r.pf?_pfNum(r.pf.cashFlow_annual):NaN,      cat:'income',  title:'NOI − debt service (proforma, annual)', def:'Levered cash flow = NOI − annual debt service. The cash that actually lands in your pocket each year after paying the mortgage.' },
+  ppu:     { label:'Cost / unit', defaultHidden:true, defaultDir:'desc', sortValue:r=>r.pf?(_pfNum(r.unitCount)>0?_pfNum(r.pf.allInBasis)/_pfNum(r.unitCount):NaN):NaN, cat:'value', title:'All-in basis ÷ rentable suites', def:'All-in cost per rentable suite = (purchase + reno + closing) ÷ suite count. A quick per-door comparison across buildings of different sizes.' },
+  beo:     { label:'Break-even occ %', defaultHidden:true, defaultDir:'asc', sortValue:r=>r.pf?_pfNum(r.pf.breakEvenOccupancy_pct):NaN, cat:'debt', title:'Occupancy needed to cover opex + debt service', def:'Break-even occupancy = the % leased required for NOI to cover debt service. The cushion between this and actual occupancy is your safety margin against a downturn.' },
+  ltv:     { label:'LTV %',       defaultHidden:true, defaultDir:'desc', sortValue:r=>r.pf?_pfNum(r.pf.LTV_pct):NaN,          cat:'debt',    title:'Loan-to-value', def:'Loan-to-Value = loan balance ÷ appraised value. Lower is safer; agency debt usually caps at 70-80%.' },
+  payoff:  { label:'Payoff',      defaultHidden:true, defaultDir:'asc',  sortValue:r=>r.pf?_pfNum(r.pf.payoffAggressive_months):NaN, cat:'debt', title:'Aggressive payoff — all NOI to debt service (months)', def:'Aggressive payoff = months to retire the loan if 100% of NOI went to debt service. A speed-of-deleveraging gauge. ∞ means NOI doesn\'t cover interest.' },
+  renoDay: { label:'Delay $/day',                 defaultDir:'desc', sortValue:r=>Number.isFinite(r.noiPerDay)?r.noiPerDay:NaN, cat:'ops',  title:'Stabilized NOI forgone per extra day of renovation/lease-up delay', def:'Cost of delay = stabilized NOI ÷ 365. Every extra day the building isn\'t finished and leased forgoes this much net income. Multiply by your slip in days to size the cost.' },
+  actions: { label:'',            fixed:true, sortable:false,                                                  cat:'id',        title:'Open this building in Financial Analytics', def:'' },
 };
+// Группы глоссария в порядке отображения.
+const PF_GLOSSARY_CATS = [
+  ['occupancy', 'Occupancy & vacancy'],
+  ['income',    'Income & cash flow'],
+  ['value',     'Valuation & value creation'],
+  ['returns',   'Investment returns'],
+  ['debt',      'Debt & risk'],
+  ['ops',       'Operations'],
+];
 
 function _pfCell(r, k){
   switch(k){
@@ -123991,6 +124040,15 @@ function _pfCell(r, k){
     case 'pfNoi':   return `<td>${r.pf?_pfFmtUsd(r.pf.NOI_annual):'—'}</td>`;
     case 'dscr':    return `<td>${r.pf?_pfFmtX(r.pf.DSCR):'—'}</td>`;
     case 'yoc':     return `<td>${r.pf?_pfFmtPct(r.pf.yieldOnCost_pct):'—'}</td>`;
+    case 'egi':     return `<td>${r.pf?_pfFmtUsd(r.pf.EGI_annual):'—'}</td>`;
+    case 'nmar':    { const m = r.pf && _pfNum(r.pf.EGI_annual)>0 ? _pfNum(r.pf.NOI_annual)/_pfNum(r.pf.EGI_annual)*100 : NaN; return `<td>${Number.isFinite(m)?_pfFmtPct(m):'—'}</td>`; }
+    case 'dy':      return `<td>${r.pf?_pfFmtPct(r.pf.debtYield_pct):'—'}</td>`;
+    case 'spr':     { const s = r.pf?_pfNum(r.pf.yieldSpread_pct):NaN; return `<td class="${s>0?'pf-pos':(s<0?'pf-neg':'')}">${r.pf&&r.pf.yieldSpread_pct!=null?_pfFmtPct(s):'—'}</td>`; }
+    case 'coc':     return `<td>${r.pf&&r.pf.cashOnCash_pct!=null?_pfFmtPct(r.pf.cashOnCash_pct):'—'}</td>`;
+    case 'em':      return `<td>${Number.isFinite(r.em)?_pfFmtX(r.em):(r.em===Infinity?'∞':'—')}</td>`;
+    case 'cf':      { const c = r.pf?_pfNum(r.pf.cashFlow_annual):NaN; return `<td class="${c>0?'pf-pos':(c<0?'pf-neg':'')}">${r.pf?_pfFmtUsd(c):'—'}</td>`; }
+    case 'ppu':     { const p = r.pf && _pfNum(r.unitCount)>0 ? _pfNum(r.pf.allInBasis)/_pfNum(r.unitCount) : NaN; return `<td>${Number.isFinite(p)&&p>0?_pfFmtUsd(p):'—'}</td>`; }
+    case 'beo':     return `<td>${r.pf&&r.pf.breakEvenOccupancy_pct!=null?_pfFmtPct(r.pf.breakEvenOccupancy_pct):'—'}</td>`;
     case 'ltv':     return `<td>${r.pf?_pfFmtPct(r.pf.LTV_pct):'—'}</td>`;
     case 'irr':     return `<td>${Number.isFinite(r.irr)?_pfFmtPct(r.irr):'—'}</td>`;
     case 'payoff':  return `<td>${r.pf?_pfFmtMonths(r.pf.payoffAggressive_months):'—'}</td>`;
@@ -124013,8 +124071,17 @@ function _pfFootHtml(rows, cols){
       case 'pfVal':   return `<td>${a.nInv?_pfFmtUsd(a.pfVal):'—'}</td>`;
       case 'upside':  return `<td class="${a.upside>0?'pf-pos':(a.upside<0?'pf-neg':'')}">${a.nInv?((a.upside>=0?'+':'')+_pfFmtUsd(a.upside)):'—'}</td>`;
       case 'pfNoi':   return `<td>${a.nInv?_pfFmtUsd(a.pfNoi):'—'}</td>`;
+      case 'egi':     return `<td>${a.nInv?_pfFmtUsd(a.pfEGI):'—'}</td>`;
+      case 'nmar':    return `<td>${a.nInv&&Number.isFinite(a.weightedNoiMargin)?_pfFmtPct(a.weightedNoiMargin):'—'}</td>`;
       case 'dscr':    return `<td>${a.nInv?_pfFmtX(a.weightedDSCR):'—'}</td>`;
+      case 'dy':      return `<td>${a.nInv&&Number.isFinite(a.weightedDebtYield)?_pfFmtPct(a.weightedDebtYield):'—'}</td>`;
       case 'yoc':     return `<td>${a.nInv?_pfFmtPct(a.weightedYoC):'—'}</td>`;
+      case 'spr':     return `<td class="${a.avgSpread>0?'pf-pos':(a.avgSpread<0?'pf-neg':'')}">${a.nInv&&Number.isFinite(a.avgSpread)?_pfFmtPct(a.avgSpread):'—'}</td>`;
+      case 'coc':     return `<td>${a.nInv?_pfFmtPct(a.weightedCoC):'—'}</td>`;
+      case 'em':      return `<td>${a.nInv&&Number.isFinite(a.avgEM)?_pfFmtX(a.avgEM):'—'}</td>`;
+      case 'cf':      return `<td class="${a.pfCF>0?'pf-pos':(a.pfCF<0?'pf-neg':'')}">${a.nInv?_pfFmtUsd(a.pfCF):'—'}</td>`;
+      case 'ppu':     return `<td>${Number.isFinite(a.ppu)?_pfFmtUsd(a.ppu):'—'}</td>`;
+      case 'beo':     return `<td>${a.nInv&&Number.isFinite(a.avgBEO)?_pfFmtPct(a.avgBEO):'—'}</td>`;
       case 'renoDay': return `<td class="${a.noiDay>0?'pf-neg':''}">${a.noiDay>0?_pfFmtUsd(a.noiDay)+'/day':'—'}</td>`;
       default:        return '<td></td>';
     }
@@ -124164,9 +124231,66 @@ function _pfRenderCharts(rows){
     chartB = `<div class="hv-card" style="padding:16px 18px;">
       <div class="hv-eyebrow" style="margin-bottom:10px;">Vacancy cost by building · $/yr</div>${bars}</div>`;
   }
-  host.innerHTML = (chartA || chartB)
-    ? `<div style="display:grid; grid-template-columns: ${(chartA && chartB) ? '1fr 1fr' : '1fr'}; gap:12px;">${chartA}${chartB}</div>`
+  // Chart C — cost of delay per building ($/day); cumulative if reno-slip slider is active.
+  const delayRows = rows.filter(r => Number.isFinite(r.noiPerDay) && r.noiPerDay > 0).sort((x,z) => z.noiPerDay - x.noiPerDay);
+  let chartC = '';
+  if (delayRows.length){
+    const maxD = Math.max(1, ...delayRows.map(r => r.noiPerDay));
+    const delayMo = _pfNum(_pfScenario.renoDelayMonths);
+    const delayDays = Math.round(delayMo * 30.4375);
+    let bars = '';
+    for (const r of delayRows){
+      const cum = delayDays > 0 ? r.noiPerDay * delayDays : 0;
+      bars += `<div class="pf-barrow"><div class="pf-barlbl" title="${esc(r.name)}">${esc(r.name)}</div>
+        <div class="pf-bartrack"><div class="pf-barfill" style="width:${Math.min(100,r.noiPerDay/maxD*100)}%; background:#f97316;"></div>
+        <div style="position:absolute; right:7px; top:50%; transform:translateY(-50%); font-size:10.5px; font-weight:700; color:var(--text);">${_pfFmtUsd(r.noiPerDay)}/day${cum>0?' · '+_pfFmtUsd(cum)+' @ '+delayMo+'mo':''}</div></div></div>`;
+    }
+    chartC = `<div class="hv-card" style="padding:16px 18px;">
+      <div class="hv-eyebrow" style="margin-bottom:10px;">Cost of delay by building · $/day${delayMo>0?' · cumulative @ '+delayMo+'-mo slip':''}</div>${bars}</div>`;
+  }
+  const charts = [chartA, chartB, chartC].filter(Boolean);
+  host.innerHTML = charts.length
+    ? `<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(320px,1fr)); gap:12px;">${charts.join('')}</div>`
     : '';
+}
+
+// --- Metric glossary (point 4) — what every column/figure means ----------
+let _pfGlossaryOpen = false;
+function _pfRenderGlossary(){
+  const host = document.getElementById('pfGlossary');
+  if (!host) return;
+  const byCat = {};
+  for (const k of Object.keys(PF_COLUMNS)){
+    const c = PF_COLUMNS[k];
+    if (!c.def) continue;
+    (byCat[c.cat] = byCat[c.cat] || []).push(c);
+  }
+  let secs = '';
+  for (const [cat,label] of PF_GLOSSARY_CATS){
+    const items = byCat[cat]; if (!items || !items.length) continue;
+    let rows = '';
+    for (const c of items){
+      rows += `<div style="padding:7px 0; border-bottom:1px solid var(--border);">
+        <div style="font-size:12px; font-weight:700; color:var(--text);">${esc(c.label)}</div>
+        <div style="font-size:11.5px; color:var(--muted); line-height:1.5; margin-top:2px;">${esc(c.def)}</div></div>`;
+    }
+    secs += `<div><div class="hv-eyebrow" style="margin-bottom:4px;">${esc(label)}</div>${rows}</div>`;
+  }
+  host.innerHTML = `<div class="hv-card" style="padding:16px 18px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+      <div style="font-size:14px; font-weight:800; color:var(--text);">Metric glossary — what every column means</div>
+      <button type="button" onclick="_pfToggleGlossary(false)" style="padding:5px 12px; font-size:11px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--muted); cursor:pointer; font-weight:600;">Close</button>
+    </div>
+    <div style="font-size:11.5px; color:var(--muted); margin-bottom:14px; line-height:1.55;">Every figure on this page is read from each building's Rent Roll occupancy and its BRRRR underwriting record in Financial Analytics — nothing is recomputed with new formulas. Hover any column header for the same definition inline.</div>
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(290px,1fr)); gap:8px 30px; align-items:start;">${secs}</div>
+  </div>`;
+}
+function _pfToggleGlossary(force){
+  _pfGlossaryOpen = (typeof force === 'boolean') ? force : !_pfGlossaryOpen;
+  const host = document.getElementById('pfGlossary');
+  if (!host) return;
+  host.style.display = _pfGlossaryOpen ? 'block' : 'none';
+  if (_pfGlossaryOpen) _pfRenderGlossary();
 }
 
 function renderPortfolioDash(){
@@ -124218,34 +124342,51 @@ function _pfOpenBuilding(bId){
   if (typeof showFinanceAnalytics === 'function') showFinanceAnalytics();
 }
 
-// --- CSV export (follows current sort + filter; RFC 4180 + BOM + CRLF) ----
+// --- CSV export (mirrors the comparison table columns + current sort; RFC 4180 + BOM + CRLF) ----
+// Колонки CSV выводятся из PF_COLUMNS — добавил колонку в таблицу → она же
+// автоматически попадает в экспорт, расхождение «таблица vs CSV» исключено.
 function _pfExportCSV(){
   try {
     const rows = _pfBuildRows();
     const sortState = (typeof readTableSort === 'function' && readTableSort('sfa_pf_dash')) || { col:'upside', dir:'desc' };
     const sorted = (typeof applyTableSort === 'function') ? applyTableSort(rows, sortState, PF_COLUMNS) : rows;
     const fld = (v)=>{ const s = String(v == null ? '' : v); return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s; };
-    const nf  = (n,d)=> Number.isFinite(n) ? Number(n).toFixed(d == null ? 2 : d) : '';
-    const i   = (n)=> Number.isFinite(n) ? String(Math.round(n)) : '';
-    const head = ['Building','Address','Occupancy %','Occupied','Total Units','Vacant','In-place MRR ($)','Vacancy Cost /yr ($)','Current Value ($)','Proforma Value ($)','Upside ($)','Proforma NOI /yr ($)','DSCR (x)','Yield-on-Cost (%)','LTV (%)','5yr IRR (%)','Aggr Payoff (mo)','Reno Delay Cost /day ($)','Has Underwriting'];
+    // сырое число → строка для таблиц: Infinity→Inf, нечисло→пусто, иначе округление до 2 знаков
+    const num = (v)=>{
+      if (v === Infinity)  return 'Inf';
+      if (v === -Infinity) return '-Inf';
+      if (typeof v !== 'number' || !Number.isFinite(v)) return '';
+      return String(Math.round(v * 100) / 100);
+    };
+    // все колонки таблицы кроме служебной actions; bldg разворачивается в Building + Address
+    const keys = Object.keys(PF_COLUMNS).filter(k => k !== 'actions');
+    const head = [];
+    for (const k of keys){ if (k === 'bldg'){ head.push('Building','Address'); } else { head.push(PF_COLUMNS[k].label); } }
     const lines = [head.map(fld).join(',')];
     for (const r of sorted){
-      const u = _pfUpside(r);
-      lines.push([
-        r.name, r.address, i(r.occupancyPct), i(r.occupiedCount), i(r.unitCount), i(r.vacantCount),
-        i(r.mrr), i(r.vacAnnual),
-        r.cur ? i(r.cur.incomeValuation) : '', r.pf ? i(r.pf.incomeValuation) : '', Number.isFinite(u) ? i(u) : '',
-        r.pf ? i(r.pf.NOI_annual) : '', r.pf ? (r.pf.DSCR === Infinity ? 'Inf' : nf(r.pf.DSCR)) : '',
-        r.pf ? nf(r.pf.yieldOnCost_pct) : '', r.pf ? nf(r.pf.LTV_pct) : '',
-        Number.isFinite(r.irr) ? nf(r.irr) : '',
-        r.pf ? (r.pf.payoffAggressive_months === Infinity ? 'Inf' : i(r.pf.payoffAggressive_months)) : '',
-        Number.isFinite(r.noiPerDay) ? i(r.noiPerDay) : '', r.hasInv ? 'yes' : 'no',
-      ].map(fld).join(','));
+      const cells = [];
+      for (const k of keys){
+        if (k === 'bldg'){ cells.push(r.name || '', r.address || ''); continue; }
+        const sv = PF_COLUMNS[k].sortValue;
+        cells.push(num(sv ? sv(r) : NaN));
+      }
+      lines.push(cells.map(fld).join(','));
     }
+    // итоговая строка портфеля — те же ключи, значения из агрегата
     const a = _pfAggregate(sorted);
-    lines.push(['PORTFOLIO TOTAL · ' + sorted.length + ' buildings','', i(a.occupancyPct), i(a.occ), i(a.units), i(a.nVacSuites),
-      i(a.mrr), i(a.vacYr), a.nInv?i(a.curVal):'', a.nInv?i(a.pfVal):'', a.nInv?i(a.upside):'', a.nInv?i(a.pfNoi):'',
-      a.weightedDSCR === Infinity ? 'Inf' : nf(a.weightedDSCR), nf(a.weightedYoC), '', '', '', i(a.noiDay), ''].map(fld).join(','));
+    const footMap = {
+      occ:a.occupancyPct, units:a.occ, mrr:a.mrr, vacYr:a.vacYr, egi:a.nInv?a.pfEGI:NaN,
+      curVal:a.nInv?a.curVal:NaN, pfVal:a.nInv?a.pfVal:NaN, upside:a.nInv?a.upside:NaN,
+      pfNoi:a.nInv?a.pfNoi:NaN, nmar:a.weightedNoiMargin, dscr:a.weightedDSCR, dy:a.weightedDebtYield,
+      yoc:a.weightedYoC, spr:a.avgSpread, coc:a.weightedCoC, em:a.avgEM, cf:a.pfCF,
+      ppu:a.ppu, beo:a.avgBEO, renoDay:a.noiDay,
+    };
+    const foot = [];
+    for (const k of keys){
+      if (k === 'bldg'){ foot.push('PORTFOLIO TOTAL · ' + sorted.length + ' buildings', ''); continue; }
+      foot.push(Object.prototype.hasOwnProperty.call(footMap, k) ? num(footMap[k]) : '');
+    }
+    lines.push(foot.map(fld).join(','));
     const blob = new Blob(['﻿' + lines.join('\r\n')], { type:'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const aEl = document.createElement('a');
