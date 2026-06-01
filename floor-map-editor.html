@@ -124218,7 +124218,16 @@ function _pfEnsureTxStyle(){
 #pfTable.pf-transposed .pf-tx-resizer{position:absolute;top:0;right:0;width:7px;height:100%;cursor:col-resize;user-select:none;z-index:6;}
 #pfTable.pf-transposed .pf-tx-resizer:hover{background:var(--accent,#0284c7);opacity:.35;}
 #pfTable.pf-transposed .pf-tx-reset{cursor:pointer;color:var(--muted);font-size:11px;margin-left:7px;text-decoration:none;}
-#pfTable.pf-transposed .pf-tx-reset:hover{color:var(--accent,#0284c7);}`;
+#pfTable.pf-transposed .pf-tx-reset:hover{color:var(--accent,#0284c7);}
+/* Phase 2 — редактируемые строки андеррайтинга (настройки по зданию, point #4) */
+#pfTable.pf-transposed tbody tr.pf-tx-secrow th{position:static;text-align:left;background:var(--surface-2);border-top:2px solid var(--border);border-bottom:1px solid var(--border);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--fg);padding:6px 11px;cursor:default;}
+#pfTable.pf-transposed tbody tr.pf-tx-secrow th.pf-tx-sechead[onclick]{cursor:pointer;}
+#pfTable.pf-transposed tbody tr.pf-tx-secrow th .pf-tx-sechint{font-weight:500;text-transform:none;letter-spacing:0;color:var(--muted);}
+#pfTable.pf-transposed tbody tr.pf-tx-arow th{font-weight:500;color:var(--muted);}
+#pfTable.pf-transposed .pf-tx-inp{width:100%;box-sizing:border-box;border:1px solid transparent;background:transparent;text-align:right;font:inherit;font-variant-numeric:tabular-nums;color:inherit;padding:2px 4px;border-radius:4px;}
+#pfTable.pf-transposed .pf-tx-inp:hover{border-color:var(--border);}
+#pfTable.pf-transposed .pf-tx-inp:focus{border-color:var(--accent,#0284c7);background:rgba(2,132,199,0.08);outline:none;}
+#pfTable.pf-transposed .pf-tx-inp::-webkit-outer-spin-button,#pfTable.pf-transposed .pf-tx-inp::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}`;
   document.head.appendChild(st);
 }
 
@@ -124290,6 +124299,27 @@ function _pfRenderTableTransposed(rows, tbl){
   if (!nB){
     tbody += `<tr><th>Metric</th><td style="text-align:center;color:var(--muted);padding:24px;">No buildings match this filter.</td><td></td></tr>`;
   } else {
+    // --- Секция настроек андеррайтинга (point #4): сворачиваемая, редактируемая ---
+    // Каждая строка = одно существующее поле investments[bId]; колонка = здание.
+    // Свёрнута по умолчанию («не мозолить глаза»). Ввод → _pfTxOnAssume.
+    const aOpen = readPref('sfa_pf_tx_assume_open') === '1';
+    tbody += `<tr class="pf-tx-secrow"><th class="pf-tx-sechead" colspan="${nB + 2}" onclick="_pfTxToggleAssume()" title="Per-building underwriting inputs — type a value and it saves to that building's Financial Analytics record and recomputes the results below">${aOpen ? '▾' : '▸'} Underwriting assumptions <span class="pf-tx-sechint">· ${aOpen ? 'editable · each building independent · synced to Financial Analytics' : 'click to edit each building'}</span></th></tr>`;
+    if (aOpen){
+      // Гарантируем hold-поля у записей (как делает страница Financial Analytics на
+      // рендере) — чтобы инпуты были заполнены и считались IRR/EM. Идемпотентно.
+      for (const r of sorted){ if (r.inv && typeof _investEnsureHoldFields === 'function') _investEnsureHoldFields(r.inv); }
+      for (const f of _PF_TX_ASSUME){
+        tbody += `<tr class="pf-tx-arow"><th class="pf-tx-alabel" title="${esc(f.label)} — type a value; saves to that building & recomputes results">${esc(f.label)}</th>`;
+        for (const r of sorted){
+          const inv = r.inv;
+          const v = (inv && inv[f.field] != null && inv[f.field] !== '') ? esc(String(inv[f.field])) : '';
+          tbody += `<td><input type="number" class="pf-tx-inp" inputmode="decimal" data-bldg="${esc(r.bId)}" data-field="${f.field}" value="${v}" step="${f.step}" min="0" placeholder="—" oninput="_pfTxOnAssume(this)"></td>`;
+        }
+        tbody += `<td></td></tr>`;
+      }
+      tbody += `<tr class="pf-tx-secrow"><th class="pf-tx-sechead" colspan="${nB + 2}">Results</th></tr>`;
+    }
+    // --- Результаты (вычисляемые метрики). data-rcell/data-acell → хирургический пересчёт ---
     for (const k of metricKeys){
       const c = PF_COLUMNS[k];
       const isSorted = sortState.col === k;
@@ -124299,12 +124329,12 @@ function _pfRenderTableTransposed(rows, tbl){
             +  `<span class="pf-tx-grip">⠿</span>`
             +  `<span class="pf-tx-mlabel" style="cursor:pointer;" onclick="_pfTxSort('${k}')">${esc(c.label)} <span style="color:var(--muted);font-size:9px;">${arrow}</span></span>`
             +  `</th>`;
-      for (const r of sorted) tbody += _pfCell(r, k);
-      tbody += _pfAggCell(a, k, nB);
+      for (const r of sorted) tbody += _pfCell(r, k).replace('<td', `<td data-rcell="${esc(r.bId)}|${k}"`);
+      tbody += _pfAggCell(a, k, nB).replace('<td', `<td data-acell="${k}"`);
       tbody += '</tr>';
     }
     tbody += '<tr><th>Open</th>';
-    for (const r of sorted) tbody += _pfCell(r, 'actions');
+    for (const r of sorted) tbody += _pfCell(r, 'actions').replace('<td', `<td data-rcell="${esc(r.bId)}|actions"`);
     tbody += '<td></td></tr>';
   }
   tbody += '</tbody>';
@@ -124448,6 +124478,142 @@ function _pfTxResizeEnd(){
     else _pfTxRz.th.setAttribute('draggable', _pfTxRz.wasDraggable);
   }
   _pfTxRz = null;
+}
+
+// =========================================================================
+// Phase 2 (point #4) — редактор андеррайтинга по зданию прямо в транспонированной
+// таблице. Колонка = здание, строка = ОДНО существующее поле investments[bId].
+// Запись — точная копия пути _investOnSlider (то же поле, savedAt, зеркало в
+// активный сценарий, debounced save). НИКАКИХ новых формул и новых полей — только
+// уже существующие поля BRRRR-движка. Правки двусторонне синхронизируются со
+// страницей Financial Analytics (общий state.investments[bId]). Каждое здание
+// независимо (ключ — bId). Секция сворачивается (pref sfa_pf_tx_assume_open),
+// чтобы «не мозолить глаза». Пересчёт — хирургический: обновляем только ячейки с
+// data-rcell/data-acell, строки-инпуты не трогаем → фокус/каретка не теряются.
+// =========================================================================
+// Поля = ровно те же 16, что и в _INVEST_FIELD_MAP (единый источник правды для
+// слайдеров Financial Analytics). label/step — только UI-метаданные, не формулы.
+const _PF_TX_ASSUME = [
+  { field:'purchasePrice',     label:'Purchase price',      step:10000 },
+  { field:'closingCostsPct',   label:'Closing costs %',     step:0.1 },
+  { field:'renoCost',          label:'Renovation cost',     step:10000 },
+  { field:'renoMonths',        label:'Reno months',         step:1 },
+  { field:'vacancyPct',        label:'Vacancy %',           step:0.5 },
+  { field:'opexPct',           label:'OpEx %',              step:0.5 },
+  { field:'capRatePct',        label:'Cap rate %',          step:0.05 },
+  { field:'refiAmount',        label:'Refi loan amount',    step:10000 },
+  { field:'refiRatePct',       label:'Refi rate %',         step:0.05 },
+  { field:'refiTermYears',     label:'Refi term (yrs)',     step:1 },
+  { field:'externalValuation', label:'External valuation',  step:10000 },
+  { field:'holdYears',         label:'Hold period (yrs)',   step:1 },
+  { field:'rentGrowthPct',     label:'Rent growth %/yr',    step:0.1 },
+  { field:'opexInflationPct',  label:'OpEx inflation %/yr', step:0.1 },
+  { field:'exitCapPct',        label:'Exit cap %',          step:0.05 },
+  { field:'sellingCostsPct',   label:'Selling costs %',     step:0.1 },
+];
+
+// Свернуть/развернуть секцию настроек. По умолчанию свёрнуто.
+function _pfTxToggleAssume(){
+  const open = readPref('sfa_pf_tx_assume_open') === '1';
+  try { writePref('sfa_pf_tx_assume_open', open ? '0' : '1'); } catch(e){}
+  renderPortfolioDash();
+}
+
+// Создаёт investments[bId] со SMART-defaults — точная копия _investSeedCurrentBuilding,
+// параметризованная по bId (без toast/render). Нужна, когда оператор начинает
+// вводить настройки для здания без записи (плашка n/u). Только существующие поля.
+function _pfTxSeedInv(bId){
+  if (!bId) return;
+  if (!state.investments) state.investments = {};
+  if (state.investments[bId]) return;
+  const _DEF = { vacancyPct:5, opexPct:35, capRatePct:7, refiRatePct:6, refiTermYears:30, ltvPct:65 };
+  let estValuation = 0, estRefiAmount = 0;
+  try {
+    const bm = (typeof _investBuildingMetrics === 'function') ? _investBuildingMetrics(bId) : null;
+    const gpr = +(bm?.stabilizedGPR_annual || 0);
+    const NOI = gpr * (1 - _DEF.vacancyPct/100) * (1 - _DEF.opexPct/100);
+    estValuation = NOI > 0 ? Math.round(NOI / (_DEF.capRatePct/100)) : 0;
+    estRefiAmount = Math.round(estValuation * (_DEF.ltvPct/100));
+  } catch(e){ console.warn('[pf:tx] seed est', e); }
+  state.investments[bId] = {
+    buildingId: bId, version: 1,
+    purchaseDate: new Date().toISOString().slice(0,10),
+    purchasePrice: 0, closingCostsPct: 2,
+    renoCost: 0, renoMonths: 6, renoStartDate: '',
+    vacancyPct: _DEF.vacancyPct, opexPct: _DEF.opexPct, capRatePct: _DEF.capRatePct,
+    refiAmount: estRefiAmount, refiRatePct: _DEF.refiRatePct, refiTermYears: _DEF.refiTermYears,
+    refiBalloonYears: 10, refiPointsPct: 1, refiDate: '',
+    externalValuation: estValuation,
+    notes: 'Seeded from Portfolio Dashboard — adjust assumptions.',
+    savedAt: new Date().toISOString(),
+  };
+  if (typeof _investEnsureScenarios === 'function') _investEnsureScenarios(state.investments[bId]);
+  if (typeof _investEnsureHoldFields === 'function') _investEnsureHoldFields(state.investments[bId]);
+}
+
+// Обработчик ввода в ячейку-настройку. Запись 1-в-1 как _investOnSlider.
+function _pfTxOnAssume(inp){
+  if (!inp) return;
+  const bId = inp.dataset.bldg, field = inp.dataset.field;
+  if (!bId || !field) return;
+  const val = parseFloat(inp.value);
+  if (!Number.isFinite(val)) return;   // пустое/частичное («-», «.») — игнор
+  const needSeed = !(state.investments && state.investments[bId]);
+  if (needSeed) _pfTxSeedInv(bId);
+  const inv = state.investments && state.investments[bId];
+  if (!inv) return;
+  // === запись 1-в-1 как _investOnSlider (поле + savedAt + зеркало в сценарий) ===
+  inv[field] = val;
+  inv.savedAt = new Date().toISOString();
+  if (typeof _investEnsureScenarios === 'function') _investEnsureScenarios(inv);
+  const sn = inv.activeScenario || 'base';
+  if (inv.scenarios){
+    if (!inv.scenarios[sn]) inv.scenarios[sn] = {};
+    inv.scenarios[sn][field] = val;
+  }
+  if (typeof _investDebouncedSave === 'function') _investDebouncedSave();
+  else { try { saveState(); } catch(e){} }
+  // Seed меняет структуру (плашка n/u → убирается, actions +Add → Open) → полный
+  // re-render. Обычная правка → хирургическое обновление результатов (фокус цел).
+  if (needSeed) renderPortfolioDash();
+  else _pfTxScheduleRefresh();
+}
+
+// Хирургический пересчёт результатов. Обновляем ТОЛЬКО ячейки data-rcell (значения
+// зданий) и data-acell (агрегат Portfolio); строки-инпуты не трогаем, поэтому фокус
+// и каретка при наборе сохраняются. Коалесцируем через rAF — быстрый набор не гоняет
+// движок на каждое нажатие. Колонки НЕ пересортировываются на лету (это сбивало бы).
+let _pfTxRefreshRAF = 0;
+function _pfTxScheduleRefresh(){
+  if (_pfTxRefreshRAF) return;
+  _pfTxRefreshRAF = requestAnimationFrame(() => {
+    _pfTxRefreshRAF = 0;
+    try { _pfTxRefreshResults(); } catch(e){ console.warn('[pf:tx] refresh', e); }
+  });
+}
+function _pfTxRefreshResults(){
+  const tbl = document.getElementById('pfTable');
+  if (!tbl) return;
+  const rows = _pfBuildRows();
+  const byId = new Map(rows.map(r => [r.bId, r]));
+  const a = _pfAggregate(rows);
+  const swap = (cell, html) => {
+    const t = document.createElement('template'); t.innerHTML = String(html).trim();
+    const fresh = t.content.firstElementChild;
+    if (!fresh) return;
+    cell.className = fresh.className;
+    cell.innerHTML = fresh.innerHTML;
+  };
+  tbl.querySelectorAll('td[data-rcell]').forEach(td => {
+    const raw = td.getAttribute('data-rcell'); const sep = raw.indexOf('|');
+    if (sep < 0) return;
+    const bId = raw.slice(0, sep), k = raw.slice(sep + 1);
+    const r = byId.get(bId); if (!r) return;
+    swap(td, _pfCell(r, k));
+  });
+  tbl.querySelectorAll('td[data-acell]').forEach(td => {
+    swap(td, _pfAggCell(a, td.getAttribute('data-acell'), rows.length));
+  });
 }
 
 // =========================================================================
