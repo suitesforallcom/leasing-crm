@@ -8324,6 +8324,21 @@ function _mp_collect(state) {
 exports.mirrorPaymentsOnStateWrite = onDocumentWritten(
   'workspaces/{wid}/data/{docId}',
   async (event) => {
+    // 2026-06-01: HARD-DISABLED per Tony approval (autonomous run #2 Stage
+    // 1.5, KNOWN_ISSUES #13). Original design wrote v1-style keys
+    // (unitId__ym, no _schema:'v2' marker) + had a delete-by-diff loop —
+    // both anti-patterns from SCALING_PLAN_v2.md §0 (rules 1 + 2). The
+    // building-aware in-handler mirrors from commit ba68a4d cover every
+    // server-side payment write correctly (with _schema:'v2', explicit-
+    // event deletes only), so this legacy trigger is now strictly
+    // redundant. Early return → it becomes a passive no-op without
+    // breaking the Firebase deploy contract (the export stays; the
+    // function body is unreachable). After this deploy: operator runs
+    // sfaCleanV1OrphanPayments({apply: true}) once to purge the 7
+    // accumulated v1 docs, and the next reconcilePaymentsV2Scheduled
+    // snapshot shows v1OrphanCount: 0.
+    return;
+    // ── code below intentionally unreachable ─────────────────────────
     if (event.params.docId !== 'state') return;
     const after = event.data && event.data.after && event.data.after.data();
     if (!after || !after.state) return;
