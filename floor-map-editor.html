@@ -15969,6 +15969,7 @@
   body.no-finance #railLeases,
   body.no-finance #railPay,
   body.no-finance #railFin,
+  body.no-finance #railPortfolio,
   body.no-finance #railComm,
   body.no-finance .revenue-block,
   body.no-finance .money-row,
@@ -16001,6 +16002,7 @@
      Hide rail button + POTENTIAL VALUE card на Home для всех кроме admin.
      Grid сжимается до 4 cols когда POTENTIAL VALUE скрыта.  */
   body:not(.role-admin) #railFin { display: none !important; }
+  body:not(.role-admin) #railPortfolio { display: none !important; }
   body:not(.role-admin) #hvFcstKpiStrip { grid-template-columns: repeat(4, 1fr) !important; }
   body:not(.role-admin) #hvFcstKpiStrip [data-kpi="value"] { display: none !important; }
   /* Backups panel — admin + manager only */
@@ -17409,6 +17411,10 @@
         <svg viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
         <span class="rail-label">Fin. analytics</span>
       </button>
+      <button class="icon-btn" onclick="showPortfolioDash()" title="Portfolio — all-building comparison · current vs proforma · vacancy cost · cost-per-day of reno delay · IRR / NOI / value (admin only)" id="railPortfolio">
+        <svg viewBox="0 0 24 24"><path d="M3 21h18"/><rect x="4" y="10" width="3.6" height="11" rx="0.5"/><rect x="10.2" y="5" width="3.6" height="16" rx="0.5"/><rect x="16.4" y="14" width="3.6" height="7" rx="0.5"/></svg>
+        <span class="rail-label">Portfolio</span>
+      </button>
       <div class="left-rail-sep"></div>
       <!-- Grid + Labels + translucent Edit-mode toggles were removed from the
            rail — they still exist as toggles in the sidebar Layers panel. -->
@@ -17842,6 +17848,143 @@
             </div>
           </div>
         </section>
+      </div>
+
+      <!-- ════ Portfolio Buildings Dashboard — admin-only separate page ════
+           Institutional-fund (BlackRock/Blackstone) style roll-up across
+           ALL buildings: current vs proforma, vacancy cost, стоимость
+           дня просрочки ремонта, headroom на рекламу. Только ЧИТАЕТ
+           существующий движок (investComputeAll / _investBuildingMetrics /
+           _investComputePortfolio / _investHoldPeriodModel) — ни одной
+           новой финансовой формулы (FINANCIAL_INVARIANTS). Рендер —
+           renderPortfolioDash(). Скрыта для non-admin CSS-правилом
+           body:not(.role-admin) #railPortfolio. -->
+      <div class="home-view" id="portfolioDashView">
+        <style>
+          #portfolioDashView { padding: 18px 22px; overflow: auto; height: 100%; }
+          #portfolioDashView .pf-grid-kpi { display:grid; gap:12px; }
+          #portfolioDashView .pf-kpi { background: var(--surface-2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; }
+          #portfolioDashView .pf-kpi-lbl { font-size:10px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em; }
+          #portfolioDashView .pf-kpi-val { font-size:23px; font-weight:700; color:var(--text); font-variant-numeric:tabular-nums; line-height:1.1; margin-top:3px; }
+          #portfolioDashView .pf-kpi-sub { font-size:11px; color:var(--muted); margin-top:2px; }
+          #portfolioDashView .pf-loss-card { border-radius:10px; padding:16px 18px; border:1px solid var(--border); position:relative; overflow:hidden; }
+          #portfolioDashView .pf-loss-val { font-size:27px; font-weight:800; font-variant-numeric:tabular-nums; line-height:1.05; margin-top:4px; }
+          #portfolioDashView .pf-loss-q { font-size:12px; font-weight:700; color:var(--text); }
+          #portfolioDashView .pf-loss-sub { font-size:11.5px; color:var(--muted); margin-top:6px; line-height:1.5; }
+          #portfolioDashView .pf-seg { display:inline-flex; border:1px solid var(--border); border-radius:7px; overflow:hidden; background:var(--surface-2); }
+          #portfolioDashView .pf-seg button { border:none; background:transparent; padding:6px 13px; font-size:12px; font-weight:600; color:var(--muted); cursor:pointer; }
+          #portfolioDashView .pf-seg button.active { background:var(--text); color:var(--surface); }
+          #portfolioDashView .pf-slider-row { display:grid; grid-template-columns: 96px 1fr 52px; gap:9px; align-items:center; }
+          #portfolioDashView .pf-slider-row label { font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:0.03em; font-weight:700; cursor:help; }
+          #portfolioDashView .pf-slider-row .pf-sl-val { font-size:12.5px; font-weight:700; color:var(--text); text-align:right; font-variant-numeric:tabular-nums; }
+          /* ползунок обязан ужиматься внутри 1fr-колонки, иначе значение наезжает на соседний label */
+          #portfolioDashView .pf-slider-row input[type=range] { width:100%; min-width:0; margin:0; }
+          #portfolioDashView .pf-barrow { display:grid; grid-template-columns: 150px 1fr; gap:10px; align-items:center; margin-bottom:7px; font-size:11.5px; }
+          #portfolioDashView .pf-barlbl { color:var(--text); font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+          #portfolioDashView .pf-bartrack { position:relative; height:22px; background:var(--surface-2); border-radius:5px; overflow:hidden; }
+          #portfolioDashView .pf-barfill { position:absolute; left:0; top:0; height:100%; border-radius:5px; }
+          #portfolioDashView table.pf-table { border-collapse:collapse; width:100%; font-size:12px; }
+          #portfolioDashView table.pf-table th { position:sticky; top:0; background:var(--surface); border-bottom:2px solid var(--border); padding:8px 9px; text-align:right; white-space:nowrap; font-size:10.5px; text-transform:uppercase; letter-spacing:0.03em; color:var(--muted); font-weight:700; z-index:1; }
+          #portfolioDashView table.pf-table th[data-col-key="bldg"] { text-align:left; }
+          #portfolioDashView table.pf-table td { padding:7px 9px; text-align:right; border-bottom:1px solid var(--border); font-variant-numeric:tabular-nums; white-space:nowrap; color:var(--text); }
+          #portfolioDashView table.pf-table td.pf-c-bldg { text-align:left; font-weight:600; }
+          #portfolioDashView table.pf-table tbody tr:hover td { background:var(--surface-2); }
+          #portfolioDashView table.pf-table tfoot td { padding:9px; border-top:2px solid var(--border); font-weight:700; text-align:right; background:var(--surface-2); }
+          #portfolioDashView .pf-pos { color:#16a34a; }
+          #portfolioDashView .pf-neg { color:#dc2626; }
+          #portfolioDashView .pf-pill { display:inline-block; padding:1px 7px; border-radius:99px; font-size:10px; font-weight:700; }
+          #portfolioDashView .pf-minibar { display:inline-block; vertical-align:middle; width:46px; height:6px; border-radius:3px; background:var(--border); overflow:hidden; margin-left:6px; }
+          #portfolioDashView .pf-minibar > i { display:block; height:100%; background:linear-gradient(90deg,#16a34a,#0284c7); }
+        </style>
+
+        <div class="hv-topbar" style="display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap;">
+          <div>
+            <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;">Portfolio · all buildings · admin only</div>
+            <div style="font-size:22px; font-weight:800; color:var(--text); margin-top:2px; letter-spacing:-0.01em; display:flex; align-items:center; gap:10px;">Portfolio Dashboard<button type="button" onclick="document.getElementById('pfHelpPanel').style.display = (document.getElementById('pfHelpPanel').style.display==='none'?'block':'none');" title="How to read this page · where the numbers come from" style="display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; padding:0; border:1px solid var(--border); border-radius:50%; background:var(--surface-2); color:var(--muted); cursor:pointer; font-size:12px; font-weight:700; flex-shrink:0;">?</button></div>
+            <div style="font-size:13px;color:var(--muted);margin-top:2px;">Current vs proforma across every building · vacancy cost · cost-per-day of reno delay · weighted IRR / NOI / value</div>
+          </div>
+        </div>
+
+        <div id="pfHelpPanel" style="display:none; margin-top:12px; padding:14px 16px; background:var(--surface-2); border:1px solid var(--border); border-radius:8px; font-size:12.5px; color:var(--text); line-height:1.6;">
+          <b>What this is.</b> A fund-style roll-up that compares every building side by side, today vs. when fully stabilized (proforma).<br>
+          <b>Where the numbers come from.</b> Occupancy, in-place rent and gross potential rent are read from each building's units (the same data as Rent Roll). NOI, value, DSCR, yield-on-cost, LTV and payoff come from each building's BRRRR underwriting record (Financial Analytics → Investment Analysis). IRR comes from the 5-year hold model. Nothing here is re-calculated with new formulas — it reuses the same engine as Financial Analytics.<br>
+          <b>Current vs Proforma.</b> <span style="color:#0284c7;font-weight:700;">Current</span> values in-place income as it stands today. <span style="color:#7c3aed;font-weight:700;">Proforma</span> values the building once every suite is leased at asking rent. The gap between them is your upside.<br>
+          <b>Scenario knobs.</b> The sliders let you stress-test the proforma (vacancy, opex, cap rate, rent growth, extra renovation months) without changing any saved record — drag them, read the portfolio, then Reset. To change a building's saved assumptions permanently, open it in Financial Analytics.<br>
+          <b>The three questions.</b> <i>Vacancy cost</i> = asking rent of every empty suite. <i>Cost per day of reno delay</i> = the stabilized net income you forgo for each extra day a building isn't finished. <i>Marketing headroom</i> = how much filling your space one month sooner is worth — your ceiling for accelerated ad spend.
+        </div>
+
+        <!-- Scenario + view-mode + filter bar -->
+        <div class="hv-card" style="padding:14px 16px; margin-top:14px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:12px;">
+            <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+              <span class="pf-seg" id="pfViewSeg">
+                <button data-mode="current" onclick="_pfSetView('current')">Current</button>
+                <button data-mode="proforma" onclick="_pfSetView('proforma')">Proforma</button>
+                <button data-mode="both" class="active" onclick="_pfSetView('both')">Both</button>
+              </span>
+              <input id="pfSearch" type="text" placeholder="Filter buildings…" oninput="renderPortfolioDash()"
+                     style="padding:6px 10px; font-size:12px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); min-width:160px;">
+            </div>
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <button id="pfExportCsvBtn" onclick="_pfExportCSV()"
+                      style="padding:6px 13px; font-size:11px; background:#0f172a; color:#fff; border:none; border-radius:5px; cursor:pointer; font-weight:700; letter-spacing:0.04em; text-transform:uppercase;"
+                      title="Download the comparison table (current view, current sort) as CSV — opens in Excel / Google Sheets">Export CSV</button>
+              <div id="pfTableTools" style="display:flex; align-items:center; gap:8px;"></div>
+            </div>
+          </div>
+          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:14px 22px; align-items:center;">
+            <div class="pf-slider-row">
+              <label title="Stabilized vacancy assumption applied to gross potential rent in the proforma. Overrides each building's saved vacancy % for this session only.">Vacancy</label>
+              <input type="range" id="pfSlVacancy" min="0" max="30" step="1" oninput="_pfOnSlider('vacancyPct', this.value, '%')" style="accent-color:#dc2626;">
+              <span class="pf-sl-val" id="pfSlVacancyVal">saved</span>
+            </div>
+            <div class="pf-slider-row">
+              <label title="Operating-expense ratio applied to effective gross income in the proforma. Overrides each building's saved opex % for this session only.">Opex</label>
+              <input type="range" id="pfSlOpex" min="0" max="60" step="1" oninput="_pfOnSlider('opexPct', this.value, '%')" style="accent-color:#f97316;">
+              <span class="pf-sl-val" id="pfSlOpexVal">saved</span>
+            </div>
+            <div class="pf-slider-row">
+              <label title="Capitalization rate used for the income-approach valuation (NOI ÷ cap rate). Lower cap = higher value. Overrides saved cap % for this session only.">Cap rate</label>
+              <input type="range" id="pfSlCap" min="3" max="12" step="0.25" oninput="_pfOnSlider('capRatePct', this.value, '%')" style="accent-color:#7c3aed;">
+              <span class="pf-sl-val" id="pfSlCapVal">saved</span>
+            </div>
+            <div class="pf-slider-row">
+              <label title="Rent-growth applied to gross potential rent in the proforma — model signing above today's asking rents.">Rent growth</label>
+              <input type="range" id="pfSlGrowth" min="0" max="25" step="1" value="0" oninput="_pfOnSlider('rentGrowthPct', this.value, '%')" style="accent-color:#16a34a;">
+              <span class="pf-sl-val" id="pfSlGrowthVal">0%</span>
+            </div>
+            <div class="pf-slider-row">
+              <label title="Extra renovation months added on top of each building's plan — see how a delayed delivery pushes out stabilization and what it costs.">Reno delay</label>
+              <input type="range" id="pfSlReno" min="0" max="12" step="1" value="0" oninput="_pfOnSlider('renoDelayMonths', this.value, 'mo')" style="accent-color:#0284c7;">
+              <span class="pf-sl-val" id="pfSlRenoVal">0mo</span>
+            </div>
+            <div style="display:flex; align-items:center;">
+              <button type="button" onclick="_pfResetScenario()"
+                      style="padding:6px 12px; font-size:11px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--muted); cursor:pointer; font-weight:600;"
+                      title="Reset all scenario sliders back to each building's saved assumptions">Reset scenario</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Portfolio roll-up KPIs (filled by JS) -->
+        <div id="pfRollup" style="margin-top:14px;"></div>
+
+        <!-- The three business questions (filled by JS) -->
+        <div id="pfLossCards" style="margin-top:14px;"></div>
+
+        <!-- Charts (filled by JS) -->
+        <div id="pfCharts" style="margin-top:14px;"></div>
+
+        <!-- Comparison table -->
+        <div class="hv-card" style="padding:16px 18px; margin-top:14px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <div class="hv-eyebrow">Building comparison</div>
+            <div id="pfTableStamp" style="font-size:11px; color:var(--muted);"></div>
+          </div>
+          <div style="overflow:auto; max-height:62vh;">
+            <table class="pf-table" id="pfTable"></table>
+          </div>
+        </div>
       </div>
 
       <!-- Payments matrix view -->
@@ -120535,7 +120678,7 @@ function removePref(base) {
    WHITELIST: only column/sort keys sync. Secrets (API keys, webhook
    secrets), Firebase config, AI provider tokens are NEVER synced.
 ============================================================ */
-const _SYNC_PREF_PATTERN = /^sfa_(rr|inv|comm|aging|pay|mpv|lsv)_/;
+const _SYNC_PREF_PATTERN = /^sfa_(rr|inv|comm|aging|pay|mpv|lsv|pf)_/;
 let _prefsFlushTimer = null;
 let _prefsLastPushedJson = '';   // cheap dedupe — skip push if nothing changed
 
@@ -121772,6 +121915,7 @@ function _routeToActiveView(view) {
       case 'commissions': return typeof showCommissions  === 'function' && showCommissions();
       case 'invoices':    return typeof showBilling      === 'function' && showBilling();
       case 'portmap':     return typeof showPortfolioMap === 'function' && showPortfolioMap();
+      case 'portfoliodash': return typeof showPortfolioDash === 'function' && showPortfolioDash();
       default:            return typeof showHome         === 'function' && showHome();
     }
   } catch (err) {
@@ -121803,6 +121947,7 @@ const SECONDARY_VIEW_IDS = [
   'activityView',
   'autobillingView',
   'financeAnalyticsView',
+  'portfolioDashView',
 ];
 
 function hideAllSecondaryViews() {
@@ -123666,6 +123811,470 @@ function showFinanceAnalytics() {
   catch (e) { console.error('[fin-analytics] invest:', e); }
 }
 window.showFinanceAnalytics = showFinanceAnalytics;
+
+// =========================================================================
+// ===== Portfolio Buildings Dashboard — отдельная страница (admin) ========
+// Institutional-fund roll-up по ВСЕМ зданиям: current vs proforma,
+// vacancy cost, стоимость дня просрочки ремонта, headroom на рекламу.
+//
+// ВАЖНО (FINANCIAL_INVARIANTS): эта страница НЕ содержит ни одной новой
+// финансовой формулы. Она ТОЛЬКО читает существующий движок:
+//   _investBuildingMetrics(bId)  → occupancy / MRR / stabilized GPR
+//   investComputeAll(input)      → NOI / value / DSCR / YoC / LTV / payoff
+//   _investHoldPeriodModel(...)  → 5-yr IRR
+// Scenario-слайдеры передают ДРУГИЕ входы в тот же investComputeAll
+// (как существующие 11 слайдеров Investment Analysis), но в отличие от
+// них НЕ пишут в state.investments — overlay чисто ephemeral.
+// =========================================================================
+
+// Ephemeral scenario overlay. null = использовать saved-значение здания.
+// rentGrowthPct / renoDelayMonths аддитивны (0 = без изменений).
+let _pfScenario = { vacancyPct:null, opexPct:null, capRatePct:null, rentGrowthPct:0, renoDelayMonths:0 };
+let _pfViewMode = 'both';   // 'current' | 'proforma' | 'both'
+
+function _pfNum(v){ const n = +v; return Number.isFinite(n) ? n : 0; }
+function _pfFmtUsd(n){
+  if (!Number.isFinite(n)) return '—';
+  const a = Math.abs(n);
+  if (a >= 1e6) return '$' + (n/1e6).toFixed(a >= 1e7 ? 1 : 2) + 'M';
+  if (a >= 1e3) return '$' + Math.round(n/1e3) + 'K';
+  return '$' + Math.round(n).toLocaleString();
+}
+function _pfFmtPct(n){ return n === Infinity ? '∞' : (Number.isFinite(n) ? n.toFixed(1) + '%' : '—'); }
+function _pfFmtX(n){ return n === Infinity ? '∞' : (Number.isFinite(n) ? n.toFixed(2) + '×' : '—'); }
+function _pfFmtMonths(n){
+  if (n === Infinity) return '∞';
+  if (!Number.isFinite(n)) return '—';
+  return n >= 12 ? (n/12).toFixed(1) + 'y' : Math.round(n) + 'mo';
+}
+function _pfUpside(r){ return (r.cur && r.pf) ? (_pfNum(r.pf.incomeValuation) - _pfNum(r.cur.incomeValuation)) : NaN; }
+function _pfScenarioActive(){
+  const s = _pfScenario;
+  return s.vacancyPct != null || s.opexPct != null || s.capRatePct != null
+      || _pfNum(s.rentGrowthPct) > 0 || _pfNum(s.renoDelayMonths) > 0;
+}
+
+// 5-летний IRR из hold-period модели (saved-предположения здания).
+function _pfBuildingIRR(bId){
+  const inv = state.investments && state.investments[bId];
+  const bm  = (typeof _investBuildingMetrics === 'function') ? _investBuildingMetrics(bId) : null;
+  if (!inv || !bm || typeof _investHoldPeriodModel !== 'function') return NaN;
+  try {
+    const hp = _investHoldPeriodModel(inv, bm, {});
+    return (hp && hp.totals && Number.isFinite(hp.totals.irr_pct)) ? hp.totals.irr_pct : NaN;
+  } catch { return NaN; }
+}
+
+// Метрики одного здания: current + proforma. Оба через investComputeAll.
+//  current : in-place доход как GPR, vacancy=0 (in-place уже net) → стоимость/NOI на сегодня
+//  proforma: stabilizedGPR + scenario-overrides → стабилизированная картина
+function _pfComputeBuilding(bId){
+  const bm = (typeof _investBuildingMetrics === 'function') ? _investBuildingMetrics(bId) : null;
+  if (!bm) return null;
+  const inv = (state.investments && state.investments[bId]) || null;
+  const vacMonthly = Math.max(0, (_pfNum(bm.stabilizedGPR_annual)/12) - _pfNum(bm.currentMRR_monthly));
+  const row = {
+    bId, bm, inv, hasInv: !!inv,
+    occupancyPct:  _pfNum(bm.occupancyPct),
+    occupiedCount: _pfNum(bm.occupiedCount),
+    unitCount:     _pfNum(bm.unitCount),
+    vacantCount:   Math.max(0, _pfNum(bm.unitCount) - _pfNum(bm.occupiedCount)),
+    mrr:           _pfNum(bm.currentMRR_monthly),
+    stabGPR:       _pfNum(bm.stabilizedGPR_annual),
+    vacMonthly, vacAnnual: vacMonthly * 12,
+    cur:null, pf:null, irr:NaN, noiPerDay:NaN, grossPerDay:NaN, carryPerDay:NaN,
+  };
+  if (inv && typeof investComputeAll === 'function'){
+    // CURRENT — фактический in-place доход, без доп. vacancy.
+    try {
+      row.cur = investComputeAll({ ...inv,
+        stabilizedGPR_annual: _pfNum(bm.currentMRR_monthly) * 12,
+        currentMRR_monthly:   _pfNum(bm.currentMRR_monthly),
+        vacancyPct: 0,
+        opexPct:    (_pfScenario.opexPct    != null ? _pfScenario.opexPct    : inv.opexPct),
+        capRatePct: (_pfScenario.capRatePct != null ? _pfScenario.capRatePct : inv.capRatePct),
+      });
+    } catch(e){ row.cur = null; }
+    // PROFORMA — стабилизированный GPR + scenario-overrides.
+    try {
+      const growth = 1 + _pfNum(_pfScenario.rentGrowthPct)/100;
+      row.pf = investComputeAll({ ...inv,
+        stabilizedGPR_annual: _pfNum(bm.stabilizedGPR_annual) * growth,
+        currentMRR_monthly:   _pfNum(bm.currentMRR_monthly),
+        vacancyPct: (_pfScenario.vacancyPct != null ? _pfScenario.vacancyPct : inv.vacancyPct),
+        opexPct:    (_pfScenario.opexPct    != null ? _pfScenario.opexPct    : inv.opexPct),
+        capRatePct: (_pfScenario.capRatePct != null ? _pfScenario.capRatePct : inv.capRatePct),
+        renoMonths: _pfNum(inv.renoMonths) + _pfNum(_pfScenario.renoDelayMonths),
+      });
+      if (row.pf){
+        // стоимость дня просрочки = стабилизированный NOI/день (forgone).
+        row.noiPerDay   = _pfNum(row.pf.NOI_annual) / 365;
+        row.grossPerDay = _pfNum(row.pf.stabilizedGPR_annual) / 365;
+        row.carryPerDay = _pfNum(row.pf.debtService_annual) / 365;
+      }
+    } catch(e){ row.pf = null; }
+    row.irr = _pfBuildingIRR(bId);
+  }
+  return row;
+}
+
+function _pfBuildRows(){
+  const q = (document.getElementById('pfSearch')?.value || '').trim().toLowerCase();
+  const out = [];
+  for (const b of (state.buildings || [])){
+    if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
+    const row = _pfComputeBuilding(b.id);
+    if (!row) continue;
+    row.name = (typeof buildingLabel === 'function') ? buildingLabel(b) : (b.name || b.id);
+    row.address = b.address || '';
+    if (q && !(row.name.toLowerCase().includes(q) || (row.address || '').toLowerCase().includes(q))) continue;
+    out.push(row);
+  }
+  return out;
+}
+
+function _pfAggregate(rows){
+  const a = { units:0, occ:0, mrr:0, vacMo:0, vacYr:0, curVal:0, pfVal:0,
+              pfNoi:0, pfDebt:0, allIn:0, noiDay:0, nInv:0, nVacSuites:0, nBldgVac:0 };
+  for (const r of rows){
+    a.units += r.unitCount; a.occ += r.occupiedCount; a.mrr += r.mrr;
+    a.vacMo += r.vacMonthly; a.vacYr += r.vacAnnual;
+    a.nVacSuites += r.vacantCount; if (r.vacantCount > 0) a.nBldgVac++;
+    if (r.cur) a.curVal += _pfNum(r.cur.incomeValuation);
+    if (r.pf){ a.pfVal += _pfNum(r.pf.incomeValuation); a.pfNoi += _pfNum(r.pf.NOI_annual);
+               a.pfDebt += _pfNum(r.pf.debtService_annual); a.allIn += _pfNum(r.pf.allInBasis); a.nInv++; }
+    if (Number.isFinite(r.noiPerDay)) a.noiDay += r.noiPerDay;
+  }
+  a.occupancyPct = a.units > 0 ? (a.occ / a.units * 100) : 0;
+  a.weightedDSCR = a.pfDebt > 0 ? (a.pfNoi / a.pfDebt) : (a.pfNoi > 0 ? Infinity : NaN);
+  a.weightedYoC  = a.allIn  > 0 ? (a.pfNoi / a.allIn * 100) : 0;
+  a.upside = a.pfVal - a.curVal;
+  return a;
+}
+
+function _pfAvgIRRStr(rows){
+  const v = rows.map(r => r.irr).filter(x => Number.isFinite(x));
+  if (!v.length) return '—';
+  return _pfFmtPct(v.reduce((s,x) => s + x, 0) / v.length);
+}
+
+// --- Column model (Section 14 UX standard) -------------------------------
+const PF_COLUMNS = {
+  bldg:    { label:'Building',       fixed:true,  defaultDir:'asc',  sortValue:r=>(r.name||'').toLowerCase(), title:'Building name' },
+  occ:     { label:'Occ %',                       defaultDir:'desc', sortValue:r=>r.occupancyPct,             title:'Occupancy — leased suites ÷ rentable suites' },
+  units:   { label:'Leased',                      defaultDir:'desc', sortValue:r=>r.occupiedCount,            title:'Occupied / total rentable suites' },
+  mrr:     { label:'In-place MRR',                defaultDir:'desc', sortValue:r=>r.mrr,                      title:'Current monthly recurring rent (occupied suites)' },
+  vacYr:   { label:'Vacancy $/yr',                defaultDir:'desc', sortValue:r=>r.vacAnnual,                title:'Annual asking rent of vacant suites — money left on the table' },
+  curVal:  { label:'Current value',               defaultDir:'desc', sortValue:r=>r.cur?_pfNum(r.cur.incomeValuation):NaN, title:'Income-approach value on in-place NOI' },
+  pfVal:   { label:'Proforma value',              defaultDir:'desc', sortValue:r=>r.pf?_pfNum(r.pf.incomeValuation):NaN,   title:'Income-approach value on stabilized NOI' },
+  upside:  { label:'Upside Δ',                     defaultDir:'desc', sortValue:r=>_pfUpside(r),               title:'Proforma value − current value' },
+  pfNoi:   { label:'Proforma NOI',                defaultDir:'desc', sortValue:r=>r.pf?_pfNum(r.pf.NOI_annual):NaN,        title:'Stabilized net operating income / yr' },
+  dscr:    { label:'DSCR',                        defaultDir:'desc', sortValue:r=>r.pf?_pfNum(r.pf.DSCR):NaN,             title:'Debt-service coverage ratio (proforma)' },
+  yoc:     { label:'YoC %',                       defaultDir:'desc', sortValue:r=>r.pf?_pfNum(r.pf.yieldOnCost_pct):NaN,  title:'Yield-on-cost = NOI ÷ all-in basis' },
+  ltv:     { label:'LTV %',       defaultHidden:true, defaultDir:'desc', sortValue:r=>r.pf?_pfNum(r.pf.LTV_pct):NaN,      title:'Loan-to-value' },
+  irr:     { label:'5yr IRR %',                   defaultDir:'desc', sortValue:r=>Number.isFinite(r.irr)?r.irr:NaN,      title:'5-year hold internal rate of return' },
+  payoff:  { label:'Payoff',      defaultHidden:true, defaultDir:'asc',  sortValue:r=>r.pf?_pfNum(r.pf.payoffAggressive_months):NaN, title:'Aggressive payoff — all NOI to debt service (months)' },
+  renoDay: { label:'Reno $/day',                  defaultDir:'desc', sortValue:r=>Number.isFinite(r.noiPerDay)?r.noiPerDay:NaN, title:'Stabilized NOI forgone per extra day of renovation delay' },
+  actions: { label:'',            fixed:true, sortable:false,                                                  title:'Open this building in Financial Analytics' },
+};
+
+function _pfCell(r, k){
+  switch(k){
+    case 'bldg':    return `<td class="pf-c-bldg">${esc(r.name)}${r.hasInv?'':' <span class="pf-pill" style="background:rgba(2,132,199,0.12);color:#0284c7;">no underwriting</span>'}</td>`;
+    case 'occ':     return `<td>${r.occupancyPct.toFixed(0)}%<span class="pf-minibar"><i style="width:${Math.min(100,Math.max(0,r.occupancyPct))}%"></i></span></td>`;
+    case 'units':   return `<td>${r.occupiedCount}/${r.unitCount}</td>`;
+    case 'mrr':     return `<td>${_pfFmtUsd(r.mrr)}</td>`;
+    case 'vacYr':   return `<td class="${r.vacAnnual>0?'pf-neg':''}">${r.vacAnnual>0?_pfFmtUsd(r.vacAnnual):'—'}</td>`;
+    case 'curVal':  return `<td>${r.cur?_pfFmtUsd(r.cur.incomeValuation):'—'}</td>`;
+    case 'pfVal':   return `<td>${r.pf?_pfFmtUsd(r.pf.incomeValuation):'—'}</td>`;
+    case 'upside':  { const u=_pfUpside(r); return `<td class="${u>0?'pf-pos':(u<0?'pf-neg':'')}">${Number.isFinite(u)?((u>=0?'+':'')+_pfFmtUsd(u)):'—'}</td>`; }
+    case 'pfNoi':   return `<td>${r.pf?_pfFmtUsd(r.pf.NOI_annual):'—'}</td>`;
+    case 'dscr':    return `<td>${r.pf?_pfFmtX(r.pf.DSCR):'—'}</td>`;
+    case 'yoc':     return `<td>${r.pf?_pfFmtPct(r.pf.yieldOnCost_pct):'—'}</td>`;
+    case 'ltv':     return `<td>${r.pf?_pfFmtPct(r.pf.LTV_pct):'—'}</td>`;
+    case 'irr':     return `<td>${Number.isFinite(r.irr)?_pfFmtPct(r.irr):'—'}</td>`;
+    case 'payoff':  return `<td>${r.pf?_pfFmtMonths(r.pf.payoffAggressive_months):'—'}</td>`;
+    case 'renoDay': return `<td class="${r.noiPerDay>0?'pf-neg':''}">${Number.isFinite(r.noiPerDay)&&r.noiPerDay>0?_pfFmtUsd(r.noiPerDay)+'/day':'—'}</td>`;
+    case 'actions': return `<td><a href="#" onclick="_pfOpenBuilding('${r.bId}');return false;" style="color:#0284c7;text-decoration:none;font-size:11px;font-weight:600;" title="Open in Financial Analytics">${r.hasInv?'Open ↗':'+ Add'}</a></td>`;
+    default:        return '<td>—</td>';
+  }
+}
+
+function _pfFootHtml(rows, cols){
+  const a = _pfAggregate(rows);
+  const cell = (k)=>{
+    switch(k){
+      case 'bldg':    return `<td style="text-align:left;">Portfolio · ${rows.length}</td>`;
+      case 'occ':     return `<td>${a.occupancyPct.toFixed(0)}%</td>`;
+      case 'units':   return `<td>${a.occ}/${a.units}</td>`;
+      case 'mrr':     return `<td>${_pfFmtUsd(a.mrr)}</td>`;
+      case 'vacYr':   return `<td class="${a.vacYr>0?'pf-neg':''}">${_pfFmtUsd(a.vacYr)}</td>`;
+      case 'curVal':  return `<td>${a.nInv?_pfFmtUsd(a.curVal):'—'}</td>`;
+      case 'pfVal':   return `<td>${a.nInv?_pfFmtUsd(a.pfVal):'—'}</td>`;
+      case 'upside':  return `<td class="${a.upside>0?'pf-pos':(a.upside<0?'pf-neg':'')}">${a.nInv?((a.upside>=0?'+':'')+_pfFmtUsd(a.upside)):'—'}</td>`;
+      case 'pfNoi':   return `<td>${a.nInv?_pfFmtUsd(a.pfNoi):'—'}</td>`;
+      case 'dscr':    return `<td>${a.nInv?_pfFmtX(a.weightedDSCR):'—'}</td>`;
+      case 'yoc':     return `<td>${a.nInv?_pfFmtPct(a.weightedYoC):'—'}</td>`;
+      case 'renoDay': return `<td class="${a.noiDay>0?'pf-neg':''}">${a.noiDay>0?_pfFmtUsd(a.noiDay)+'/day':'—'}</td>`;
+      default:        return '<td></td>';
+    }
+  };
+  return '<tfoot><tr>' + cols.map(cell).join('') + '</tr></tfoot>';
+}
+
+function _pfRenderTable(rows){
+  const tbl = document.getElementById('pfTable');
+  if (!tbl) return;
+  const cols = Object.keys(PF_COLUMNS);
+  const sortState = (typeof readTableSort === 'function' && readTableSort('sfa_pf_dash')) || { col:'upside', dir:'desc' };
+  const sorted = (typeof applyTableSort === 'function') ? applyTableSort(rows, sortState, PF_COLUMNS) : rows;
+  let thead = '<thead><tr>';
+  for (const k of cols){
+    const c = PF_COLUMNS[k];
+    thead += `<th data-col-key="${k}"`
+      + (c.sortable === false ? '' : ' data-col-sortable="true"')
+      + (c.fixed ? ' data-col-fixed="true"' : '')
+      + (c.defaultHidden ? ' data-col-default-hidden="true"' : '')
+      + ` title="${esc(c.title || c.label)}">${esc(c.label)}</th>`;
+  }
+  thead += '</tr></thead>';
+  let tbody = '<tbody>';
+  for (const r of sorted) tbody += '<tr>' + cols.map(k => _pfCell(r, k)).join('') + '</tr>';
+  if (!sorted.length) tbody += `<tr><td colspan="${cols.length}" style="text-align:center;color:var(--muted);padding:24px;">No buildings match this filter.</td></tr>`;
+  tbody += '</tbody>';
+  tbl.innerHTML = thead + tbody + _pfFootHtml(rows, cols);
+  // Section 14: sort + width-resize + hide/reorder + per-header tooltips.
+  const host = document.getElementById('pfTableTools');
+  try { if (typeof ensureColumnsButton === 'function') ensureColumnsButton(tbl, 'sfa_pf_dash', host); } catch(e){ console.warn('[pf] cols', e); }
+  try { if (typeof attachTableSort === 'function') attachTableSort(tbl, 'sfa_pf_dash', PF_COLUMNS, () => _pfRenderTable(_pfBuildRows())); } catch(e){ console.warn('[pf] sort', e); }
+}
+
+function _pfRenderRollup(rows){
+  const host = document.getElementById('pfRollup');
+  if (!host) return;
+  const a = _pfAggregate(rows);
+  const mode = _pfViewMode;
+  const showCur = (mode === 'current'  || mode === 'both');
+  const showPf  = (mode === 'proforma' || mode === 'both');
+  const kpi = (lbl,val,sub,color)=>`<div class="pf-kpi"><div class="pf-kpi-lbl">${esc(lbl)}</div><div class="pf-kpi-val"${color?` style="color:${color}"`:''}>${val}</div><div class="pf-kpi-sub">${sub||'—'}</div></div>`;
+  let html = '';
+  if (mode === 'both' && a.nInv > 0){
+    const pct = a.curVal > 0 ? (a.upside / a.curVal * 100) : 0;
+    html += `<div class="hv-card" style="padding:16px 18px; margin-bottom:12px; background:linear-gradient(135deg, rgba(124,58,237,0.06), rgba(22,163,74,0.04)); border:1px solid var(--border);">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:14px;">
+        <div>
+          <div class="pf-kpi-lbl">Portfolio upside · current → proforma</div>
+          <div style="font-size:30px; font-weight:800; color:#16a34a; font-variant-numeric:tabular-nums; line-height:1.05; margin-top:3px;">${a.upside>=0?'+':''}${_pfFmtUsd(a.upside)}</div>
+          <div class="pf-kpi-sub">${_pfFmtUsd(a.curVal)} today → ${_pfFmtUsd(a.pfVal)} stabilized · ${pct>=0?'+':''}${pct.toFixed(0)}% value creation across ${a.nInv} underwritten building${a.nInv===1?'':'s'}</div>
+        </div>
+        <div style="text-align:right;">
+          <div class="pf-kpi-lbl">Returns · IRR (avg) · DSCR · YoC (wtd)</div>
+          <div style="font-size:18px; font-weight:700; color:var(--text); margin-top:4px; font-variant-numeric:tabular-nums;">${_pfAvgIRRStr(rows)} · ${_pfFmtX(a.weightedDSCR)} · ${_pfFmtPct(a.weightedYoC)}</div>
+        </div>
+      </div></div>`;
+  }
+  const cards = [];
+  if (showCur){
+    cards.push(kpi('Occupancy', a.occupancyPct.toFixed(0) + '%', a.occ + ' of ' + a.units + ' suites leased', '#0284c7'));
+    cards.push(kpi('In-place rent · MRR', _pfFmtUsd(a.mrr), _pfFmtUsd(a.mrr*12) + ' / yr', '#0284c7'));
+    if (a.nInv > 0) cards.push(kpi('Current value', _pfFmtUsd(a.curVal), 'income approach · ' + a.nInv + ' underwritten', '#0284c7'));
+  }
+  if (showPf && a.nInv > 0){
+    cards.push(kpi('Proforma value', _pfFmtUsd(a.pfVal), 'fully stabilized', '#7c3aed'));
+    cards.push(kpi('Proforma NOI', _pfFmtUsd(a.pfNoi), _pfFmtUsd(a.pfNoi/12) + ' / mo', '#7c3aed'));
+    cards.push(kpi('Weighted DSCR', _pfFmtX(a.weightedDSCR), 'portfolio debt coverage', '#7c3aed'));
+    cards.push(kpi('Weighted yield-on-cost', _pfFmtPct(a.weightedYoC), 'NOI ÷ all-in basis', '#7c3aed'));
+  }
+  if (!cards.length){
+    cards.push(kpi('Buildings', String(rows.length), 'no underwriting records yet · add one in Financial Analytics', ''));
+    cards.push(kpi('In-place rent · MRR', _pfFmtUsd(a.mrr), _pfFmtUsd(a.mrr*12) + ' / yr', '#0284c7'));
+    cards.push(kpi('Vacancy cost', _pfFmtUsd(a.vacYr), _pfFmtUsd(a.vacMo) + ' / mo empty', '#dc2626'));
+  }
+  const ncols = Math.max(1, Math.min(cards.length, 5));
+  html += `<div class="pf-grid-kpi" style="grid-template-columns: repeat(${ncols}, minmax(0,1fr));">${cards.join('')}</div>`;
+  host.innerHTML = html;
+}
+
+function _pfRenderLossCards(rows){
+  const host = document.getElementById('pfLossCards');
+  if (!host) return;
+  const a = _pfAggregate(rows);
+  let worst = null;
+  for (const r of rows){ if (Number.isFinite(r.noiPerDay) && r.noiPerDay > 0 && (!worst || r.noiPerDay > worst.noiPerDay)) worst = r; }
+  const card = (accent,q,val,sub)=>`<div class="pf-loss-card" style="background:linear-gradient(135deg, ${accent}14, transparent); border-color:${accent}55;">
+    <div class="pf-loss-q">${q}</div>
+    <div class="pf-loss-val" style="color:${accent};">${val}</div>
+    <div class="pf-loss-sub">${sub}</div></div>`;
+  const c1 = card('#dc2626', 'How much am I losing by not renting?',
+    _pfFmtUsd(a.vacYr) + ' <span style="font-size:14px;color:var(--muted);font-weight:600;">/ yr</span>',
+    `${_pfFmtUsd(a.vacMo)} / mo of asking rent sitting empty · ${a.nVacSuites} vacant suite${a.nVacSuites===1?'':'s'} across ${a.nBldgVac} building${a.nBldgVac===1?'':'s'}.`);
+  // Сценарий проскальзывания ремонта: дни × NOI/день = совокупная упущенная прибыль.
+  const delayMo = _pfNum(_pfScenario.renoDelayMonths);
+  const delayDays = Math.round(delayMo * 30.4375);   // средняя длина месяца (365.25/12) — только для перевода месяцев в дни
+  const slipNote = (delayMo > 0)
+    ? ` <b style="color:#f97316;">Modeled ${delayMo}-mo slip = ${delayDays} days × ${_pfFmtUsd(a.noiDay)}/day = ${_pfFmtUsd(a.noiDay * delayDays)} of forgone stabilized NOI.</b>`
+    : ` Drag the Reno-delay slider to model a slip.`;
+  const c2 = a.noiDay > 0
+    ? card('#f97316', 'What does each day of reno delay cost?',
+        _pfFmtUsd(a.noiDay) + ' <span style="font-size:14px;color:var(--muted);font-weight:600;">/ day</span>',
+        `Stabilized net income forgone for every extra day buildings aren't finished.${worst ? ' Worst: ' + esc(worst.name) + ' at ' + _pfFmtUsd(worst.noiPerDay) + '/day.' : ''}${slipNote}`)
+    : card('#f97316', 'What does each day of reno delay cost?', '—',
+        `Add a renovation budget + cap rate to a building in Financial Analytics to quantify the daily cost of delay.`);
+  const c3 = card('#0284c7', 'How much can I spend to fill faster?',
+    _pfFmtUsd(a.vacMo) + ' <span style="font-size:14px;color:var(--muted);font-weight:600;">/ mo</span>',
+    `What filling your vacant space one month sooner is worth — the ceiling for extra marketing / ad spend per month of acceleration. Spend below this and it pays for itself.`);
+  host.innerHTML = `<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px,1fr)); gap:12px;">${c1}${c2}${c3}</div>`;
+}
+
+function _pfRenderCharts(rows){
+  const host = document.getElementById('pfCharts');
+  if (!host) return;
+  // Chart A — value bullet bars: proforma (light) behind, current (solid) in front.
+  const valRows = rows.filter(r => r.cur || r.pf);
+  let chartA = '';
+  if (valRows.length){
+    const maxVal = Math.max(1, ...rows.map(r => Math.max(_pfNum(r.cur && r.cur.incomeValuation), _pfNum(r.pf && r.pf.incomeValuation))));
+    const sortedV = valRows.slice().sort((x,z) =>
+      (_pfNum(z.pf && z.pf.incomeValuation) || _pfNum(z.cur && z.cur.incomeValuation))
+    - (_pfNum(x.pf && x.pf.incomeValuation) || _pfNum(x.cur && x.cur.incomeValuation)));
+    let bars = '';
+    for (const r of sortedV){
+      const cv = _pfNum(r.cur && r.cur.incomeValuation), pv = _pfNum(r.pf && r.pf.incomeValuation);
+      bars += `<div class="pf-barrow"><div class="pf-barlbl" title="${esc(r.name)}">${esc(r.name)}</div>
+        <div class="pf-bartrack" style="height:26px;">
+          ${pv>0?`<div class="pf-barfill" style="width:${Math.min(100,pv/maxVal*100)}%; background:rgba(124,58,237,0.28);"></div>`:''}
+          ${cv>0?`<div class="pf-barfill" style="width:${Math.min(100,cv/maxVal*100)}%; background:#0284c7;"></div>`:''}
+          <div style="position:absolute; right:7px; top:50%; transform:translateY(-50%); font-size:10.5px; font-weight:700; color:var(--text);">${cv>0?_pfFmtUsd(cv):''}${(cv>0&&pv>0)?' → ':''}${pv>0?_pfFmtUsd(pv):''}</div>
+        </div></div>`;
+    }
+    chartA = `<div class="hv-card" style="padding:16px 18px;">
+      <div class="hv-eyebrow" style="margin-bottom:10px;">Value · <span style="color:#0284c7;">current ▮</span> vs <span style="color:#7c3aed;">proforma ▮</span></div>${bars}</div>`;
+  }
+  // Chart B — vacancy cost / yr per building.
+  const vacRows = rows.filter(r => r.vacAnnual > 0).sort((x,z) => z.vacAnnual - x.vacAnnual);
+  let chartB = '';
+  if (vacRows.length){
+    const maxVac = Math.max(1, ...vacRows.map(r => r.vacAnnual));
+    let bars = '';
+    for (const r of vacRows){
+      bars += `<div class="pf-barrow"><div class="pf-barlbl" title="${esc(r.name)}">${esc(r.name)}</div>
+        <div class="pf-bartrack"><div class="pf-barfill" style="width:${Math.min(100,r.vacAnnual/maxVac*100)}%; background:#dc2626;"></div>
+        <div style="position:absolute; right:7px; top:50%; transform:translateY(-50%); font-size:10.5px; font-weight:700; color:var(--text);">${_pfFmtUsd(r.vacAnnual)}/yr · ${r.vacantCount} empty</div></div></div>`;
+    }
+    chartB = `<div class="hv-card" style="padding:16px 18px;">
+      <div class="hv-eyebrow" style="margin-bottom:10px;">Vacancy cost by building · $/yr</div>${bars}</div>`;
+  }
+  host.innerHTML = (chartA || chartB)
+    ? `<div style="display:grid; grid-template-columns: ${(chartA && chartB) ? '1fr 1fr' : '1fr'}; gap:12px;">${chartA}${chartB}</div>`
+    : '';
+}
+
+function renderPortfolioDash(){
+  const rows = _pfBuildRows();
+  try { _pfRenderRollup(rows); }    catch(e){ console.error('[pf] rollup', e); }
+  try { _pfRenderLossCards(rows); } catch(e){ console.error('[pf] loss', e); }
+  try { _pfRenderCharts(rows); }    catch(e){ console.error('[pf] charts', e); }
+  try { _pfRenderTable(rows); }     catch(e){ console.error('[pf] table', e); }
+  const stamp = document.getElementById('pfTableStamp');
+  if (stamp) stamp.textContent = rows.length + ' building' + (rows.length === 1 ? '' : 's')
+    + (_pfScenarioActive() ? ' · scenario applied' : ' · saved assumptions');
+}
+
+// --- Controls ------------------------------------------------------------
+function _pfSetView(mode){
+  _pfViewMode = mode;
+  document.querySelectorAll('#pfViewSeg button').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+  renderPortfolioDash();
+}
+function _pfOnSlider(field, val, unit){
+  _pfScenario[field] = parseFloat(val);
+  const map = { vacancyPct:'pfSlVacancyVal', opexPct:'pfSlOpexVal', capRatePct:'pfSlCapVal', rentGrowthPct:'pfSlGrowthVal', renoDelayMonths:'pfSlRenoVal' };
+  const el = document.getElementById(map[field]);
+  if (el) el.textContent = (unit === 'mo') ? (parseFloat(val) + 'mo') : (parseFloat(val) + '%');
+  renderPortfolioDash();
+}
+function _pfResetScenario(){
+  _pfScenario = { vacancyPct:null, opexPct:null, capRatePct:null, rentGrowthPct:0, renoDelayMonths:0 };
+  _pfInitSliders();
+  renderPortfolioDash();
+}
+// Стартовые позиции thumb'ов = средние saved-значения по зданиям с записью.
+function _pfInitSliders(){
+  let nv=0, sv=0, so=0, sc=0;
+  for (const b of (state.buildings || [])){
+    const inv = state.investments && state.investments[b.id];
+    if (!inv) continue;
+    nv++; sv += _pfNum(inv.vacancyPct); so += _pfNum(inv.opexPct); sc += _pfNum(inv.capRatePct);
+  }
+  const setSl = (id,valId,thumb,lbl)=>{ const s=document.getElementById(id), l=document.getElementById(valId); if(s) s.value=thumb; if(l) l.textContent=lbl; };
+  setSl('pfSlVacancy','pfSlVacancyVal', nv?Math.round(sv/nv):5,    _pfScenario.vacancyPct!=null?_pfScenario.vacancyPct+'%':'saved');
+  setSl('pfSlOpex',   'pfSlOpexVal',    nv?Math.round(so/nv):35,   _pfScenario.opexPct!=null?_pfScenario.opexPct+'%':'saved');
+  setSl('pfSlCap',    'pfSlCapVal',     nv?(sc/nv).toFixed(2):7,   _pfScenario.capRatePct!=null?_pfScenario.capRatePct+'%':'saved');
+  setSl('pfSlGrowth', 'pfSlGrowthVal',  _pfNum(_pfScenario.rentGrowthPct),   _pfNum(_pfScenario.rentGrowthPct)+'%');
+  setSl('pfSlReno',   'pfSlRenoVal',    _pfNum(_pfScenario.renoDelayMonths), _pfNum(_pfScenario.renoDelayMonths)+'mo');
+}
+function _pfOpenBuilding(bId){
+  try { state.ui = state.ui || {}; state.ui.currentBuildingId = bId; if (typeof saveState==='function') saveState(); } catch(e){}
+  if (typeof showFinanceAnalytics === 'function') showFinanceAnalytics();
+}
+
+// --- CSV export (follows current sort + filter; RFC 4180 + BOM + CRLF) ----
+function _pfExportCSV(){
+  try {
+    const rows = _pfBuildRows();
+    const sortState = (typeof readTableSort === 'function' && readTableSort('sfa_pf_dash')) || { col:'upside', dir:'desc' };
+    const sorted = (typeof applyTableSort === 'function') ? applyTableSort(rows, sortState, PF_COLUMNS) : rows;
+    const fld = (v)=>{ const s = String(v == null ? '' : v); return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s; };
+    const nf  = (n,d)=> Number.isFinite(n) ? Number(n).toFixed(d == null ? 2 : d) : '';
+    const i   = (n)=> Number.isFinite(n) ? String(Math.round(n)) : '';
+    const head = ['Building','Address','Occupancy %','Occupied','Total Units','Vacant','In-place MRR ($)','Vacancy Cost /yr ($)','Current Value ($)','Proforma Value ($)','Upside ($)','Proforma NOI /yr ($)','DSCR (x)','Yield-on-Cost (%)','LTV (%)','5yr IRR (%)','Aggr Payoff (mo)','Reno Delay Cost /day ($)','Has Underwriting'];
+    const lines = [head.map(fld).join(',')];
+    for (const r of sorted){
+      const u = _pfUpside(r);
+      lines.push([
+        r.name, r.address, i(r.occupancyPct), i(r.occupiedCount), i(r.unitCount), i(r.vacantCount),
+        i(r.mrr), i(r.vacAnnual),
+        r.cur ? i(r.cur.incomeValuation) : '', r.pf ? i(r.pf.incomeValuation) : '', Number.isFinite(u) ? i(u) : '',
+        r.pf ? i(r.pf.NOI_annual) : '', r.pf ? (r.pf.DSCR === Infinity ? 'Inf' : nf(r.pf.DSCR)) : '',
+        r.pf ? nf(r.pf.yieldOnCost_pct) : '', r.pf ? nf(r.pf.LTV_pct) : '',
+        Number.isFinite(r.irr) ? nf(r.irr) : '',
+        r.pf ? (r.pf.payoffAggressive_months === Infinity ? 'Inf' : i(r.pf.payoffAggressive_months)) : '',
+        Number.isFinite(r.noiPerDay) ? i(r.noiPerDay) : '', r.hasInv ? 'yes' : 'no',
+      ].map(fld).join(','));
+    }
+    const a = _pfAggregate(sorted);
+    lines.push(['PORTFOLIO TOTAL · ' + sorted.length + ' buildings','', i(a.occupancyPct), i(a.occ), i(a.units), i(a.nVacSuites),
+      i(a.mrr), i(a.vacYr), a.nInv?i(a.curVal):'', a.nInv?i(a.pfVal):'', a.nInv?i(a.upside):'', a.nInv?i(a.pfNoi):'',
+      a.weightedDSCR === Infinity ? 'Inf' : nf(a.weightedDSCR), nf(a.weightedYoC), '', '', '', i(a.noiDay), ''].map(fld).join(','));
+    const blob = new Blob(['﻿' + lines.join('\r\n')], { type:'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const aEl = document.createElement('a');
+    aEl.href = url; aEl.download = 'portfolio-dashboard-' + new Date().toISOString().slice(0,10) + '.csv';
+    document.body.appendChild(aEl); aEl.click();
+    setTimeout(() => { document.body.removeChild(aEl); URL.revokeObjectURL(url); }, 120);
+    if (typeof toast === 'function') toast('Portfolio CSV exported');
+  } catch(e){ console.error('[pf] csv', e); if (typeof toast === 'function') toast('CSV export failed', 'error'); }
+}
+
+function showPortfolioDash(){
+  if (typeof canSeeFinanceAnalytics === 'function' && !canSeeFinanceAnalytics()){
+    if (typeof toast === 'function') toast('Portfolio Dashboard is admin-only', 'error');
+    try { showFloorPlan(); } catch {}
+    return;
+  }
+  state.ui = state.ui || {};
+  state.ui.activeView = 'portfoliodash';
+  saveState();
+  hideAllSecondaryViews();
+  const view = document.getElementById('portfolioDashView');
+  if (view) view.classList.add('active');
+  const svg = document.getElementById('planSvg'); if (svg) svg.style.display = 'none';
+  if (typeof setActiveRailButton === 'function') setActiveRailButton('railPortfolio');
+  if (typeof applyViewClasses === 'function') applyViewClasses('portfoliodash');
+  try { _pfInitSliders(); } catch(e){ console.error('[pf] sliders', e); }
+  try { renderPortfolioDash(); } catch(e){ console.error('[pf] render', e); }
+}
+window.showPortfolioDash = showPortfolioDash;
 
 // Persistent queue filter — survives page transitions, but defaults to 'all'.
 let _hvQueueFilter = 'all';
