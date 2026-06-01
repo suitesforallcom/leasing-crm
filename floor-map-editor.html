@@ -124122,6 +124122,8 @@ function _pfFmtMonths(n){
   if (!Number.isFinite(n)) return '—';
   return n >= 12 ? (n/12).toFixed(1) + 'y' : Math.round(n) + 'mo';
 }
+// Площадь (ft²): целое с разделителями тысяч; пусто/0 → «—».
+function _pfFmtSqft(n){ return (Number.isFinite(+n) && +n > 0) ? Math.round(+n).toLocaleString() : '—'; }
 function _pfUpside(r){ return (r.cur && r.pf) ? (_pfNum(r.pf.incomeValuation) - _pfNum(r.cur.incomeValuation)) : NaN; }
 function _pfScenarioActive(){
   const s = _pfScenario;
@@ -124147,6 +124149,30 @@ function _pfBuildingHold(bId){
   return out;
 }
 
+// Площади здания (ft²) — из УЖЕ существующих полей, без новых формул/схемы.
+//  total    : gross-площадь здания = Σ f.grossSqft (из редактора здания). Если
+//             gross нигде не заполнен — fallback на сумму rentable-юнитов, чтобы
+//             «Total» не показывал 0 при заполненных юнитах.
+//  rentable : сдаваемая office-площадь = Σ u.sqft по rentable-office юнитам — тот
+//             же фильтр, что rent-roll / forecast / _investBuildingMetrics.
+//  leased   : занятая часть rentable (u.status==='occupied').
+//  vacant   : rentable − leased (никогда не отрицательная).
+function _pfBuildingArea(bId){
+  const b = (state.buildings || []).find(x => x.id === bId);
+  let gross = 0, rentable = 0, leased = 0;
+  for (const f of (b?.floors || [])){
+    gross += +f.grossSqft || 0;
+    for (const u of (f.units || [])){
+      if (u.rentable === false || (u.type && u.type !== 'office')) continue;
+      const sf = +u.sqft || 0;
+      rentable += sf;
+      if (u.status === 'occupied') leased += sf;
+    }
+  }
+  const total = gross > 0 ? gross : rentable;
+  return { total, rentable, leased, vacant: Math.max(0, rentable - leased) };
+}
+
 // Метрики одного здания: current + proforma. Оба через investComputeAll.
 //  current : in-place доход как GPR, vacancy=0 (in-place уже net) → стоимость/NOI на сегодня
 //  proforma: stabilizedGPR + scenario-overrides → стабилизированная картина
@@ -124155,6 +124181,7 @@ function _pfComputeBuilding(bId){
   if (!bm) return null;
   const inv = (state.investments && state.investments[bId]) || null;
   const vacMonthly = Math.max(0, (_pfNum(bm.stabilizedGPR_annual)/12) - _pfNum(bm.currentMRR_monthly));
+  const area = _pfBuildingArea(bId);
   const row = {
     bId, bm, inv, hasInv: !!inv,
     occupancyPct:  _pfNum(bm.occupancyPct),
@@ -124164,6 +124191,7 @@ function _pfComputeBuilding(bId){
     mrr:           _pfNum(bm.currentMRR_monthly),
     stabGPR:       _pfNum(bm.stabilizedGPR_annual),
     vacMonthly, vacAnnual: vacMonthly * 12,
+    areaTotal: area.total, areaRentable: area.rentable, areaLeased: area.leased, areaVacant: area.vacant,
     cur:null, pf:null, irr:NaN, em:NaN, noiPerDay:NaN, grossPerDay:NaN, carryPerDay:NaN,
   };
   if (inv && typeof investComputeAll === 'function'){
@@ -124219,11 +124247,14 @@ function _pfBuildRows(){
 function _pfAggregate(rows){
   const a = { units:0, occ:0, mrr:0, vacMo:0, vacYr:0, curVal:0, pfVal:0,
               pfNoi:0, pfDebt:0, allIn:0, noiDay:0, nInv:0, nVacSuites:0, nBldgVac:0,
-              pfEGI:0, pfCF:0, pfRefi:0, pfEquity:0 };
+              pfEGI:0, pfCF:0, pfRefi:0, pfEquity:0,
+              areaTotal:0, areaRentable:0, areaLeased:0, areaVacant:0 };
   const emV=[], sprV=[], beoV=[];
   for (const r of rows){
     a.units += r.unitCount; a.occ += r.occupiedCount; a.mrr += r.mrr;
     a.vacMo += r.vacMonthly; a.vacYr += r.vacAnnual;
+    a.areaTotal += _pfNum(r.areaTotal); a.areaRentable += _pfNum(r.areaRentable);
+    a.areaLeased += _pfNum(r.areaLeased); a.areaVacant += _pfNum(r.areaVacant);
     a.nVacSuites += r.vacantCount; if (r.vacantCount > 0) a.nBldgVac++;
     if (r.cur) a.curVal += _pfNum(r.cur.incomeValuation);
     if (r.pf){ a.pfVal += _pfNum(r.pf.incomeValuation); a.pfNoi += _pfNum(r.pf.NOI_annual);
@@ -124263,6 +124294,10 @@ const PF_COLUMNS = {
   bldg:    { label:'Building',       fixed:true,  defaultDir:'asc',  sortValue:r=>(r.name||'').toLowerCase(), cat:'id',        title:'Building name', def:'The building. A "no underwriting" pill means it has occupancy data but no saved BRRRR record yet — add one in Financial Analytics to unlock value, return and debt columns.' },
   occ:     { label:'Occ %',                       defaultDir:'desc', sortValue:r=>r.occupancyPct,             cat:'occupancy', title:'Physical occupancy — leased suites ÷ rentable suites', def:'Physical occupancy = occupied rentable office suites ÷ total rentable office suites. Same suite filter as Rent Roll (rentable, type=office).' },
   units:   { label:'Leased',                      defaultDir:'desc', sortValue:r=>r.occupiedCount,            cat:'occupancy', title:'Occupied / total rentable suites', def:'Count of leased suites over total rentable suites. The raw counts behind Occ %.' },
+  areaTot: { label:'Total ft²',                    defaultDir:'desc', sortValue:r=>_pfNum(r.areaTotal),        cat:'area',      title:'Gross building area — sum of every floor\'s gross ft²', def:'Total building area = sum of each floor\'s gross ft² entered in the Building editor. Falls back to the sum of rentable suite areas when a floor\'s gross ft² hasn\'t been set.' },
+  areaRent:{ label:'Rentable ft²',                 defaultDir:'desc', sortValue:r=>_pfNum(r.areaRentable),     cat:'area',      title:'Leasable area — sum of rentable office-suite ft² (same filter as Rent Roll)', def:'Rentable area = total square footage of leasable office suites (rentable ≠ false, type = office). The space you can put a tenant in — the denominator of occupancy by area.' },
+  areaLsd: { label:'Leased ft²',                   defaultDir:'desc', sortValue:r=>_pfNum(r.areaLeased),       cat:'area',      title:'Occupied rentable area — ft² of leased office suites', def:'Leased area = square footage of rentable office suites currently occupied. The numerator of occupancy by area.' },
+  areaVac: { label:'Vacant ft²',                   defaultDir:'asc',  sortValue:r=>_pfNum(r.areaVacant),       cat:'area',      title:'Empty leasable area — rentable − leased ft²', def:'Vacant area = rentable ft² minus leased ft². The empty leasable space still to fill — the square footage behind the vacancy you carry.' },
   mrr:     { label:'In-place MRR',                defaultDir:'desc', sortValue:r=>r.mrr,                      cat:'income',    title:'Current monthly recurring rent (occupied suites)', def:'In-place Monthly Recurring Revenue = sum of contract rent on currently-occupied suites. What actually bills today.' },
   vacYr:   { label:'Vacancy $/yr',                defaultDir:'desc', sortValue:r=>r.vacAnnual,                cat:'occupancy', title:'Annual asking rent of vacant suites — money left on the table', def:'Annualised asking rent of every empty suite (gross potential − in-place). The income you forgo by not leasing — the "loss-to-lease from vacancy".' },
   egi:     { label:'EGI /yr',     defaultHidden:true, defaultDir:'desc', sortValue:r=>r.pf?_pfNum(r.pf.EGI_annual):NaN,        cat:'income',  title:'Effective gross income = gross potential rent − vacancy & credit loss (proforma)', def:'Effective Gross Income = stabilized gross potential rent minus the vacancy/credit-loss allowance. The top of the NOI waterfall after vacancy.' },
@@ -124289,6 +124324,7 @@ const PF_COLUMNS = {
 // Группы глоссария в порядке отображения.
 const PF_GLOSSARY_CATS = [
   ['occupancy', 'Occupancy & vacancy'],
+  ['area',      'Area (ft²)'],
   ['income',    'Income & cash flow'],
   ['value',     'Valuation & value creation'],
   ['returns',   'Investment returns'],
@@ -124319,6 +124355,10 @@ function _pfCell(r, k){
     case 'bldg':    return `<td class="pf-c-bldg">${esc(r.name)}${r.hasInv?'':' <span class="pf-pill" style="background:rgba(2,132,199,0.12);color:#0284c7;">no underwriting</span>'}</td>`;
     case 'occ':     { const o = _pfNum(r.occupancyPct); return `<td>${o.toFixed(0)}%<span class="pf-minibar"><i style="width:${Math.min(100,Math.max(0,o))}%"></i></span></td>`; }
     case 'units':   return `<td>${r.occupiedCount}/${r.unitCount}</td>`;
+    case 'areaTot': return `<td>${_pfFmtSqft(r.areaTotal)}</td>`;
+    case 'areaRent':return `<td>${_pfFmtSqft(r.areaRentable)}</td>`;
+    case 'areaLsd': return `<td>${_pfFmtSqft(r.areaLeased)}</td>`;
+    case 'areaVac': return `<td class="${r.areaVacant>0?'pf-neg':''}">${_pfFmtSqft(r.areaVacant)}</td>`;
     case 'mrr':     return `<td>${_pfFmtUsd(r.mrr)}</td>`;
     case 'vacYr':   return `<td class="${r.vacAnnual>0?'pf-neg':''}">${r.vacAnnual>0?_pfFmtUsd(r.vacAnnual):'—'}</td>`;
     case 'curVal':  return `<td>${r.cur?_pfFmtUsd(r.cur.incomeValuation):'—'}</td>`;
@@ -124353,6 +124393,10 @@ function _pfAggCell(a, k, nRows){
     case 'bldg':    return `<td style="text-align:left;">Portfolio · ${nRows}</td>`;
     case 'occ':     return `<td>${a.occupancyPct.toFixed(0)}%</td>`;
     case 'units':   return `<td>${a.occ}/${a.units}</td>`;
+    case 'areaTot': return `<td>${_pfFmtSqft(a.areaTotal)}</td>`;
+    case 'areaRent':return `<td>${_pfFmtSqft(a.areaRentable)}</td>`;
+    case 'areaLsd': return `<td>${_pfFmtSqft(a.areaLeased)}</td>`;
+    case 'areaVac': return `<td class="${a.areaVacant>0?'pf-neg':''}">${_pfFmtSqft(a.areaVacant)}</td>`;
     case 'mrr':     return `<td>${_pfFmtUsd(a.mrr)}</td>`;
     case 'vacYr':   return `<td class="${a.vacYr>0?'pf-neg':''}">${_pfFmtUsd(a.vacYr)}</td>`;
     case 'curVal':  return `<td>${a.nInv?_pfFmtUsd(a.curVal):'—'}</td>`;
@@ -124458,7 +124502,11 @@ function _pfEnsureTxStyle(){
 #pfTable.pf-transposed .pf-tx-inp{width:100%;box-sizing:border-box;border:1px solid transparent;background:transparent;text-align:right;font:inherit;font-variant-numeric:tabular-nums;color:inherit;padding:2px 4px;border-radius:4px;}
 #pfTable.pf-transposed .pf-tx-inp:hover{border-color:var(--border);}
 #pfTable.pf-transposed .pf-tx-inp:focus{border-color:var(--accent,#0284c7);background:rgba(2,132,199,0.08);outline:none;}
-#pfTable.pf-transposed .pf-tx-inp::-webkit-outer-spin-button,#pfTable.pf-transposed .pf-tx-inp::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}`;
+#pfTable.pf-transposed .pf-tx-inp::-webkit-outer-spin-button,#pfTable.pf-transposed .pf-tx-inp::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
+#pfTable.pf-transposed .pf-tx-incell{display:flex;align-items:center;gap:2px;}
+#pfTable.pf-transposed .pf-tx-incell .pf-tx-inp{flex:1 1 auto;width:auto;min-width:0;}
+#pfTable.pf-transposed .pf-tx-unit{flex:0 0 auto;color:var(--muted);font-size:10px;font-weight:600;font-variant-numeric:tabular-nums;user-select:none;pointer-events:none;}
+#pfTable.pf-transposed .pf-tx-unit.pre{margin-right:1px;}`;
   document.head.appendChild(st);
 }
 
@@ -124540,11 +124588,16 @@ function _pfRenderTableTransposed(rows, tbl){
       // рендере) — чтобы инпуты были заполнены и считались IRR/EM. Идемпотентно.
       for (const r of sorted){ if (r.inv && typeof _investEnsureHoldFields === 'function') _investEnsureHoldFields(r.inv); }
       for (const f of _PF_TX_ASSUME){
-        tbody += `<tr class="pf-tx-arow"><th class="pf-tx-alabel" title="${esc(f.label)} — type a value; saves to that building & recomputes results">${esc(f.label)}</th>`;
+        const unit = f.unit || '';
+        const isPre = unit === '$';                                   // доллар — слева, остальные — справа от числа
+        const pre = isPre ? `<span class="pf-tx-unit pre">$</span>` : '';
+        const suf = (unit && !isPre) ? `<span class="pf-tx-unit suf">${esc(unit)}</span>` : '';
+        const unitWord = isPre ? 'dollars ($)' : (unit === '%' ? 'percent (%)' : (unit === 'mo' ? 'months' : (unit === 'yr' ? 'years' : esc(unit))));
+        tbody += `<tr class="pf-tx-arow"><th class="pf-tx-alabel" title="${esc(f.label)} — ${unitWord}; type a value, it saves to that building & recomputes results">${esc(f.label)}</th>`;
         for (const r of sorted){
           const inv = r.inv;
           const v = (inv && inv[f.field] != null && inv[f.field] !== '') ? esc(String(inv[f.field])) : '';
-          tbody += `<td><input type="number" class="pf-tx-inp" inputmode="decimal" data-bldg="${esc(r.bId)}" data-field="${f.field}" value="${v}" step="${f.step}" min="0" placeholder="—" oninput="_pfTxOnAssume(this)"></td>`;
+          tbody += `<td><span class="pf-tx-incell">${pre}<input type="number" class="pf-tx-inp" inputmode="decimal" data-bldg="${esc(r.bId)}" data-field="${f.field}" value="${v}" step="${f.step}" min="0" placeholder="—" oninput="_pfTxOnAssume(this)">${suf}</span></td>`;
         }
         tbody += `<td></td></tr>`;
       }
@@ -124724,23 +124777,26 @@ function _pfTxResizeEnd(){
 // =========================================================================
 // Поля = ровно те же 16, что и в _INVEST_FIELD_MAP (единый источник правды для
 // слайдеров Financial Analytics). label/step — только UI-метаданные, не формулы.
+// unit — единица, которая выводится РЯДОМ с числом в ячейке ('$' слева; '%','mo',
+// 'yr','%/yr' справа). Ярлык слева очищен от символа единицы, чтобы не дублировать
+// (Tony 2026-06-01: «подписывай там где доллары доллары где проценты проценты»).
 const _PF_TX_ASSUME = [
-  { field:'purchasePrice',     label:'Purchase price',      step:10000 },
-  { field:'closingCostsPct',   label:'Closing costs %',     step:0.1 },
-  { field:'renoCost',          label:'Renovation cost',     step:10000 },
-  { field:'renoMonths',        label:'Reno months',         step:1 },
-  { field:'vacancyPct',        label:'Vacancy %',           step:0.5 },
-  { field:'opexPct',           label:'Operating Expenses %', step:0.5 },
-  { field:'capRatePct',        label:'Cap rate %',          step:0.05 },
-  { field:'refiAmount',        label:'Refi loan amount',    step:10000 },
-  { field:'refiRatePct',       label:'Refi rate %',         step:0.05 },
-  { field:'refiTermYears',     label:'Refi term (yrs)',     step:1 },
-  { field:'externalValuation', label:'External valuation',  step:10000 },
-  { field:'holdYears',         label:'Hold period (yrs)',   step:1 },
-  { field:'rentGrowthPct',     label:'Rent growth %/yr',    step:0.1 },
-  { field:'opexInflationPct',  label:'OpEx inflation %/yr', step:0.1 },
-  { field:'exitCapPct',        label:'Exit cap %',          step:0.05 },
-  { field:'sellingCostsPct',   label:'Selling costs %',     step:0.1 },
+  { field:'purchasePrice',     label:'Purchase price',      step:10000, unit:'$' },
+  { field:'closingCostsPct',   label:'Closing costs',       step:0.1,   unit:'%' },
+  { field:'renoCost',          label:'Renovation cost',     step:10000, unit:'$' },
+  { field:'renoMonths',        label:'Reno duration',       step:1,     unit:'mo' },
+  { field:'vacancyPct',        label:'Vacancy',             step:0.5,   unit:'%' },
+  { field:'opexPct',           label:'Operating expenses',  step:0.5,   unit:'%' },
+  { field:'capRatePct',        label:'Cap rate',            step:0.05,  unit:'%' },
+  { field:'refiAmount',        label:'Refi loan amount',    step:10000, unit:'$' },
+  { field:'refiRatePct',       label:'Refi rate',           step:0.05,  unit:'%' },
+  { field:'refiTermYears',     label:'Refi term',           step:1,     unit:'yr' },
+  { field:'externalValuation', label:'External valuation',  step:10000, unit:'$' },
+  { field:'holdYears',         label:'Hold period',         step:1,     unit:'yr' },
+  { field:'rentGrowthPct',     label:'Rent growth',         step:0.1,   unit:'%/yr' },
+  { field:'opexInflationPct',  label:'OpEx inflation',      step:0.1,   unit:'%/yr' },
+  { field:'exitCapPct',        label:'Exit cap',            step:0.05,  unit:'%' },
+  { field:'sellingCostsPct',   label:'Selling costs',       step:0.1,   unit:'%' },
 ];
 
 // Свернуть/развернуть секцию настроек. По умолчанию свёрнуто.
@@ -125466,7 +125522,7 @@ const PF_PRESETS = {
   default:  null,   // дефолтная видимость: спрятаны только defaultHidden-колонки
   full:     'ALL',  // показать всё
   investor: ['occ','units','mrr','curVal','pfVal','upside','yoc','spr','coc','em','irr'],
-  operator: ['occ','units','mrr','vacYr','egi','pfNoi','nmar','cf','renoDay'],
+  operator: ['occ','units','areaRent','areaLsd','areaVac','mrr','vacYr','egi','pfNoi','nmar','cf','renoDay'],
   lender:   ['occ','units','pfNoi','dscr','dy','ltv','beo','payoff','cf'],
 };
 function _pfApplyPreset(name){
