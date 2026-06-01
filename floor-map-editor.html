@@ -124044,6 +124044,24 @@ const PF_GLOSSARY_CATS = [
   ['debt',      'Debt & risk'],
   ['ops',       'Operations'],
 ];
+// Фаза колонки для переключателя Current / Proforma / Both (point 1 — "отдельная
+// таблица на проформу и отдельная как сейчас"). 'cur' — только сегодняшний снимок
+// (in-place rent, текущая стоимость, вакансия); 'pf' — только проформа (стабилизи-
+// рованные NOI/возвраты/долг). Колонки без записи — общие (всегда видны: bldg, occ,
+// units, ppu, actions). Переключатель показывает соответствующее подмножество, так
+// что Current и Proforma выглядят как две отдельные таблицы в одном контроле.
+const PF_COL_PHASE = {
+  mrr:'cur', vacYr:'cur', curVal:'cur',
+  egi:'pf', pfVal:'pf', upside:'pf', pfNoi:'pf', nmar:'pf', dscr:'pf', dy:'pf',
+  yoc:'pf', spr:'pf', coc:'pf', em:'pf', irr:'pf', cf:'pf', beo:'pf', ltv:'pf',
+  payoff:'pf', renoDay:'pf',
+};
+// Видна ли колонка в текущем режиме просмотра (both = все).
+function _pfColInPhase(k, mode){
+  const ph = PF_COL_PHASE[k];
+  if (!ph || mode === 'both') return true;
+  return (mode === 'current') ? ph === 'cur' : ph === 'pf';
+}
 
 function _pfCell(r, k){
   switch(k){
@@ -124110,7 +124128,10 @@ function _pfFootHtml(rows, cols){
 function _pfRenderTable(rows){
   const tbl = document.getElementById('pfTable');
   if (!tbl) return;
-  const cols = Object.keys(PF_COLUMNS);
+  // Колонки текущей фазы (Current / Proforma / Both). Линза/шестерёнка прячет часть
+  // из них через display:none поверх — поэтому здесь рендерим ВСЕ колонки фазы, иначе
+  // меню-шестерёнка не сможет вернуть скрытую колонку обратно.
+  const cols = Object.keys(PF_COLUMNS).filter(k => _pfColInPhase(k, _pfViewMode));
   const sortState = (typeof readTableSort === 'function' && readTableSort('sfa_pf_dash')) || { col:'upside', dir:'desc' };
   const sorted = (typeof applyTableSort === 'function') ? applyTableSort(rows, sortState, PF_COLUMNS) : rows;
   let thead = '<thead><tr>';
@@ -124320,6 +124341,7 @@ function renderPortfolioDash(){
   try { _pfRenderTable(rows); }     catch(e){ console.error('[pf] table', e); }
   const stamp = document.getElementById('pfTableStamp');
   if (stamp) stamp.textContent = rows.length + ' building' + (rows.length === 1 ? '' : 's')
+    + ' · ' + (_pfViewMode === 'both' ? 'current + proforma' : _pfViewMode) + ' view'
     + (_pfScenarioActive() ? ' · scenario applied' : ' · saved assumptions');
 }
 
@@ -124431,8 +124453,15 @@ function _pfExportCSV(){
       if (typeof v !== 'number' || !Number.isFinite(v)) return '';
       return String(Math.round(v * 100) / 100);
     };
-    // все колонки таблицы кроме служебной actions; bldg разворачивается в Building + Address
-    const keys = Object.keys(PF_COLUMNS).filter(k => k !== 'actions');
+    // CSV следует текущему виду (§14): колонки активной фазы минус скрытые линзой/
+    // шестерёнкой; служебная actions всегда исключена, фиксированные (bldg) — всегда есть.
+    let _csvHidden = [];
+    try { _csvHidden = JSON.parse(readPref('sfa_pf_dash_col_hidden') || '[]') || []; } catch(e){}
+    const _csvHiddenSet = new Set(_csvHidden);
+    const keys = Object.keys(PF_COLUMNS).filter(k =>
+      k !== 'actions'
+      && _pfColInPhase(k, _pfViewMode)
+      && (PF_COLUMNS[k].fixed || !_csvHiddenSet.has(k)));
     const head = [];
     for (const k of keys){ if (k === 'bldg'){ head.push('Building','Address'); } else { head.push(PF_COLUMNS[k].label); } }
     const lines = [head.map(fld).join(',')];
@@ -124463,7 +124492,7 @@ function _pfExportCSV(){
     const blob = new Blob(['﻿' + lines.join('\r\n')], { type:'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const aEl = document.createElement('a');
-    aEl.href = url; aEl.download = 'portfolio-dashboard-' + new Date().toISOString().slice(0,10) + '.csv';
+    aEl.href = url; aEl.download = 'portfolio-dashboard-' + _pfViewMode + '-' + new Date().toISOString().slice(0,10) + '.csv';
     document.body.appendChild(aEl); aEl.click();
     setTimeout(() => { document.body.removeChild(aEl); URL.revokeObjectURL(url); }, 120);
     if (typeof toast === 'function') toast('Portfolio CSV exported');
