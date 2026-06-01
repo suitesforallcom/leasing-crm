@@ -31,12 +31,11 @@
   - **Subscriptions** (`startAutoPay`): intentionally left flat — Stripe subscriptions don't natively handle one-month proration. Operator can issue one-off credit via Stripe Dashboard when needed.
 **Alignment**: FINANCIAL_MODEL_REFERENCE §EQ-5 / Kiwi §CN1 partial concession — waiver classified upfront (status='free' + waiverStart/End), immutable after first posting. Closes DECISION D-2026-05-11-FM3 (deferred → resolved).
 
-### #2. Stripe duplicate invoice for Wilbur Brown Jr 📌 OPEN
-**Severity**: 🔴 — real money implication.
-**Issue**: Wilbur Brown Jr has a duplicate $104 late-fee invoice in Stripe (`in_1TUVW22nq2bZh3q6XdFAu7Wp`). Carried over from earlier session — Tony was asked to confirm void but never did.
-**Workaround**: invoice still pending; no double-charge yet (tenant hasn't paid). Operator can void via Stripe Dashboard.
-**Fix path**: Tony confirms void. Claude must NOT void Stripe invoices autonomously.
-**Tony decision needed**: confirm void.
+### #2. Stripe duplicate invoice for Wilbur Brown Jr ✅ RESOLVED 2026-05-31
+**Severity**: 🔴 → resolved.
+**Issue (historical)**: duplicate $104 late-fee invoice `in_1TUVW22nq2bZh3q6XdFAu7Wp`. Risked double-charge if tenant paid.
+**Resolution**: operator ran `voidOrDeleteStripeInvoice` CF via console 2026-05-31; CF returned `{action: 'noop', status: 'void'}` — confirming the invoice was already in `void` state (Tony had voided it manually via Stripe Dashboard at some earlier point, or a prior CF invocation took effect). Idempotent CF correctly detected the pre-voided state and short-circuited.
+**Lesson**: when carrying over an open Stripe item across sessions, run the idempotent CF first to verify current Stripe-side state — `noop` confirms no action needed without risking double-action.
 
 ### #11. Monolithic state doc ~841KB — Firestore 1MB ceiling + write contention ⚠️ ARCHITECTURE CEILING
 **Severity**: 🔴 — the whole workspace lives in ONE Firestore doc `workspaces/default/data/state`. Two walls: (1) hard 1MB/doc limit — ~841KB now (82%); was 927KB before the 2026-05-31 phantom cleanup. `fbPushNow` refuses writes >950KB (floor-map-editor.html:31158), warns >900KB (:31167); Synced-state-size panel mirrors thresholds at :55968. (2) Every edit rewrites the whole doc under an optimistic lock → write-contention / version-conflict banner-storm as operators grow.
