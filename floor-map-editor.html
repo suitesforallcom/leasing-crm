@@ -20299,10 +20299,16 @@
           </div>
         </div>
         <div class="bm-floor-list" id="bmFloorList"></div>
-        <button type="button" class="bm-add-floor" onclick="bmAddFloor()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          Add floor
-        </button>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <button type="button" class="bm-add-floor" onclick="bmAddFloor()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Add floor
+          </button>
+          <button type="button" class="bm-add-floor" onclick="bmAutoFillRentable()" title="Set each floor's Rentable ft² to the sum of its leasable office units' areas (same formula as Forecast). Fills the draft below — review, then Save.">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Auto-fill Rentable from units
+          </button>
+        </div>
       </div>
 
       <!-- Notes -->
@@ -61740,6 +61746,28 @@ function bmAddFloor() {
   while (used.has(n)) n++;
   bmDraftFloors.push({ number: n, name: ordinalFloorName(n) });
   renderBmFloorList();
+}
+
+// Заполняет Rentable ft² каждого этажа суммой площадей его сдаваемых office-юнитов —
+// та же формула, что в Forecast/Portfolio (_floorLeasableSqft, см. ~36329):
+// rentable !== false && (нет type ИЛИ type==='office'). Пишем только в ЧЕРНОВИК
+// bmDraftFloors (state не трогаем) — оператор проверяет значения и жмёт Save.
+function bmAutoFillRentable() {
+  if (!editingBuildingId) { toast('Open an existing building to read its units', 'error'); return; }
+  const b = state.buildings.find(x => x.id === editingBuildingId);
+  if (!b) { toast('Building not found', 'error'); return; }
+  let filled = 0, total = 0;
+  bmDraftFloors.forEach(df => {
+    const src = df._existingId && (b.floors || []).find(fl => fl.id === df._existingId);
+    if (!src) return;
+    const sqft = (src.units || [])
+      .filter(u => u.rentable !== false && (!u.type || u.type === 'office'))
+      .reduce((s, u) => s + (+u.sqft || 0), 0);
+    if (sqft > 0) { df.rentableSqft = sqft; filled++; total += sqft; }
+  });
+  renderBmFloorList();
+  if (!filled) { toast('No leasable units found to read areas from', 'error'); return; }
+  toast(`Filled Rentable ft² on ${filled} floor${filled === 1 ? '' : 's'} (Σ ${total.toLocaleString()} ft²) — review, then Save`, 'success');
 }
 
 function bmRemoveFloor(idx) {
@@ -128052,6 +128080,20 @@ function renderRentRoll() {
   const expiring60 = _kpiRows.filter(r => { const d = daysBetween(r.leaseEnd); return d !== null && d <= 60 && d >= 0; });
   const totalSqft = _kpiRows.reduce((s, r) => s + r.sqft, 0);
   const occSqft = occ.reduce((s, r) => s + r.sqft, 0);
+  // Gross площадь = Σ floor.grossSqft в ТОЙ ЖЕ building/floor-области, что и unit-KPI,
+  // поэтому фильтр по этажу сворачивает площадь только выбранного этажа. Rentable =
+  // Σ unit sqft (totalSqft выше). Gross ≥ rentable: gross включает коридоры / общие
+  // зоны / технические помещения, которые отдельно не сдаются.
+  const _rrScopeB = getMSValues('rrBuildingMS');
+  const _rrScopeF = getMSValues('rrFloorMS');
+  let grossSqftTotal = 0;
+  state.buildings.forEach(b => {
+    if (_rrScopeB.length && !_rrScopeB.includes(b.id)) return;
+    (b.floors || []).forEach(f => {
+      if (_rrScopeF.length && !_rrScopeF.includes(f.id)) return;
+      grossSqftTotal += (+f.grossSqft || 0);
+    });
+  });
 
   // Scope subtitle — shows buildings and floors currently filtered in
   const sub = document.getElementById('rrSub');
@@ -128078,6 +128120,8 @@ function renderRentRoll() {
     <div class="rr-kpi"><div class="rr-kpi-label">Total Units</div><div class="rr-kpi-value">${totalUnits}</div><div class="rr-kpi-sub">${_rrFmtSqft(totalSqft)} ft² total</div></div>
     <div class="rr-kpi"><div class="rr-kpi-label">Occupied</div><div class="rr-kpi-value free">${occ.length}</div><div class="rr-kpi-sub">${occRate}% · ${_rrFmtSqft(occSqft)} ft² leased</div></div>
     <div class="rr-kpi"><div class="rr-kpi-label">Vacant</div><div class="rr-kpi-value" style="color: #8f887c;">${vac.length}</div><div class="rr-kpi-sub">${100 - occRate}% · ${_rrFmtSqft(totalSqft - occSqft)} ft²</div></div>
+    <div class="rr-kpi"><div class="rr-kpi-label">Total Area</div><div class="rr-kpi-value">${_rrFmtSqft(grossSqftTotal)}${_rrUnit('ft²')}</div><div class="rr-kpi-sub">Gross floor area</div></div>
+    <div class="rr-kpi"><div class="rr-kpi-label">Rentable</div><div class="rr-kpi-value">${_rrFmtSqft(totalSqft)}${_rrUnit('ft²')}</div><div class="rr-kpi-sub">${grossSqftTotal > 0 ? Math.round(totalSqft / grossSqftTotal * 100) + '% of gross' : 'Leasable area'}</div></div>
     <div class="rr-kpi"><div class="rr-kpi-label">Current monthly</div><div class="rr-kpi-value money">${_rrFmtMoney(actualRevenue)}</div><div class="rr-kpi-sub">Contract rent · in-place</div></div>
     <div class="rr-kpi"><div class="rr-kpi-label">Potential monthly</div><div class="rr-kpi-value money">${_rrFmtMoney(potentialRevenue)}</div><div class="rr-kpi-sub">Proforma · fully leased</div></div>
     <div class="rr-kpi"><div class="rr-kpi-label">Annual current</div><div class="rr-kpi-value money">${_rrFmtMoney(actualRevenue * 12)}</div><div class="rr-kpi-sub">${totalSqft > 0 ? '$' + (actualRevenue * 12 / totalSqft).toFixed(2) + '/ft/yr' : ''}</div></div>
