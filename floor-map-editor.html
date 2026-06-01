@@ -124197,38 +124197,95 @@ function _pfEnsureTxStyle(){
   const st = document.createElement('style');
   st.id = 'pfTxStyle';
   st.textContent = `
-#pfTable.pf-transposed{border-collapse:separate;border-spacing:0;width:auto;min-width:100%;}
-#pfTable.pf-transposed th,#pfTable.pf-transposed td{padding:7px 11px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums;white-space:nowrap;}
+#pfTable.pf-transposed{border-collapse:separate;border-spacing:0;table-layout:fixed;width:auto;}
+#pfTable.pf-transposed th,#pfTable.pf-transposed td{padding:7px 11px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 #pfTable.pf-transposed tbody td{text-align:right;}
-#pfTable.pf-transposed thead th{position:sticky;top:0;z-index:2;background:var(--surface-2);border-bottom:2px solid var(--border);text-align:right;font-size:11px;}
+#pfTable.pf-transposed thead th{position:sticky;top:0;z-index:2;background:var(--surface-2);border-bottom:2px solid var(--border);text-align:left;font-size:11px;}
 #pfTable.pf-transposed thead th:first-child,#pfTable.pf-transposed tbody th:first-child{position:sticky;left:0;z-index:3;background:var(--surface-2);text-align:left;}
 #pfTable.pf-transposed thead th:first-child{z-index:4;}
-#pfTable.pf-transposed thead th:last-child,#pfTable.pf-transposed tbody td:last-child{background:var(--surface-2);font-weight:700;}
-#pfTable.pf-transposed tbody tr:hover td{background:rgba(2,132,199,0.06);}`;
+#pfTable.pf-transposed thead th:last-child,#pfTable.pf-transposed tbody td:last-child{background:var(--surface-2);font-weight:700;text-align:right;}
+#pfTable.pf-transposed tbody tr:hover td{background:rgba(2,132,199,0.06);}
+/* Перетаскиваемые ручки (строки-метрики и колонки-здания) + индикаторы drop'а */
+#pfTable.pf-transposed .pf-tx-grip{display:inline-block;color:var(--muted);font-size:11px;margin-right:5px;cursor:grab;user-select:none;}
+#pfTable.pf-transposed thead th[data-bldg]{cursor:grab;}
+#pfTable.pf-transposed tbody th[data-metric]{cursor:grab;}
+#pfTable.pf-transposed .pf-tx-dragging{opacity:.4;}
+#pfTable.pf-transposed .pf-tx-drop-before{box-shadow:inset 3px 0 0 0 var(--accent,#0284c7);}
+#pfTable.pf-transposed .pf-tx-drop-after{box-shadow:inset -3px 0 0 0 var(--accent,#0284c7);}
+#pfTable.pf-transposed .pf-tx-drop-above{box-shadow:inset 0 3px 0 0 var(--accent,#0284c7);}
+#pfTable.pf-transposed .pf-tx-drop-below{box-shadow:inset 0 -3px 0 0 var(--accent,#0284c7);}
+/* Грип изменения ширины на правом крае шапки */
+#pfTable.pf-transposed .pf-tx-resizer{position:absolute;top:0;right:0;width:7px;height:100%;cursor:col-resize;user-select:none;z-index:6;}
+#pfTable.pf-transposed .pf-tx-resizer:hover{background:var(--accent,#0284c7);opacity:.35;}
+#pfTable.pf-transposed .pf-tx-reset{cursor:pointer;color:var(--muted);font-size:11px;margin-left:7px;text-decoration:none;}
+#pfTable.pf-transposed .pf-tx-reset:hover{color:var(--accent,#0284c7);}`;
   document.head.appendChild(st);
 }
 
 // Транспонированная раскладка: строки = метрики, колонки = здания + Portfolio.
 // Переиспользует _pfCell (ячейка значения) и _pfAggCell (агрегат) — никаких
 // новых форматтеров/формул, только другая ориентация уже считанных данных.
+// Применяем ручной порядок зданий (колонок), сохранённый перетаскиванием.
+// Здания, которых нет в сохранённом списке (новые / отфильтрованные обратно),
+// дописываются в конец в порядке сортировки. Пустой ручной порядок → отдаём
+// как есть (ранжирование по активной метрике-сортировке).
+function _pfTxOrderBuildings(sorted){
+  let order = [];
+  try { order = JSON.parse(readPref('sfa_pf_tx_bldg_order') || '[]') || []; } catch(e){}
+  if (!order.length) return sorted;
+  const byId = new Map(sorted.map(r => [r.bId, r]));
+  const seen = new Set(), out = [];
+  for (const id of order){ const r = byId.get(id); if (r && !seen.has(id)){ out.push(r); seen.add(id); } }
+  for (const r of sorted){ if (!seen.has(r.bId)){ out.push(r); seen.add(r.bId); } }
+  return out;
+}
+// Аналогично для строк-метрик. keys = видимые метрики в дефолтном порядке.
+function _pfTxOrderMetrics(keys){
+  let order = [];
+  try { order = JSON.parse(readPref('sfa_pf_tx_metric_order') || '[]') || []; } catch(e){}
+  if (!order.length) return keys;
+  const set = new Set(keys), seen = new Set(), out = [];
+  for (const k of order){ if (set.has(k) && !seen.has(k)){ out.push(k); seen.add(k); } }
+  for (const k of keys){ if (!seen.has(k)){ out.push(k); seen.add(k); } }
+  return out;
+}
+
 function _pfRenderTableTransposed(rows, tbl){
   _pfEnsureTxStyle();
   tbl.classList.add('pf-transposed');
   const sortState = (typeof readTableSort === 'function' && readTableSort('sfa_pf_dash')) || { col:'upside', dir:'desc' };
-  const sorted = (typeof applyTableSort === 'function') ? applyTableSort(rows, sortState, PF_COLUMNS) : rows;
+  const sorted0 = (typeof applyTableSort === 'function') ? applyTableSort(rows, sortState, PF_COLUMNS) : rows;
+  const sorted = _pfTxOrderBuildings(sorted0);   // ручной порядок колонок поверх сортировки
   // видимые метрики = фаза ∩ не скрытые линзой; bldg/actions выводятся отдельно
   let hidden = [];
   try { hidden = JSON.parse(readPref('sfa_pf_dash_col_hidden') || '[]') || []; } catch(e){}
   const hSet = new Set(hidden);
-  const metricKeys = Object.keys(PF_COLUMNS).filter(k =>
+  let metricKeys = Object.keys(PF_COLUMNS).filter(k =>
     k !== 'bldg' && k !== 'actions' && _pfColInPhase(k, _pfViewMode) && !hSet.has(k));
+  metricKeys = _pfTxOrderMetrics(metricKeys);     // ручной порядок строк поверх дефолта
   const a = _pfAggregate(sorted);
   const nB = sorted.length;
-  let thead = '<thead><tr><th>Metric</th>';
-  for (const r of sorted){
-    thead += `<th title="${esc(r.name)}">${esc(r.name)}${r.hasInv?'':' <span class="pf-pill" style="background:rgba(2,132,199,0.12);color:#0284c7;">n/u</span>'}</th>`;
-  }
-  thead += `<th title="Portfolio aggregate across all buildings">Portfolio</th></tr></thead>`;
+  // Ширины колонок (table-layout:fixed + colgroup → ширины авторитетны, ресайз точный)
+  let wMap = {}; try { wMap = JSON.parse(readPref('sfa_pf_tx_col_w') || '{}') || {}; } catch(e){}
+  const metricW = parseInt(readPref('sfa_pf_tx_metric_w'), 10) || 190;
+  const portW   = wMap.__portfolio__ || 124;
+  let cg = `<colgroup><col style="width:${metricW}px">`;
+  for (const r of sorted) cg += `<col style="width:${wMap[r.bId] || 132}px">`;
+  cg += `<col style="width:${portW}px"></colgroup>`;
+  // Шапка: угловая ячейка Metric (+ресайз +reset), здания (drag+ресайз), Portfolio (ресайз)
+  let thead = '<thead><tr>';
+  thead += `<th title="Metrics — drag a row by its grip to reorder · click a metric label to sort buildings">Metric`
+        +  `<a class="pf-tx-reset" title="Reset row &amp; column order and widths to default" onclick="_pfTxResetLayout()">↺</a>`
+        +  `<span class="pf-tx-resizer" data-resize="__metric__" data-cidx="0"></span></th>`;
+  sorted.forEach((r, i) => {
+    const nu = r.hasInv ? '' : ' <span class="pf-pill" style="background:rgba(2,132,199,0.12);color:#0284c7;">n/u</span>';
+    thead += `<th data-bldg="${esc(r.bId)}" draggable="true" title="${esc(r.name)} — drag to reorder · drag right edge to resize">`
+          +  `<span class="pf-tx-grip">⠿</span>${esc(r.name)}${nu}`
+          +  `<span class="pf-tx-resizer" data-resize="${esc(r.bId)}" data-cidx="${i + 1}"></span></th>`;
+  });
+  thead += `<th title="Portfolio aggregate across all buildings">Portfolio`
+        +  `<span class="pf-tx-resizer" data-resize="__portfolio__" data-cidx="${nB + 1}"></span></th>`;
+  thead += '</tr></thead>';
   let tbody = '<tbody>';
   if (!nB){
     tbody += `<tr><th>Metric</th><td style="text-align:center;color:var(--muted);padding:24px;">No buildings match this filter.</td><td></td></tr>`;
@@ -124237,7 +124294,11 @@ function _pfRenderTableTransposed(rows, tbl){
       const c = PF_COLUMNS[k];
       const isSorted = sortState.col === k;
       const arrow = isSorted ? (sortState.dir === 'asc' ? '▲' : '▼') : '↕';
-      tbody += `<tr><th style="cursor:pointer;" title="${esc(c.title || c.label)} — click to sort buildings by this metric" onclick="_pfTxSort('${k}')">${esc(c.label)} <span style="color:var(--muted);font-size:9px;">${arrow}</span></th>`;
+      // th строки: draggable для reorder; клик по ярлыку (вложенный span) — сортировка зданий
+      tbody += `<tr><th data-metric="${k}" draggable="true" title="${esc(c.title || c.label)} — drag to reorder · click label to sort buildings">`
+            +  `<span class="pf-tx-grip">⠿</span>`
+            +  `<span class="pf-tx-mlabel" style="cursor:pointer;" onclick="_pfTxSort('${k}')">${esc(c.label)} <span style="color:var(--muted);font-size:9px;">${arrow}</span></span>`
+            +  `</th>`;
       for (const r of sorted) tbody += _pfCell(r, k);
       tbody += _pfAggCell(a, k, nB);
       tbody += '</tr>';
@@ -124247,17 +124308,146 @@ function _pfRenderTableTransposed(rows, tbl){
     tbody += '<td></td></tr>';
   }
   tbody += '</tbody>';
-  tbl.innerHTML = thead + tbody;
+  tbl.innerHTML = cg + thead + tbody;
+  _pfTxWire(tbl);
 }
 
 // Клик по метке метрики в транспонированном виде сортирует здания (колонки) по
 // этой метрике. Делит то же состояние сортировки, что и обычный вид (sfa_pf_dash).
+// Сортировка — явное ранжирование, поэтому она СБРАСЫВАЕТ ручной порядок колонок
+// (иначе клик визуально ничего не делал бы). Перетаскивание задаёт порядок заново.
 function _pfTxSort(k){
   const cur = (typeof readTableSort === 'function' && readTableSort('sfa_pf_dash')) || { col:'upside', dir:'desc' };
   let dir = (PF_COLUMNS[k] && PF_COLUMNS[k].defaultDir) || 'desc';
   if (cur.col === k) dir = (cur.dir === 'asc') ? 'desc' : 'asc';
+  try { removePref('sfa_pf_tx_bldg_order'); } catch(e){}
   if (typeof writeTableSort === 'function') writeTableSort('sfa_pf_dash', { col:k, dir });
   renderPortfolioDash();
+}
+
+// Сброс пользовательской раскладки транспонированного вида (порядок строк/колонок + ширины).
+function _pfTxResetLayout(){
+  try {
+    removePref('sfa_pf_tx_bldg_order');
+    removePref('sfa_pf_tx_metric_order');
+    removePref('sfa_pf_tx_col_w');
+    removePref('sfa_pf_tx_metric_w');
+  } catch(e){}
+  renderPortfolioDash();
+}
+
+// =========================================================================
+// Drag-reorder (строки-метрики + колонки-здания) и resize ширины для
+// транспонированного вида. Делегированные слушатели вешаются на #pfTable ОДИН
+// раз (innerHTML переписывается каждый рендер, но элемент таблицы тот же — флаг
+// _pfTxWired защищает от дублей). Префы пишутся в sfa_pf_tx_* → авто-синк в
+// Firestore (whitelist _SYNC_PREF_PATTERN). Никакой бизнес-логики: только
+// порядок отображения и ширины уже посчитанных данных.
+// =========================================================================
+let _pfTxDrag = null;   // { type:'bldg'|'metric', id, el, targetId, before }
+let _pfTxRz   = null;   // { col, key, startX, startW, th, wasDraggable }
+function _pfTxWire(tbl){
+  if (tbl._pfTxWired) return;
+  tbl._pfTxWired = true;
+  tbl.addEventListener('dragstart', _pfTxDragStart);
+  tbl.addEventListener('dragover',  _pfTxDragOver);
+  tbl.addEventListener('drop',      _pfTxDrop);
+  tbl.addEventListener('dragend',   _pfTxDragEnd);
+  tbl.addEventListener('pointerdown', _pfTxResizeMaybeStart);
+}
+function _pfTxClearMarks(){
+  document.querySelectorAll('#pfTable .pf-tx-drop-before,#pfTable .pf-tx-drop-after,#pfTable .pf-tx-drop-above,#pfTable .pf-tx-drop-below')
+    .forEach(el => el.classList.remove('pf-tx-drop-before','pf-tx-drop-after','pf-tx-drop-above','pf-tx-drop-below'));
+}
+function _pfTxDragStart(e){
+  if (e.target.closest && e.target.closest('.pf-tx-resizer')){ e.preventDefault(); return; }
+  const th = e.target.closest && e.target.closest('th[data-bldg],th[data-metric]');
+  if (!th) return;
+  const type = th.dataset.bldg ? 'bldg' : 'metric';
+  _pfTxDrag = { type, id: th.dataset.bldg || th.dataset.metric, el: th };
+  try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', _pfTxDrag.id); } catch(e2){}
+  th.classList.add('pf-tx-dragging');
+}
+function _pfTxDragOver(e){
+  if (!_pfTxDrag) return;
+  const sel = _pfTxDrag.type === 'bldg' ? 'th[data-bldg]' : 'th[data-metric]';
+  const th = e.target.closest && e.target.closest(sel);
+  if (!th || th === _pfTxDrag.el) return;
+  e.preventDefault();
+  _pfTxClearMarks();
+  const r = th.getBoundingClientRect();
+  if (_pfTxDrag.type === 'bldg'){
+    const before = (e.clientX - r.left) < r.width / 2;
+    th.classList.add(before ? 'pf-tx-drop-before' : 'pf-tx-drop-after');
+    _pfTxDrag.targetId = th.dataset.bldg; _pfTxDrag.before = before;
+  } else {
+    const above = (e.clientY - r.top) < r.height / 2;
+    th.classList.add(above ? 'pf-tx-drop-above' : 'pf-tx-drop-below');
+    _pfTxDrag.targetId = th.dataset.metric; _pfTxDrag.before = above;
+  }
+}
+function _pfTxDrop(e){
+  if (!_pfTxDrag){ return; }
+  e.preventDefault();
+  const d = _pfTxDrag, tbl = document.getElementById('pfTable');
+  if (tbl && d.targetId && d.id !== d.targetId){
+    const isB = d.type === 'bldg';
+    const attr = isB ? 'data-bldg' : 'data-metric';
+    const scope = isB ? 'thead' : 'tbody';
+    let order = [...tbl.querySelectorAll(`${scope} th[${attr}]`)].map(th => th.getAttribute(attr));
+    order = order.filter(x => x !== d.id);
+    let ti = order.indexOf(d.targetId);
+    if (ti < 0) ti = order.length;
+    if (!d.before) ti += 1;
+    order.splice(ti, 0, d.id);
+    try { writePref(isB ? 'sfa_pf_tx_bldg_order' : 'sfa_pf_tx_metric_order', JSON.stringify(order)); } catch(e2){}
+  }
+  _pfTxClearMarks();
+  _pfTxDrag = null;
+  renderPortfolioDash();
+}
+function _pfTxDragEnd(){
+  _pfTxClearMarks();
+  if (_pfTxDrag && _pfTxDrag.el) _pfTxDrag.el.classList.remove('pf-tx-dragging');
+  _pfTxDrag = null;
+}
+function _pfTxResizeMaybeStart(e){
+  const rz = e.target.closest && e.target.closest('.pf-tx-resizer');
+  if (!rz) return;
+  const tbl = document.getElementById('pfTable');
+  const th  = rz.closest('th');
+  const cidx = parseInt(rz.dataset.cidx, 10);
+  const col = tbl && tbl.querySelectorAll('colgroup col')[cidx];
+  if (!th || !col) return;
+  e.preventDefault(); e.stopPropagation();
+  const wasDraggable = th.getAttribute('draggable');
+  th.setAttribute('draggable', 'false');
+  _pfTxRz = { col, key: rz.dataset.resize, startX: e.clientX, startW: th.getBoundingClientRect().width, th, wasDraggable };
+  window.addEventListener('pointermove', _pfTxResizeMove);
+  window.addEventListener('pointerup', _pfTxResizeEnd, { once:true });
+}
+function _pfTxResizeMove(e){
+  if (!_pfTxRz) return;
+  const w = Math.max(64, Math.min(560, _pfTxRz.startW + (e.clientX - _pfTxRz.startX)));
+  _pfTxRz.col.style.width = w + 'px';
+}
+function _pfTxResizeEnd(){
+  window.removeEventListener('pointermove', _pfTxResizeMove);
+  if (!_pfTxRz){ return; }
+  const w = Math.round(parseFloat(_pfTxRz.col.style.width) || _pfTxRz.startW);
+  const key = _pfTxRz.key;
+  if (key === '__metric__'){
+    try { writePref('sfa_pf_tx_metric_w', String(w)); } catch(e){}
+  } else {
+    let m = {}; try { m = JSON.parse(readPref('sfa_pf_tx_col_w') || '{}') || {}; } catch(e){}
+    m[key] = w;
+    try { writePref('sfa_pf_tx_col_w', JSON.stringify(m)); } catch(e){}
+  }
+  if (_pfTxRz.th){
+    if (_pfTxRz.wasDraggable == null) _pfTxRz.th.removeAttribute('draggable');
+    else _pfTxRz.th.setAttribute('draggable', _pfTxRz.wasDraggable);
+  }
+  _pfTxRz = null;
 }
 
 // =========================================================================
