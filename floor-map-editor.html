@@ -17930,6 +17930,18 @@
                 <button data-mode="proforma" onclick="_pfSetView('proforma')">Proforma</button>
                 <button data-mode="both" class="active" onclick="_pfSetView('both')">Both</button>
               </span>
+              <label style="display:flex; align-items:center; gap:6px; font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em;"
+                     title="Lens — preset column sets tailored to who's reading. Investor highlights value & returns, Operator highlights income & operations, Lender highlights debt & risk. You can still toggle individual columns with the gear menu afterwards.">
+                Lens
+                <select id="pfPreset" onchange="_pfApplyPreset(this.value)"
+                        style="padding:5px 8px; font-size:12px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); cursor:pointer; text-transform:none; letter-spacing:0;">
+                  <option value="default">Default</option>
+                  <option value="investor">Investor · value &amp; returns</option>
+                  <option value="operator">Operator · income &amp; ops</option>
+                  <option value="lender">Lender · debt &amp; risk</option>
+                  <option value="full">Full · all metrics</option>
+                </select>
+              </label>
               <input id="pfSearch" type="text" placeholder="Filter buildings…" oninput="renderPortfolioDash()"
                      style="padding:6px 10px; font-size:12px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); min-width:160px;">
             </div>
@@ -124301,6 +124313,7 @@ function _pfToggleGlossary(force){
 
 function renderPortfolioDash(){
   const rows = _pfBuildRows();
+  try { const psel = document.getElementById('pfPreset'); if (psel){ const p = readPref('sfa_pf_preset') || 'default'; if (psel.value !== p) psel.value = p; } } catch(e){}
   try { _pfRenderRollup(rows); }    catch(e){ console.error('[pf] rollup', e); }
   try { _pfRenderLossCards(rows); } catch(e){ console.error('[pf] loss', e); }
   try { _pfRenderCharts(rows); }    catch(e){ console.error('[pf] charts', e); }
@@ -124314,6 +124327,34 @@ function renderPortfolioDash(){
 function _pfSetView(mode){
   _pfViewMode = mode;
   document.querySelectorAll('#pfViewSeg button').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+  renderPortfolioDash();
+}
+// --- Audience lenses (point 3 — "менять вид для кого таблица сделана") -----
+// Пресет = готовый набор видимых колонок под конкретного читателя. Пишет тот же
+// pref-ключ, что и шестерёнка (sfa_pf_dash_col_hidden), поэтому ручное скрытие
+// колонок продолжает работать поверх пресета. Никаких новых данных — только
+// видимость уже существующих столбцов PF_COLUMNS.
+const PF_PRESETS = {
+  default:  null,   // дефолтная видимость: спрятаны только defaultHidden-колонки
+  full:     'ALL',  // показать всё
+  investor: ['occ','units','mrr','curVal','pfVal','upside','yoc','spr','coc','em','irr'],
+  operator: ['occ','units','mrr','vacYr','egi','pfNoi','nmar','cf','renoDay'],
+  lender:   ['occ','units','pfNoi','dscr','dy','ltv','beo','payoff','cf'],
+};
+function _pfApplyPreset(name){
+  if (!(name in PF_PRESETS)) name = 'default';
+  const spec = PF_PRESETS[name];
+  const keys = Object.keys(PF_COLUMNS);
+  let hidden;
+  if (spec === null)        hidden = keys.filter(k => PF_COLUMNS[k].defaultHidden && !PF_COLUMNS[k].fixed);
+  else if (spec === 'ALL')  hidden = [];
+  else                      hidden = keys.filter(k => !PF_COLUMNS[k].fixed && !spec.includes(k));
+  try {
+    writePref('sfa_pf_dash_col_hidden', JSON.stringify(hidden));
+    writePref('sfa_pf_preset', name);
+  } catch(e){}
+  const sel = document.getElementById('pfPreset');
+  if (sel) sel.value = name;
   renderPortfolioDash();
 }
 function _pfOnSlider(field, val, unit){
