@@ -17903,6 +17903,9 @@
             <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;">All buildings · admin only</div>
           </div>
           <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <button id="pfOccBtn" onclick="_pfOccToggle()"
+                    style="padding:6px 13px; font-size:11px; background:var(--text); color:var(--surface); border:1px solid var(--border); border-radius:5px; cursor:pointer; font-weight:700; letter-spacing:0.04em; text-transform:uppercase;"
+                    title="Show / hide the movable Occupancy &amp; Rollover widget — units occupied vs vacant across the portfolio, and leases coming up for renewal in the next 30 / 60 / 90 days (with rent at risk). Drag it anywhere by its header.">Occupancy</button>
             <button id="pfGlossaryBtn" onclick="_pfToggleGlossary()"
                     style="padding:6px 13px; font-size:11px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:5px; cursor:pointer; font-weight:700; letter-spacing:0.04em; text-transform:uppercase;"
                     title="Show the metric glossary — what every column and figure means, grouped by category">Glossary</button>
@@ -124246,6 +124249,232 @@ function _pfTxSort(k){
   renderPortfolioDash();
 }
 
+// =========================================================================
+// Перетаскиваемый виджет «Occupancy & Rollover» (point 8 — "меню чтобы я мог
+// двигать как на других сайтах… сколько юнитов свободно/занято, сколько
+// освобождается"). Плавающая панель поверх дашборда: занятость портфеля +
+// договоры, истекающие в ближайшие 30/60/90 дней (rollover).
+// НЕ выдумывает формул: занятость — из _pfAggregate(rows); список истечений —
+// из того же движка, что и топбар-плашка (_expiringUnits → buildLeasesRows),
+// то есть daysLeft = (u.until||u.leaseEnd) − сегодня и группировка suites в
+// один договор уже учтены. Виджет — ребёнок #portfolioDashView с
+// position:fixed: плавает над контентом и авто-скрывается, когда дашборд не
+// активен (родитель display:none). Позиция/свёрнутость/скрытость — в prefs.
+// =========================================================================
+function _pfEnsureOccStyle(){
+  if (document.getElementById('pfOccStyle')) return;
+  const s = document.createElement('style');
+  s.id = 'pfOccStyle';
+  s.textContent = `
+#pfOccWidget{position:fixed;right:22px;bottom:22px;z-index:48;width:308px;max-width:94vw;background:var(--surface,#fffdf8);border:1px solid var(--border,#d9d2c3);border-radius:12px;box-shadow:0 14px 44px rgba(0,0,0,.26);font-family:inherit;color:var(--text,#1a1815);overflow:hidden;}
+#pfOccWidget.hidden{display:none;}
+#pfOccWidget .pf-occ-head{display:flex;align-items:center;gap:7px;padding:9px 11px;background:var(--surface-2,#f3efe6);border-bottom:1px solid var(--border,#d9d2c3);cursor:grab;user-select:none;touch-action:none;}
+#pfOccWidget .pf-occ-head.dragging{cursor:grabbing;}
+#pfOccWidget .pf-occ-title{flex:1;font-size:12px;font-weight:800;letter-spacing:.02em;text-transform:uppercase;color:var(--text,#1a1815);}
+#pfOccWidget .pf-occ-grip{color:var(--muted,#8f887c);font-size:13px;line-height:1;}
+#pfOccWidget .pf-occ-iconbtn{border:1px solid transparent;background:transparent;color:var(--muted,#8f887c);cursor:pointer;width:22px;height:22px;border-radius:6px;font-size:12px;line-height:1;padding:0;}
+#pfOccWidget .pf-occ-iconbtn:hover{background:var(--surface,#fff);border-color:var(--border,#d9d2c3);color:var(--text,#1a1815);}
+#pfOccWidget .pf-occ-body{padding:12px 13px;max-height:64vh;overflow:auto;}
+#pfOccWidget.pf-occ-collapsed .pf-occ-body{display:none;}
+#pfOccWidget .pf-occ-sec{font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted,#8f887c);margin:1px 0 7px;}
+#pfOccWidget .pf-occ-sec.mt{margin-top:15px;}
+#pfOccWidget .pf-occ-bigrow{display:flex;align-items:baseline;gap:8px;margin-bottom:8px;}
+#pfOccWidget .pf-occ-big{font-size:25px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1;}
+#pfOccWidget .pf-occ-bigsub{font-size:11px;color:var(--muted,#8f887c);font-weight:600;}
+#pfOccWidget .pf-occ-bar{display:flex;height:13px;border-radius:7px;overflow:hidden;background:var(--border,#e5e0d5);margin-bottom:6px;}
+#pfOccWidget .pf-occ-bar i{display:block;height:100%;}
+#pfOccWidget .pf-occ-legend{display:flex;gap:13px;font-size:11px;color:var(--text,#1a1815);}
+#pfOccWidget .pf-occ-legend span{display:inline-flex;align-items:center;gap:5px;}
+#pfOccWidget .pf-occ-dot{width:9px;height:9px;border-radius:2px;display:inline-block;}
+#pfOccWidget .pf-occ-buckets{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:9px;}
+#pfOccWidget .pf-occ-bucket{background:var(--surface-2,#f3efe6);border:1px solid var(--border,#e5e0d5);border-radius:8px;padding:7px 6px;text-align:center;}
+#pfOccWidget .pf-occ-bk-n{font-size:18px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1;}
+#pfOccWidget .pf-occ-bk-lbl{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;color:var(--muted,#8f887c);margin-top:3px;}
+#pfOccWidget .pf-occ-bk-rent{font-size:10px;color:#b45309;font-weight:700;margin-top:2px;font-variant-numeric:tabular-nums;}
+#pfOccWidget .pf-occ-list{display:flex;flex-direction:column;}
+#pfOccWidget .pf-occ-li{display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--border,#ece7dd);font-size:11.5px;cursor:pointer;}
+#pfOccWidget .pf-occ-li:hover{color:var(--accent,#1a3a5c);}
+#pfOccWidget .pf-occ-li-main{flex:1;min-width:0;}
+#pfOccWidget .pf-occ-li-t{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+#pfOccWidget .pf-occ-li-s{font-size:10px;color:var(--muted,#8f887c);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+#pfOccWidget .pf-occ-li-d{font-size:10.5px;font-weight:800;font-variant-numeric:tabular-nums;white-space:nowrap;}
+#pfOccWidget .pf-occ-empty{font-size:11.5px;color:var(--muted,#8f887c);padding:6px 0;}`;
+  document.head.appendChild(s);
+}
+let _pfOccDrag = null;
+function _pfOccEnsureDom(){
+  let w = document.getElementById('pfOccWidget');
+  if (w) return w;
+  const host = document.getElementById('portfolioDashView');
+  if (!host) return null;
+  _pfEnsureOccStyle();
+  w = document.createElement('div');
+  w.id = 'pfOccWidget';
+  w.innerHTML =
+      '<div class="pf-occ-head" id="pfOccHead">'
+    +   '<span class="pf-occ-grip">⠿</span>'
+    +   '<span class="pf-occ-title">Occupancy &amp; Rollover</span>'
+    +   '<button type="button" class="pf-occ-iconbtn" id="pfOccCollapseBtn" title="Collapse / expand">▾</button>'
+    +   '<button type="button" class="pf-occ-iconbtn" id="pfOccCloseBtn" title="Hide — reopen with the Occupancy button in the header">✕</button>'
+    + '</div>'
+    + '<div class="pf-occ-body" id="pfOccBody"></div>';
+  host.appendChild(w);
+  w.querySelector('#pfOccHead').addEventListener('pointerdown', _pfOccDragStart);
+  w.querySelector('#pfOccCollapseBtn').addEventListener('click', _pfOccToggleCollapse);
+  w.querySelector('#pfOccCloseBtn').addEventListener('click', _pfOccClose);
+  if (readPref('sfa_pf_occ_collapsed') === '1') w.classList.add('pf-occ-collapsed');
+  _pfOccApplyPos();
+  return w;
+}
+// Применяем сохранённую позицию (с клампом в текущий вьюпорт — окно могло
+// уменьшиться). Если позиции нет — остаётся CSS-дефолт (правый нижний угол).
+function _pfOccApplyPos(){
+  const w = document.getElementById('pfOccWidget');
+  if (!w) return;
+  let pos = null;
+  try { pos = JSON.parse(readPref('sfa_pf_occ_pos') || 'null'); } catch(e){}
+  if (pos && Number.isFinite(pos.left) && Number.isFinite(pos.top)){
+    const rect = w.getBoundingClientRect();
+    const maxL = Math.max(0, window.innerWidth  - rect.width  - 4);
+    const maxT = Math.max(0, window.innerHeight - rect.height - 4);
+    w.style.left = Math.min(Math.max(0, pos.left), maxL) + 'px';
+    w.style.top  = Math.min(Math.max(0, pos.top),  maxT) + 'px';
+    w.style.right = 'auto'; w.style.bottom = 'auto';
+  }
+}
+function _pfOccDragStart(e){
+  const w = document.getElementById('pfOccWidget');
+  if (!w) return;
+  if (e.target.closest('.pf-occ-iconbtn')) return;   // клик по кнопке — не таскаем
+  const rect = w.getBoundingClientRect();
+  _pfOccDrag = { dx: e.clientX - rect.left, dy: e.clientY - rect.top, w: rect.width, h: rect.height };
+  w.style.left = rect.left + 'px'; w.style.top = rect.top + 'px';
+  w.style.right = 'auto'; w.style.bottom = 'auto';
+  document.getElementById('pfOccHead')?.classList.add('dragging');
+  window.addEventListener('pointermove', _pfOccDragMove);
+  window.addEventListener('pointerup', _pfOccDragEnd, { once:true });
+  e.preventDefault();
+}
+function _pfOccDragMove(e){
+  if (!_pfOccDrag) return;
+  const w = document.getElementById('pfOccWidget');
+  if (!w) return;
+  const maxL = Math.max(0, window.innerWidth  - _pfOccDrag.w - 4);
+  const maxT = Math.max(0, window.innerHeight - _pfOccDrag.h - 4);
+  w.style.left = Math.min(Math.max(0, e.clientX - _pfOccDrag.dx), maxL) + 'px';
+  w.style.top  = Math.min(Math.max(0, e.clientY - _pfOccDrag.dy), maxT) + 'px';
+}
+function _pfOccDragEnd(){
+  window.removeEventListener('pointermove', _pfOccDragMove);
+  document.getElementById('pfOccHead')?.classList.remove('dragging');
+  const w = document.getElementById('pfOccWidget');
+  if (w && _pfOccDrag){
+    try { writePref('sfa_pf_occ_pos', JSON.stringify({ left: parseFloat(w.style.left)||0, top: parseFloat(w.style.top)||0 })); } catch(e){}
+  }
+  _pfOccDrag = null;
+}
+function _pfOccToggleCollapse(e){
+  if (e) e.stopPropagation();
+  const w = document.getElementById('pfOccWidget');
+  if (!w) return;
+  const collapsed = w.classList.toggle('pf-occ-collapsed');
+  try { writePref('sfa_pf_occ_collapsed', collapsed ? '1' : ''); } catch(e2){}
+  const btn = document.getElementById('pfOccCollapseBtn');
+  if (btn) btn.textContent = collapsed ? '▸' : '▾';
+}
+function _pfOccClose(e){
+  if (e) e.stopPropagation();
+  document.getElementById('pfOccWidget')?.classList.add('hidden');
+  try { writePref('sfa_pf_occ_hidden', '1'); } catch(e2){}
+  _pfOccSyncBtn();
+}
+// Тумблер из шапки дашборда (#pfOccBtn).
+function _pfOccToggle(){
+  _pfOccEnsureDom();
+  const w = document.getElementById('pfOccWidget');
+  if (!w) return;
+  const nowHidden = !w.classList.contains('hidden');
+  w.classList.toggle('hidden', nowHidden);
+  try { writePref('sfa_pf_occ_hidden', nowHidden ? '1' : ''); } catch(e){}
+  if (!nowHidden){ _pfOccApplyPos(); renderPortfolioDash(); }
+  _pfOccSyncBtn();
+}
+function _pfOccSyncBtn(){
+  const btn = document.getElementById('pfOccBtn');
+  if (!btn) return;
+  const hidden = (readPref('sfa_pf_occ_hidden') === '1');
+  btn.style.background = hidden ? 'var(--surface)' : 'var(--text)';
+  btn.style.color      = hidden ? 'var(--text)'    : 'var(--surface)';
+}
+// Портфельный охват истечений: дашборд показывает ВСЕ здания, а buildLeasesRows
+// фильтрует по активному зданию. Временно (синхронно, без await/saveState)
+// снимаем фильтр и переиспользуем тот же движок, затем возвращаем как было.
+function _pfAllExpiring(maxDays){
+  const ui = (typeof state !== 'undefined') ? state.ui : null;
+  const saved = ui ? ui.currentBuildingId : undefined;
+  try {
+    if (ui) ui.currentBuildingId = null;
+    return (typeof _expiringUnits === 'function') ? _expiringUnits(maxDays) : [];
+  } finally {
+    if (ui) ui.currentBuildingId = saved;
+  }
+}
+function _pfRenderOccWidget(rows){
+  const w = _pfOccEnsureDom();
+  if (!w) return;
+  _pfOccSyncBtn();
+  if (readPref('sfa_pf_occ_hidden') === '1'){ w.classList.add('hidden'); return; }
+  w.classList.remove('hidden');
+  const body = document.getElementById('pfOccBody');
+  if (!body) return;
+  const a = _pfAggregate(rows);
+  const occ = a.occ || 0, units = a.units || 0, vac = Math.max(0, units - occ);
+  const occPct = units > 0 ? (occ / units * 100) : 0;
+  // rollover ограничиваем теми же зданиями, что видны в таблице (учитывает фильтр поиска)
+  const visible = new Set(rows.map(r => r.bId));
+  let exp = [];
+  try { exp = _pfAllExpiring(90).filter(e => visible.size === 0 || visible.has(e.buildingId)); } catch(e){}
+  const b30 = exp.filter(e => e.daysLeft <= 30);
+  const b60 = exp.filter(e => e.daysLeft > 30 && e.daysLeft <= 60);
+  const b90 = exp.filter(e => e.daysLeft > 60 && e.daysLeft <= 90);
+  const sumRent = arr => arr.reduce((s,e) => s + (+e.rent || 0), 0);
+  const bar =
+      '<div class="pf-occ-bar">'
+    + (occPct > 0   ? `<i style="width:${occPct.toFixed(1)}%;background:linear-gradient(90deg,#16a34a,#0284c7);"></i>` : '')
+    + (occPct < 100 ? `<i style="width:${(100-occPct).toFixed(1)}%;background:var(--border,#e5e0d5);"></i>` : '')
+    + '</div>';
+  const bucket = (arr,lbl) =>
+      `<div class="pf-occ-bucket"><div class="pf-occ-bk-n">${arr.length}</div><div class="pf-occ-bk-lbl">${lbl}</div>`
+    + (sumRent(arr) > 0 ? `<div class="pf-occ-bk-rent">${_pfFmtUsd(sumRent(arr))}/mo</div>` : '<div class="pf-occ-bk-rent">&nbsp;</div>')
+    + '</div>';
+  let html = '';
+  html += '<div class="pf-occ-sec">Occupancy · ' + rows.length + ' building' + (rows.length === 1 ? '' : 's') + '</div>';
+  html += `<div class="pf-occ-bigrow"><span class="pf-occ-big">${occPct.toFixed(0)}%</span><span class="pf-occ-bigsub">${occ} of ${units} units leased</span></div>`;
+  html += bar;
+  html += `<div class="pf-occ-legend"><span><i class="pf-occ-dot" style="background:#16a34a;"></i>${occ} occupied</span><span><i class="pf-occ-dot" style="background:var(--border,#cfc8ba);"></i>${vac} vacant</span></div>`;
+  html += '<div class="pf-occ-sec mt">Coming up for renewal</div>';
+  html += '<div class="pf-occ-buckets">' + bucket(b30,'≤30d') + bucket(b60,'31–60d') + bucket(b90,'61–90d') + '</div>';
+  if (!exp.length){
+    html += '<div class="pf-occ-empty">No leases expiring in the next 90 days.</div>';
+  } else {
+    html += '<div class="pf-occ-list">';
+    for (const e of exp.slice(0,6)){
+      const grp  = (e.groupSize > 1 ? ` +${e.groupSize-1}` : '');
+      const dCls = e.daysLeft <= 30 ? '#dc2626' : (e.daysLeft <= 60 ? '#b45309' : 'var(--muted,#8f887c)');
+      const who  = e.tenant || e.company || ('Suite ' + e.suite);
+      html += `<div class="pf-occ-li" onclick="try{_pfOpenBuilding('${e.buildingId}')}catch(x){}" title="${esc(e.building)} · Suite ${esc(String(e.suite))} · ${esc(e.tenant||e.company||'—')} · expires in ${e.daysLeft}d">`
+        +   `<div class="pf-occ-li-main"><div class="pf-occ-li-t">${esc(who)}</div>`
+        +   `<div class="pf-occ-li-s">${esc(e.building)} · ${esc(String(e.suite))}${grp} · ${_pfFmtUsd(+e.rent||0)}/mo</div></div>`
+        +   `<div class="pf-occ-li-d" style="color:${dCls};">${e.daysLeft}d</div></div>`;
+    }
+    if (exp.length > 6) html += `<div class="pf-occ-empty">+ ${exp.length-6} more within 90 days</div>`;
+    html += '</div>';
+  }
+  body.innerHTML = html;
+  const cb = document.getElementById('pfOccCollapseBtn');
+  if (cb) cb.textContent = w.classList.contains('pf-occ-collapsed') ? '▸' : '▾';
+}
+
 function _pfRenderRollup(rows){
   const host = document.getElementById('pfRollup');
   if (!host) return;
@@ -124432,6 +124661,7 @@ function renderPortfolioDash(){
   try { _pfRenderLossCards(rows); } catch(e){ console.error('[pf] loss', e); }
   try { _pfRenderCharts(rows); }    catch(e){ console.error('[pf] charts', e); }
   try { _pfRenderTable(rows); }     catch(e){ console.error('[pf] table', e); }
+  try { _pfRenderOccWidget(rows); } catch(e){ console.error('[pf] occ-widget', e); }
   const stamp = document.getElementById('pfTableStamp');
   if (stamp) stamp.textContent = rows.length + ' building' + (rows.length === 1 ? '' : 's')
     + ' · ' + (_pfViewMode === 'both' ? 'current + proforma' : _pfViewMode) + ' view'
