@@ -8364,3 +8364,131 @@ exports.mirrorPaymentsOnStateWrite = onDocumentWritten(
   }
 );
 
+// ─── SCALING — Phase 1 reconcile monitoring (hourly cron) ──────────────────
+// Server-side counterpart to the client-side sfaReconcilePaymentsV2(). Runs
+// once an hour, compares monolith state.buildings[*]...payments against the
+// v2 collection (filtered by _schema:'v2'), writes the result to two docs:
+//   - workspaces/{wid}/scaling/reconcileLatest    (always latest snapshot)
+//   - workspaces/{wid}/scaling/reconcile_<tsIso>  (history, append-only)
+// Purpose: continuous soak verification during Phase 1.2 read-switch prep
+// (DORMANT client commit `de72bc5`). Tony can inspect via Firebase Console
+// /workspaces/default/scaling/reconcileLatest at any time without running
+// the browser-side helper.
+//
+// ALSO TRACKED:
+//   - v1OrphanCount: docs in payments collection WITHOUT _schema:'v2'.
+//     The legacy `mirrorPaymentsOnStateWrite` trigger above writes v1-style
+//     keys (unitId__ym, no schema marker) when syncV2=true is on. Those
+//     v1 docs are silently accumulating in the collection and would COLLIDE
+//     across buildings with same suite numbers (the v1 bug §0 rule 1 of
+//     SCALING_PLAN_v2.md was specifically built to prevent). NOT auto-fixed
+//     here — surfaced for Tony's review. Recommendation in
+//     `SCALING_AUDIT_2026-05-31.md`: disable the legacy trigger now that
+//     building-aware in-handler mirrors (commit `ba68a4d`) cover the same
+//     ground correctly.
+
+function _rc_stableStr(v) {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v);
+  if (Array.isArray(v)) return '[' + v.map(_rc_stableStr).join(',') + ']';
+  return '{' + Object.keys(v).filter(k => v[k] !== undefined).sort()
+    .map(k => JSON.stringify(k) + ':' + _rc_stableStr(v[k])).join(',') + '}';
+}
+
+async function _computePaymentsReconcileV2(workspaceId) {
+  const stateRef = db.doc(`workspaces/${workspaceId}/data/state`);
+  const snap = await stateRef.get();
+  const data = snap.data() || {};
+  const s = data.state && typeof data.state === 'object' ? data.state : data;
+  // Expected = monolith view.
+  const expected = new Map();
+  for (const b of (s.buildings || [])) {
+    for (const f of (b.floors || [])) {
+      for (const u of (f.units || [])) {
+        const p = u.payments || {};
+        for (const ym of Object.keys(p)) {
+          expected.set(`${b.id}__${u.id}__${ym}`, _rc_stableStr(p[ym]));
+        }
+      }
+    }
+  }
+  // Actual = v2 docs in the collection; non-v2 are counted separately.
+  const colSnap = await db.collection(`workspaces/${workspaceId}/payments`).get();
+  const actualV2 = new Map();
+  let v1OrphanCount = 0;
+  const v1OrphanSample = [];
+  colSnap.forEach(d => {
+    const x = d.data() || {};
+    if (x._schema === 'v2') {
+      actualV2.set(d.id, _rc_stableStr(x.rec || {}));
+    } else {
+      v1OrphanCount++;
+      if (v1OrphanSample.length < 20) v1OrphanSample.push(d.id);
+    }
+  });
+  const missingInCloud = [...expected.keys()].filter(k => !actualV2.has(k));
+  const extraInCloud = [...actualV2.keys()].filter(k => !expected.has(k));
+  const mismatched = [...expected.keys()].filter(k => actualV2.has(k) && actualV2.get(k) !== expected.get(k));
+  const clean = !missingInCloud.length && !extraInCloud.length && !mismatched.length;
+  return {
+    workspaceId,
+    stateCount: expected.size,
+    cloudCount: actualV2.size,
+    v1OrphanCount,
+    v1OrphanSample,
+    missingInCloud: missingInCloud.slice(0, 50),
+    missingInCloudTotal: missingInCloud.length,
+    extraInCloud: extraInCloud.slice(0, 50),
+    extraInCloudTotal: extraInCloud.length,
+    mismatched: mismatched.slice(0, 50),
+    mismatchedTotal: mismatched.length,
+    clean,
+    syncV2Enabled: !!(s.settings && s.settings.syncV2),
+    syncV2ReadEnabled: !!(s.settings && s.settings.syncV2Read),
+    syncBuildingsV2Enabled: !!(s.settings && s.settings.syncBuildingsV2),
+    computedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+}
+
+async function _writeReconcileResult(workspaceId, result) {
+  const tsIso = new Date().toISOString().replace(/[:.]/g, '-');
+  // Always overwrite latest for easy single-doc inspection
+  await db.doc(`workspaces/${workspaceId}/scaling/reconcileLatest`).set(result);
+  // History entry (append-only doc; never deleted by this CF)
+  await db.doc(`workspaces/${workspaceId}/scaling/reconcile_${tsIso}`).set(result);
+}
+
+exports.reconcilePaymentsV2Scheduled = onSchedule(
+  {
+    schedule: '0 * * * *',     // every hour on minute 0 UTC
+    timeZone: 'UTC',
+    memory: '512MiB',
+    timeoutSeconds: 540,
+  },
+  async () => {
+    try {
+      const wid = WORKSPACE_ID;
+      const result = await _computePaymentsReconcileV2(wid);
+      await _writeReconcileResult(wid, result);
+      logger.info(`[reconcile-monitor] wid=${wid} clean=${result.clean} `
+        + `state=${result.stateCount} cloud=${result.cloudCount} `
+        + `missing=${result.missingInCloudTotal} extra=${result.extraInCloudTotal} `
+        + `mismatched=${result.mismatchedTotal} v1Orphans=${result.v1OrphanCount}`);
+    } catch (e) {
+      logger.error('[reconcile-monitor] crashed:', e.message || e);
+    }
+  }
+);
+
+// Manual trigger — callable from console for on-demand check without
+// waiting for cron. Operator-gated (requireEditor).
+exports.runReconcilePaymentsV2Now = onCall(
+  { timeoutSeconds: 540, memory: '512MiB' },
+  async (req) => {
+    await requireEditor(req.auth);
+    const wid = (req.data && req.data.workspaceId) || WORKSPACE_ID;
+    const result = await _computePaymentsReconcileV2(wid);
+    await _writeReconcileResult(wid, result);
+    return { ok: true, ...result };
+  }
+);
+
