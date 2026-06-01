@@ -17897,11 +17897,19 @@
           #portfolioDashView .pf-minibar > i { display:block; height:100%; background:linear-gradient(90deg,#16a34a,#0284c7); }
         </style>
 
-        <div class="hv-topbar" style="display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap;">
-          <div>
-            <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;">Portfolio · all buildings · admin only</div>
-            <div style="font-size:22px; font-weight:800; color:var(--text); margin-top:2px; letter-spacing:-0.01em; display:flex; align-items:center; gap:10px;">Portfolio Dashboard<button type="button" onclick="document.getElementById('pfHelpPanel').style.display = (document.getElementById('pfHelpPanel').style.display==='none'?'block':'none');" title="How to read this page · where the numbers come from" style="display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; padding:0; border:1px solid var(--border); border-radius:50%; background:var(--surface-2); color:var(--muted); cursor:pointer; font-size:12px; font-weight:700; flex-shrink:0;">?</button></div>
-            <div style="font-size:13px;color:var(--muted);margin-top:2px;">Current vs proforma across every building · vacancy cost · cost-per-day of reno delay · weighted IRR / NOI / value</div>
+        <div class="hv-topbar" style="display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap;">
+          <div style="display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;">
+            <div style="font-size:20px; font-weight:800; color:var(--text); letter-spacing:-0.01em; display:flex; align-items:center; gap:9px;">Portfolio Dashboard<button type="button" onclick="document.getElementById('pfHelpPanel').style.display = (document.getElementById('pfHelpPanel').style.display==='none'?'block':'none');" title="How to read this page · where the numbers come from" style="display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; padding:0; border:1px solid var(--border); border-radius:50%; background:var(--surface-2); color:var(--muted); cursor:pointer; font-size:12px; font-weight:700; flex-shrink:0;">?</button></div>
+            <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;">All buildings · admin only</div>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <button id="pfGlossaryBtn" onclick="_pfToggleGlossary()"
+                    style="padding:6px 13px; font-size:11px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:5px; cursor:pointer; font-weight:700; letter-spacing:0.04em; text-transform:uppercase;"
+                    title="Show the metric glossary — what every column and figure means, grouped by category">Glossary</button>
+            <button id="pfExportCsvBtn" onclick="_pfExportCSV()"
+                    style="padding:6px 13px; font-size:11px; background:#0f172a; color:#fff; border:none; border-radius:5px; cursor:pointer; font-weight:700; letter-spacing:0.04em; text-transform:uppercase;"
+                    title="Download the comparison table (current view, current sort) as CSV — opens in Excel / Google Sheets">Export CSV</button>
+            <div id="pfTableTools" style="display:flex; align-items:center; gap:8px;"></div>
           </div>
         </div>
 
@@ -17914,8 +17922,8 @@
         </div>
 
         <!-- Scenario + view-mode + filter bar -->
-        <div class="hv-card" style="padding:14px 16px; margin-top:14px;">
-          <div style="display:flex; justify-content:space-between; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:12px;">
+        <div class="hv-card" style="padding:10px 14px; margin-top:12px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:14px; flex-wrap:wrap;">
             <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
               <span class="pf-seg" id="pfViewSeg">
                 <button data-mode="current" onclick="_pfSetView('current')">Current</button>
@@ -17925,17 +17933,15 @@
               <input id="pfSearch" type="text" placeholder="Filter buildings…" oninput="renderPortfolioDash()"
                      style="padding:6px 10px; font-size:12px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); min-width:160px;">
             </div>
-            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-              <button id="pfGlossaryBtn" onclick="_pfToggleGlossary()"
-                      style="padding:6px 13px; font-size:11px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:5px; cursor:pointer; font-weight:700; letter-spacing:0.04em; text-transform:uppercase;"
-                      title="Show the metric glossary — what every column and figure means, grouped by category">Glossary</button>
-              <button id="pfExportCsvBtn" onclick="_pfExportCSV()"
-                      style="padding:6px 13px; font-size:11px; background:#0f172a; color:#fff; border:none; border-radius:5px; cursor:pointer; font-weight:700; letter-spacing:0.04em; text-transform:uppercase;"
-                      title="Download the comparison table (current view, current sort) as CSV — opens in Excel / Google Sheets">Export CSV</button>
-              <div id="pfTableTools" style="display:flex; align-items:center; gap:8px;"></div>
-            </div>
+            <button type="button" id="pfAssumeToggle" onclick="_pfToggleAssumptions()"
+                    style="display:flex; align-items:center; gap:8px; padding:6px 12px; font-size:11px; border:1px solid var(--border); border-radius:6px; background:var(--surface-2); color:var(--text); cursor:pointer; font-weight:700;"
+                    title="Stress-test the proforma — vacancy, opex, cap rate, rent growth, extra reno months. Overrides are session-only and don't change any saved record.">
+              <span style="text-transform:uppercase; letter-spacing:0.04em;">⚙ Assumptions</span>
+              <span id="pfAssumeSummary" style="font-weight:600; color:var(--muted);">saved</span>
+              <span id="pfAssumeCaret" style="color:var(--muted); font-size:9px;">▸</span>
+            </button>
           </div>
-          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:14px 22px; align-items:center;">
+          <div id="pfAssumptions" style="display:none; margin-top:12px; padding-top:12px; border-top:1px solid var(--border); grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:14px 22px; align-items:center;">
             <div class="pf-slider-row">
               <label title="Stabilized vacancy assumption applied to gross potential rent in the proforma. Overrides each building's saved vacancy % for this session only.">Vacancy</label>
               <input type="range" id="pfSlVacancy" min="0" max="30" step="1" oninput="_pfOnSlider('vacancyPct', this.value, '%')" style="accent-color:#dc2626;">
@@ -124315,7 +124321,32 @@ function _pfOnSlider(field, val, unit){
   const map = { vacancyPct:'pfSlVacancyVal', opexPct:'pfSlOpexVal', capRatePct:'pfSlCapVal', rentGrowthPct:'pfSlGrowthVal', renoDelayMonths:'pfSlRenoVal' };
   const el = document.getElementById(map[field]);
   if (el) el.textContent = (unit === 'mo') ? (parseFloat(val) + 'mo') : (parseFloat(val) + '%');
+  _pfUpdateAssumeSummary();
   renderPortfolioDash();
+}
+// Сворачиваемая панель сценарных ползунков (point 9 — компактная шапка).
+let _pfAssumeOpen = false;
+function _pfToggleAssumptions(force){
+  _pfAssumeOpen = (typeof force === 'boolean') ? force : !_pfAssumeOpen;
+  const panel = document.getElementById('pfAssumptions');
+  const caret = document.getElementById('pfAssumeCaret');
+  if (panel) panel.style.display = _pfAssumeOpen ? 'grid' : 'none';
+  if (caret) caret.textContent = _pfAssumeOpen ? '▾' : '▸';
+}
+// Однострочная сводка активных override'ов рядом с кнопкой Assumptions.
+function _pfUpdateAssumeSummary(){
+  const s = _pfScenario, parts = [];
+  if (s.vacancyPct != null)            parts.push('Vac ' + s.vacancyPct + '%');
+  if (s.opexPct != null)               parts.push('Opex ' + s.opexPct + '%');
+  if (s.capRatePct != null)            parts.push('Cap ' + s.capRatePct + '%');
+  if (_pfNum(s.rentGrowthPct) > 0)     parts.push('+' + s.rentGrowthPct + '% growth');
+  if (_pfNum(s.renoDelayMonths) > 0)   parts.push('+' + s.renoDelayMonths + 'mo reno');
+  const el = document.getElementById('pfAssumeSummary');
+  if (!el) return;
+  const active = parts.length > 0;
+  el.textContent = active ? parts.join(' · ') : 'saved';
+  el.style.color = active ? '#0284c7' : 'var(--muted)';
+  el.style.fontWeight = active ? '700' : '600';
 }
 function _pfResetScenario(){
   _pfScenario = { vacancyPct:null, opexPct:null, capRatePct:null, rentGrowthPct:0, renoDelayMonths:0 };
@@ -124336,6 +124367,7 @@ function _pfInitSliders(){
   setSl('pfSlCap',    'pfSlCapVal',     nv?(sc/nv).toFixed(2):7,   _pfScenario.capRatePct!=null?_pfScenario.capRatePct+'%':'saved');
   setSl('pfSlGrowth', 'pfSlGrowthVal',  _pfNum(_pfScenario.rentGrowthPct),   _pfNum(_pfScenario.rentGrowthPct)+'%');
   setSl('pfSlReno',   'pfSlRenoVal',    _pfNum(_pfScenario.renoDelayMonths), _pfNum(_pfScenario.renoDelayMonths)+'mo');
+  _pfUpdateAssumeSummary();
 }
 function _pfOpenBuilding(bId){
   try { state.ui = state.ui || {}; state.ui.currentBuildingId = bId; if (typeof saveState==='function') saveState(); } catch(e){}
