@@ -213,11 +213,12 @@ Any time a Claude session finds a discrepancy between SuitesForAll behavior and 
 - **Status**: NOT ENFORCED. 5× over-record guard catches typos; over-payments still recorded as `paid` with full amount.
 - **Action**: KNOWN_ISSUES.md follow-up needed if overpayment scenarios become operational.
 
-### D-2026-05-11-FM3 · Pro-rate helper not wired into invoice generation (Kiwi §8 spirit, KNOWN_ISSUES #1)
+### D-2026-05-11-FM3 · Pro-rate helper not wired into invoice generation (Kiwi §8 spirit, KNOWN_ISSUES #1) ✅ RESOLVED 2026-05-31
 - **Where**: `_unitProrationCredit(u, ym)` exists but invoice paths still bill full rent
 - **Kiwi rule**: CN1 — concessions classified upfront, immutable after first posting
-- **Status**: helper exists, wiring deferred. Operator manually adjusts spillover-month invoices.
-- **Action**: KNOWN_ISSUES.md #1; needs Tony's call on auto-wire vs operator-controlled.
+- **Status**: ✅ wired 2026-05-31 (commit `7086a53`). Ported helpers to functions/index.js as `_unitProrationCreditCF` + `_waiverCoverageCF`; `unitRentCents(unit, ym)` applies credit when ym provided; `runAutoInvoices` cron applies credit before `stripe.invoiceItems.create`. Client `_monthBilling(... unit)` extended; 8 UI callsites updated (A/R Aging, payment health squares, outstanding-balance breakdown).
+- **Subscriptions** (`startAutoPay`) intentionally left flat — Stripe subscriptions don't natively handle one-month proration. Operator can issue one-off credit via Stripe Dashboard if a waiver hits a subscription month.
+- **Action**: closed. KNOWN_ISSUES.md #1 marked FIXED.
 
 ### D-2026-05-11-FM4 · Building valuation defaults differ between Forecast hero (9%) and Investment Analysis (7%)
 - **Where**: `floor-map-editor.html` — `renderHomeForecast()` uses 9% / 35% / 0% vacancy; `renderHomeInvest()` uses 7% / 35% / 5%

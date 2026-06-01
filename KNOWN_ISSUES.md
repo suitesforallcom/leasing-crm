@@ -23,15 +23,13 @@
 
 ## 🔴 CRITICAL
 
-### #1. `_unitProrationCredit` not wired into invoice generation 📌 OPEN
-**Severity**: 🔴 — affects real billing.
-**Where**: `floor-map-editor.html` `_unitProrationCredit(u, ym)` helper exists (commit `68b7687` 2026-05-11), but downstream invoice-generation paths (`runAutoInvoices`, manual invoice creation, Stripe sync, A/R Aging calc) still bill full rent regardless of waiver date range.
-**Operator impact**: a "free month" recorded as e.g. May 12 → June 12 will:
-  - ✅ Mark May as `status='free'` (full month free)
-  - ❌ NOT auto-prorate June's invoice — operator must manually adjust if they want to bill only 18 days
-**Workaround**: operator manually creates partial invoice for the spillover month after seeing the "Quick estimate" panel preview.
-**Fix path**: audit all rent-calc callsites, apply `× (1 - _unitProrationCredit(u, ym))` consistently. Estimated 30-60 min audit + 4-6 callsite edits + test.
-**Tony decision needed**: confirm wiring should be auto-applied (vs operator-controlled per-invoice).
+### #1. `_unitProrationCredit` not wired into invoice generation ✅ FIXED 2026-05-31
+**Severity**: 🔴 → resolved.
+**Fix (commit `7086a53`)**:
+  - **Server (`functions/index.js`)**: ported `_unitProrationCredit` + `_mpmComputeWaiverCoverage` to `_unitProrationCreditCF` + `_waiverCoverageCF` (~50 lines, pure functions, no DOM). `unitRentCents(unit, ym)` now applies the credit when `ym` is provided. `createStripeInvoice` passes `ym` for rent-purpose invoices. `runAutoInvoices` (daily 09:00 UTC cron) multiplies rent by `(1 - credit)` so Stripe invoiceItems.create receives the credited amount automatically.
+  - **Client (`floor-map-editor.html`)**: `_monthBilling(rent, ym, leaseStartIso, graceDays, nowOpt, unit)` accepts optional `unit` and applies credit AFTER lease-start proration (so new-lease + waiver in same month compose correctly). 8 callsites updated: `_computeUnitMoney` (owed + late-fee), `_renderUnitPaymentHealth` (red squares), `_outstandingForUnit` (balance breakdown), and the autoApply UI preview.
+  - **Subscriptions** (`startAutoPay`): intentionally left flat — Stripe subscriptions don't natively handle one-month proration. Operator can issue one-off credit via Stripe Dashboard when needed.
+**Alignment**: FINANCIAL_MODEL_REFERENCE §EQ-5 / Kiwi §CN1 partial concession — waiver classified upfront (status='free' + waiverStart/End), immutable after first posting. Closes DECISION D-2026-05-11-FM3 (deferred → resolved).
 
 ### #2. Stripe duplicate invoice for Wilbur Brown Jr 📌 OPEN
 **Severity**: 🔴 — real money implication.
