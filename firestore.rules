@@ -324,6 +324,28 @@ service cloud.firestore {
         allow read:  if isMember(wid);
         allow write: if isEditor(wid);
       }
+
+      // Per-building documents (SCALING Phase 2 — см. SCALING_PLAN_v2.md §5).
+      // Каждое здание — свой /workspaces/{wid}/buildings/{buildingId}.
+      // Зачем: добавление здания = новый док, не раздувает существующие
+      // → снимает 1 MB doc-limit на весь портфель. Контракт доступа тот же
+      // что у state-дока + /payments: member читает, editor пишет.
+      // Server-side mirror (через admin SDK в functions/index.js) идёт мимо
+      // правил, поэтому CF-driven мутации продолжают работать.
+      match /buildings/{bid} {
+        allow read:  if isMember(wid);
+        allow write: if isEditor(wid);
+      }
+
+      // Reconcile monitoring snapshots (SCALING Phase 1+2 monitoring).
+      // Hourly cron CFs (reconcilePaymentsV2Scheduled, reconcileBuildings-
+      // V2Scheduled) пишут результаты в /workspaces/{wid}/scaling/
+      // reconcileLatest + buildingsReconcileLatest + history docs. Operator
+      // читает их для observing soak; CF-only writes (admin SDK bypass).
+      match /scaling/{doc} {
+        allow read:  if isMember(wid);
+        allow write: if false;
+      }
     }
 
     // ----- Legacy per-user state (pre-Stage-2 storage) --------------------
