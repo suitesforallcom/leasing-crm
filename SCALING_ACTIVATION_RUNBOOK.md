@@ -4,6 +4,16 @@
 >
 > **Use this when you decide to flip flags.** Everything below is currently OFF on prod — no behavior change yet. Each phase is independently rollbackable via flag flip.
 
+## ⚡ Entry point — type these in the prod browser console
+
+```js
+sfaScalingHelp()         // discover every helper (one line each)
+sfaScalingStatusV2()     // current flags + next recommended step
+sfaInspectState()        // state composition + Phase 3 candidates
+```
+
+Then read on for the activation sequence.
+
 ---
 
 ## Current state of the system (2026-06-01)
@@ -296,18 +306,36 @@ If you genuinely need to roll back POST-STRIP (Stage 5 or 6 went wrong): the reh
 
 ---
 
-## Commits delivered this run
+## Commits delivered this run (oldest → newest)
 
 ```
-1ee8476 feat(scaling): hook saveState → _mirrorBuildingsToV2 (Phase 2 activation wire)
-9cb4c9a feat(scaling): Phase 2.4 building read-switch client core (DORMANT)
-fb10e5d docs(scaling): autonomous run #2 journal + KNOWN_ISSUES #13
-e184d83 feat(scaling): Phase 1 reconcile monitoring CF (hourly + on-call)
-1d69489 docs(scaling): audit of u.payments + state.buildings read sites
-ad53f88 feat(scaling): Phase 2 building dual-write mirrors + reconcile (DORMANT)
 de72bc5 feat(scaling): Phase 1.2 read-switch client core (DORMANT)
+ad53f88 feat(scaling): Phase 2 building dual-write mirrors + reconcile (DORMANT)
+1d69489 docs(scaling): audit of u.payments + state.buildings read sites
+e184d83 feat(scaling): Phase 1 reconcile monitoring CF (hourly + on-call)
+fb10e5d docs(scaling): autonomous run #2 journal + KNOWN_ISSUES #13
+9cb4c9a feat(scaling): Phase 2.4 building read-switch client core (DORMANT)
+1ee8476 feat(scaling): hook saveState → _mirrorBuildingsToV2 (Phase 2 activation wire)
+f926e10 docs(scaling): activation runbook (this file)
+127a95a perf(scaling): null guards on currentX helpers + memoize _investBuildTenantsByBuilding
+0b6bc3b feat(scaling): sfaRehydrateMonolithPayments + sfaRehydrateMonolithBuildings (rollback)
+f6c2fa7 feat(scaling): Phase 2 buildings reconcile monitoring CF (symmetric to payments)
+360ccc9 feat(scaling): wire deleteBuildingFromModal → _mirrorBuildingDeleteV2 + audit doc
+0d3d5db feat(scaling): sfaScalingStatusV2 — combined dashboard
+f9942c7 feat(scaling): sfaScalingHelp — discoverability reference
+f5b2778 feat(scaling): sfaStripPaymentsPreview + sfaStripBuildingsPreview + saveLocalOnly audit
+324214f feat(scaling): sfaInspectState — state composition analyzer
+baa95a6 feat(scaling): sfaOutreachTailCapPreview — Phase 3 outreach cap sizing
+39d5f51 feat(scaling): sfaScalingReconcileHistory — trend view of hourly snapshots
 ```
 
-Plus release stamps and SESSION_LOG/SCALING_PLAN/KNOWN_ISSUES updates.
+Plus release stamps after every feature commit, and updates to:
+- `SCALING_PLAN_v2.md` (journal §9)
+- `KNOWN_ISSUES.md` (#13 latent v1 trigger)
+- `SCALING_AUDIT_2026-05-31.md` (Part A + B reads audit)
+- `SCALING_AUDIT_BUILDINGS_DELETES_2026-06-01.md` (delete sites)
+- `SCALING_AUDIT_SAVELOCALONLY_2026-06-01.md` (Phase 2 hook safety)
+- `MEMORY.md` + `feedback_dormant_pattern_for_risky_migrations.md`
+- `SESSION_LOG.md` (run #2 entry)
 
 — End of runbook. Open an issue or DM when you start activation; happy to walk through it live.
