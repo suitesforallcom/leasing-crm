@@ -18017,6 +18017,9 @@
             <table class="pf-table" id="pfTable"></table>
           </div>
         </div>
+
+        <!-- Institutional summary (point 5+6 — Blackstone / BlackRock / JPM-style bottom block) -->
+        <div id="pfInstitutional" style="margin-top:14px;"></div>
       </div>
 
       <!-- Payments matrix view -->
@@ -124075,7 +124078,7 @@ function _pfColInPhase(k, mode){
 function _pfCell(r, k){
   switch(k){
     case 'bldg':    return `<td class="pf-c-bldg">${esc(r.name)}${r.hasInv?'':' <span class="pf-pill" style="background:rgba(2,132,199,0.12);color:#0284c7;">no underwriting</span>'}</td>`;
-    case 'occ':     return `<td>${r.occupancyPct.toFixed(0)}%<span class="pf-minibar"><i style="width:${Math.min(100,Math.max(0,r.occupancyPct))}%"></i></span></td>`;
+    case 'occ':     { const o = _pfNum(r.occupancyPct); return `<td>${o.toFixed(0)}%<span class="pf-minibar"><i style="width:${Math.min(100,Math.max(0,o))}%"></i></span></td>`; }
     case 'units':   return `<td>${r.occupiedCount}/${r.unitCount}</td>`;
     case 'mrr':     return `<td>${_pfFmtUsd(r.mrr)}</td>`;
     case 'vacYr':   return `<td class="${r.vacAnnual>0?'pf-neg':''}">${r.vacAnnual>0?_pfFmtUsd(r.vacAnnual):'—'}</td>`;
@@ -124613,6 +124616,164 @@ function _pfRenderCharts(rows){
     : '';
 }
 
+// --- Institutional summary (point 5+6) -----------------------------------
+// Нижний «институциональный» блок в стиле отчётов крупнейших владельцев
+// (Blackstone / BlackRock / JPMorgan): income-bridge (EGI→NOI→cash flow),
+// value-creation bridge, кредитные метрики (как в term-sheet банка) и
+// концентрация портфеля. ВСЁ — только чтение из _pfAggregate / _pfBuildRows.
+// Новых финансовых формул нет: opex = EGI − NOI (определение NOI), LTV =
+// refi-кредит ÷ proforma-стоимость, share = здание ÷ Σ — презентационные
+// отношения уже посчитанных движком величин, как везде на этой странице.
+function _pfEnsureInstStyle(){
+  if (document.getElementById('pfInstStyle')) return;
+  const st = document.createElement('style');
+  st.id = 'pfInstStyle';
+  st.textContent = `
+    #portfolioDashView .pf-inst-head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
+    #portfolioDashView .pf-inst-cap { font-size:11.5px; color:var(--muted); line-height:1.5; flex:1 1 260px; }
+    #portfolioDashView .pf-inst-tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+    #portfolioDashView .pf-inst-tile { background:var(--surface-2); border:1px solid var(--border); border-radius:8px; padding:10px 12px; }
+    #portfolioDashView .pf-inst-tile-lbl { font-size:9.5px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; display:flex; align-items:center; gap:6px; }
+    #portfolioDashView .pf-inst-tile-val { font-size:19px; font-weight:800; color:var(--text); font-variant-numeric:tabular-nums; margin-top:4px; line-height:1.05; }
+    #portfolioDashView .pf-inst-tile-sub { font-size:10px; color:var(--muted); margin-top:3px; line-height:1.4; }
+    #portfolioDashView .pf-inst-dot { width:8px; height:8px; border-radius:50%; display:inline-block; flex:none; }
+    #portfolioDashView .pf-inst-dedrow { display:grid; grid-template-columns:150px 1fr; gap:10px; align-items:center; margin-bottom:7px; font-size:11px; }
+    #portfolioDashView .pf-inst-dedlbl { color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    #portfolioDashView .pf-inst-dedval { text-align:right; color:var(--muted); font-variant-numeric:tabular-nums; }
+    #portfolioDashView .pf-inst-foot { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:8px 26px; font-size:11.5px; color:var(--muted); line-height:1.55; }
+    #portfolioDashView .pf-inst-foot b { color:var(--text); }
+  `;
+  document.head.appendChild(st);
+}
+
+function _pfRenderInstitutional(rows){
+  const host = document.getElementById('pfInstitutional');
+  if (!host) return;
+  _pfEnsureInstStyle();
+  const a = _pfAggregate(rows);
+  const nB = rows.length;
+  const nNoInv = Math.max(0, nB - a.nInv);
+  const asOf = (()=>{ try { return new Date().toLocaleDateString('en-US', { year:'numeric', month:'short', day:'numeric' }); } catch(e){ return ''; } })();
+  // знаковый формат для значений, которые могут быть отрицательными (cash flow, value-add)
+  const sgn = v => (v < 0 ? '-' : '') + _pfFmtUsd(Math.abs(v));
+
+  // ---- Panel A: Income → cash-flow bridge (NOI-мост) ----
+  let pA = '';
+  if (a.pfEGI > 0){
+    const opex = a.pfEGI - a.pfNoi;            // определение: NOI = EGI − opex
+    const w = v => Math.max(0, Math.min(100, v / a.pfEGI * 100));
+    const sub = (lbl, amtStr, bw, color) => `<div class="pf-barrow"><div class="pf-barlbl">${lbl}</div>
+      <div class="pf-bartrack" style="height:24px;"><div class="pf-barfill" style="left:0; width:${bw}%; background:${color};"></div>
+      <div style="position:absolute; right:7px; top:50%; transform:translateY(-50%); font-size:10.5px; font-weight:700; color:var(--text);">${amtStr}</div></div></div>`;
+    const ded = (lbl, val, cap) => `<div class="pf-inst-dedrow"><div class="pf-inst-dedlbl">${lbl}</div>
+      <div class="pf-inst-dedval">−${_pfFmtUsd(val)}${cap?` <span style="opacity:.85;">· ${cap}</span>`:''}</div></div>`;
+    pA = `<div class="hv-card" style="padding:16px 18px;">
+      <div class="hv-eyebrow" style="margin-bottom:10px;">Income → cash flow · stabilized / yr</div>
+      ${sub('Effective gross income', _pfFmtUsd(a.pfEGI), 100, '#0284c7')}
+      ${ded('− Operating expenses', opex, 'EGI − NOI')}
+      ${sub('Net operating income', _pfFmtUsd(a.pfNoi), w(a.pfNoi), '#16a34a')}
+      ${ded('− Debt service', a.pfDebt, 'DSCR ' + _pfFmtX(a.weightedDSCR))}
+      ${sub('Levered cash flow', sgn(a.pfCF), w(a.pfCF), '#0d9488')}
+      <div style="margin-top:8px; font-size:11px; color:var(--muted);">NOI margin <b style="color:var(--text);">${_pfFmtPct(a.weightedNoiMargin)}</b> — every dollar of stabilized income converts to that much NOI before debt service.</div>
+    </div>`;
+  }
+
+  // ---- Panel B: Value-creation bridge ----
+  let pB = '';
+  if (a.pfVal > 0){
+    const curW = Math.max(0, Math.min(100, a.curVal / a.pfVal * 100));
+    const upW  = Math.max(0, Math.min(100, a.upside / a.pfVal * 100));
+    const upPct = a.curVal > 0 ? (a.upside / a.curVal * 100) : NaN;
+    const upClass = a.upside >= 0 ? 'pf-pos' : 'pf-neg';
+    pB = `<div class="hv-card" style="padding:16px 18px;">
+      <div class="hv-eyebrow" style="margin-bottom:10px;">Value creation · <span style="color:#0284c7;">current ▮</span> + <span style="color:#7c3aed;">value-add ▮</span></div>
+      <div class="pf-bartrack" style="height:30px; margin-bottom:12px;">
+        <div class="pf-barfill" style="left:0; width:${curW}%; background:#0284c7;"></div>
+        <div class="pf-barfill" style="left:${curW}%; width:${upW}%; background:rgba(124,58,237,0.85);"></div>
+        <div style="position:absolute; right:8px; top:50%; transform:translateY(-50%); font-size:11px; font-weight:800; color:var(--text);">${_pfFmtUsd(a.pfVal)}</div>
+      </div>
+      <div class="pf-inst-tiles">
+        <div class="pf-inst-tile"><div class="pf-inst-tile-lbl">Current value</div><div class="pf-inst-tile-val">${_pfFmtUsd(a.curVal)}</div><div class="pf-inst-tile-sub">income approach, in-place</div></div>
+        <div class="pf-inst-tile"><div class="pf-inst-tile-lbl">Value add</div><div class="pf-inst-tile-val ${upClass}">${sgn(a.upside)}</div><div class="pf-inst-tile-sub">${Number.isFinite(upPct)?(upPct>=0?'+':'')+_pfFmtPct(upPct)+' over current':'stabilization upside'}</div></div>
+        <div class="pf-inst-tile"><div class="pf-inst-tile-lbl">Proforma value</div><div class="pf-inst-tile-val">${_pfFmtUsd(a.pfVal)}</div><div class="pf-inst-tile-sub">stabilized · ${a.nInv} of ${nB} underwritten</div></div>
+      </div>
+    </div>`;
+  }
+
+  // ---- Panel C: Financing & leverage (как term-sheet банка) ----
+  let pC = '';
+  if (a.nInv > 0){
+    const dot = c => `<span class="pf-inst-dot" style="background:${c};"></span>`;
+    const G='#16a34a', Y='#f59e0b', R='#dc2626', N='var(--border)';
+    const dscrC = !Number.isFinite(a.weightedDSCR) ? N : (a.weightedDSCR>=1.25?G:(a.weightedDSCR>=1.10?Y:R));
+    const dyC   = !Number.isFinite(a.weightedDebtYield) ? N : (a.weightedDebtYield>=10?G:(a.weightedDebtYield>=8?Y:R));
+    const cushion = Number.isFinite(a.avgBEO) ? (a.occupancyPct - a.avgBEO) : NaN;
+    const beoC  = !Number.isFinite(cushion) ? N : (cushion>=10?G:(cushion>=0?Y:R));
+    const refiLtv = a.pfVal > 0 ? (a.pfRefi / a.pfVal * 100) : NaN;
+    const tile = (lbl, val, sub, dotc) => `<div class="pf-inst-tile">
+      <div class="pf-inst-tile-lbl">${dotc?dot(dotc):''}${lbl}</div>
+      <div class="pf-inst-tile-val">${val}</div>
+      <div class="pf-inst-tile-sub">${sub}</div></div>`;
+    pC = `<div class="hv-card" style="padding:16px 18px;">
+      <div class="hv-eyebrow" style="margin-bottom:10px;">Financing &amp; leverage · stabilized refinance</div>
+      <div class="pf-inst-tiles">
+        ${tile('Refi proceeds', _pfFmtUsd(a.pfRefi), 'loan sized at stabilization')}
+        ${tile('Equity remaining', _pfFmtUsd(a.pfEquity), 'capital still in the deal')}
+        ${tile('Refi LTV', _pfFmtPct(refiLtv), 'loan ÷ proforma value')}
+        ${tile('Weighted DSCR', _pfFmtX(a.weightedDSCR), '≥ 1.25× typical floor', dscrC)}
+        ${tile('Debt yield', _pfFmtPct(a.weightedDebtYield), '≥ 10% typical floor', dyC)}
+        ${tile('Break-even occ', _pfFmtPct(a.avgBEO), Number.isFinite(cushion)?(_pfFmtPct(Math.abs(cushion))+(cushion>=0?' cushion vs ':' short of ')+_pfFmtPct(a.occupancyPct)+' occ'):'avg across deals', beoC)}
+        ${tile('Yield on cost', _pfFmtPct(a.weightedYoC), 'NOI ÷ all-in basis')}
+        ${tile('All-in basis', _pfFmtUsd(a.allIn), (Number.isFinite(a.ppu)?_pfFmtUsd(a.ppu)+' / unit':'cost + reno'))}
+      </div>
+    </div>`;
+  }
+
+  // ---- Panel D: Portfolio composition (концентрация) ----
+  let pD = '';
+  const compRows = rows.filter(r => r.pf && _pfNum(r.pf.incomeValuation) > 0)
+                       .map(r => ({ name:r.name, v:_pfNum(r.pf.incomeValuation) }))
+                       .sort((x,z) => z.v - x.v);
+  if (compRows.length && a.pfVal > 0){
+    let bars = '';
+    for (const r of compRows){
+      const share = r.v / a.pfVal * 100;
+      bars += `<div class="pf-barrow"><div class="pf-barlbl" title="${esc(r.name)}">${esc(r.name)}</div>
+        <div class="pf-bartrack"><div class="pf-barfill" style="left:0; width:${Math.max(2,Math.min(100,share))}%; background:linear-gradient(90deg,#0284c7,#7c3aed);"></div>
+        <div style="position:absolute; right:7px; top:50%; transform:translateY(-50%); font-size:10.5px; font-weight:700; color:var(--text);">${_pfFmtPct(share)} · ${_pfFmtUsd(r.v)}</div></div></div>`;
+    }
+    const top1 = compRows[0].v / a.pfVal * 100;
+    const top3 = compRows.slice(0,3).reduce((s,x)=>s+x.v,0) / a.pfVal * 100;
+    const conc = `<div style="margin-top:8px; font-size:11px; color:var(--muted);">Largest asset <b style="color:var(--text);">${esc(compRows[0].name)}</b> = <b style="color:var(--text);">${_pfFmtPct(top1)}</b> of proforma value · top 3 = <b style="color:var(--text);">${_pfFmtPct(top3)}</b>${compRows.length<=3?' (entire portfolio)':''}.</div>`;
+    pD = `<div class="hv-card" style="padding:16px 18px;">
+      <div class="hv-eyebrow" style="margin-bottom:10px;">Portfolio composition · share of stabilized value</div>${bars}${conc}</div>`;
+  }
+
+  // ---- Panel E: Methodology / as-of footer ----
+  const pE = `<div class="hv-card" style="padding:14px 18px; background:var(--surface-2);">
+    <div class="hv-eyebrow" style="margin-bottom:10px;">Basis &amp; methodology</div>
+    <div class="pf-inst-foot">
+      <div><b>As of</b><br>${asOf}</div>
+      <div><b>Coverage</b><br>${nB} building${nB===1?'':'s'} · ${a.nInv} underwritten${nNoInv>0?` · ${nNoInv} occupancy-only`:''}</div>
+      <div><b>Units</b><br>${a.units} total · ${a.occ} occupied · ${a.nVacSuites} vacant (${_pfFmtPct(a.occupancyPct)})</div>
+      <div><b>Valuation</b><br>Income approach (direct cap), stabilized proforma</div>
+      <div style="grid-column:1/-1;">Figures are read from each building's Rent Roll occupancy and its BRRRR underwriting record in Financial Analytics — no new formulas are applied here. Operating expenses are shown as EGI − NOI; refi LTV as loan ÷ proforma value; composition as each asset ÷ portfolio value.</div>
+    </div></div>`;
+
+  // ---- Сборка ----
+  const head = `<div class="pf-inst-head">
+    <div class="hv-eyebrow" style="font-size:13px; color:var(--text);">Institutional summary</div>
+    <div class="pf-inst-cap">How the largest owners frame a book of assets — income bridge, value creation, lender credit metrics, and concentration. Same engine numbers as above, presented institution-style.</div>
+  </div>`;
+  const topGrid = [pA, pB].filter(Boolean).join('');
+  let html = head;
+  if (topGrid) html += `<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(330px,1fr)); gap:12px;">${topGrid}</div>`;
+  if (pC) html += `<div style="margin-top:12px;">${pC}</div>`;
+  if (pD) html += `<div style="margin-top:12px;">${pD}</div>`;
+  html += `<div style="margin-top:12px;">${pE}</div>`;
+  host.innerHTML = html;
+}
+
 // --- Metric glossary (point 4) — what every column/figure means ----------
 let _pfGlossaryOpen = false;
 function _pfRenderGlossary(){
@@ -124662,6 +124823,7 @@ function renderPortfolioDash(){
   try { _pfRenderCharts(rows); }    catch(e){ console.error('[pf] charts', e); }
   try { _pfRenderTable(rows); }     catch(e){ console.error('[pf] table', e); }
   try { _pfRenderOccWidget(rows); } catch(e){ console.error('[pf] occ-widget', e); }
+  try { _pfRenderInstitutional(rows); } catch(e){ console.error('[pf] inst', e); }
   const stamp = document.getElementById('pfTableStamp');
   if (stamp) stamp.textContent = rows.length + ' building' + (rows.length === 1 ? '' : 's')
     + ' · ' + (_pfViewMode === 'both' ? 'current + proforma' : _pfViewMode) + ' view'
