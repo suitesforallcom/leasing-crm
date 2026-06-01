@@ -17862,6 +17862,14 @@
       <div class="home-view" id="portfolioDashView">
         <style>
           #portfolioDashView { padding: 18px 22px; overflow: auto; height: 100%; }
+          /* Шапка дашборда должна оставаться сверху при прокрутке. Базовый .hv-topbar
+             уже даёт position:sticky; top:0 — но у контейнера padding-top:18px, поэтому
+             липкий бар встаёт на 18px ниже верха скролл-вьюпорта, и в этот зазор
+             просвечивает прокручиваемый контент (карточки над заголовком). Поднимаем
+             z-index бара над содержимым и маскируем зазор box-shadow цвета фона страницы:
+             тень рисуется вместе с z-index:30 элементом и перекрывает контент в зазоре,
+             а её верх обрезается overflow контейнера. */
+          #portfolioDashView .hv-topbar { z-index: 30; box-shadow: 0 -20px 0 0 var(--zip-paper); }
           #portfolioDashView .pf-grid-kpi { display:grid; gap:12px; }
           #portfolioDashView .pf-kpi { background: var(--surface-2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; }
           #portfolioDashView .pf-kpi-lbl { font-size:10px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em; }
