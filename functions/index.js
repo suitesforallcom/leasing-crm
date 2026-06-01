@@ -8492,3 +8492,106 @@ exports.runReconcilePaymentsV2Now = onCall(
   }
 );
 
+// ─── SCALING — Phase 2 buildings reconcile monitoring (hourly cron) ────────
+// Symmetric server-side counterpart of sfaReconcileBuildingsV2(). Same shape
+// as the payments reconcile monitor (commit e184d83) but reads buildings
+// collection instead of payments. Writes result to:
+//   workspaces/{wid}/scaling/buildingsReconcileLatest  (overwrite each tick)
+//   workspaces/{wid}/scaling/buildingsReconcile_<tsIso>  (history)
+// Active when state.settings.syncBuildingsV2 = true (until then, collection
+// is empty → result is just stateCount vs 0 — surfaces the not-yet-activated
+// state without erroring).
+
+function _buildingForV2Server(b) {
+  if (!b || typeof b !== 'object') return null;
+  const clone = JSON.parse(JSON.stringify(b));
+  for (const f of (clone.floors || [])) {
+    for (const u of (f.units || [])) {
+      delete u.payments;  // payments живут в коллекции payments
+    }
+  }
+  return clone;
+}
+
+async function _computeBuildingsReconcileV2(workspaceId) {
+  const stateRef = db.doc(`workspaces/${workspaceId}/data/state`);
+  const snap = await stateRef.get();
+  const data = snap.data() || {};
+  const s = data.state && typeof data.state === 'object' ? data.state : data;
+  // Expected = monolith view.
+  const expected = new Map();
+  for (const b of (s.buildings || [])) {
+    if (!b || !b.id) continue;
+    expected.set(b.id, _rc_stableStr(_buildingForV2Server(b)));
+  }
+  // Actual = v2 docs in the collection.
+  const colSnap = await db.collection(`workspaces/${workspaceId}/buildings`).get();
+  const actualV2 = new Map();
+  let nonV2Count = 0;
+  colSnap.forEach(d => {
+    const x = d.data() || {};
+    if (x._schema === 'v2' && x.doc) {
+      actualV2.set(d.id, _rc_stableStr(x.doc));
+    } else {
+      nonV2Count++;
+    }
+  });
+  const missingInCloud = [...expected.keys()].filter(k => !actualV2.has(k));
+  const extraInCloud = [...actualV2.keys()].filter(k => !expected.has(k));
+  const mismatched = [...expected.keys()].filter(k => actualV2.has(k) && actualV2.get(k) !== expected.get(k));
+  const clean = !missingInCloud.length && !extraInCloud.length && !mismatched.length;
+  return {
+    workspaceId,
+    stateCount: expected.size,
+    cloudCount: actualV2.size,
+    nonV2Count,
+    missingInCloud,
+    extraInCloud,
+    mismatched,
+    clean,
+    syncBuildingsV2Enabled: !!(s.settings && s.settings.syncBuildingsV2),
+    syncBuildingsReadEnabled: !!(s.settings && s.settings.syncBuildingsRead),
+    computedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+}
+
+async function _writeBuildingsReconcileResult(workspaceId, result) {
+  const tsIso = new Date().toISOString().replace(/[:.]/g, '-');
+  await db.doc(`workspaces/${workspaceId}/scaling/buildingsReconcileLatest`).set(result);
+  await db.doc(`workspaces/${workspaceId}/scaling/buildingsReconcile_${tsIso}`).set(result);
+}
+
+exports.reconcileBuildingsV2Scheduled = onSchedule(
+  {
+    schedule: '5 * * * *',     // every hour at minute 5 UTC — offset from payments cron
+    timeZone: 'UTC',
+    memory: '512MiB',
+    timeoutSeconds: 540,
+  },
+  async () => {
+    try {
+      const wid = WORKSPACE_ID;
+      const result = await _computeBuildingsReconcileV2(wid);
+      await _writeBuildingsReconcileResult(wid, result);
+      logger.info(`[reconcile-buildings-monitor] wid=${wid} clean=${result.clean} `
+        + `state=${result.stateCount} cloud=${result.cloudCount} `
+        + `missing=${result.missingInCloud.length} extra=${result.extraInCloud.length} `
+        + `mismatched=${result.mismatched.length} nonV2=${result.nonV2Count} `
+        + `syncBuildingsV2=${result.syncBuildingsV2Enabled}`);
+    } catch (e) {
+      logger.error('[reconcile-buildings-monitor] crashed:', e.message || e);
+    }
+  }
+);
+
+exports.runReconcileBuildingsV2Now = onCall(
+  { timeoutSeconds: 540, memory: '512MiB' },
+  async (req) => {
+    await requireEditor(req.auth);
+    const wid = (req.data && req.data.workspaceId) || WORKSPACE_ID;
+    const result = await _computeBuildingsReconcileV2(wid);
+    await _writeBuildingsReconcileResult(wid, result);
+    return { ok: true, ...result };
+  }
+);
+
