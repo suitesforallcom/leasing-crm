@@ -60,6 +60,21 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 36. Server-side CF payment writes must dual-write to v2 collection (2026-05-31)
+
+- **Status:** active
+- **Branch / commit:** `main` — commit `ba68a4d`
+- **Area:** Scaling V2 / Phase 1 dual-write / Cloud Functions / Stripe webhook
+- **Files:** `functions/index.js` — helpers `_stateIfSyncV2()` / `_writePaymentV2()` / `_deletePaymentV2()` (~:215-260), handler patches in `handleInvoicePaid` (anchor + advance siblings, ~:3025-3050), `handleInvoiceVoided` (~:2520-2535), `handleChargeRefunded` (~:2585-2600), `confirmBankMatch` (~:7665-7680), `undoAutoAppliedPayment` (~:7130-7145)
+- **Invariant:** Every server-side CF that writes `u.payments[ym]` inside `mutateWorkspaceState((s) => {...})` MUST also mirror the result to `workspaces/{ws}/payments/{buildingId__unitId__ym}` via `_writePaymentV2()` after the mutate commits. Every CF that deletes `u.payments[ym]` MUST call `_deletePaymentV2()` on the same explicit event. Gate-checked through `_stateIfSyncV2()` — when `state.settings.syncV2 === false` the whole mirror block is a no-op (operator can roll back via flag without redeploying CF).
+- **Why:** without server-side mirror, server writes (Stripe webhooks, bank-feed confirm, undo auto-applied) bypass the v2 collection entirely → `sfaReconcilePaymentsV2()` accumulates drift on every webhook → read-switch (Phase 2 next step) cannot proceed because the v2 collection is stale. Client-side mirror exists via `repo._mirrorSet/_mirrorDel` (floor-map-editor.html:31966), but CF writes happen out-of-process — same DB but different code path — so they need their own mirror call.
+- **NEVER delete by diff.** v1 strip incident 2026-05-30: a server-side diff-on-push strip mass-deleted all 1277 payment docs ×2 (race where stripped monolith loaded before overlay rehydrated → diff read empty → "delete everything"). v2 mirror-delete is ONLY called from explicit-event handlers (`undoAutoAppliedPayment` → `_deletePaymentV2`). Never derive deletions from before/after state comparison. See `SCALING_PLAN_v2.md` §0 rule 2.
+- **How to verify:** `grep -c "_writePaymentV2\|_deletePaymentV2\|_stateIfSyncV2" functions/index.js` returns **≥ 14** (3 helper definitions + ≥ 5 `_stateIfSyncV2` gate checks + ≥ 5 `_writePaymentV2` writes + ≥ 1 `_deletePaymentV2` delete). Functional test: trigger one of `invoice.payment_succeeded` / `invoice.voided` / `charge.refunded` / `confirmBankMatch` / `undoAutoAppliedPayment` → run `sfaReconcilePaymentsV2()` → expect `missing 0 / extra 0 / mismatched 0`.
+- **Mirrors client pattern at floor-map-editor.html:** schema `{ _schema:'v2', buildingId, floorId, unitId, ym, rec, _mirroredAt, _mirroredBy:'cloud-function' }`. Field-for-field same as client `_mirrorSet`; reconcile treats both writes as the same doc.
+- **Rollback:** flip `state.settings.syncV2 = false; saveState()` in client console (mirror block stops without CF redeploy), or `git revert ba68a4d && firebase deploy --only functions`.
+
+---
+
 ### 35. `loadPaymentsData` must be FILL-ONLY — static seed must never overwrite live payments (2026-05-31)
 
 - **Status:** active
