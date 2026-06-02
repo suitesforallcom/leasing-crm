@@ -12117,7 +12117,10 @@
   .upv2-send-lease-btn:hover { background: var(--accent-hover, #2b29b8); border-color: var(--accent-hover, #2b29b8); }
   .upv2-send-lease-actions {
     display: flex; gap: 6px; align-items: center;
-    flex-shrink: 0; flex-wrap: wrap;
+    flex-wrap: wrap; min-width: 0;
+    /* Tony 2026-06-01: на узкой панели две кнопки не помещались и «Send via
+       DocuSign» уезжала за край карточки. Убрали flex-shrink:0 → контейнер
+       сжимается до ширины строки и кнопки переносятся стопкой вместо overflow. */
   }
   .upv2-send-lease-btn-secondary {
     background: transparent;
