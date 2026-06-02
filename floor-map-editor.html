@@ -124593,7 +124593,21 @@ function _pfEnsureTxStyle(){
 #pfTable.pf-transposed .pf-tx-incell{display:flex;align-items:center;gap:2px;}
 #pfTable.pf-transposed .pf-tx-incell .pf-tx-inp{flex:1 1 auto;width:auto;min-width:0;}
 #pfTable.pf-transposed .pf-tx-unit{flex:0 0 auto;color:var(--muted);font-size:10px;font-weight:600;font-variant-numeric:tabular-nums;user-select:none;pointer-events:none;}
-#pfTable.pf-transposed .pf-tx-unit.pre{margin-right:1px;}`;
+#pfTable.pf-transposed .pf-tx-unit.pre{margin-right:1px;}
+/* Правый клик по строке-метрике Building Comparison: скрыть / показать / раскрасить */
+#pfTable.pf-transposed tbody tr.pf-tx-colored td,#pfTable.pf-transposed tbody tr.pf-tx-colored th{background-color:var(--surface-2);background-image:linear-gradient(var(--rowbg),var(--rowbg));}
+#pfTable.pf-transposed .pf-tx-hidbadge{cursor:pointer;color:var(--accent,#0284c7);font-size:10px;font-weight:700;margin-left:6px;text-decoration:none;border:1px solid var(--accent,#0284c7);border-radius:9px;padding:0 5px;}
+#pfTable.pf-transposed .pf-tx-hidbadge:hover{background:rgba(2,132,199,0.12);}
+.pf-tx-menu{position:fixed;z-index:9999;min-width:188px;max-width:268px;max-height:72vh;overflow:auto;background:var(--surface,var(--surface-2,#fff));border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,0.18);padding:5px;font-size:12px;}
+.pf-tx-menu-h{padding:5px 8px 3px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);}
+.pf-tx-menu-i{display:block;width:100%;text-align:left;background:none;border:none;padding:6px 8px;border-radius:5px;cursor:pointer;color:var(--fg);font:inherit;}
+.pf-tx-menu-i:hover{background:rgba(2,132,199,0.10);}
+.pf-tx-menu-all{font-weight:600;color:var(--accent,#0284c7);}
+.pf-tx-menu-sep{height:1px;background:var(--border);margin:5px 2px;}
+.pf-tx-menu-sw{display:flex;gap:5px;align-items:center;padding:5px 8px 7px;flex-wrap:wrap;}
+.pf-tx-sw{width:20px;height:20px;border-radius:5px;border:1px solid var(--border);cursor:pointer;padding:0;}
+.pf-tx-sw:hover{transform:scale(1.12);}
+.pf-tx-sw-x{background:var(--surface-2);color:var(--muted);font-size:11px;line-height:1;display:flex;align-items:center;justify-content:center;}`;
   document.head.appendChild(st);
 }
 
@@ -124649,8 +124663,13 @@ function _pfRenderTableTransposed(rows, tbl){
   cg += `<col style="width:${portW}px"></colgroup>`;
   // Шапка: угловая ячейка Metric (+ресайз +reset), здания (drag+ресайз), Portfolio (ресайз)
   let thead = '<thead><tr>';
-  thead += `<th title="Metrics — drag a row by its grip to reorder · click a metric label to sort buildings">Metric`
-        +  `<a class="pf-tx-reset" title="Reset row &amp; column order and widths to default" onclick="_pfTxResetLayout()">↺</a>`
+  const _hidShowable = hidden.filter(hk => PF_COLUMNS[hk] && hk !== 'bldg' && hk !== 'actions');
+  const _hidBadge = _hidShowable.length
+    ? `<a class="pf-tx-hidbadge" title="${_hidShowable.length} hidden metric(s) — click to restore" onclick="_pfTxShowHiddenMenu(event)">⊘${_hidShowable.length}</a>`
+    : '';
+  thead += `<th title="Metrics — right-click a row to hide or color it · drag a row by its grip to reorder · click a metric label to sort buildings">Metric`
+        +  `<a class="pf-tx-reset" title="Reset row/column order, widths &amp; colors to default" onclick="_pfTxResetLayout()">↺</a>`
+        +  _hidBadge
         +  `<span class="pf-tx-resizer" data-resize="__metric__" data-cidx="0"></span></th>`;
   sorted.forEach((r, i) => {
     const nu = r.hasInv ? '' : ' <span class="pf-pill" style="background:rgba(2,132,199,0.12);color:#0284c7;">n/u</span>';
@@ -124696,7 +124715,8 @@ function _pfRenderTableTransposed(rows, tbl){
       const isSorted = sortState.col === k;
       const arrow = isSorted ? (sortState.dir === 'asc' ? '▲' : '▼') : '↕';
       // th строки: draggable для reorder; клик по ярлыку (вложенный span) — сортировка зданий
-      tbody += `<tr><th data-metric="${k}" draggable="true" title="${esc(c.title || c.label)} — drag to reorder · click label to sort buildings">`
+      const _rcss = _pfTxRowColorFor(k);
+      tbody += `<tr${_rcss ? ` class="pf-tx-colored" style="--rowbg:${_rcss}"` : ''}><th data-metric="${k}" draggable="true" title="${esc(c.title || c.label)} — right-click to hide or color · drag to reorder · click label to sort buildings">`
             +  `<span class="pf-tx-grip">⠿</span>`
             +  `<span class="pf-tx-mlabel" style="cursor:pointer;" onclick="_pfTxSort('${k}')">${esc(c.label)} <span style="color:var(--muted);font-size:9px;">${arrow}</span></span>`
             +  `</th>`;
@@ -124733,8 +124753,137 @@ function _pfTxResetLayout(){
     removePref('sfa_pf_tx_metric_order');
     removePref('sfa_pf_tx_col_w');
     removePref('sfa_pf_tx_metric_w');
+    removePref('sfa_pf_tx_row_colors');
   } catch(e){}
   renderPortfolioDash();
+}
+
+// =========================================================================
+// Правый клик по строке-метрике Building Comparison (транспонированный вид):
+//   • «Hide this row» — прячет метрику. Пишем в тот же набор
+//     sfa_pf_dash_col_hidden, что и «скрытые колонки» стандартного вида →
+//     метрика скрыта согласованно в обоих ориентациях, один источник правды.
+//   • палитра цветов — подсветка строки (sfa_pf_tx_row_colors = {metric: css}),
+//     применяется CSS-переменной --rowbg на <tr> (без правки данных ячеек).
+//   • «Hidden metrics · N» — вернуть скрытые поштучно или «Show all».
+// Бейдж ⊘N в углу «Metric» — запасной путь вернуть строки, если скрыли все.
+// Чисто UI: только отображение уже посчитанных данных, без формул/схемы.
+// Префы sfa_pf_* авто-синкаются в Firestore (_SYNC_PREF_PATTERN).
+// =========================================================================
+const _PF_TX_ROW_COLORS = [
+  { name:'Yellow', css:'rgba(250,204,21,0.20)' },
+  { name:'Green',  css:'rgba(34,197,94,0.18)' },
+  { name:'Blue',   css:'rgba(2,132,199,0.16)' },
+  { name:'Rose',   css:'rgba(244,63,94,0.16)' },
+  { name:'Purple', css:'rgba(168,85,247,0.18)' },
+  { name:'Slate',  css:'rgba(100,116,139,0.18)' },
+];
+function _pfTxRowColors(){
+  let m = {}; try { m = JSON.parse(readPref('sfa_pf_tx_row_colors') || '{}') || {}; } catch(e){}
+  return (m && typeof m === 'object') ? m : {};
+}
+// Возвращает валидный css-цвет строки или '' — защита от подделанного localStorage.
+function _pfTxRowColorFor(k){
+  const c = _pfTxRowColors()[k];
+  return (typeof c === 'string' && /^(rgba?\([\d.,\s]+\)|#[0-9a-fA-F]{3,8})$/.test(c)) ? c : '';
+}
+function _pfTxHiddenSet(){
+  let h = []; try { h = JSON.parse(readPref('sfa_pf_dash_col_hidden') || '[]') || []; } catch(e){}
+  return Array.isArray(h) ? h : [];
+}
+// Только реально скрываемые метрики (исключаем bldg/actions и мусор).
+function _pfTxHiddenMetrics(){
+  return _pfTxHiddenSet().filter(k => PF_COLUMNS[k] && k !== 'bldg' && k !== 'actions');
+}
+function _pfTxHideRow(k){
+  if (!k) return;
+  const h = _pfTxHiddenSet();
+  if (!h.includes(k)) h.push(k);
+  try { writePref('sfa_pf_dash_col_hidden', JSON.stringify(h)); } catch(e){}
+  _pfTxCloseMenu(); renderPortfolioDash();
+}
+function _pfTxShowRow(k){
+  const h = _pfTxHiddenSet().filter(x => x !== k);
+  try { writePref('sfa_pf_dash_col_hidden', JSON.stringify(h)); } catch(e){}
+  _pfTxCloseMenu(); renderPortfolioDash();
+}
+function _pfTxShowAllRows(){
+  try { writePref('sfa_pf_dash_col_hidden', '[]'); } catch(e){}
+  _pfTxCloseMenu(); renderPortfolioDash();
+}
+function _pfTxColorRow(k, css){
+  if (!k) return;
+  const m = _pfTxRowColors();
+  if (css) m[k] = css; else delete m[k];
+  try { writePref('sfa_pf_tx_row_colors', JSON.stringify(m)); } catch(e){}
+  _pfTxCloseMenu(); renderPortfolioDash();
+}
+// --- плавающее контекстное меню строки ---
+let _pfTxMenuEl = null;
+function _pfTxCloseMenu(){
+  if (_pfTxMenuEl){ _pfTxMenuEl.remove(); _pfTxMenuEl = null; }
+  document.removeEventListener('pointerdown', _pfTxMenuOutside, true);
+  document.removeEventListener('keydown', _pfTxMenuKey, true);
+}
+function _pfTxMenuOutside(e){ if (_pfTxMenuEl && !_pfTxMenuEl.contains(e.target)) _pfTxCloseMenu(); }
+function _pfTxMenuKey(e){ if (e.key === 'Escape') _pfTxCloseMenu(); }
+function _pfTxContextMenu(e){
+  const tbl = e.target.closest && e.target.closest('#pfTable.pf-transposed');
+  if (!tbl) return;
+  if (e.target.closest('input,textarea,select,a')) return;   // не перехватываем native-меню на инпутах/ссылках
+  const row = e.target.closest('tbody tr');
+  const mth = row && row.querySelector(':scope > th[data-metric]');
+  const k = mth ? mth.dataset.metric : null;
+  const hidden = _pfTxHiddenMetrics();
+  if (!k && !hidden.length) return;                          // нечего показать → отдаём native-меню
+  e.preventDefault();
+  _pfTxShowMenu(e.clientX, e.clientY, k, hidden);
+}
+function _pfTxShowHiddenMenu(e){
+  if (e){ e.preventDefault(); e.stopPropagation(); }
+  const hidden = _pfTxHiddenMetrics();
+  if (!hidden.length) return;
+  _pfTxShowMenu(e ? e.clientX : 220, e ? e.clientY : 220, null, hidden);
+}
+function _pfTxShowMenu(x, y, k, hidden){
+  _pfTxCloseMenu();
+  if (!k && (!hidden || !hidden.length)) return;
+  const m = document.createElement('div');
+  m.className = 'pf-tx-menu';
+  let html = '';
+  if (k){
+    const label = (PF_COLUMNS[k] && PF_COLUMNS[k].label) || k;
+    const cur = _pfTxRowColorFor(k);
+    html += `<div class="pf-tx-menu-h">${esc(label)}</div>`;
+    html += `<button class="pf-tx-menu-i" onclick="_pfTxHideRow('${esc(k)}')">⊘ Hide this row</button>`;
+    html += `<div class="pf-tx-menu-sw">`;
+    for (const c of _PF_TX_ROW_COLORS)
+      html += `<button class="pf-tx-sw" title="${esc(c.name)}" style="background:${c.css}" onclick="_pfTxColorRow('${esc(k)}','${c.css}')"></button>`;
+    html += `<button class="pf-tx-sw pf-tx-sw-x" title="Clear color" onclick="_pfTxColorRow('${esc(k)}','')">${cur ? '✕' : '–'}</button>`;
+    html += `</div>`;
+  }
+  if (hidden && hidden.length){
+    if (k) html += `<div class="pf-tx-menu-sep"></div>`;
+    html += `<div class="pf-tx-menu-h">Hidden metrics · ${hidden.length}</div>`;
+    for (const hk of hidden){
+      const hl = (PF_COLUMNS[hk] && PF_COLUMNS[hk].label) || hk;
+      html += `<button class="pf-tx-menu-i" onclick="_pfTxShowRow('${esc(hk)}')">＋ ${esc(hl)}</button>`;
+    }
+    html += `<button class="pf-tx-menu-i pf-tx-menu-all" onclick="_pfTxShowAllRows()">Show all</button>`;
+  }
+  m.innerHTML = html;
+  document.body.appendChild(m);
+  _pfTxMenuEl = m;
+  const r = m.getBoundingClientRect();
+  let px = x, py = y;
+  if (px + r.width  > window.innerWidth  - 8) px = window.innerWidth  - r.width  - 8;
+  if (py + r.height > window.innerHeight - 8) py = window.innerHeight - r.height - 8;
+  m.style.left = Math.max(8, px) + 'px';
+  m.style.top  = Math.max(8, py) + 'px';
+  setTimeout(() => {
+    document.addEventListener('pointerdown', _pfTxMenuOutside, true);
+    document.addEventListener('keydown', _pfTxMenuKey, true);
+  }, 0);
 }
 
 // =========================================================================
@@ -124755,6 +124904,7 @@ function _pfTxWire(tbl){
   tbl.addEventListener('drop',      _pfTxDrop);
   tbl.addEventListener('dragend',   _pfTxDragEnd);
   tbl.addEventListener('pointerdown', _pfTxResizeMaybeStart);
+  tbl.addEventListener('contextmenu', _pfTxContextMenu);
 }
 function _pfTxClearMarks(){
   document.querySelectorAll('#pfTable .pf-tx-drop-before,#pfTable .pf-tx-drop-after,#pfTable .pf-tx-drop-above,#pfTable .pf-tx-drop-below')
