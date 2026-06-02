@@ -52788,7 +52788,10 @@ function renderHomeForecast() {
   // 3 past months on the left (faded) + 12 future months. Width
   // adjusts dynamically so the bars stay legible regardless of how
   // many we render.
-  const W = 900, H = 232, pad = { l: 6, r: 6, t: 30, b: 36 };
+  // H/pad.b увеличены на 12px (232→244, 36→48), чтобы под milestone-колонкой
+  // поместилась 3-я подпись — макс. аренда при 100% (capacityCeiling). chartH
+  // не меняется (166) → геометрия баров/линии-потолка/ETA остаётся прежней.
+  const W = 900, H = 244, pad = { l: 6, r: 6, t: 30, b: 48 };
   const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
   // 3 past + 12 future = 15 баров + 1 финальный milestone-слот «ETA до 100%».
   // Резервируем слот всегда, даже когда ETA = «never» / «20+ yrs» — иначе
@@ -53101,6 +53104,14 @@ function renderHomeForecast() {
     _milMain = '100%'; _milSub = _etaLbl; _milOpacity = 1;
     _milTip  = `100% leased ETA: ${_etaLbl} — ${_etaMonths}mo from now at current pace`;
   }
+  // Макс. аренда при 100% занятости = capacityCeiling (= currentMRR + vacant
+  // asking-rent, тот же maxMonthlyPotential, что в KPI-strip). Показываем СНИЗУ
+  // колонки как итоговое число «сколько будет аренды при 100% площади» (Tony
+  // 2026-06-01). Это уже посчитанное значение — новых формул нет. Компактно: $Xk/mo.
+  const _capMo  = Math.round(capacityCeiling);
+  const _capLbl = _capMo >= 1000 ? `$${Math.round(_capMo / 1000).toLocaleString()}k/mo`
+                                 : `$${_capMo.toLocaleString()}/mo`;
+  const _capTip = `Maximum rent at 100% leased: $${_capMo.toLocaleString()}/mo — current rent plus every vacant suite at asking rent`;
   // Тонкий пунктирный делитель слева от milestone-колонки — отделяет
   // непрерывный таймлайн forecast'а от «маркера-цели». Без него оператор
   // может прочесть колонку как ещё один обычный месяц.
@@ -53124,6 +53135,10 @@ function renderHomeForecast() {
       <text x="${milX + milW/2}" y="${milBaseY + 28}" text-anchor="middle"
             font-size="9" fill="var(--muted)" opacity="0.7"
             font-family="Inter, system-ui, sans-serif">ETA</text>
+      <text x="${milX + milW/2}" y="${milBaseY + 41}" text-anchor="middle"
+            font-size="11" fill="#7c3aed" font-weight="700"
+            font-family="Inter, system-ui, sans-serif"
+            style="font-variant-numeric: tabular-nums;"><title>${esc(_capTip)}</title>${esc(_capLbl)}</text>
     </g>
   ` : '';
   // Компактная одно-строчная легенда: цветные точки + короткие лейблы +
