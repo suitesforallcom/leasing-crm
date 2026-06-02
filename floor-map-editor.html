@@ -31616,6 +31616,53 @@ try {
   window.sfaDisableStripBuildingsV2 = sfaDisableStripBuildingsV2;
 } catch (e) {}
 
+// =========================================================================
+// Phase 3 (Stage 7) — OUTREACH TAIL-CAP — DORMANT (settings.syncOutreachCap=false).
+// Полная история outreach durably пишется в workspaces/{ws}/audit через
+// recordAuditClient на КАЖДОМ recordOutreach (36+ callsites). Поэтому u.outreach[]
+// в монолите — лишь локальный кэш (cap 100). При флаге ON обрезаем хвост до N (25)
+// в payload-КОПИИ → монолит легче на ~40KB, история не теряется (она в Audit).
+// Откат: флаг off (хвост снова до 100 на пуше). Низкий риск — поле не финансовое,
+// зеркало durable. Активация — оператором (sfaEnableOutreachCap), НЕ автономно.
+// =========================================================================
+function _outreachCapEnabled() {
+  try { return !!(state && state.settings && state.settings.syncOutreachCap === true); }
+  catch (e) { return false; }
+}
+function _outreachCapN() {
+  const n = state && state.settings && +state.settings.syncOutreachCapN;
+  return (Number.isFinite(n) && n > 0) ? n : 25;
+}
+function _fbCapOutreachInPayload(payload) {
+  if (!payload || !_outreachCapEnabled()) return 0;
+  if (typeof window !== 'undefined' && window._sfaRehydrating) return 0;
+  const cap = _outreachCapN();
+  let n = 0;
+  for (const b of (payload.buildings || []))
+    for (const f of ((b && b.floors) || []))
+      for (const u of ((f && f.units) || [])) {
+        if (u && Array.isArray(u.outreach) && u.outreach.length > cap) { u.outreach = u.outreach.slice(-cap); n++; }
+      }
+  if (n) console.debug('[outreach-cap-v3] обрезано до ' + cap + ' на ' + n + ' юнит(ах)');
+  return n;
+}
+function sfaEnableOutreachCap(n) {
+  if (typeof isRootAdmin === 'function' && !isRootAdmin()) { console.warn('root-admin only'); return; }
+  if (!state.settings) state.settings = {};
+  if (typeof n === 'number' && n > 0) state.settings.syncOutreachCapN = n;
+  state.settings.syncOutreachCap = true; if (typeof saveState === 'function') saveState();
+  console.log('✓ syncOutreachCap = ON (cap=' + _outreachCapN() + '). Полная история — в Settings → Audit. Откат: sfaDisableOutreachCap().');
+}
+function sfaDisableOutreachCap() {
+  if (!state.settings) state.settings = {};
+  state.settings.syncOutreachCap = false; if (typeof saveState === 'function') saveState();
+  console.log('✓ syncOutreachCap = OFF — хвост outreach снова до 100 на пуше.');
+}
+try {
+  window.sfaEnableOutreachCap = sfaEnableOutreachCap;
+  window.sfaDisableOutreachCap = sfaDisableOutreachCap;
+} catch (e) {}
+
 async function fbPushNow() {
   if (!fbSync.enabled || !fbSync.sdk) return;
   // Same guard at the direct-push level — belt and braces.
@@ -31640,6 +31687,9 @@ async function fbPushNow() {
     // источник (dual-write + read-switch ВКЛ). Коллекцию НЕ трогает — не delete-by-diff.
     try { _fbStripPaymentsFromPayload(payload); } catch (e) { console.warn('[strip-pay-v2]', e); }
     try { _fbStripBuildingsFromPayload(payload); } catch (e) { console.warn('[strip-bld-v2]', e); }
+    // Phase 3 (DORMANT — флаг syncOutreachCap): обрезает хвост u.outreach до N в
+    // payload-копии; полная история durable в audit-подколлекции. Не финансовое.
+    try { _fbCapOutreachInPayload(payload); } catch (e) { console.warn('[outreach-cap-v3]', e); }
     const json = JSON.stringify(payload);
     const sizeKB = Math.round(json.length / 1024);
     // HARD GUARD against the 1MB Firestore document limit. Below
@@ -33262,6 +33312,10 @@ window.sfaScalingHelp = function () {
        'sfaEnableStripBuildingsV2()       — Phase 2.5 ON → unlimited buildings',
        'sfaDisableStripBuildingsV2()      — Phase 2.5 OFF',
        'on missing data after strip: sfaRehydrateMonolithPayments()/Buildings()']],
+    ['Phase 3 outreach tail-cap — Stage 7 (DORMANT; full history stays in Audit log)',
+      ['sfaOutreachTailCapPreview(25)     — dry-run size impact (no mutation)',
+       'sfaEnableOutreachCap(25)          — cap in-state outreach tail to 25 on push',
+       'sfaDisableOutreachCap()           — OFF (tail back to 100)']],
     ['Server-side (Firebase Console paths)',
       ['workspaces/' + WORKSPACE_ID + '/scaling/reconcileLatest          — Phase 1 hourly snapshot',
        'workspaces/' + WORKSPACE_ID + '/scaling/buildingsReconcileLatest — Phase 2 hourly snapshot',
