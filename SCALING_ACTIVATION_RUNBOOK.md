@@ -255,11 +255,11 @@ Implementation notes — similar to Stage 5 strip but for buildings instead of p
 
 Not blocking unlimited buildings. Frees additional ~170 KB per building.
 
-- `u.leaseDocuments[*]` (104 KB workspace total) → `workspaces/{ws}/leaseDocs/{bid__uid__n}` or Storage refs
-- `u.outreach[*]` (66 KB) → `workspaces/{ws}/audit/` subcollection, keep tail of 25 in state
-- `state.gmailActivity` + `callActivity` + `calendarEvents` + `dailyHistory` → `workspaces/{ws}/ingest/{type}`
+- ✅ **`u.outreach[*]` (66 KB) — BUILT DORMANT 2026-06-01 (commit `a634bc6`).** Full history already mirrored to `workspaces/{ws}/audit` via `recordAuditClient` on every `recordOutreach` (verified, 36+ callsites), so the in-state array is only a cache. Flag `settings.syncOutreachCap` (default false) + `_fbCapOutreachInPayload` caps the tail to N (default 25) on the deep-clone payload. Enable: `sfaEnableOutreachCap(25)`. Preview: `sfaOutreachTailCapPreview(25)`. Rollback: `sfaDisableOutreachCap()`. Low-risk (non-financial, durable mirror). **Activate anytime — no soak gate needed** (history is safe in Audit).
+- ⏳ **`u.leaseDocuments[*]` (104 KB) — NOT BUILT.** Prereq: a durable dual-write mirror FIRST (like Phase 1 payments) → `workspaces/{ws}/leaseDocs/{bid__uid__n}` or Storage refs, then reconcile, then strip. Sensitive (lease/DocuSign records, not a cache) — must NOT be capped/stripped before a verified mirror exists. Build with reconcile-gate, not autonomously rushed. The `_tplStripReplacer`/`htmlStorageRef` Storage pattern is the reuse target for the heavy HTML.
+- ⏳ **`state.gmailActivity` + `callActivity` + `calendarEvents` + `dailyHistory` — NOT BUILT.** These are CF-written top-level maps → `workspaces/{ws}/ingest/{type}` needs `functions/index.js` changes (GATED — separate Tony approval). Client-side cap is possible but the real win is server-side ingest.
 
-These are independent migrations — can do one at a time.
+These are independent migrations — can do one at a time. outreach-cap shipped; the other two are scoped above and need (leaseDocs) a mirror-first build or (activity) gated CF work.
 
 ---
 
