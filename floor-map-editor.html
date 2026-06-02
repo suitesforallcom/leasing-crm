@@ -52221,17 +52221,35 @@ function renderHomeForecast() {
   const f = _computeRevenueForecast(rate, floorFilter, paceMul, buildingRentStartMs);
   // Req1 — ручной $/мес прирост continuing-rent (линейный кумулятивный
   // эскалатор по запросу оператора 2026-06-01, approval «Да — как описано»).
-  // Первый прогнозный месяц = базовый (+0), каждый следующий +$X сверху
-  // (Mo2 = +1×, Mo3 = +2×, …). Лифтит ТОЛЬКО revenue-линию / Total / Avg
-  // (continuingRent → все consumers ниже). Potential value считается из
-  // f.maxMonthlyPotential (proforma 100% leased), поэтому НЕ затрагивается —
-  // инвариант 9% cap / 35% opex сохранён.
+  // Лифтит ТОЛЬКО revenue-линию / Total / Avg (continuingRent → все consumers
+  // ниже). Potential value считается из f.maxMonthlyPotential (proforma 100%
+  // leased), поэтому НЕ затрагивается — инвариант 9% cap / 35% opex сохранён.
+  //
+  // Req2-fix (Tony 2026-06-01): эскалатор теперь УВАЖАЕТ дату старта аренды
+  // текущего здания — как базовая аренда (≈36881) и новые подписания (≈36919).
+  // Раньше он накладывался на каждый прогнозный месяц с ТЕКУЩЕГО → доход
+  // рисовался ДО даты старта (баг, замеченный оператором: дата сентябрь, а
+  // график давал доход с июля). Теперь:
+  //   • есть дата старта → месяцы ДО неё получают $0; первый АКТИВНЫЙ месяц
+  //     (= месяц старта, здание «открывается») = +1×step, далее +2×, +3× …
+  //     (выбор оператора: «аренда с сентября → деньги с сентября»).
+  //   • нет даты старта → прежнее поведение: первый прогнозный месяц
+  //     (текущий) = базовый +0, далее +1×, +2× …
+  // _stepCum12 / _stepLastMo копят реально добавленную сумму → лейбл слайдера
+  // ниже показывает «≈ +$…/12mo», совпадающий с графиком (а не step×66 всегда).
   const _rentStepUsd = Math.max(0, +readPref('sfa_inv_fcst_rentStepUsd') || 0);
+  let _stepCum12 = 0, _stepLastMo = 0;
   if (_rentStepUsd > 0) {
-    let _k = 0;
+    const _fcstB      = (typeof _currentForecastBuilding === 'function') ? _currentForecastBuilding() : null;
+    const _fcstBStart = (_fcstB && buildingRentStartMs.get(_fcstB.id)) || null;
+    let _k = _fcstBStart ? 1 : 0;
     for (const m of f.months) {
       if (m.isPast) continue;
-      m.continuingRent += _k * _rentStepUsd;
+      if (_fcstBStart && m.mStart && m.mStart.getTime() < _fcstBStart) continue;
+      const _add = _k * _rentStepUsd;
+      m.continuingRent += _add;
+      _stepCum12 += _add;
+      _stepLastMo  = _add;
       _k++;
     }
   }
@@ -52249,12 +52267,14 @@ function renderHomeForecast() {
   }
   const rentStepLblEl = document.getElementById('hvFcstRentStepLabel');
   if (rentStepLblEl) {
-    // Σ прироста за 12 прогнозных месяцев = step × (0+1+…+11) = step×66.
-    const _cum12 = Math.round(66 * _rentStepUsd);
-    const _mo12  = Math.round(11 * _rentStepUsd);
+    // Σ реально добавленного прироста в окне (с учётом даты старта) — см.
+    // _stepCum12 выше. Без даты = step×66 (как прежде); с датой — меньше,
+    // т.к. месяцы до старта дают $0. Так лейбл совпадает с суммой на графике.
+    const _cum12 = Math.round(_stepCum12);
+    const _mo12  = Math.round(_stepLastMo);
     rentStepLblEl.textContent = _rentStepUsd > 0 ? `≈ +$${_cum12.toLocaleString()}/12mo` : '';
     rentStepLblEl.title = _rentStepUsd > 0
-      ? `Each forecast month adds $${_rentStepUsd.toLocaleString()} more to continuing-lease revenue than the previous one (Mo12 is +$${_mo12.toLocaleString()}/mo). Summed across the 12-month window that is ≈ +$${_cum12.toLocaleString()}. Affects the revenue line, Total and Avg only — Potential value (proforma) is unchanged.`
+      ? `Each forecast month adds $${_rentStepUsd.toLocaleString()} more to continuing-lease revenue than the previous one (last active month in the window is +$${_mo12.toLocaleString()}/mo). Summed across the forecast window that is ≈ +$${_cum12.toLocaleString()}. Affects the revenue line, Total and Avg only — Potential value (proforma) is unchanged.`
       : '';
   }
   // --- Req2 UI: дата старта аренды для ТЕКУЩЕГО прогнозируемого здания.
@@ -52272,7 +52292,7 @@ function renderHomeForecast() {
         `<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:11.5px; color:var(--muted);">
            <span style="text-transform:uppercase; letter-spacing:0.04em; font-weight:700; cursor:help;"
                  title="Renovation / lease-up timing for ${esc(_bName)}. Before this month the building contributes $0 to the forecast — no continuing rent and no new signings. Use it to model a building under renovation that starts leasing later. Stored per building.">Rent starts</span>
-           <input type="date" id="hvFcstRentStartInput" value="${esc(_cur)}"
+           <input type="date" id="hvFcstRentStartInput" value="${esc(_cur)}" min="2000-01-01"
                   style="padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font-size: 12px;">
            <span style="color:var(--text); font-weight:600;">${esc(_bName)}</span>
            <span id="hvFcstRentStartNote"></span>
