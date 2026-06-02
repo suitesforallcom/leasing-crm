@@ -124733,8 +124733,14 @@ function _pfRenderTableTransposed(rows, tbl){
         tbody += `<tr class="pf-tx-arow"><th class="pf-tx-alabel" title="${esc(f.label)} — ${unitWord}; type a value, it saves to that building & recomputes results">${esc(f.label)}</th>`;
         for (const r of sorted){
           const inv = r.inv;
-          const v = (inv && inv[f.field] != null && inv[f.field] !== '') ? esc(String(inv[f.field])) : '';
-          tbody += `<td><span class="pf-tx-incell">${pre}<input type="number" class="pf-tx-inp" inputmode="decimal" data-bldg="${esc(r.bId)}" data-field="${f.field}" value="${v}" step="${f.step}" min="0" placeholder="—" oninput="_pfTxOnAssume(this)">${suf}</span></td>`;
+          const _raw = (inv && inv[f.field] != null && inv[f.field] !== '') ? inv[f.field] : '';
+          // $-поля показываем с разделителями тысяч (2,150,000), иначе крупные суммы
+          // сливаются. В type=number запятые недопустимы → для $ берём type=text;
+          // остальные (% / mo / yr) остаются type=number. Парсер терпит запятые.
+          const v = esc(isPre && _raw !== '' && Number.isFinite(+_raw) ? (+_raw).toLocaleString('en-US') : String(_raw));
+          const _typeAttr = isPre ? 'type="text"' : `type="number" step="${f.step}" min="0"`;
+          const _fmtAttr  = isPre ? ' onblur="_pfTxAssumeFmt(this)"' : '';
+          tbody += `<td><span class="pf-tx-incell">${pre}<input ${_typeAttr} class="pf-tx-inp" inputmode="decimal" data-bldg="${esc(r.bId)}" data-field="${esc(f.field)}" value="${v}"${_fmtAttr} placeholder="—" oninput="_pfTxOnAssume(this)">${suf}</span></td>`;
         }
         tbody += `<td></td></tr>`;
       }
@@ -125125,7 +125131,7 @@ function _pfTxOnAssume(inp){
   if (!inp) return;
   const bId = inp.dataset.bldg, field = inp.dataset.field;
   if (!bId || !field) return;
-  const val = parseFloat(inp.value);
+  const val = parseFloat(String(inp.value).replace(/,/g, ''));   // терпим разделители тысяч в $-полях
   if (!Number.isFinite(val)) return;   // пустое/частичное («-», «.») — игнор
   const needSeed = !(state.investments && state.investments[bId]);
   if (needSeed) _pfTxSeedInv(bId);
@@ -125146,6 +125152,14 @@ function _pfTxOnAssume(inp){
   // re-render. Обычная правка → хирургическое обновление результатов (фокус цел).
   if (needSeed) renderPortfolioDash();
   else _pfTxScheduleRefresh();
+}
+// Реформат $-поля андеррайтинга на blur: убираем старые запятые и ставим заново
+// разделители тысяч (2150000 → 2,150,000). Только отображение — значение уже
+// сохранено в _pfTxOnAssume (он терпит запятые при парсинге).
+function _pfTxAssumeFmt(inp){
+  if (!inp) return;
+  const n = parseFloat(String(inp.value).replace(/,/g, ''));
+  inp.value = Number.isFinite(n) ? n.toLocaleString('en-US') : '';
 }
 
 // Хирургический пересчёт результатов. Обновляем ТОЛЬКО ячейки data-rcell (значения
