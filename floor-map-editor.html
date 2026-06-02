@@ -17889,7 +17889,10 @@
              z-index бара над содержимым и маскируем зазор box-shadow цвета фона страницы:
              тень рисуется вместе с z-index:30 элементом и перекрывает контент в зазоре,
              а её верх обрезается overflow контейнера. */
-          #portfolioDashView .hv-topbar { z-index: 30; box-shadow: 0 -20px 0 0 var(--zip-paper); }
+          /* Tony 2026-06-01: шапка дашборда должна прокручиваться вместе с контентом,
+             а не залипать сверху, и не держать фикс-высоту 56px. Снимаем sticky +
+             фикс-высоту ТОЛЬКО для дашборда (класс .hv-topbar общий с home/forecast). */
+          #portfolioDashView .hv-topbar { position: static; height: auto; min-height: 0; padding: 2px 0 6px; box-shadow: none; }
           #portfolioDashView .pf-grid-kpi { display:grid; gap:12px; }
           #portfolioDashView .pf-kpi { background: var(--surface-2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; }
           #portfolioDashView .pf-kpi-lbl { font-size:10px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em; }
