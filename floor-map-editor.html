@@ -18049,7 +18049,10 @@
             <div class="hv-eyebrow">Building comparison</div>
             <div id="pfTableStamp" style="font-size:11px; color:var(--muted);"></div>
           </div>
-          <div style="overflow:auto; max-height:62vh;">
+          <!-- Tony 2026-06-01: таблицу не сворачивать во внутренний скролл и без
+               вертикального бегунка — показываем целиком, страница листается сама.
+               overflow-x оставлен как подстраховка при большом числе зданий. -->
+          <div style="overflow-x:auto;">
             <table class="pf-table" id="pfTable"></table>
           </div>
         </div>
