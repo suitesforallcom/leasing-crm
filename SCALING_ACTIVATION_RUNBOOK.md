@@ -208,8 +208,11 @@ sfaTestBuildingsReadSwitchV2(false)
 
 **Effect:** `saveState` STOPS writing `u.payments[ym]` to the monolith. State doc drops ~200 KB. Reads continue from Phase 1.2 listener.
 
-### NOT YET BUILT — design notes for future implementation
+### ✅ BUILT DORMANT 2026-06-01 (commit `25eae58`)
 
+Shipped: flag `settings.syncV2StripPayments` (default **false**) + `_fbStripPaymentsFromPayload()` — **scrub-only** on the `fbSanitizeState` deep-clone payload (collection untouched, NOT delete-by-diff; the dead v1 `_fbPaymentsCutover` stays disabled). Strict gate `_stripPaymentsV2Enabled()` requires dual-write **AND** read-switch ON, so a stray flag alone strips nothing. Enable: `sfaEnableStripPaymentsV2()` (refuses unless read-switch live + warns re soak). Rollback: `sfaDisableStripPaymentsV2()` (monolith re-fattens next push) or `sfaRehydrateMonolithPayments()`. **Activate only after 48h clean soak.**
+
+Implementation notes:
 - Use the existing `_fbPaymentsCutover` kill-switch infrastructure (currently always-on, blocks strip)
 - New flag: `settings.syncV2StripPayments`
 - Hook into `fbPushNow` (or `saveState`'s replacer) to scrub `u.payments` from the outbound state on push
@@ -231,9 +234,11 @@ Required before implementing:
 
 **Effect:** `saveState` STOPS writing `state.buildings` to monolith. Reads continue from Phase 2.4 listener. State doc drops ~600 KB → **unlimited buildings unlocked** (each building is its own doc, no shared 1 MB ceiling).
 
-### NOT YET BUILT — design notes
+### ✅ BUILT DORMANT 2026-06-01 (commit `25eae58`)
 
-Similar to Stage 5 strip but for buildings instead of payments. Requires:
+Shipped: flag `settings.syncBuildingsStrip` (default **false**) + `_fbStripBuildingsFromPayload()` — scrubs `payload.buildings` to `[]` on the deep-clone payload (read-switch rehydrates `state.buildings` from the `buildings` collection). Strict gate `_stripBuildingsV2Enabled()` requires buildings dual-write **AND** read-switch ON. Enable: `sfaEnableStripBuildingsV2()`. Rollback: `sfaDisableStripBuildingsV2()` or `sfaRehydrateMonolithBuildings()`. **Activate only after Stage 5 + 48h clean buildings soak.**
+
+Implementation notes — similar to Stage 5 strip but for buildings instead of payments. Requires:
 - Phase 2 dual-write live + reconcile clean for 48h+
 - Phase 2.4 read-switch live + UI verified for 48h+
 - `sfaRehydrateMonolithBuildings()` rollback helper
