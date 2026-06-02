@@ -31524,6 +31524,98 @@ async function _fbPaymentsCutover(payload) {
   }
 }
 
+// =========================================================================
+// Stage 5/6 — STRIP МОНОЛИТА (Phase 1.3 payments + Phase 2.5 buildings) — DORMANT.
+// По умолчанию ВЫКЛ (settings.syncV2StripPayments / syncBuildingsStrip = false).
+// Это НЕ v1 _fbPaymentsCutover (тот делал delete-by-diff коллекции и ДВАЖДЫ снёс
+// 1277 доков — мёртв, см. выше). Здесь — ТОЛЬКО scrub полей из payload (это
+// глубокая копия из fbSanitizeState → live state НЕ трогается). Коллекции
+// (payments / buildings) НЕ трогаются вообще: их ведёт dual-write, читает
+// read-switch. §7-инвариант соблюдён: никакого diff/delete — просто перестаём
+// нести поле в монолитном документе.
+// Гейт СТРОГИЙ (defense-in-depth): strip применяется ТОЛЬКО когда включены И
+// dual-write, И read-switch — т.е. коллекция уже живой источник чтения. Поэтому
+// даже случайно выставленный флаг сам по себе ничего не стрипнет.
+// Откат: флаг → off (монолит снова толстеет на следующем пуше) либо точечно
+// sfaRehydrateMonolithPayments() / sfaRehydrateMonolithBuildings().
+// Активация — ОПЕРАТОРОМ после 48ч чистого soak (sfaEnableStrip*V2), НЕ автономно.
+// =========================================================================
+function _stripPaymentsV2Enabled() {
+  try {
+    return !!(state && state.settings && state.settings.syncV2StripPayments === true)
+      && typeof syncV2Enabled === 'function' && syncV2Enabled()
+      && typeof syncV2ReadEnabled === 'function' && syncV2ReadEnabled();
+  } catch (e) { return false; }
+}
+function _stripBuildingsV2Enabled() {
+  try {
+    return !!(state && state.settings && state.settings.syncBuildingsStrip === true)
+      && typeof buildingsSyncV2Enabled === 'function' && buildingsSyncV2Enabled()
+      && typeof syncBuildingsReadEnabled === 'function' && syncBuildingsReadEnabled();
+  } catch (e) { return false; }
+}
+// Stage 5 — снять u.payments из payload-копии. Возвращает число затронутых юнитов.
+function _fbStripPaymentsFromPayload(payload) {
+  if (!payload || !_stripPaymentsV2Enabled()) return 0;
+  if (typeof window !== 'undefined' && window._sfaRehydrating) return 0;   // во время отката не стрипаем
+  let n = 0;
+  for (const b of (payload.buildings || []))
+    for (const f of ((b && b.floors) || []))
+      for (const u of ((f && f.units) || [])) {
+        if (u && u.payments && Object.keys(u.payments).length) { u.payments = {}; n++; }
+      }
+  if (n) console.debug('[strip-pay-v2] payments сняты с ' + n + ' юнит(ов) в payload');
+  return n;
+}
+// Stage 6 — снять state.buildings целиком из payload (read-switch соберёт из коллекции).
+function _fbStripBuildingsFromPayload(payload) {
+  if (!payload || !_stripBuildingsV2Enabled()) return 0;
+  if (typeof window !== 'undefined' && window._sfaRehydrating) return 0;
+  const n = Array.isArray(payload.buildings) ? payload.buildings.length : 0;
+  if (n) { payload.buildings = []; console.debug('[strip-bld-v2] ' + n + ' зданий снято с payload'); }
+  return n;
+}
+// --- Операторские включатели (root-admin). НЕ автономные. Жёсткая пред-проверка:
+//     read-switch обязан быть включён (иначе strip = потеря видимости данных). ---
+function sfaEnableStripPaymentsV2() {
+  if (typeof isRootAdmin === 'function' && !isRootAdmin()) { console.warn('root-admin only'); return; }
+  if (!(typeof syncV2Enabled === 'function' && syncV2Enabled() && typeof syncV2ReadEnabled === 'function' && syncV2ReadEnabled())) {
+    console.error('✗ Strip отказан: сначала включи dual-write (syncV2) И read-switch (syncV2Read).');
+    return;
+  }
+  console.warn('⚠ Перед включением: sfaReconcilePaymentsV2() = missing 0 / mismatched 0, и read-switch отработал ≥48ч без дрейфа. Откат: sfaDisableStripPaymentsV2() / sfaRehydrateMonolithPayments().');
+  if (!state.settings) state.settings = {};
+  state.settings.syncV2StripPayments = true; if (typeof saveState === 'function') saveState();
+  console.log('✓ syncV2StripPayments = ON — монолит перестанет нести payments на следующем пуше.');
+}
+function sfaDisableStripPaymentsV2() {
+  if (!state.settings) state.settings = {};
+  state.settings.syncV2StripPayments = false; if (typeof saveState === 'function') saveState();
+  console.log('✓ syncV2StripPayments = OFF — монолит снова несёт payments.');
+}
+function sfaEnableStripBuildingsV2() {
+  if (typeof isRootAdmin === 'function' && !isRootAdmin()) { console.warn('root-admin only'); return; }
+  if (!(typeof buildingsSyncV2Enabled === 'function' && buildingsSyncV2Enabled() && typeof syncBuildingsReadEnabled === 'function' && syncBuildingsReadEnabled())) {
+    console.error('✗ Strip отказан: сначала включи buildings dual-write (syncBuildingsV2) И read-switch (syncBuildingsRead).');
+    return;
+  }
+  console.warn('⚠ Перед включением: sfaReconcileBuildingsV2() = чисто, read-switch ≥48ч без дрейфа. Откат: sfaDisableStripBuildingsV2() / sfaRehydrateMonolithBuildings().');
+  if (!state.settings) state.settings = {};
+  state.settings.syncBuildingsStrip = true; if (typeof saveState === 'function') saveState();
+  console.log('✓ syncBuildingsStrip = ON — монолит перестанет нести buildings на следующем пуше (безлимит зданий).');
+}
+function sfaDisableStripBuildingsV2() {
+  if (!state.settings) state.settings = {};
+  state.settings.syncBuildingsStrip = false; if (typeof saveState === 'function') saveState();
+  console.log('✓ syncBuildingsStrip = OFF — монолит снова несёт buildings.');
+}
+try {
+  window.sfaEnableStripPaymentsV2 = sfaEnableStripPaymentsV2;
+  window.sfaDisableStripPaymentsV2 = sfaDisableStripPaymentsV2;
+  window.sfaEnableStripBuildingsV2 = sfaEnableStripBuildingsV2;
+  window.sfaDisableStripBuildingsV2 = sfaDisableStripBuildingsV2;
+} catch (e) {}
+
 async function fbPushNow() {
   if (!fbSync.enabled || !fbSync.sdk) return;
   // Same guard at the direct-push level — belt and braces.
@@ -31543,6 +31635,11 @@ async function fbPushNow() {
     // перестал нести ~195KB платежей. Безопасно: payload — копия; при сбое
     // зеркалирования strip не применяется (пушим с платежами).
     try { await _fbPaymentsCutover(payload); } catch (e) { console.warn('[payments-cutover]', e); }
+    // Stage 5/6 strip (DORMANT — флаги syncV2StripPayments / syncBuildingsStrip):
+    // снимает payments / buildings из payload-КОПИИ, когда коллекция уже живой
+    // источник (dual-write + read-switch ВКЛ). Коллекцию НЕ трогает — не delete-by-diff.
+    try { _fbStripPaymentsFromPayload(payload); } catch (e) { console.warn('[strip-pay-v2]', e); }
+    try { _fbStripBuildingsFromPayload(payload); } catch (e) { console.warn('[strip-bld-v2]', e); }
     const json = JSON.stringify(payload);
     const sizeKB = Math.round(json.length / 1024);
     // HARD GUARD against the 1MB Firestore document limit. Below
