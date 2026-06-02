@@ -17777,9 +17777,9 @@
               <div style="display:flex; flex-direction:column; gap: 8px;">
                 <div style="display:grid; grid-template-columns: 90px 1fr auto; gap: 10px; align-items: center;">
                   <label for="hvFcstRate" style="font-size:11px; color:var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700; cursor: help;"
-                         title="Tenants assumed NOT to renew on lease end. Default 30% — industry baseline for office space.">Non-renewal</label>
+                         title="Tenants assumed NOT to renew on lease end. Default 30% — industry baseline for office space. Stored per building.">Non-renewal</label>
                   <input type="range" id="hvFcstRate" min="0" max="100" step="5" value="30"
-                         oninput="document.getElementById('hvFcstRateLabel').textContent = this.value + '%'; renderHomeForecast();"
+                         oninput="_onFcstRateInput(this.value)"
                          style="width: 100%; accent-color: #0284c7;">
                   <span style="display:flex; align-items:center; gap:8px; font-variant-numeric: tabular-nums; white-space: nowrap;">
                     <span id="hvFcstRateLabel" style="color:var(--text); font-size: 13px; font-weight: 600; min-width: 36px; text-align: right;">30%</span>
@@ -17788,9 +17788,9 @@
                 </div>
                 <div style="display:grid; grid-template-columns: 90px 1fr auto; gap: 10px; align-items: center;">
                   <label for="hvFcstPace" style="font-size:11px; color:var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700; cursor: help;"
-                         title="How many offices you sign per month. Default 100% = observed last-3-mo pace; drag left to model a slower sales cycle, right to model a campaign push.">Pace</label>
+                         title="How many offices you sign per month. Default 100% = observed last-3-mo pace; drag left to model a slower sales cycle, right to model a campaign push. Stored per building.">Pace</label>
                   <input type="range" id="hvFcstPace" min="0" max="200" step="5" value="100"
-                         oninput="renderHomeForecast();"
+                         oninput="_onFcstPaceInput(this.value)"
                          style="width: 100%; accent-color: #16a34a;">
                   <span style="display:flex; align-items:center; gap:8px; font-variant-numeric: tabular-nums; white-space: nowrap;">
                     <span id="hvFcstPaceLabel" style="color:var(--text); font-size: 13px; font-weight: 600; min-width: 36px; text-align: right;">100%</span>
@@ -17799,7 +17799,7 @@
                 </div>
                 <div style="display:grid; grid-template-columns: 90px 1fr auto; gap: 10px; align-items: center;">
                   <label for="hvFcstRentStep" style="font-size:11px; color:var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700; cursor: help;"
-                         title="Manual rent growth: extra dollars per month added to continuing-lease revenue, compounding linearly each forecast month (Mo 1 = baseline, Mo 2 = +$step, Mo 3 = +2×$step, …). Drag the slider for a quick value, or type an exact amount in the box on the right when the slider range isn't enough. Lifts the revenue line, Total and Avg only — Potential value (proforma) is unchanged.">Rent step-up</label>
+                         title="Manual rent growth: extra dollars per month added to continuing-lease revenue, compounding linearly each forecast month (Mo 1 = baseline, Mo 2 = +$step, Mo 3 = +2×$step, …). Drag the slider for a quick value, or type an exact amount in the box on the right when the slider range isn't enough. Lifts the revenue line, Total and Avg only — Potential value (proforma) is unchanged. Stored per building.">Rent step-up</label>
                   <input type="range" id="hvFcstRentStepRange" min="0" max="2000" step="50" value="0"
                          oninput="_onFcstRentStepInput(this.value)"
                          style="width: 100%; accent-color: #7c3aed;">
@@ -52174,14 +52174,55 @@ function _fcstSetRentStart(bId, val) {
   renderHomeForecast();
 }
 
-// Req1 — общий обработчик слайдера И ручного ввода rent step-up: оба пишут
-// один pref и пере-рендерят прогноз. Слайдер — быстрый грубый выбор; поле
-// справа — точный/большой ввод, когда диапазона слайдера не хватает
-// (значение > max слайдера просто прижимает ползунок к максимуму, но
-// реальная величина = введённой). Отрицательное / NaN → 0.
+// Req (Tony 2026-06-01) — показатели сценария Forecast задаются ОТДЕЛЬНО для
+// каждого здания: non-renewal %, pace %, rent step-up $. Храним каждый как
+// sfa_inv_fcst_* = JSON {bId: value} (auto-sync через _SYNC_PREF_PATTERN, БЕЗ
+// изменения state-схемы) — ровно как дата старта аренды выше. На рендере
+// берём значение ТЕКУЩЕГО здания, на изменении пишем в его ключ. Дефолты =
+// прежние стартовые (30 / 100 / 0): «не настроенное» здание ведёт себя как
+// раньше. До этого все три были глобальными (rate/pace жили только в DOM,
+// step-up — один общий ключ sfa_inv_fcst_rentStepUsd), поэтому значение
+// «протекало» между зданиями. Старый общий ключ step-up больше не читается.
+const _FCST_NONRENEW_KEY = 'sfa_inv_fcst_nonRenew';
+const _FCST_PACE_KEY     = 'sfa_inv_fcst_pace';
+const _FCST_RENTSTEP_KEY = 'sfa_inv_fcst_rentStep';
+function _fcstKnobMap(key) {
+  try {
+    const o = JSON.parse(readPref(key) || '{}');
+    return (o && typeof o === 'object' && !Array.isArray(o)) ? o : {};
+  } catch (e) { return {}; }
+}
+function _fcstKnobGet(key, bId, dflt) {
+  if (!bId) return dflt;
+  const v = _fcstKnobMap(key)[bId];
+  return (v === undefined || v === null || v === '' || isNaN(+v)) ? dflt : +v;
+}
+function _fcstKnobSet(key, bId, val) {
+  if (!bId) return;
+  const o = _fcstKnobMap(key);
+  o[bId] = val;
+  try { writePref(key, JSON.stringify(o)); } catch (e) {}
+}
+function _fcstCurBldgId() {
+  const b = (typeof _currentForecastBuilding === 'function') ? _currentForecastBuilding() : null;
+  return b ? b.id : null;
+}
+// NON-RENEWAL (0..100 %) — пишем под текущее здание, пере-рендерим.
+function _onFcstRateInput(val) {
+  _fcstKnobSet(_FCST_NONRENEW_KEY, _fcstCurBldgId(), Math.min(100, Math.max(0, Math.round(+val || 0))));
+  renderHomeForecast();
+}
+// PACE (0..200 %).
+function _onFcstPaceInput(val) {
+  _fcstKnobSet(_FCST_PACE_KEY, _fcstCurBldgId(), Math.min(200, Math.max(0, Math.round(+val || 0))));
+  renderHomeForecast();
+}
+// RENT STEP-UP — общий обработчик слайдера И ручного ввода $/мес: оба пишут
+// per-building ключ. Слайдер — быстрый грубый выбор; поле справа — точный/
+// большой ввод (значение > max слайдера прижимает ползунок к max, но реальная
+// величина = введённой). Отрицательное / NaN → 0.
 function _onFcstRentStepInput(val) {
-  const n = Math.max(0, Math.round(+val || 0));
-  try { writePref('sfa_inv_fcst_rentStepUsd', String(n)); } catch (e) {}
+  _fcstKnobSet(_FCST_RENTSTEP_KEY, _fcstCurBldgId(), Math.max(0, Math.round(+val || 0)));
   renderHomeForecast();
 }
 
@@ -52195,11 +52236,19 @@ function renderHomeForecast() {
   const isAdmin = role === 'admin';
   if (!isAdmin) { section.style.display = 'none'; return; }
   section.style.display = '';
+  // Req (Tony 2026-06-01) — non-renewal / pace берём ПО ТЕКУЩЕМУ зданию из
+  // per-building prefs (дефолты 30 / 100). DOM-ползунки синхронизируем под
+  // значение здания, чтобы переключение зданий восстанавливало позиции;
+  // activeElement-гард не даёт перебить живой drag. Rent step-up читается
+  // ниже тем же _fcstKnobGet(_FCST_RENTSTEP_KEY, _fcstBId, 0).
+  const _fcstBId = _fcstCurBldgId();
   const rateInput = document.getElementById('hvFcstRate');
-  const rate = rateInput ? +rateInput.value : 30;
+  const rate = _fcstKnobGet(_FCST_NONRENEW_KEY, _fcstBId, 30);
+  if (rateInput && document.activeElement !== rateInput) rateInput.value = String(rate);
   // Второй бегунок — pace-множитель. 100 = текущий темп, 0..200 диапазон.
   const paceInput = document.getElementById('hvFcstPace');
-  const pacePct   = paceInput ? +paceInput.value : 100;
+  const pacePct   = _fcstKnobGet(_FCST_PACE_KEY, _fcstBId, 100);
+  if (paceInput && document.activeElement !== paceInput) paceInput.value = String(pacePct);
   const paceMul   = Math.max(0, pacePct / 100);
   // Floor filter — picker is now scoped to the CURRENT building only and
   // resets on every page load / building switch (see _forecastFloorFilter).
@@ -52237,7 +52286,7 @@ function renderHomeForecast() {
   //     (текущий) = базовый +0, далее +1×, +2× …
   // _stepCum12 / _stepLastMo копят реально добавленную сумму → лейбл слайдера
   // ниже показывает «≈ +$…/12mo», совпадающий с графиком (а не step×66 всегда).
-  const _rentStepUsd = Math.max(0, +readPref('sfa_inv_fcst_rentStepUsd') || 0);
+  const _rentStepUsd = _fcstKnobGet(_FCST_RENTSTEP_KEY, _fcstBId, 0);
   let _stepCum12 = 0, _stepLastMo = 0;
   if (_rentStepUsd > 0) {
     const _fcstB      = (typeof _currentForecastBuilding === 'function') ? _currentForecastBuilding() : null;
@@ -52707,7 +52756,10 @@ function renderHomeForecast() {
   // на range, но tooltip читаем здесь чтобы пересчитать вместе с pace.
   const _rateLblEl = document.getElementById('hvFcstRateLabel');
   if (_rateLblEl) {
-    _rateLblEl.title = `${rate}% — fraction of expiring leases assumed to walk away at term end. Industry baseline for office is ~30%. Drag the slider to model retention scenarios.`;
+    // textContent тоже тут — чтобы при переключении здания (без oninput)
+    // подпись синхронизировалась со значением текущего здания.
+    _rateLblEl.textContent = `${rate}%`;
+    _rateLblEl.title = `${rate}% — fraction of expiring leases assumed to walk away at term end. Industry baseline for office is ~30%. Drag the slider to model retention scenarios. Stored per building.`;
   }
 
   // ---- Assumptions footer (compact 4 lines) -------------------------
