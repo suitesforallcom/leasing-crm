@@ -52166,19 +52166,41 @@ function _fcstRentStartMap() {
     return (o && typeof o === 'object' && !Array.isArray(o)) ? o : {};
   } catch (e) { return {}; }
 }
+// Гард года < 100 (Tony 2026-06-01, баг ловился дважды): <input type=date>
+// разрешает напечатать «0026» в поле года → value="0026-09-01". new Date(...) с
+// таким годом даёт 26 н.э. (~2000 лет назад) → старт проваливается в прошлое,
+// per-building rent-start гейт перестаёт работать, и выручка/эскалятор стартуют с
+// ТЕКУЩЕГО месяца вместо выбранного. min="2000-01-01" НЕ блокирует ввод «26».
+// Нормализуем: год < 100 → +2000. Возвращаем ms начала месяца либо null.
+function _fcstParseRentStartMs(str) {
+  const mm = /^(\d{1,4})-(\d{2})-(\d{2})/.exec(String(str || ''));
+  if (!mm) return null;
+  let y = +mm[1]; if (y < 100) y += 2000;
+  const d = new Date(y, (+mm[2]) - 1, 1);   // нормализуем к началу месяца
+  return isNaN(d.getTime()) ? null : d.getTime();
+}
+// Та же нормализация, но строкой 'YYYY-MM-DD' (год дополнен до 4 цифр, <100 → +2000)
+// либо '' — для хранимого значения и значения поля даты.
+function _fcstNormalizeRentStartStr(str) {
+  const mm = /^(\d{1,4})-(\d{2})-(\d{2})/.exec(String(str || ''));
+  if (!mm) return '';
+  let y = +mm[1]; if (y < 100) y += 2000;
+  return String(y).padStart(4, '0') + '-' + mm[2] + '-' + mm[3];
+}
 function _fcstRentStartMsMap() {
   const o = _fcstRentStartMap(), m = new Map();
   for (const k of Object.keys(o)) {
-    const d = o[k] && new Date(o[k] + 'T00:00:00');
-    if (d && !isNaN(d.getTime())) {
-      m.set(k, new Date(d.getFullYear(), d.getMonth(), 1).getTime());
-    }
+    const ms = _fcstParseRentStartMs(o[k]);
+    if (ms != null) m.set(k, ms);
   }
   return m;
 }
 function _fcstSetRentStart(bId, val) {
   const o = _fcstRentStartMap();
-  if (val) o[bId] = val; else delete o[bId];
+  // нормализуем год < 100 → 20xx, чтобы и хранимое значение, и поле даты сразу
+  // показывали корректный год (иначе «26» осело бы как 0026 и старт уехал в прошлое).
+  const norm = _fcstNormalizeRentStartStr(val);
+  if (norm) o[bId] = norm; else delete o[bId];
   try { writePref('sfa_inv_fcst_rentStart', JSON.stringify(o)); } catch (e) {}
   renderHomeForecast();
 }
@@ -52344,7 +52366,7 @@ function renderHomeForecast() {
       timingEl.innerHTML = '';
     } else {
       const _rsMap = _fcstRentStartMap();
-      const _cur   = _rsMap[_fb.id] || '';
+      const _cur   = _fcstNormalizeRentStartStr(_rsMap[_fb.id] || '');   // год<100 → 20xx и в поле даты
       const _bName = _fb.name || _fb.id;
       timingEl.innerHTML =
         `<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:11.5px; color:var(--muted);">
