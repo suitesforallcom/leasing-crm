@@ -60,6 +60,22 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 37. Buildings read-switch must re-merge u.payments from cache (2026-06-03)
+
+- **Status:** active
+- **Branch / commit:** `main` — fix `9099b34`
+- **Area:** Scaling V2 / Phase 2.4 buildings read-switch / Phase 1.2 payments read-switch / payments hydration / false-overdue
+- **Files:** `floor-map-editor.html` — `_v2PaymentsCache` decl (after `_v2PaymentsRerenderTimer`), `_v2PaymentsAttachListener` populate block (before the unit lookup), `_v2BuildingsAttachListener` fill block (after `_buildingFromV2Restore`, before `state.buildings[idx]=incoming / push`).
+- **Invariant:** (a) the payments read-switch listener MUST update `_v2PaymentsCache[buildingId+'|'+unitId][ym]` on EVERY `payments` docChange, **before** the in-memory unit lookup (so a payment is cached even when its building isn't loaded yet). (b) the buildings read-switch listener MUST fill `u.payments` from `_v2PaymentsCache[bid+'|'+u.id]` for every incoming building's units (without clobbering already-set `ym`) — for NEW buildings (`idx<0`) too, not only swapped existing ones.
+- **Why (incident 2026-06-03):** during the live Stage-6 buildings strip, the monolith stopped carrying `state.buildings`. On reload the buildings read-switch swapped in collection building docs (payments stripped by `_buildingForV2`); the payments listener had applied 1297 payment docs by locating units in `state.buildings`, but when buildings were absent/late those applies were dropped and **never re-applied** (the "refetch via cache" the code comment promised did not exist). The buildings listener only preserved payments from a *prior in-memory* building (`idx>=0`); a NEW building (every building under strip) got none → Suite 431 (and all units) showed **false "Overdue" + accrued late fees** for already-paid months. No data lost (payments intact in the `payments` collection); rolled back via `sfaRehydrateMonolith{Payments,Buildings}`. The real `_v2PaymentsCache` makes both snapshot orderings correct.
+- **Blast radius:** hydration only — does NOT touch any money-computation path (rent / late-fee / owed / collections). Only affects behavior when the read-switch is ON; can only ADD recorded payments to in-memory state, never remove. With read-switches off → no-op.
+- **Also fixed (role-helper):** `isRootAdmin()` was called with NO email in the 4 `sfaEnable*` toggles (`sfaEnableStripPaymentsV2` / `…BuildingsV2` / `…LeaseDocs` / `sfaEnableOutreachCap`) → `isRootAdmin(undefined)` always false → "root-admin only" rejected everyone incl. the owner. Fixed to `isRootAdmin(fbSync?.user?.email)`. (The 2026-06-03 payments-strip was activated by setting `state.settings.syncV2StripPayments=true` directly to work around this.)
+- **How to verify:** `grep -c "_v2PaymentsCache" floor-map-editor.html` ≥ 4 (decl + populate set/del + buildings fill). `grep -c "!isRootAdmin()" floor-map-editor.html` must be **0** (all call sites pass an email). Functional: with both read-switches ON + buildings strip ON, reload → every paid suite still shows paid (no false late fees), `sfaReconcilePaymentsV2()` clean.
+- **Strip retry gate:** before re-enabling the buildings strip (Stage 6), this fix must be deployed AND a reload must show paid suites intact under the strip. The payments strip (Stage 5) was independently verified safe (924→717 KB).
+- **Rollback:** `git revert 9099b34 && … deploy`, or operationally `state.settings.syncBuildingsStrip=false; saveState(); sfaRehydrateMonolithBuildings()`.
+
+---
+
 ### 36. Server-side CF payment writes must dual-write to v2 collection (2026-05-31)
 
 - **Status:** active
