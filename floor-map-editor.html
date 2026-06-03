@@ -19644,6 +19644,42 @@
           </div>
         </div>
         <div class="sep"></div>
+        <!-- Label size — отдельный блок (запрос Tony): множитель размера ВСЕХ
+             подписей-данных на карте (номер юнита, цена, $/ft²/yr, арендатор).
+             Слайдер 50–200% + ручной ввод для точных / вне-диапазона значений
+             (паттерн «слайдер + numeric»). Применяется через state.settings.labelScale
+             → _labelFontFor → renderUnits. -->
+        <div class="snap-wrap">
+          <button class="icon-btn" id="labelSizeBtn" onclick="toggleLabelSizePopover(event)" title="Label text size — suite #, price, rate, tenant">
+            <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+              <text x="1.5" y="19" font-size="17" font-weight="800" font-family="inherit">A</text>
+              <text x="14" y="19" font-size="11" font-weight="800" font-family="inherit">a</text>
+            </svg>
+          </button>
+          <div class="snap-popover" id="labelSizePopover" style="min-width:248px; max-width:300px;">
+            <div class="snap-popover-title">Label size</div>
+            <div style="padding:0 10px 8px;">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <input type="range" id="labelScaleSlider" min="50" max="200" step="5" value="100"
+                       oninput="setLabelScale(this.value,false)" onchange="setLabelScale(this.value,true)" style="flex:1;">
+                <input type="number" id="labelScaleNum" min="30" max="400" step="5" value="100"
+                       oninput="setLabelScale(this.value,false)" onchange="setLabelScale(this.value,true)"
+                       style="width:54px; padding:5px 6px; border:1px solid var(--border); border-radius:6px;
+                              font-size:12px; box-sizing:border-box; background:var(--surface);">
+                <span style="font-size:11px; color:var(--muted);">%</span>
+              </div>
+              <div style="font-size:10px; color:var(--muted); margin:6px 0 0; line-height:1.4;">
+                Scales the suite number, price, $/ft²/yr and tenant labels on the map. Drag 50–200%, or type an exact value (30–400%).
+              </div>
+              <button type="button" onclick="setLabelScale(100,true)"
+                      style="margin-top:8px; padding:6px 10px; background:var(--surface); color:var(--text);
+                             border:1px solid var(--border); border-radius:6px; font-weight:600; font-size:11px; cursor:pointer;">
+                ↺ Reset to 100%
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="sep"></div>
         <!-- Overflow "more actions" menu. Three-dot icon opens a popover
              of less-frequent actions that don't deserve their own toolbar
              button. Currently hosts Remove background; add new actions
@@ -26318,6 +26354,10 @@ let state = {
     // --unit-price-opacity / --unit-text-opacity на #planSvg.
     priceTextOpacity: 1.0,   // .unit-price (рент)
     unitTextOpacity: 1.0,    // .unit-num + .unit-rate + .unit-dim (suite # / $/ft² / tenant)
+    // Множитель размера ВСЕХ подписей-данных на карте (номер юнита, цена,
+    // $/ft²/yr, арендатор). Управляется блоком «Label size» (кнопка Aa) в
+    // нижней панели; применяется внутри _labelFontFor. 1.0 = 100% (как было).
+    labelScale: 1.0,
     defaultRent: 1000,
     defaultRate: 0,
     defaultSqft: 150,
@@ -30807,9 +30847,50 @@ function printFloorPlanSvg() {
 function toggleSnapPopover(e) {
   if (e) e.stopPropagation();
   document.getElementById('snapPopover')?.classList.toggle('open');
-  // Auto-close the More-actions popover when opening Snap (single popover at a time)
+  // Auto-close the other popovers when opening Snap (single popover at a time)
   closeMoreActionsPopover();
+  document.getElementById('labelSizePopover')?.classList.remove('open');
 }
+
+// Label-size popover — Aa button. Множитель размера подписей-данных.
+function toggleLabelSizePopover(e) {
+  if (e) e.stopPropagation();
+  const p = document.getElementById('labelSizePopover');
+  if (!p) return;
+  const willOpen = !p.classList.contains('open');
+  p.classList.toggle('open');
+  // single popover at a time
+  document.getElementById('snapPopover')?.classList.remove('open');
+  closeMoreActionsPopover();
+  // Подтягиваем актуальное значение из стейта в контролы при открытии.
+  if (willOpen) {
+    const pct = Math.round((((state && state.settings && typeof state.settings.labelScale === 'number') ? state.settings.labelScale : 1)) * 100);
+    const sl = document.getElementById('labelScaleSlider');
+    const num = document.getElementById('labelScaleNum');
+    if (sl) sl.value = Math.max(50, Math.min(200, pct));
+    if (num) num.value = pct;
+  }
+}
+
+// Применяет размер подписей. pct — проценты (30–400). persist=true → saveState
+// (на release слайдера / change поля), чтобы не штормить запись при перетаскивании.
+function setLabelScale(pct, persist) {
+  pct = Math.round(+pct);
+  if (!Number.isFinite(pct)) pct = 100;
+  pct = Math.max(30, Math.min(400, pct));
+  state.settings = state.settings || {};
+  state.settings.labelScale = pct / 100;
+  // Синхронизируем оба контрола (слайдер клампится своим диапазоном 50–200).
+  const sl = document.getElementById('labelScaleSlider');
+  const num = document.getElementById('labelScaleNum');
+  if (sl && document.activeElement !== sl) sl.value = Math.max(50, Math.min(200, pct));
+  else if (sl) sl.value = Math.max(50, Math.min(200, pct));
+  if (num && document.activeElement !== num) num.value = pct;
+  if (typeof renderUnits === 'function') renderUnits();
+  if (persist) { try { saveState(); } catch {} }
+}
+window.toggleLabelSizePopover = toggleLabelSizePopover;
+window.setLabelScale = setLabelScale;
 
 // More-actions overflow popover — uses the snap-popover styling but
 // toggles via inline `display` since we don't reuse the .open class.
@@ -30819,8 +30900,9 @@ function toggleMoreActionsPopover(e) {
   if (!p) return;
   const open = p.style.display === 'block';
   p.style.display = open ? 'none' : 'block';
-  // Close the snap popover so we don't have two open at once
+  // Close the other popovers so we don't have two open at once
   document.getElementById('snapPopover')?.classList.remove('open');
+  document.getElementById('labelSizePopover')?.classList.remove('open');
   if (!open) {
     _initMoreActionsCapacityForm();
     if (typeof _refreshFloorLeaseTplCurrent === 'function') _refreshFloorLeaseTplCurrent();
@@ -30866,6 +30948,7 @@ window.closeMoreActionsPopover  = closeMoreActionsPopover;
 document.addEventListener('click', (e) => {
   if (!e.target.closest('.snap-wrap')) {
     document.getElementById('snapPopover')?.classList.remove('open');
+    document.getElementById('labelSizePopover')?.classList.remove('open');
     closeMoreActionsPopover();
   }
 });
@@ -64834,10 +64917,17 @@ function renderUnits() {
     ? (_ru_rect.width / viewBox.w)
     : 1;
   const _SMALL_UNIT_THRESHOLD = 50;   // smaller dim < 50 user-units → small bucket
+  // Глобальный множитель размера подписей-данных (блок «Label size», кнопка
+  // Aa в нижней панели). 1 = как раньше. Клампим в разумный диапазон, чтобы
+  // битое значение из стейта не разнесло рендер.
+  const _labelScale = (() => {
+    const v = (state && state.settings && typeof state.settings.labelScale === 'number') ? state.settings.labelScale : 1;
+    return (Number.isFinite(v) && v > 0) ? Math.min(4, Math.max(0.3, v)) : 1;
+  })();
   const _labelFontFor = (u, targetScreenPx) => {
     const minDim = Math.min(u.w || 9999, u.h || 9999);
     const isSmall = minDim < _SMALL_UNIT_THRESHOLD;
-    const sizeUnits = (targetScreenPx / _ru_zoom) * (isSmall ? 0.65 : 1);
+    const sizeUnits = (targetScreenPx * _labelScale / _ru_zoom) * (isSmall ? 0.65 : 1);
     // Sanitize: clamp Infinity / NaN / negative to safe range. SVG attrs
     // reject non-finite numeric values and abort the whole subtree.
     if (!Number.isFinite(sizeUnits) || sizeUnits <= 0) return targetScreenPx;
@@ -149713,6 +149803,12 @@ const _utpEl = document.getElementById('unitTextOpacity');
 if (_ptpEl) { _ptpEl.value = _ptp; document.getElementById('priceTextOpacityVal').textContent = _ptp + '%'; }
 if (_utpEl) { _utpEl.value = _utp; document.getElementById('unitTextOpacityVal').textContent  = _utp + '%'; }
 if (typeof applyTextBrightness === 'function') applyTextBrightness();
+// Label-size block — выставляем контролы из сохранённого labelScale.
+const _lsp = Math.round(((typeof state.settings.labelScale === 'number') ? state.settings.labelScale : 1) * 100);
+const _lsSl = document.getElementById('labelScaleSlider');
+const _lsNum = document.getElementById('labelScaleNum');
+if (_lsSl)  _lsSl.value  = Math.max(50, Math.min(200, _lsp));
+if (_lsNum) _lsNum.value = _lsp;
 pushHistory();
 
 // Restore view. New users (no activeView in state.ui yet) land on the
