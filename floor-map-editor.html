@@ -31907,6 +31907,28 @@ function _fbStripBuildingsFromPayload(payload) {
   if (n) { payload.buildings = []; console.debug('[strip-bld-v2] ' + n + ' зданий снято с payload'); }
   return n;
 }
+// Strip-гейт leaseDocs: флаг + dual-write + read-switch обязаны быть ВКЛ
+// (иначе snять leaseDocuments = потеря видимости договоров).
+function _stripLeaseDocsV2Enabled() {
+  try {
+    return !!(state && state.settings && state.settings.leaseDocsStrip === true)
+      && typeof leaseDocsSyncV2Enabled === 'function' && leaseDocsSyncV2Enabled()
+      && typeof leaseDocsReadEnabled === 'function' && leaseDocsReadEnabled();
+  } catch (e) { return false; }
+}
+// C1c — снять u.leaseDocuments из payload-копии (read-switch соберёт из коллекции).
+function _fbStripLeaseDocsFromPayload(payload) {
+  if (!payload || !_stripLeaseDocsV2Enabled()) return 0;
+  if (typeof window !== 'undefined' && window._sfaRehydrating) return 0;
+  let n = 0;
+  for (const b of (payload.buildings || []))
+    for (const f of ((b && b.floors) || []))
+      for (const u of ((f && f.units) || [])) {
+        if (u && Array.isArray(u.leaseDocuments) && u.leaseDocuments.length) { u.leaseDocuments = []; n++; }
+      }
+  if (n) console.debug('[strip-leasedocs-v2] leaseDocuments сняты с ' + n + ' юнит(ов) в payload');
+  return n;
+}
 // --- Операторские включатели (root-admin). НЕ автономные. Жёсткая пред-проверка:
 //     read-switch обязан быть включён (иначе strip = потеря видимости данных). ---
 function sfaEnableStripPaymentsV2() {
@@ -31941,11 +31963,29 @@ function sfaDisableStripBuildingsV2() {
   state.settings.syncBuildingsStrip = false; if (typeof saveState === 'function') saveState();
   console.log('✓ syncBuildingsStrip = OFF — монолит снова несёт buildings.');
 }
+function sfaEnableStripLeaseDocs() {
+  if (typeof isRootAdmin === 'function' && !isRootAdmin()) { console.warn('root-admin only'); return; }
+  if (!(typeof leaseDocsSyncV2Enabled === 'function' && leaseDocsSyncV2Enabled() && typeof leaseDocsReadEnabled === 'function' && leaseDocsReadEnabled())) {
+    console.error('✗ Strip отказан: сначала включи leaseDocs dual-write (leaseDocsV2) И read-switch (leaseDocsRead).');
+    return;
+  }
+  console.warn('⚠ Перед включением: sfaReconcileLeaseDocsV2() = чисто, read-switch отработал ≥48ч без дрейфа. Откат: sfaDisableStripLeaseDocs() / sfaRehydrateMonolithLeaseDocs().');
+  if (!state.settings) state.settings = {};
+  state.settings.leaseDocsStrip = true; if (typeof saveState === 'function') saveState();
+  console.log('✓ leaseDocsStrip = ON — монолит перестанет нести leaseDocuments на следующем пуше.');
+}
+function sfaDisableStripLeaseDocs() {
+  if (!state.settings) state.settings = {};
+  state.settings.leaseDocsStrip = false; if (typeof saveState === 'function') saveState();
+  console.log('✓ leaseDocsStrip = OFF — монолит снова несёт leaseDocuments.');
+}
 try {
   window.sfaEnableStripPaymentsV2 = sfaEnableStripPaymentsV2;
   window.sfaDisableStripPaymentsV2 = sfaDisableStripPaymentsV2;
   window.sfaEnableStripBuildingsV2 = sfaEnableStripBuildingsV2;
   window.sfaDisableStripBuildingsV2 = sfaDisableStripBuildingsV2;
+  window.sfaEnableStripLeaseDocs = sfaEnableStripLeaseDocs;
+  window.sfaDisableStripLeaseDocs = sfaDisableStripLeaseDocs;
 } catch (e) {}
 
 // =========================================================================
@@ -32019,6 +32059,9 @@ async function fbPushNow() {
     // источник (dual-write + read-switch ВКЛ). Коллекцию НЕ трогает — не delete-by-diff.
     try { _fbStripPaymentsFromPayload(payload); } catch (e) { console.warn('[strip-pay-v2]', e); }
     try { _fbStripBuildingsFromPayload(payload); } catch (e) { console.warn('[strip-bld-v2]', e); }
+    // C1c strip (DORMANT — флаг leaseDocsStrip + dual-write + read-switch): снимает
+    // u.leaseDocuments из payload-копии. Коллекцию leaseDocs НЕ трогает.
+    try { _fbStripLeaseDocsFromPayload(payload); } catch (e) { console.warn('[strip-leasedocs-v2]', e); }
     // Phase 3 (DORMANT — флаг syncOutreachCap): обрезает хвост u.outreach до N в
     // payload-копии; полная история durable в audit-подколлекции. Не финансовое.
     try { _fbCapOutreachInPayload(payload); } catch (e) { console.warn('[outreach-cap-v3]', e); }
@@ -33286,6 +33329,122 @@ window.sfaReconcileLeaseDocsV2 = async function () {
   return { stateCount: stateKeys.length, cloudCount: cloudKeys.length, missingInCloud, extraInCloud, mismatched, clean };
 };
 
+// ── Phase 3 leaseDocs read-switch (DORMANT) ──────────────────────────────
+// Когда settings.leaseDocsRead=true, клиент гидрирует u.leaseDocuments из
+// коллекции leaseDocs (real-time listener) вместо монолита. НУЖЕН ПЕРЕД strip
+// (C1c): после strip монолит не несёт leaseDocuments — листенер их восстановит.
+// Default false → нулевое влияние. Требует match /leaseDocs/ read в rules.
+function leaseDocsReadEnabled() {
+  try { return !!(state && state.settings && state.settings.leaseDocsRead); }
+  catch { return false; }
+}
+window.leaseDocsReadEnabled = leaseDocsReadEnabled;
+
+let _v2LeaseDocsListenerUnsub = null;
+let _v2LeaseDocsListenerDocsApplied = 0;
+let _v2LeaseDocsRerenderTimer = null;
+
+// Находит юнит по (bid/fid/uid). uid уникален → fallback-поиск только по uid.
+function _findUnitForLeaseDocs(bid, fid, uid) {
+  if (!uid) return null;
+  for (const b of (state.buildings || [])) {
+    if (bid && b.id !== bid) continue;
+    for (const f of ((b && b.floors) || [])) {
+      if (fid && f.id !== fid) continue;
+      for (const u of ((f && f.units) || [])) if (u && u.id === uid) return u;
+    }
+  }
+  for (const b of (state.buildings || [])) for (const f of ((b && b.floors) || [])) for (const u of ((f && f.units) || []))
+    if (u && u.id === uid) return u;
+  return null;
+}
+
+function _v2LeaseDocsAttachListener() {
+  if (_v2LeaseDocsListenerUnsub) return true;
+  if (typeof fbSync === 'undefined' || !fbSync || !fbSync.enabled || !fbSync.sdk || !fbSync.db) {
+    console.warn('[v2-leasedocs-read] Firestore not ready'); return false;
+  }
+  const { sdk, db } = fbSync;
+  try {
+    _v2LeaseDocsListenerUnsub = sdk.onSnapshot(
+      sdk.collection(db, 'workspaces', WORKSPACE_ID, 'leaseDocs'),
+      (snap) => {
+        if (!leaseDocsReadEnabled()) return;
+        let changed = 0;
+        snap.docChanges().forEach((ch) => {
+          const data = ch.doc.data();
+          if (!data || data._schema !== 'v2') return;
+          const u = _findUnitForLeaseDocs(data.buildingId, data.floorId, data.unitId);
+          if (!u) return;
+          if (ch.type === 'removed') {
+            if (Array.isArray(u.leaseDocuments) && u.leaseDocuments.length) { u.leaseDocuments = []; changed++; }
+            return;
+          }
+          u.leaseDocuments = Array.isArray(data.docs) ? JSON.parse(JSON.stringify(data.docs)) : [];
+          changed++; _v2LeaseDocsListenerDocsApplied++;
+        });
+        if (changed > 0) {
+          if (_v2LeaseDocsRerenderTimer) clearTimeout(_v2LeaseDocsRerenderTimer);
+          _v2LeaseDocsRerenderTimer = setTimeout(() => {
+            _v2LeaseDocsRerenderTimer = null;
+            try { if (typeof renderDetail === 'function') renderDetail(); } catch {}
+          }, 150);
+        }
+      },
+      (err) => { console.warn('[v2-leasedocs-read] listener error:', err?.message || err); }
+    );
+    console.log('[v2-leasedocs-read] listener attached on workspaces/' + WORKSPACE_ID + '/leaseDocs');
+    return true;
+  } catch (e) { console.warn('[v2-leasedocs-read] failed to attach:', e?.message || e); _v2LeaseDocsListenerUnsub = null; return false; }
+}
+
+function _v2LeaseDocsDetachListener() {
+  if (!_v2LeaseDocsListenerUnsub) return;
+  try { _v2LeaseDocsListenerUnsub(); } catch {}
+  _v2LeaseDocsListenerUnsub = null;
+  if (_v2LeaseDocsRerenderTimer) { clearTimeout(_v2LeaseDocsRerenderTimer); _v2LeaseDocsRerenderTimer = null; }
+}
+
+function _v2LeaseDocsAttachIfFlagged() {
+  if (leaseDocsReadEnabled() && !_v2LeaseDocsListenerUnsub) _v2LeaseDocsAttachListener();
+}
+window._v2LeaseDocsAttachIfFlagged = _v2LeaseDocsAttachIfFlagged;
+
+window.sfaTestLeaseDocsReadSwitchV2 = function (enable) {
+  if (!state || !state.settings) { console.warn('[v2-leasedocs-read] state not ready'); return; }
+  if (enable === true) {
+    if (!leaseDocsSyncV2Enabled()) { console.warn('[v2-leasedocs-read] settings.leaseDocsV2 must be true first (dual-write active + backfill done)'); return; }
+    state.settings.leaseDocsRead = true;
+    const ok = _v2LeaseDocsAttachListener();
+    if (!ok) { state.settings.leaseDocsRead = false; console.warn('[v2-leasedocs-read] attach failed — flag rolled back'); return; }
+    if (typeof saveState === 'function') saveState();
+    console.log('%c[v2-leasedocs-read] ✓ ENABLED. Listener attached.', 'color:green;font-weight:bold');
+  } else if (enable === false) {
+    state.settings.leaseDocsRead = false;
+    _v2LeaseDocsDetachListener();
+    if (typeof saveState === 'function') saveState();
+    console.log('%c[v2-leasedocs-read] ✓ DISABLED. Listener detached.', 'color:#a16207;font-weight:bold');
+  } else {
+    console.log('=== sfaTestLeaseDocsReadSwitchV2 status ===');
+    console.log('settings.leaseDocsRead:', leaseDocsReadEnabled());
+    console.log('listener attached:     ', !!_v2LeaseDocsListenerUnsub, '(' + _v2LeaseDocsListenerDocsApplied + ' docs applied)');
+    console.log('settings.leaseDocsV2:  ', leaseDocsSyncV2Enabled() ? 'on' : 'off (нужно сначала enable + backfill)');
+  }
+};
+
+window.sfaLeaseDocsReadSwitchSmoke = async function () {
+  console.log('[v2-leasedocs-read:smoke] checking reconcile drift…');
+  const r = await sfaReconcileLeaseDocsV2();
+  if (!r) return;
+  if (r.clean) {
+    console.log('%c✓ leaseDocs read-switch SAFE: reconcile clean.', 'color:green;font-weight:bold;font-size:13px');
+    console.log('  → next: sfaTestLeaseDocsReadSwitchV2(true) to enable.');
+  } else {
+    console.warn('⚠ leaseDocs read-switch NOT SAFE — drift. Resolve via sfaMirrorLeaseDocsV2() backfill BEFORE enabling leaseDocsRead.');
+  }
+  return r;
+};
+
 // ── Phase 2.4 building read-switch (DORMANT) ─────────────────────────────
 // Симметрично Phase 1.2 read-switch для payments, но для buildings. Когда
 // `settings.syncBuildingsRead = true`, клиент читает state.buildings из
@@ -33588,6 +33747,34 @@ window.sfaRehydrateMonolithBuildings = async function () {
   console.log('%c[rehydrate-buildings] ✓ restored', 'color:green;font-weight:bold',
               newBuildings.length, 'buildings from collection');
   console.log('→ verify via: sfaReconcileBuildingsV2()');
+};
+
+// C1c rollback — восстановить u.leaseDocuments из коллекции обратно в монолит.
+// Авто-выключает leaseDocsStrip, чтобы восстановленные доки не сстрипались на
+// следующем пуше. Root admin only.
+window.sfaRehydrateMonolithLeaseDocs = async function () {
+  if (!fbSync || !fbSync.enabled || !fbSync.sdk || !fbSync.db) { console.warn('[rehydrate-leasedocs] Firestore не готов'); return; }
+  if ((fbSync.user?.email || '').toLowerCase() !== 'tony@al-en.com') { console.warn('[rehydrate-leasedocs] только root admin'); return; }
+  if (!confirm('Rehydrate u.leaseDocuments из workspaces/' + WORKSPACE_ID + '/leaseDocs обратно в монолит?\n\n' +
+               'Используй как C1c rollback (leaseDocsStrip будет выключен).\n\nWorkspace: ' + WORKSPACE_ID +
+               (WORKSPACE_ID === 'default' ? '  ⚠ ЭТО ПРОД' : '  (staging)'))) return;
+  const { sdk, db } = fbSync;
+  let snap;
+  try { snap = await sdk.getDocs(sdk.collection(db, 'workspaces', WORKSPACE_ID, 'leaseDocs')); }
+  catch (e) { console.warn('[rehydrate-leasedocs] read failed (нужно match /leaseDocs/ read в rules):', e?.message || e); return; }
+  const byUid = {};
+  snap.forEach(d => { const x = d.data() || {}; if (x._schema === 'v2' && x.unitId) byUid[x.unitId] = Array.isArray(x.docs) ? x.docs : []; });
+  let applied = 0;
+  for (const b of (state.buildings || [])) for (const f of ((b && b.floors) || [])) for (const u of ((f && f.units) || [])) {
+    if (u && u.id && (u.id in byUid)) { u.leaseDocuments = JSON.parse(JSON.stringify(byUid[u.id])); applied++; }
+  }
+  if (state.settings && state.settings.leaseDocsStrip) {
+    state.settings.leaseDocsStrip = false;
+    console.warn('[rehydrate-leasedocs] leaseDocsStrip auto-disabled — восстановленные доки сохранятся.');
+  }
+  if (typeof saveState === 'function') saveState();
+  console.log('%c[rehydrate-leasedocs] ✓ restored', 'color:green;font-weight:bold', applied, 'unit(s) from collection');
+  console.log('→ verify via: sfaReconcileLeaseDocsV2()');
 };
 
 // Console — read-only reconcile. State.buildings[*] vs коллекция
@@ -34323,6 +34510,8 @@ function fbApplyRemote(doc) {
   try { if (typeof _v2PaymentsAttachIfFlagged === 'function') _v2PaymentsAttachIfFlagged(); } catch {}
   // Phase 2.4 read-switch — то же самое для buildings.
   try { if (typeof _v2BuildingsAttachIfFlagged === 'function') _v2BuildingsAttachIfFlagged(); } catch {}
+  // Phase 3 read-switch — то же самое для leaseDocs.
+  try { if (typeof _v2LeaseDocsAttachIfFlagged === 'function') _v2LeaseDocsAttachIfFlagged(); } catch {}
 
   saveLocalOnly();       // write to localStorage without triggering fbPushNow
   if ((healed || migrated || contractMigrated || leaseHeadChanged) && typeof saveState === 'function') {
