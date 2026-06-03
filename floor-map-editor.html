@@ -86166,6 +86166,10 @@ function _leaseAiModelOptions() {
 }
 function _leaseAiSelectedModel() {
   const ids = _leaseAiModelOptions().map(o => o.id).filter(Boolean);
+  // Default to the most capable model — Claude Opus — whenever an Anthropic key
+  // is configured (Tony 2026-06-03). Overrides a stale saved non-Opus pick;
+  // the operator can still switch in the dropdown per import.
+  if (ids.includes('claude-opus-4-5')) return 'claude-opus-4-5';
   try { const s = localStorage.getItem(LEASE_AI_MODEL_LS); if (s && ids.includes(s)) return s; } catch {}
   return ids[0] || '';
 }
