@@ -27671,6 +27671,11 @@ function saveState(opts) {
   // Parallel to the monolith push above (different Firestore doc), so no
   // conflict with the optimistic-locking transaction.
   try { if (typeof _mirrorBuildingsToV2 === 'function') _mirrorBuildingsToV2(); } catch (e) { console.warn('[mirror-buildings:saveState]', e?.message || e); }
+  // Phase 3 dual-write — mirror each unit's leaseDocuments[] to per-unit docs
+  // in workspaces/{ws}/leaseDocs/{bid__fid__uid}. _mirrorLeaseDocsToV2 is a
+  // no-op when leaseDocsSyncV2Enabled() is false (default) → DORMANT until the
+  // operator flips settings.leaseDocsV2 (and adds the /leaseDocs/ rule).
+  try { if (typeof _mirrorLeaseDocsToV2 === 'function') _mirrorLeaseDocsToV2(); } catch (e) { console.warn('[mirror-leasedocs:saveState]', e?.message || e); }
   // Optional dirty hint for partial re-render. Callers that know exactly
   // what changed (e.g., manual payment touched only u.payments) can pass
   // { dirty: ['payments'] } so renderAll-level work is skipped and only
@@ -33157,6 +33162,128 @@ window.sfaMirrorBuildingsV2 = function () {
   const res = _mirrorBuildingsToV2();
   console.log('[mirror-buildings] ✓ записано', res.written, '| пропущено', res.skipped,
               '\n→ проверь: sfaReconcileBuildingsV2()');
+};
+
+// =========================================================================
+// Phase 3 (Stage 7) — LEASE DOCUMENTS dual-write → per-unit docs — DORMANT.
+// leaseDocuments[] (метаданные договоров; PDF уже в Storage по pdfStoragePath,
+// плюс versions/extracted/body) весят ~113 KB в монолите. Зеркалим массив
+// каждого юнита в отдельный док workspaces/{ws}/leaseDocs/{bid__fid__uid},
+// симметрично buildings/payments. Flag settings.leaseDocsV2 (default false).
+// Чистое дублирование — монолит остаётся источником истины до strip-стадии.
+// ⚠ Активация требует match-правила /leaseDocs/ (read+write) в firestore.rules
+// (отдельный gated commit) + backfill + reconcile clean → read-switch → strip.
+// =========================================================================
+function leaseDocsSyncV2Enabled() {
+  try { return !!(state && state.settings && state.settings.leaseDocsV2); }
+  catch { return false; }
+}
+window.leaseDocsSyncV2Enabled = leaseDocsSyncV2Enabled;
+
+function _mirrorLeaseDocsReady() {
+  return typeof leaseDocsSyncV2Enabled === 'function' && leaseDocsSyncV2Enabled()
+    && typeof fbSync !== 'undefined' && fbSync && fbSync.enabled && fbSync.sdk && fbSync.db;
+}
+
+// Ключ дока: bid__fid__uid (uid уникален; bid/fid нужны для адресной записи и
+// восстановления на read-switch, тот же стиль что building-aware payments-ключ).
+function _leaseDocsKey(bid, fid, uid) { return `${bid || ''}__${fid || ''}__${uid || ''}`; }
+
+// Кэш последнего записанного шейпа по ключу — пишем только при изменении.
+const _lastWrittenLeaseDocsShape = {};
+function _mirrorLeaseDocsResetCache() {
+  for (const k of Object.keys(_lastWrittenLeaseDocsShape)) delete _lastWrittenLeaseDocsShape[k];
+}
+window._mirrorLeaseDocsResetCache = _mirrorLeaseDocsResetCache;
+
+// Зеркалит leaseDocuments всех юнитов. Idempotent (shape-hash compare).
+// Непустой массив → upsert; массив стал пустым/исчез, но ранее писался →
+// delete дока (чтобы read-switch не показал фантомные договоры).
+function _mirrorLeaseDocsToV2() {
+  if (!_mirrorLeaseDocsReady()) return { written: 0, deleted: 0, skipped: 0, error: 'not-ready' };
+  const { sdk, db } = fbSync;
+  let written = 0, deleted = 0, skipped = 0;
+  for (const b of (state.buildings || [])) {
+    for (const f of ((b && b.floors) || [])) {
+      for (const u of ((f && f.units) || [])) {
+        if (!u || !u.id) continue;
+        const key = _leaseDocsKey(b.id, f.id, u.id);
+        const arr = Array.isArray(u.leaseDocuments) ? u.leaseDocuments : [];
+        if (arr.length === 0) {
+          if (_lastWrittenLeaseDocsShape[key] !== undefined) {
+            try {
+              sdk.deleteDoc(sdk.doc(db, 'workspaces', WORKSPACE_ID, 'leaseDocs', key))
+                .catch(e => console.warn('[mirror-leasedocs:del]', key, e?.message || e));
+              delete _lastWrittenLeaseDocsShape[key];
+              deleted++;
+            } catch (e) { console.warn('[mirror-leasedocs:del] throw', key, e?.message || e); }
+          }
+          continue;
+        }
+        const shape = _stableStringifyBld(arr);
+        if (_lastWrittenLeaseDocsShape[key] === shape) { skipped++; continue; }
+        _lastWrittenLeaseDocsShape[key] = shape;
+        try {
+          const ref = sdk.doc(db, 'workspaces', WORKSPACE_ID, 'leaseDocs', key);
+          sdk.setDoc(ref, {
+            _schema: 'v2',
+            buildingId: b.id, floorId: f.id, unitId: u.id,
+            docs: JSON.parse(JSON.stringify(arr)),   // deep-clone, drop undefined (Firestore-safe)
+            _mirroredAt: sdk.serverTimestamp(),
+            _mirroredBy: 'client',
+          }).catch(e => console.warn('[mirror-leasedocs]', key, e?.message || e));
+          written++;
+        } catch (e) { console.warn('[mirror-leasedocs] setDoc throw', key, e?.message || e); skipped++; }
+      }
+    }
+  }
+  return { written, deleted, skipped };
+}
+window._mirrorLeaseDocsToV2 = _mirrorLeaseDocsToV2;
+
+// Console — однократный backfill leaseDocuments в коллекцию. Root admin only.
+// Прод — ТОЛЬКО после staging-валидации и добавления /leaseDocs/ в rules.
+window.sfaMirrorLeaseDocsV2 = function () {
+  if (!leaseDocsSyncV2Enabled()) { console.warn('[mirror-leasedocs] сначала включи settings.leaseDocsV2'); return; }
+  if (!fbSync || !fbSync.enabled) { console.warn('[mirror-leasedocs] Firestore не готов'); return; }
+  if ((fbSync.user?.email || '').toLowerCase() !== 'tony@al-en.com') { console.warn('[mirror-leasedocs] только root admin'); return; }
+  let n = 0;
+  for (const b of (state.buildings || [])) for (const f of ((b && b.floors) || [])) for (const u of ((f && f.units) || [])) if (Array.isArray(u.leaseDocuments) && u.leaseDocuments.length) n++;
+  if (!confirm('Backfill leaseDocuments ' + n + ' юнит(ов) в workspaces/' + WORKSPACE_ID + '/leaseDocs?\n\n' +
+               (WORKSPACE_ID === 'default' ? '⚠ ЭТО ПРОД!' : '(staging — безопасно)') + '\n\nМонолит не трогается.')) return;
+  _mirrorLeaseDocsResetCache();
+  const res = _mirrorLeaseDocsToV2();
+  console.log('[mirror-leasedocs] ✓ записано', res.written, '| удалено', res.deleted, '| пропущено', res.skipped, '\n→ проверь: sfaReconcileLeaseDocsV2()');
+};
+
+// Reconcile — читает коллекцию напрямую (нужно match /leaseDocs/ read в rules)
+// и сверяет shape по ключам со state. Симметрично sfaReconcileBuildingsV2, но
+// клиентский (без CF), т.к. rules-правило даст и read.
+window.sfaReconcileLeaseDocsV2 = async function () {
+  if (!fbSync || !fbSync.enabled || !fbSync.sdk || !fbSync.db) { console.warn('[reconcile-leasedocs] Firestore not ready'); return; }
+  const { sdk, db } = fbSync;
+  const stateMap = {};
+  for (const b of (state.buildings || [])) for (const f of ((b && b.floors) || [])) for (const u of ((f && f.units) || [])) {
+    const arr = Array.isArray(u.leaseDocuments) ? u.leaseDocuments : [];
+    if (arr.length) stateMap[_leaseDocsKey(b.id, f.id, u.id)] = _stableStringifyBld(arr);
+  }
+  let snap;
+  try { snap = await sdk.getDocs(sdk.collection(db, 'workspaces', WORKSPACE_ID, 'leaseDocs')); }
+  catch (e) { console.warn('[reconcile-leasedocs] read failed — нужно match /leaseDocs/ read в firestore.rules:', e?.message || e); return; }
+  const cloudMap = {};
+  snap.forEach(d => { const data = d.data(); if (data && data._schema === 'v2') cloudMap[d.id] = _stableStringifyBld(data.docs || []); });
+  const stateKeys = Object.keys(stateMap), cloudKeys = Object.keys(cloudMap);
+  const missingInCloud = stateKeys.filter(k => !(k in cloudMap));
+  const extraInCloud = cloudKeys.filter(k => !(k in stateMap));
+  const mismatched = stateKeys.filter(k => (k in cloudMap) && cloudMap[k] !== stateMap[k]);
+  const clean = !missingInCloud.length && !extraInCloud.length && !mismatched.length;
+  console.log('%c=== reconcile leaseDocs v2 (ws=' + WORKSPACE_ID + ') ===', 'font-weight:bold;font-size:13px');
+  console.log('state units w/ docs:', stateKeys.length, '| v2-docs in collection:', cloudKeys.length);
+  console.log('missingInCloud:', missingInCloud.length, missingInCloud);
+  console.log('extraInCloud:', extraInCloud.length, extraInCloud);
+  console.log('mismatched:', mismatched.length, mismatched);
+  console.log(clean ? '✓ ЧИСТО — коллекция совпадает с state' : '⚠ есть расхождения');
+  return { stateCount: stateKeys.length, cloudCount: cloudKeys.length, missingInCloud, extraInCloud, mismatched, clean };
 };
 
 // ── Phase 2.4 building read-switch (DORMANT) ─────────────────────────────
