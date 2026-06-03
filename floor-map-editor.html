@@ -32026,7 +32026,7 @@ async function fbPushNow() {
     // loud here so the operator knows their next save won't sync
     // until they archive old buildings or trim photos).
     if (json.length > 950 * 1024) {
-      const msg = `Refusing to push: state is ${sizeKB}KB, near Firestore's 1MB doc limit. Archive an old building or trim large photos in Settings → Archive before saving more.`;
+      const msg = `Refusing to push: workspace data is ${sizeKB}KB, near Firestore's 1MB limit. The heavy items are payment & lease-document history (Settings → My Data shows the breakdown) — archiving units does NOT shrink it. Ask an admin to run the scaling cleanup.`;
       console.error('[fb] ' + msg);
       toast(msg, 'error');
       fbSync.status = 'error';
@@ -58382,12 +58382,17 @@ function _measureStateBreakdown(payload) {
     try { return v == null ? 0 : JSON.stringify(v).length; } catch { return 0; }
   };
   const cats = {
-    blueprints:    0,
-    photos:        0,
-    prospects:     0,
-    outreach:      0,
-    tenantHistory: 0,
-    geometry:      0,
+    blueprints:         0,
+    photos:             0,
+    prospects:          0,
+    outreach:           0,
+    tenantHistory:      0,
+    payments:           0,
+    leaseDocuments:     0,
+    leaseEnvelopes:     0,
+    additionalServices: 0,
+    stripe:             0,
+    unitFields:         0,
     tenants:       sz(payload.tenants),
     leases:        sz(payload.leases),
     contracts:     sz(payload.contracts),
@@ -58403,23 +58408,34 @@ function _measureStateBreakdown(payload) {
         const prospects  = sz(u.prospects);
         const outreach   = sz(u.outreach);
         const tenantHist = sz(u.tenantHistory);
-        cats.photos        += photos;
-        cats.prospects     += prospects;
-        cats.outreach      += outreach;
-        cats.tenantHistory += tenantHist;
+        const payments   = sz(u.payments);
+        const leaseDocs  = sz(u.leaseDocuments);
+        const leaseEnv   = sz(u.leaseEnvelopes);
+        const addlSvc    = sz(u.additionalServices);
+        const stripe     = sz(u.stripe);
+        cats.photos             += photos;
+        cats.prospects          += prospects;
+        cats.outreach           += outreach;
+        cats.tenantHistory      += tenantHist;
+        cats.payments           += payments;
+        cats.leaseDocuments     += leaseDocs;
+        cats.leaseEnvelopes     += leaseEnv;
+        cats.additionalServices += addlSvc;
+        cats.stripe             += stripe;
+        // «unitFields» = честный остаток (геометрия, рента, статус, даты, контакты…)
+        // после выноса тяжёлых записей выше. Раньше это поле звалось «geometry» и
+        // ошибочно включало payments/leaseDocuments → панель вводила в заблуждение.
         const rest = { ...u };
-        delete rest.photos; delete rest.prospects;
-        delete rest.outreach; delete rest.tenantHistory;
-        const geom = sz(rest);
-        cats.geometry += geom;
-        const total = photos + prospects + outreach + tenantHist + geom;
+        delete rest.photos; delete rest.prospects; delete rest.outreach; delete rest.tenantHistory;
+        delete rest.payments; delete rest.leaseDocuments; delete rest.leaseEnvelopes;
+        delete rest.additionalServices; delete rest.stripe;
+        const unitFields = sz(rest);
+        cats.unitFields += unitFields;
+        const total = photos + prospects + outreach + tenantHist + payments + leaseDocs + leaseEnv + addlSvc + stripe + unitFields;
         if (total >= 5000) {
-          const max = Math.max(photos, prospects, outreach, tenantHist, geom);
-          let heavy = '';
-          if      (max === photos)     heavy = 'photos';
-          else if (max === prospects)  heavy = 'lease drafts';
-          else if (max === outreach)   heavy = 'outreach';
-          else if (max === tenantHist) heavy = 'tenant history';
+          const parts = { 'photos': photos, 'lease drafts': prospects, 'outreach': outreach, 'tenant history': tenantHist, 'payments': payments, 'lease documents': leaseDocs, 'DocuSign envelopes': leaseEnv, 'additional services': addlSvc, 'Stripe links': stripe, 'unit fields': unitFields };
+          let heavy = '', max = 0;
+          for (const k of Object.keys(parts)) { if (parts[k] > max) { max = parts[k]; heavy = k; } }
           const bldgLabel = buildingLabel(b) || 'Building';
           const flrLabel  = f.name || (f.number != null ? 'Floor ' + f.number : 'Floor');
           hot.push({
@@ -58460,7 +58476,7 @@ async function renderAcctData(body) {
   let barColor, barNote;
   if (sizeBytes >= 950 * 1024) {
     barColor = 'var(--danger, #dc2626)';
-    barNote = 'Sync paused — state exceeds the 950 KB Firestore cap. Archive a building or trim photos before further saves can sync.';
+    barNote = 'Sync paused — workspace data exceeds the 950 KB Firestore cap. The heaviest items are payment & lease-document history (see breakdown below) — archiving units does NOT shrink this. Ask an admin to run the scaling cleanup before further saves can sync.';
   } else if (sizeBytes >= 900 * 1024) {
     barColor = 'var(--warning, #F59E0B)';
     barNote = 'Approaching the 950 KB cap. Trim heavy items below before next save.';
@@ -58474,17 +58490,22 @@ async function renderAcctData(body) {
 
   // Лейблы для категорий — порядок внутри объекта не важен, сортировка по байтам ниже.
   const catLabels = {
-    blueprints:    'Floor blueprints',
-    photos:        'Unit photos',
-    prospects:     'Prospects + lease drafts',
-    outreach:      'Outreach events',
-    tenantHistory: 'Tenant history',
-    geometry:      'Building / floor / unit geometry',
-    tenants:       'Tenants',
-    leases:        'Leases',
-    contracts:     'Contracts',
-    investments:   'Investment models',
-    settings:      'Workspace settings',
+    blueprints:         'Floor blueprints',
+    photos:             'Unit photos',
+    prospects:          'Prospects + lease drafts',
+    outreach:           'Outreach events',
+    tenantHistory:      'Tenant history',
+    payments:           'Payment records',
+    leaseDocuments:     'Lease documents',
+    leaseEnvelopes:     'DocuSign envelopes',
+    additionalServices: 'Additional services',
+    stripe:             'Stripe links',
+    unitFields:         'Unit fields (geometry, rent, status…)',
+    tenants:            'Tenants',
+    leases:             'Leases',
+    contracts:          'Contracts',
+    investments:        'Investment models',
+    settings:           'Workspace settings',
   };
   const sortedCats = breakdown
     ? Object.entries(breakdown.cats).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1])
