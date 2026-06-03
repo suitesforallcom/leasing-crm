@@ -21,6 +21,14 @@ Format:
 
 ---
 
+## 2026-06-03
+
+### Crop background tool (floor-map editor)
+
+- 🆕 `7c34ef7` **Crop background image** — new bottom-toolbar «⋯ More» action + mode `crop-bg`. Operator drags a box over the area to keep; everything outside is trimmed off the blueprint PNG/PDF. Available at any stage (auto-enables Edit Mode like the outline tool). **Alignment-safe:** the cropped image is re-placed into the SAME world-rect it occupied before (recomputes `bg.scale/x/y`), so units / walls / floor-outline don't shift and `pxPerFt` calibration stays valid — no recompute. Reversible via Undo (Ctrl+Z) + pre-mutation local backup. Cross-origin Storage URLs loaded with `crossOrigin='anonymous'`; tainted-canvas falls back to a toast. Verified in-browser: crop math (`aligned: true`), 240×180 pixel output correct, parse-check 0 errors. Deployed to `https://suitesforall.web.app` (meta release `7c34ef7dd03a`). Push to main approved by Tony this session.
+
+---
+
 ## 2026-05-23 → 2026-05-24
 
 ### HubSpot Insights panel — Sprint 4 + bug-fix chain
