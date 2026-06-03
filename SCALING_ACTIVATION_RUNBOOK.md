@@ -29,7 +29,9 @@ Then read on for the activation sequence.
 | Phase 2.5 strip monolith buildings | NOT BUILT | (no flag yet) | n/a |
 | Reconcile monitor CF (hourly) | LIVE | (no flag — always runs when `syncV2` is on) | — |
 
-State doc size right now: ~850 KB. Hard ceiling 1 MB → 150 KB headroom = ~2 more buildings before lockup. **Phase 1.3 strip frees ~200 KB.** **Phase 2.5 strip frees ~600 KB.** Both must follow their respective dual-write + read-switch.
+> **✅ UPDATE 2026-06-03 — Stage 5 + Stage 6 STRIPS ACTIVATED. Monolith doc = ~51 KB (was 924).** Both read-switches live; payments + buildings served from collections; monolith carries only settings/ui/investments/flags. Flags `settings.syncV2StripPayments` + `settings.syncBuildingsStrip` = ON. Required the FIXES_LOG Entry 37 fix first (buildings read-switch re-merges payments from `_v2PaymentsCache`; without it the first attempt showed false late fees and was reverted). ~900 KB headroom now. NOTE: in-memory/localStorage state is still ~924 KB (read-switches rehydrate it) — that's expected; the Firestore DOC is what shrank. Rollback if ever needed: `state.settings.syncBuildingsStrip=false; syncV2StripPayments=false; saveState(); sfaRehydrateMonolithBuildings(); sfaRehydrateMonolithPayments()`.
+
+State doc size before activation: ~924 KB. Hard ceiling 1 MB. **Phase 1.3 strip freed ~207 KB; Phase 2.5 strip freed ~570 KB → combined 924→51 KB.** Both followed their dual-write + read-switch + the Entry-37 payment-merge fix.
 
 ---
 
