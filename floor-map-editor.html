@@ -86205,8 +86205,10 @@ const LEASE_AI_SYSTEM_PROMPT = [
   '  "document_type": "lease | amendment | renewal_amendment | commencement_date_agreement | estoppel | guaranty | assignment | sublease | work_letter | parking_agreement | exhibit | other",',
   '  "document_date": "YYYY-MM-DD or null (the document\'s own date / execution date)",',
   '  "executed": <true if signed/fully-executed, false if draft/unsigned, null if unknown>,',
-  '  "tenant_name": "string or null (the individual signer / primary tenant)",',
-  '  "company": "string or null (tenant legal entity / DBA, if any)",',
+  '  "tenant_name": "string or null — the TENANT PARTY exactly as named in the lease\'s opening / parties clause (\'between Landlord and ___ , as Tenant\'). For a commercial lease this is almost always a LEGAL ENTITY (e.g. \'Advocates for Disabled Vets, LLC\'). It is NOT the human in the signature block. Use the individual\'s name here ONLY if the tenant party itself is an individual person (no entity).",',
+  '  "company": "string or null — the tenant legal entity / DBA (same as tenant_name when the tenant is an entity).",',
+  '  "signatory": "string or null — the PERSON who signed for the tenant (from the signature block: \'By:\', \'Print Name:\', \'Name:\'). This is NOT the tenant. E.g. \'Paul R. Aaronson\'.",',
+  '  "signatory_title": "string or null — that signer\'s title (\'As Its:\' / title line), e.g. \'CEO\', \'Managing Member\'.",',
   '  "email": "string or null",',
   '  "phone": "string or null",',
   '  "monthly_rent": <number or null (base monthly rent in USD; if only annual is given, divide by 12)>,',
@@ -86413,6 +86415,46 @@ function _leaseAiSafeParse(raw) {
   if (is) t += '"';
   while (stack.length) t += stack.pop();
   try { return JSON.parse(t); } catch {}
+  return null;
+}
+
+// Семантическая страховка: модель иногда берёт ИМЯ ПОДПИСАНТА (из блока подписи
+// «Print Name / By / As Its CEO») как имя арендатора. На самом деле арендатор —
+// это СТОРОНА (юр.лицо). Если tenant_name похож на человека, а company — явное
+// юр.лицо (LLC/Inc/…), то арендатор = company, а человек = подписант. Возвращает
+// строку-пометку для оператора (или null). Мутирует parsed.
+const _LEASE_ENTITY_SUFFIX = /\b(l\.?l\.?c\.?|inc\.?|incorporated|corp\.?|corporation|company|co\.?|l\.?p\.?|l\.?l\.?p\.?|ltd\.?|pllc|p\.?a\.?|p\.?c\.?|trust|associates|partnership|holdings|group|enterprises|ventures)\b/i;
+function _leaseLooksLikePerson(s) {
+  s = String(s || '').trim();
+  if (!s || _LEASE_ENTITY_SUFFIX.test(s)) return false;
+  const words = s.split(/\s+/);
+  if (words.length < 2 || words.length > 4) return false;          // 2–4 слова
+  // каждое слово — Capitalized / инициал (J.) — без цифр/спецсимволов
+  return words.every(w => /^[A-Z][a-z'’.-]*\.?$/.test(w) || /^[A-Z]\.?$/.test(w));
+}
+function _leaseAiFixTenantEntity(parsed) {
+  if (!parsed) return null;
+  const tn = (parsed.tenant_name || '').trim();
+  const co = (parsed.company || '').trim();
+  // Случай: tenant_name — человек, company — юр.лицо, и это разные строки.
+  if (tn && co && tn !== co && _leaseLooksLikePerson(tn) && _LEASE_ENTITY_SUFFIX.test(co)) {
+    parsed.lease_abstract = parsed.lease_abstract || {};
+    parsed.lease_abstract.parties = parsed.lease_abstract.parties || {};
+    if (!parsed.lease_abstract.parties.signatory) parsed.lease_abstract.parties.signatory = parsed.signatory || tn;
+    // top-level signatory (если модель не дала)
+    if (!parsed.signatory) parsed.signatory = tn;
+    parsed.tenant_name = co;
+    // источник tenant_name теперь — entity, прежняя цитата (из подписи) больше не верна
+    if (parsed._sources) delete parsed._sources.tenant_name;
+    return `Tenant set to the entity «${co}». «${tn}» looks like the signatory${parsed.signatory_title ? ' (' + parsed.signatory_title + ')' : ''}, not the tenant — verify.`;
+  }
+  // Подтянуть signatory в parties для отображения, даже без коррекции.
+  if (parsed.signatory) {
+    parsed.lease_abstract = parsed.lease_abstract || {};
+    parsed.lease_abstract.parties = parsed.lease_abstract.parties || {};
+    if (!parsed.lease_abstract.parties.signatory) parsed.lease_abstract.parties.signatory = parsed.signatory;
+    if (parsed.signatory_title && !parsed.lease_abstract.parties.signatory_title) parsed.lease_abstract.parties.signatory_title = parsed.signatory_title;
+  }
   return null;
 }
 
@@ -86672,6 +86714,9 @@ function _leaseAiMergeAndRender() {
   _leaseAiState.estoppelFacts = merged.estoppelFacts || [];
   if (_leaseAiState._activeDoc) { _leaseAiState.pages = _leaseAiState._activeDoc.pages || []; _leaseAiState.hasTextLayer = !!_leaseAiState._activeDoc.hasTextLayer; }
   const parsed = merged.fields;
+  // Семантика: арендатор = сторона (юр.лицо), не подписант (Tony 2026-06-03).
+  _leaseAiState.tenantNote = _leaseAiFixTenantEntity(parsed) || null;
+  _leaseAiState.abstract = parsed.lease_abstract || _leaseAiState.abstract;  // коррекция могла дописать parties.signatory
   // current-rent override на merged-расписании
   if (_leaseAiState.rentSchedule.length) {
     const d = new Date(); const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
@@ -86827,6 +86872,7 @@ function _leaseAbstractHtml(abs) {
     ['TI allowance', abs.ti_allowance], ['Insurance required', abs.insurance_required], ['Guaranty', abs.guaranty],
   ]));
   out += section('Parties & premises', rows([
+    ['Signatory', pa.signatory ? (pa.signatory + (pa.signatory_title ? ' (' + pa.signatory_title + ')' : '')) : null],
     ['Landlord', pa.landlord], ['Landlord notice', pa.landlord_notice], ['Property manager', pa.property_manager], ['Tenant notice', pa.tenant_notice], ['Guarantor', pa.guarantor],
     ['Building', pr.building], ['Suite', pr.suite], ['RSF', pr.rsf], ['USF', pr.usf],
   ]));
@@ -87042,6 +87088,8 @@ function _leaseAiRenderVerification() {
 function _leaseAiMatchWarnings(parsed) {
   const out = [];
   if (!parsed) return out;
+  // Коррекция «арендатор = юр.лицо, не подписант».
+  if (_leaseAiState && _leaseAiState.tenantNote) out.push({ level: 'warn', msg: esc(_leaseAiState.tenantNote) });
   const selId = (selectedIds && selectedIds[0]) || null;
   const selUnit = selId ? currentUnits().find(x => x.id === selId) : null;
   // 1) Suite в договоре ≠ выбранный суит
