@@ -75896,6 +75896,76 @@ function _renderUnitV2Tabs(u, activeTab) {
 //  - CURRENT month = late ONLY if we're past the grace period
 //    (default day 5, matches the late-fee policy default).
 // =============================================================
+// =====================================================================
+// Rent escalation → billing (DORMANT, flag: settings.escalationBilling).
+// Финмодель (FINANCIAL_MODULE_SYNC_RULES §rent-schedule): «Rent schedule
+// generates correct invoice amounts (proration on partial periods,
+// escalations on schedule)». Реализация: helper возвращает ренту ступени,
+// покрывающей 1-е число месяца ym (Tony: «обычно с 1-го числа», расписание
+// редактируемо для тонкой настройки). КЛИЕНТ-ONLY пока — owed/A-R/overdue
+// учитывают ступени; реальные Stripe-счета (functions/index.js cron)
+// по-прежнему по contractRent до отдельного functions-деплоя.
+// SAFETY: при выключенном флаге helper возвращает fallback (контрактную
+// ренту) → _computeUnitMoney считает БАЙТ-В-БАЙТ как раньше.
+// Границы периода расписания ("12/1/24 – 11/30/25") → {start,end} Date (US M/D/Y).
+function _rentPeriodBounds(periodStr) {
+  const m = String(periodStr || '').match(/(\d{1,2}\/\d{1,2}\/\d{2,4})\s*[–\-—to]+\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/);
+  if (!m) return null;
+  const p = (s) => {
+    const mm = s.match(/(\d+)\/(\d+)\/(\d+)/); if (!mm) return null;
+    const yr = (+mm[3] < 100) ? 2000 + (+mm[3]) : (+mm[3]);
+    const d = new Date(yr, (+mm[1]) - 1, (+mm[2]));
+    return isNaN(d.getTime()) ? null : d;
+  };
+  const a = p(m[1]), b = p(m[2]);
+  return (a && b) ? { start: a, end: b } : null;
+}
+// Строка расписания, чей период покрывает 1-е число месяца ym (calendar-month).
+function _rentScheduleRowForYm(sched, ym) {
+  if (!Array.isArray(sched) || !sched.length || !/^\d{4}-\d{2}$/.test(ym)) return null;
+  const [y, mo] = ym.split('-').map(Number);
+  const first = new Date(y, mo - 1, 1);
+  for (const r of sched) {
+    const b = _rentPeriodBounds(r && r.period);
+    if (b && first >= b.start && first <= b.end) return r;
+  }
+  return null;
+}
+// Эскалированная месячная рента для ym. Флаг OFF / нет расписания / месяц вне
+// расписания → fallback (контрактная рента). $0-период (abatement) → 0.
+// ВАЖНО: имя _escalatedMonthlyRent (НЕ _effectiveMonthlyRent — последнее уже
+// занято существующей group-aware функцией текущей ренты; коллизия имён ломала
+// эскалацию).
+function _escalatedMonthlyRent(u, ym, fallback) {
+  const flat = (fallback != null) ? fallback : (+u.contractRent || +u.rent || 0);
+  if (!(state && state.settings && state.settings.escalationBilling)) return flat;  // DORMANT
+  const sched = Array.isArray(u && u.rentSchedule) ? u.rentSchedule : [];
+  if (!sched.length) return flat;
+  const row = _rentScheduleRowForYm(sched, ym);
+  if (!row) return flat;
+  const v = +row.monthly_rent;
+  return (isFinite(v) && v >= 0) ? v : flat;
+}
+window.sfaEnableEscalationBilling  = function () { state.settings = state.settings || {}; state.settings.escalationBilling = true;  try { saveState(); } catch {} try { renderAll(); } catch {} console.info('[escalation] billing ON — owed/A-R now use rent schedules (client only; Stripe cron unchanged)'); return true; };
+window.sfaDisableEscalationBilling = function () { state.settings = state.settings || {}; state.settings.escalationBilling = false; try { saveState(); } catch {} try { renderAll(); } catch {} console.info('[escalation] billing OFF — back to flat contract rent'); return true; };
+// Reconcile-превью: по каждому суите с расписанием показывает ренту текущего
+// месяца flat vs по ступени (для сверки перед включением флага).
+window.sfaEscalationBillingPreview = function () {
+  const nowYm = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; })();
+  const rows = [];
+  (state.buildings || []).forEach(b => (b.floors || []).forEach(f => (f.units || []).forEach(u => {
+    const sched = Array.isArray(u.rentSchedule) ? u.rentSchedule : [];
+    if (!sched.length) return;
+    const flat = +u.contractRent || +u.rent || 0;
+    const row = _rentScheduleRowForYm(sched, nowYm);
+    const esc = row ? +row.monthly_rent : null;
+    rows.push({ suite: u.id, building: b.name || b.id, flat, escalatedThisMonth: esc, period: row ? row.period : '(no period covers ' + nowYm + ')', diff: (esc != null ? +(esc - flat).toFixed(2) : null) });
+  })));
+  console.log(`%cEscalation billing preview — ${nowYm} · flag is currently ${state?.settings?.escalationBilling ? 'ON' : 'OFF'}`, 'font-weight:700');
+  console.table(rows);
+  return rows;
+};
+
 function _computeUnitMoney(u) {
   // Multi-suite lease: financial state (rent, payments, late-fee config)
   // lives on the head. Redirect so any caller using a member sees the
@@ -75903,6 +75973,8 @@ function _computeUnitMoney(u) {
   // what kills the phantom "X months unpaid" badge on member suites.
   if (typeof _unitLeaseHead === 'function') u = _unitLeaseHead(u);
   const rent = +u.contractRent || +u.rent || 0;
+  // Escalation-aware месячная рента (DORMANT — при флаге OFF === rent).
+  const _escRent = (ym) => _escalatedMonthlyRent(u, ym, rent);
   const now = new Date();
   const startIso = u.leaseStart || u.signed || '';
   const startDate = startIso ? new Date(startIso + 'T00:00:00') : null;
@@ -75943,10 +76015,12 @@ function _computeUnitMoney(u) {
 
     const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
     const p = u.payments?.[ym];
-    const mb = _monthBilling(rent, ym, startIso, grace, now, u);
+    // Escalation: база месяца = рента ступени, покрывающей ym (флаг OFF → rent).
+    const monthBase = _escRent(ym);
+    const mb = _monthBilling(monthBase, ym, startIso, grace, now, u);
     const monthRent = mb.monthRent;
     if (p?.status === 'paid') {
-      paidYtd += (+p.amount) || rent;
+      paidYtd += (+p.amount) || monthBase;
       continue;
     }
     // Waived month — no debt, no late fee, no overdue overlay. Shares
@@ -75956,8 +76030,9 @@ function _computeUnitMoney(u) {
     if (p?.status === 'free') continue;
 
     if (i > 0) {
-      // Past unpaid month — outstanding + overdue
-      if (rent > 0) { outstanding += rent; owed += rent; unpaidMonths++; }
+      // Past unpaid month — outstanding + overdue. monthBase = escalated rent
+      // for THIS month (флаг OFF → === rent, поведение не меняется).
+      if (monthBase > 0) { outstanding += monthBase; owed += monthBase; unpaidMonths++; }
     } else if (i === 0) {
       // Current month: rent is owed, but only counts as "overdue"
       // (alarms / red overlay) once past the grace day. Якорь грейса
