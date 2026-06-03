@@ -97370,15 +97370,45 @@ function openCropModal() {
   const modal = document.getElementById('cropModal');
   // Reset rotation each time the modal opens — fresh blueprint, fresh state
   cropRotation = 0;
-  _cropOriginalSrc = bg.src;
   _cropOriginalImg = null;
-  img.onload = () => {
-    cropRectNorm = { x: 0.1, y: 0.1, w: 0.8, h: 0.8 };
-    positionCropRect();
-  };
-  img.onerror = () => toast('Could not load image for cropping', 'error');
-  img.src = bg.src;
   modal.classList.add('active');
+
+  // Грузим картинку так, чтобы applyCrop → canvas.toDataURL не упал на
+  // «Tainted canvases may not be exported». Cross-origin Storage-URL,
+  // загруженный БЕЗ crossOrigin, портит canvas. Поэтому:
+  //   1) предпочитаем закешированный same-origin data-URL (не портит никогда);
+  //   2) иначе грузим Storage-URL с crossOrigin='anonymous' — cors.json
+  //      разрешает GET для нашего origin, поэтому canvas остаётся чистым;
+  //   3) если crossOrigin-загрузка падает (бакет без CORS) — грузим без него,
+  //      чтобы показать хотя бы превью (экспорт подскажет про sfaCacheCurrentBg).
+  const _loadInto = (src, tryCors) => {
+    _cropOriginalSrc = src;
+    img.onload = () => {
+      cropRectNorm = { x: 0.1, y: 0.1, w: 0.8, h: 0.8 };
+      positionCropRect();
+    };
+    img.onerror = () => {
+      if (tryCors) {
+        // crossOrigin не прошёл — повторяем без него (превью без экспорта).
+        img.removeAttribute('crossorigin');
+        _loadInto(src, false);
+      } else if (typeof toast === 'function') {
+        toast('Could not load image for cropping', 'error');
+      }
+    };
+    if (tryCors && /^https?:/i.test(src)) img.crossOrigin = 'anonymous';
+    else img.removeAttribute('crossorigin');
+    img.src = src;
+  };
+
+  const fid = (typeof currentFloor === 'function') ? currentFloor()?.id : null;
+  if (typeof _bgCachedDataUrl === 'function' && fid) {
+    _bgCachedDataUrl(fid)
+      .then(cached => _loadInto(cached || bg.src, !cached))
+      .catch(() => _loadInto(bg.src, true));
+  } else {
+    _loadInto(bg.src, true);
+  }
 }
 
 // Rotate by NATIVELY redrawing the original image through canvas and
@@ -97700,7 +97730,13 @@ function applyCrop() {
       toast('Could not sync blueprint to cloud: ' + (err.message || err), 'error');
     });
   } catch (err) {
-    toast('Crop failed: ' + err.message, 'error');
+    // «Tainted canvas» = картинка с Storage загрузилась без CORS-доступа.
+    // Обычно лечится crossOrigin в openCropModal (cors.json настроен), но
+    // если бакет вернул фон без CORS-заголовков — подсказываем ручной путь.
+    const msg = /tainted|toDataURL|cross-?origin|securityerror/i.test(String(err && (err.message || err)))
+      ? 'Crop failed — the floor plan image is blocked from export (cross-origin). Re-upload the floor plan, or run sfaCacheCurrentBg() in the console to pick the original file, then crop again.'
+      : 'Crop failed: ' + (err && err.message ? err.message : err);
+    toast(msg, 'error');
   }
 }
 
