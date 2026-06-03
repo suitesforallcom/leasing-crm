@@ -12154,6 +12154,21 @@
   .la-ab-row:last-child { border-bottom: 0; }
   .la-ab-k { color: var(--muted); flex-shrink: 0; }
   .la-ab-v { color: var(--text); text-align: right; }
+  /* Stage 2 — Missing / Not Found collapsed section + manual entry */
+  .la-miss-details { border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
+  .la-miss-sum { cursor: pointer; padding: 8px 10px; font: 800 12px inherit; color: var(--text); list-style: none; }
+  .la-miss-sum::-webkit-details-marker { display: none; }
+  .la-miss-details[open] .la-miss-sum { border-bottom: 1px solid var(--border); }
+  .la-miss-details > *:not(summary) { padding: 0 10px; }
+  .la-miss-cat { margin: 8px 0; }
+  .la-miss-cat-t { font: 700 10.5px inherit; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); margin-bottom: 4px; }
+  .la-miss-row { display: flex; align-items: center; gap: 8px; justify-content: space-between; padding: 3px 0; }
+  .la-miss-label { font-size: 11.5px; color: var(--text); }
+  .la-miss-crit { font-size: 9px; font-weight: 800; color: #dc2626; text-transform: uppercase; letter-spacing: .3px; }
+  .la-miss-input { display: flex; gap: 4px; flex-shrink: 0; }
+  .la-miss-input input { width: 130px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; font-size: 11.5px; background: var(--surface); box-sizing: border-box; }
+  .la-miss-input button { padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); font-size: 11px; font-weight: 700; cursor: pointer; }
+  .la-miss-input button:hover { background: var(--accent-light); }
   .lease-ai-doc {
     border-right: 1px solid var(--border); overflow: auto; background: #475569;
     padding: 16px; display: flex; flex-direction: column; align-items: center; gap: 12px;
@@ -86275,7 +86290,7 @@ async function _leaseAiOnFile(file) {
   if (!file) return;
   if (file.size > 25 * 1024 * 1024) { toast('File too large (max 25 MB)', 'error'); return; }
   const doc = document.getElementById('leaseAiDoc');
-  _leaseAiState = { fields: null, sources: null, text: '', imageBlocks: [], pages: [], hasTextLayer: false, modelId: '' };
+  _leaseAiState = { fields: null, sources: null, text: '', imageBlocks: [], pages: [], hasTextLayer: false, modelId: '', manualFields: {} };
   _leaseAiSetStatus('Reading document…');
   try {
     const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
@@ -86484,7 +86499,9 @@ async function _leaseAiAnalyze() {
     }
     _leaseAiRenderFields(parsed);
     _leaseAiRenderEscalation(_leaseAiState.rentSchedule);
+    _leaseAiRenderVerification();
     _leaseAiRenderAbstractSummary(_leaseAiState.abstract);
+    _leaseAiRenderMissing();
     _leaseAiRenderAnalysis(_leaseAiState.keyPoints);
     const got = LEASE_AI_FIELD_DEFS.filter(d => parsed[d.key] != null && parsed[d.key] !== '').length;
     const hint = _leaseAiState.hasTextLayer ? ' · click a field to see its source in the lease' : '';
@@ -86642,6 +86659,175 @@ function _renderLeaseAbstract(u) {
     </details>`;
 }
 
+// ===== Stage 2: field status · Missing/Not-Found section · verification =====
+// Каталог ключевых полей для определения «чего не хватает» (не все 200 — самое
+// операционно-важное). path читается от parsed (core) или parsed.lease_abstract.
+// crit = billing-critical (нужно для tenant/charges).
+const LEASE_FIELD_CATALOG = [
+  { key: 'tenant_name',    label: 'Tenant name',            cat: 'Tenant',            path: 'tenant_name', crit: true },
+  { key: 'company',        label: 'Company',                cat: 'Tenant',            path: 'company' },
+  { key: 'email',          label: 'Billing email',          cat: 'Tenant',            path: 'email', crit: true },
+  { key: 'phone',          label: 'Phone',                  cat: 'Tenant',            path: 'phone' },
+  { key: 'building',       label: 'Building',               cat: 'Property',          path: 'lease_abstract.premises.building' },
+  { key: 'suite',          label: 'Suite',                  cat: 'Property',          path: 'lease_abstract.premises.suite' },
+  { key: 'square_feet',    label: 'Rentable SF',            cat: 'Property',          path: 'square_feet', crit: true },
+  { key: 'landlord',       label: 'Landlord',               cat: 'Property',          path: 'lease_abstract.parties.landlord' },
+  { key: 'lease_start',    label: 'Lease start',            cat: 'Dates',             path: 'lease_start', crit: true },
+  { key: 'lease_end',      label: 'Lease end',              cat: 'Dates',             path: 'lease_end', crit: true },
+  { key: 'term_months',    label: 'Term (months)',          cat: 'Dates',             path: 'term_months' },
+  { key: 'monthly_rent',   label: 'Monthly rent',           cat: 'Rent',              path: 'monthly_rent', crit: true },
+  { key: 'rent_due_day',   label: 'Rent due day',           cat: 'Rent',              path: 'lease_abstract.rent_due_day', crit: true },
+  { key: 'lease_structure',label: 'Lease structure (NNN/Gross)', cat: 'Rent',         path: 'lease_abstract.lease_structure', crit: true },
+  { key: 'pro_rata',       label: 'Pro-rata share %',       cat: 'CAM / Recoveries',  path: 'lease_abstract.additional_rent.pro_rata_share_pct' },
+  { key: 'cam_monthly',    label: 'CAM monthly estimate',   cat: 'CAM / Recoveries',  path: 'lease_abstract.additional_rent.monthly_estimate' },
+  { key: 'base_year',      label: 'Base year',              cat: 'CAM / Recoveries',  path: 'lease_abstract.additional_rent.base_year' },
+  { key: 'expense_cap',    label: 'Expense cap',            cat: 'CAM / Recoveries',  path: 'lease_abstract.additional_rent.expense_cap' },
+  { key: 'sales_tax',      label: 'Sales tax applies',      cat: 'Payment',           path: 'lease_abstract.sales_tax.applies' },
+  { key: 'payment_method', label: 'Payment method',         cat: 'Payment',           path: 'lease_abstract.payment_method' },
+  { key: 'grace_days',     label: 'Late-fee grace days',    cat: 'Payment',           path: 'lease_abstract.late_fee.grace_days' },
+  { key: 'deposit',        label: 'Security deposit',       cat: 'Deposit / Guaranty',path: 'deposit', crit: true },
+  { key: 'guaranty',       label: 'Guaranty',               cat: 'Deposit / Guaranty',path: 'lease_abstract.guaranty' },
+  { key: 'insurance',      label: 'Insurance required',     cat: 'Insurance',         path: 'lease_abstract.insurance_required' },
+  { key: 'renewal',        label: 'Renewal option',         cat: 'Options',           path: 'lease_abstract.options.renewal' },
+  { key: 'holdover',       label: 'Holdover rent',          cat: 'Options',           path: 'lease_abstract.options.holdover' },
+  { key: 'early_term',     label: 'Early termination',      cat: 'Options',           path: 'lease_abstract.options.early_termination' },
+  { key: 'parking_spaces', label: 'Parking spaces',         cat: 'Parking',           path: 'lease_abstract.parking.spaces' },
+];
+function _leaseGetByPath(obj, path) {
+  if (!obj || !path) return undefined;
+  return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
+}
+function _leaseFieldFilled(v) {
+  if (v == null) return false;
+  if (typeof v === 'string') return v.trim() !== '';
+  if (Array.isArray(v)) return v.length > 0;
+  return true; // numbers (incl. 0), booleans (incl. false) count as present
+}
+// Значение поля каталога: ручной ввод имеет приоритет над AI.
+function _leaseCatalogValue(def) {
+  const man = _leaseAiState && _leaseAiState.manualFields && _leaseAiState.manualFields[def.key];
+  if (man && _leaseFieldFilled(man.value)) return { value: man.value, manual: true };
+  const v = _leaseGetByPath(_leaseAiState && _leaseAiState.fields, def.path);
+  return { value: v, manual: false };
+}
+
+// Сворачиваемая секция «Missing / Not Found Fields (N)» (Tony §2): поля без
+// значения уходят сюда, сгруппированы по категории, с ручным вводом. Main-экран
+// чистый. Ручной ввод → status «Manually added» (+ кто/когда).
+function _leaseAiRenderMissing() {
+  const host = document.getElementById('leaseAiFields');
+  if (!host) return;
+  let wrap = document.getElementById('leaseAiMissingWrap');
+  if (wrap) wrap.remove();
+  if (!_leaseAiState || !_leaseAiState.fields) return;
+  const missing = [], added = [];
+  LEASE_FIELD_CATALOG.forEach(def => {
+    const { value, manual } = _leaseCatalogValue(def);
+    if (_leaseFieldFilled(value)) { if (manual) added.push({ def, value }); }
+    else missing.push(def);
+  });
+  // группируем missing по категории
+  const byCat = {};
+  missing.forEach(d => { (byCat[d.cat] = byCat[d.cat] || []).push(d); });
+  const cats = Object.keys(byCat);
+  const addedHtml = added.length
+    ? `<div style="margin:4px 0 8px;">` + added.map(a => `<div class="la-ab-row"><span class="la-ab-k">✍️ ${esc(a.def.label)}</span><span class="la-ab-v">${esc(String(a.value))}</span></div>`).join('') + `</div>`
+    : '';
+  const groupsHtml = cats.map(cat => {
+    const rows = byCat[cat].map(d => `
+      <div class="la-miss-row">
+        <div class="la-miss-label">${esc(d.label)}${d.crit ? ' <span class="la-miss-crit">billing-critical</span>' : ''}</div>
+        <div class="la-miss-input">
+          <input type="text" id="lafm_${esc(d.key)}" placeholder="Add value…" onkeydown="if(event.key==='Enter'){event.preventDefault();_leaseAiAddManualField('${esc(d.key)}');}">
+          <button type="button" onclick="_leaseAiAddManualField('${esc(d.key)}')">Save</button>
+        </div>
+      </div>`).join('');
+    return `<div class="la-miss-cat"><div class="la-miss-cat-t">${esc(cat)} (${byCat[cat].length})</div>${rows}</div>`;
+  }).join('');
+  wrap = document.createElement('div');
+  wrap.id = 'leaseAiMissingWrap';
+  wrap.className = 'lease-esc-wrap';
+  wrap.innerHTML =
+    `<details class="la-miss-details"${missing.length === 0 ? ' open' : ''}>
+       <summary class="la-miss-sum">🗂 Missing / Not Found Fields (${missing.length})</summary>
+       ${added.length ? `<div class="la-miss-cat-t" style="margin-top:6px;">Manually added (${added.length})</div>${addedHtml}` : ''}
+       ${missing.length ? groupsHtml : '<div style="color:var(--muted);font-size:11.5px;padding:6px 0;">All catalog fields found. 🎉</div>'}
+       <div style="font-size:10px;color:var(--muted);margin-top:4px;">Collapsed by default — keeps the review screen clean. Manual entries are saved with who/when.</div>
+     </details>`;
+  host.appendChild(wrap);
+}
+function _leaseAiAddManualField(key) {
+  const inp = document.getElementById('lafm_' + key);
+  const val = inp ? inp.value.trim() : '';
+  if (!val) return;
+  _leaseAiState.manualFields = _leaseAiState.manualFields || {};
+  const by = (typeof fbSync !== 'undefined' && fbSync && fbSync.user && fbSync.user.email) ? fbSync.user.email : 'operator';
+  _leaseAiState.manualFields[key] = { value: val, by, ts: new Date().toISOString(), sourceType: 'manual' };
+  // если это одно из core-полей формы — подставим и в видимый input
+  const coreInp = document.getElementById('laf_' + key);
+  if (coreInp) coreInp.value = val;
+  _leaseAiRenderMissing();
+  if (typeof toast === 'function') toast('Added «' + key + '» (manual)', 'success');
+}
+window._leaseAiAddManualField = _leaseAiAddManualField;
+
+// Панель верификации (детерминированные кросс-чеки — реальный сигнал доверия,
+// а не self-confidence модели). Tony §7.4/7.5 + review §D.
+function _leaseAiRenderVerification() {
+  const host = document.getElementById('leaseAiFields');
+  if (!host) return;
+  let wrap = document.getElementById('leaseAiVerifyWrap');
+  if (wrap) wrap.remove();
+  const f = _leaseAiState && _leaseAiState.fields;
+  if (!f) return;
+  const checks = [];
+  const mark = (label, status, detail) => checks.push({ label, status, detail }); // status: ok|warn|na
+  // 1) commencement + term = expiration
+  const ls = f.lease_start, le = f.lease_end, tm = +f.term_months;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(ls || '') && /^\d{4}-\d{2}-\d{2}$/.test(le || '') && isFinite(tm) && tm > 0) {
+    const sd = new Date(ls + 'T00:00:00');
+    const exp = new Date(sd); exp.setMonth(exp.getMonth() + tm); exp.setDate(exp.getDate() - 1);
+    const ed = new Date(le + 'T00:00:00');
+    const diffDays = Math.abs((exp - ed) / 86400000);
+    mark('Commencement + term = expiration', diffDays <= 5 ? 'ok' : 'warn',
+      diffDays <= 5 ? 'matches' : `off by ~${Math.round(diffDays)}d (computed ${exp.toISOString().slice(0,10)} vs ${le})`);
+  } else mark('Commencement + term = expiration', 'na', 'need start + term + end');
+  // 2) rent schedule rows: monthly × months ≈ period total
+  const sched = Array.isArray(_leaseAiState.rentSchedule) ? _leaseAiState.rentSchedule : [];
+  if (sched.length) {
+    let bad = 0, checked = 0;
+    sched.forEach(r => {
+      const b = (typeof _rentPeriodBounds === 'function') ? _rentPeriodBounds(r.period) : null;
+      const mr = +r.monthly_rent, pt = +r.period_rent;
+      if (b && isFinite(mr) && isFinite(pt) && pt > 0) {
+        const months = Math.max(1, Math.round((b.end - b.start) / 86400000 / 30.44));
+        const expected = mr * months;
+        checked++;
+        if (Math.abs(expected - pt) > Math.max(50, pt * 0.03)) bad++;
+      }
+    });
+    mark('Rent schedule: monthly × months = period total', bad === 0 ? 'ok' : 'warn',
+      checked ? (bad === 0 ? `${checked} rows match` : `${bad}/${checked} rows off`) : 'no checkable rows');
+  } else mark('Rent schedule rows', 'na', 'no schedule');
+  // 3) current monthly_rent = current schedule period (after our override)
+  if (sched.length) {
+    const d = new Date(); const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    const row = (typeof _rentScheduleRowForYm === 'function') ? _rentScheduleRowForYm(sched, ym) : null;
+    if (row) mark('Monthly rent = current schedule period', Math.abs((+row.monthly_rent) - (+f.monthly_rent)) < 1 ? 'ok' : 'warn',
+      `field ${f.monthly_rent} vs period ${row.monthly_rent}`);
+    else mark('Monthly rent vs schedule', 'na', 'no period covers today');
+  }
+  if (!checks.length) return;
+  const icon = (s) => s === 'ok' ? '✓' : (s === 'warn' ? '⚠' : '–');
+  const col = (s) => s === 'ok' ? '#16a34a' : (s === 'warn' ? '#d97706' : 'var(--muted)');
+  wrap = document.createElement('div');
+  wrap.id = 'leaseAiVerifyWrap';
+  wrap.className = 'lease-esc-wrap';
+  wrap.innerHTML = `<div class="lease-esc-head">✓ Verification</div>`
+    + checks.map(c => `<div class="la-ab-row"><span class="la-ab-k" style="color:${col(c.status)};">${icon(c.status)} ${esc(c.label)}</span><span class="la-ab-v">${esc(c.detail||'')}</span></div>`).join('');
+  host.appendChild(wrap);
+}
+
 // Рендер юр-анализа (key points) в 3-ю колонку.
 function _leaseAiRenderAnalysis(keyPoints) {
   const el = document.getElementById('leaseAiAnalysis');
@@ -86688,6 +86874,9 @@ function _leaseAiCreateTenant() {
       }
       if (_leaseAiState.abstract && typeof _leaseAiState.abstract === 'object') {
         u.leaseAbstract = _leaseAiState.abstract;
+      }
+      if (_leaseAiState.manualFields && Object.keys(_leaseAiState.manualFields).length) {
+        u.leaseManualFields = _leaseAiState.manualFields;  // {key:{value,by,ts,sourceType}} — audit
       }
     }
   } catch (e) { console.warn('[lease-ai] persist extras failed', e); }
