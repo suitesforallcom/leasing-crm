@@ -12169,6 +12169,12 @@
   .la-miss-input input { width: 130px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; font-size: 11.5px; background: var(--surface); box-sizing: border-box; }
   .la-miss-input button { padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); font-size: 11px; font-weight: 700; cursor: pointer; }
   .la-miss-input button:hover { background: var(--accent-light); }
+  /* Stage 3a — match/duplicate/commencement warning banner */
+  .lease-ai-banner { flex-shrink: 0; padding: 8px 14px; background: #fffbeb; border-bottom: 1px solid #fde68a; max-height: 130px; overflow: auto; }
+  .lease-ai-warn { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #92400e; line-height: 1.4; padding: 2px 0; }
+  .lease-ai-warn span { flex: 1; }
+  .lease-ai-warn button { flex-shrink: 0; padding: 4px 10px; border: 1px solid #f59e0b; background: #fff; color: #92400e; border-radius: 6px; font-size: 11px; font-weight: 700; cursor: pointer; }
+  .lease-ai-warn button:hover { background: #fef3c7; }
   .lease-ai-doc {
     border-right: 1px solid var(--border); overflow: auto; background: #475569;
     padding: 16px; display: flex; flex-direction: column; align-items: center; gap: 12px;
@@ -22707,6 +22713,7 @@
       </div>
       <button class="lease-ai-x" onclick="closeLeaseAiModal()" aria-label="Close">×</button>
     </div>
+    <div class="lease-ai-banner" id="leaseAiBanner" style="display:none;"></div>
     <div class="lease-ai-body">
       <div class="lease-ai-doc" id="leaseAiDoc">
         <div class="lease-ai-drop" id="leaseAiDrop" onclick="document.getElementById('leaseAiFileInput').click()">
@@ -86269,6 +86276,8 @@ function openLeaseAiModal() {
   const analysis = document.getElementById('leaseAiAnalysis');
   if (analysis) analysis.innerHTML =
     `<h3>⚖️ Key points &amp; risks</h3><div style="color:var(--muted); font-size:11.5px; line-height:1.5;">A senior real-estate attorney's read of the lease — escalations, options, guaranty, pass-throughs, termination rights and anything to watch — appears here after analysis.</div>`;
+  const banner = document.getElementById('leaseAiBanner');
+  if (banner) { banner.style.display = 'none'; banner.innerHTML = ''; }
   _leaseAiSetStatus('');
   const rb = document.getElementById('leaseAiReanalyzeBtn'); if (rb) rb.disabled = true;
   const cb = document.getElementById('leaseAiCreateBtn');    if (cb) cb.disabled = true;
@@ -86497,6 +86506,7 @@ async function _leaseAiAnalyze() {
         _leaseAiState.currentPeriod = _cur.period || _nowYm;
       }
     }
+    _leaseAiRenderWarnings(parsed);
     _leaseAiRenderFields(parsed);
     _leaseAiRenderEscalation(_leaseAiState.rentSchedule);
     _leaseAiRenderVerification();
@@ -86827,6 +86837,80 @@ function _leaseAiRenderVerification() {
     + checks.map(c => `<div class="la-ab-row"><span class="la-ab-k" style="color:${col(c.status)};">${icon(c.status)} ${esc(c.label)}</span><span class="la-ab-v">${esc(c.detail||'')}</span></div>`).join('');
   host.appendChild(wrap);
 }
+
+// ===== Stage 3a: match-to-suite · duplicate detection · commencement check =====
+// Tony «купил здание с арендаторами» — не плодить дубли, привязывать к нужному
+// суиту, ловить рассинхрон commencement↔расписание. Чисто предупреждения +
+// действие «switch suite»; ничего не пишет.
+function _leaseAiMatchWarnings(parsed) {
+  const out = [];
+  if (!parsed) return out;
+  const selId = (selectedIds && selectedIds[0]) || null;
+  const selUnit = selId ? currentUnits().find(x => x.id === selId) : null;
+  // 1) Suite в договоре ≠ выбранный суит
+  const leaseSuite = (parsed.lease_abstract && parsed.lease_abstract.premises && parsed.lease_abstract.premises.suite)
+    ? String(parsed.lease_abstract.premises.suite).replace(/^(suite|ste|unit|#)\s*/i, '').trim() : '';
+  if (leaseSuite && selUnit && String(selUnit.id).toLowerCase() !== leaseSuite.toLowerCase()) {
+    // есть ли такой суит где-то?
+    let target = null, tBuilding = null, tFloor = null;
+    (state.buildings || []).some(b => (b.floors || []).some(f => (f.units || []).some(x => {
+      if (String(x.id).toLowerCase() === leaseSuite.toLowerCase()) { target = x; tBuilding = b; tFloor = f; return true; }
+      return false;
+    })));
+    out.push({
+      level: 'warn',
+      msg: `This lease is for <b>Suite ${esc(leaseSuite)}</b>, but you have <b>Suite ${esc(selUnit.id)}</b> selected.`,
+      action: target ? { label: `Switch to Suite ${target.id}`, fn: `_leaseAiSwitchSuite('${esc(tBuilding.id)}','${esc(tFloor.id)}','${esc(target.id)}')` } : null,
+    });
+  }
+  // 2) Дубликат арендатора (occupied unit с похожим именем, не текущий)
+  const name = (parsed.tenant_name || parsed.company || '').trim();
+  if (name) {
+    const dupes = [];
+    (state.buildings || []).forEach(b => (b.floors || []).forEach(f => (f.units || []).forEach(x => {
+      if (x.id === selId) return;
+      if (x.status !== 'occupied') return;
+      const xn = (x.tenant || x.company || '').trim();
+      if (xn && typeof _loiFuzzyMatch === 'function' && _loiFuzzyMatch(xn, name)) dupes.push({ suite: x.id, building: b.name || b.id });
+    })));
+    if (dupes.length) {
+      out.push({ level: 'warn', msg: `A tenant like <b>${esc(name)}</b> already exists on ${dupes.slice(0,3).map(d => `Suite ${esc(d.suite)}`).join(', ')}${dupes.length>3?'…':''}. Possible duplicate — verify this isn't the same lease.` });
+    }
+  }
+  // 3) Commencement ↔ schedule[0] start рассинхрон (re-anchor сигнал)
+  const sched = Array.isArray(_leaseAiState && _leaseAiState.rentSchedule) ? _leaseAiState.rentSchedule : [];
+  if (sched.length && /^\d{4}-\d{2}-\d{2}$/.test(parsed.lease_start || '') && typeof _rentPeriodBounds === 'function') {
+    const b0 = _rentPeriodBounds(sched[0].period);
+    if (b0) {
+      const cs = new Date(parsed.lease_start + 'T00:00:00');
+      const diffDays = Math.abs((b0.start - cs) / 86400000);
+      if (diffDays > 5) {
+        out.push({ level: 'warn', msg: `Rent schedule starts <b>${b0.start.toISOString().slice(0,10)}</b> but commencement is <b>${esc(parsed.lease_start)}</b> (off ~${Math.round(diffDays)}d). If a Commencement Date Agreement moved the start, the schedule periods may need re-anchoring — verify before billing.` });
+      }
+    }
+  }
+  return out;
+}
+function _leaseAiRenderWarnings(parsed) {
+  const el = document.getElementById('leaseAiBanner');
+  if (!el) return;
+  const warns = _leaseAiMatchWarnings(parsed);
+  if (!warns.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  el.style.display = 'block';
+  el.innerHTML = warns.map(w =>
+    `<div class="lease-ai-warn">⚠ <span>${w.msg}</span>${w.action ? `<button type="button" onclick="${w.action.fn}">${esc(w.action.label)}</button>` : ''}</div>`
+  ).join('');
+}
+function _leaseAiSwitchSuite(bId, fId, unitId) {
+  try {
+    if (state.ui) { state.ui.currentBuildingId = bId; state.ui.currentFloorId = fId; }
+    selectedIds = [unitId];
+    if (typeof toast === 'function') toast('Switched to Suite ' + unitId + ' — review and create there', 'success');
+    // перерисуем предупреждения (suite-mismatch уйдёт)
+    if (_leaseAiState && _leaseAiState.fields) _leaseAiRenderWarnings(_leaseAiState.fields);
+  } catch (e) { console.warn('[lease-ai] switch suite failed', e); }
+}
+window._leaseAiSwitchSuite = _leaseAiSwitchSuite;
 
 // Рендер юр-анализа (key points) в 3-ю колонку.
 function _leaseAiRenderAnalysis(keyPoints) {
