@@ -6250,6 +6250,29 @@
     background: var(--surface-2); border: 1px solid var(--border);
     border-radius: 3px; font-size: 10px;
   }
+  /* Широкий 2-колоночный вариант для меню «⋯ More» (Floor actions).
+     Раньше всё стояло в одну колонку → popover был выше viewport,
+     оператор крутил скролл и не видел верхний пункт (Crop). Теперь меню
+     широкое, секции разложены в 2 колонки → всё помещается без прокрутки
+     (Tony 2026-06-03). Авто-fit сам схлопывает в 1 колонку на узких экранах. */
+  .snap-popover.more-actions-popover {
+    width: min(680px, 94vw);
+    padding: 12px 14px;
+  }
+  .more-actions-popover .ma-cols {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(258px, 1fr));
+    gap: 0 22px;
+    align-items: start;
+  }
+  .more-actions-popover .ma-col { min-width: 0; }
+  /* Тонкий вертикальный разделитель между колонками (виден только когда
+     колонок две — на узких экранах auto-fit делает 1 колонку и второй
+     .ma-col переносится вниз, бордюр слева там не мешает). */
+  .more-actions-popover .ma-col + .ma-col {
+    border-left: 1px solid var(--border);
+    padding-left: 22px;
+  }
 
   /* Vertical Edit/View toggle button pinned to the left edge near bottom */
   .edit-mode-edge {
@@ -16793,6 +16816,27 @@
   .quick-add-sep {
     height: 1px; background: var(--border); margin: 4px 6px;
   }
+  /* Files — отдельная кнопка в .topbar-actions: открывает модалку текущего
+     здания сразу на вкладке Files (агрегатор всех файлов). Ghost-стиль, чтобы
+     отличаться от accent-залитой quick-add (+). */
+  .topbar-files-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    height: 32px; padding: 0 12px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font: 600 12.5px inherit;
+    cursor: pointer; flex-shrink: 0;
+    transition: background .12s, border-color .12s, transform .08s;
+  }
+  .topbar-files-btn:hover { background: var(--surface); border-color: var(--accent); }
+  .topbar-files-btn:active { transform: scale(0.97); }
+  .topbar-files-btn svg { width: 16px; height: 16px; flex-shrink: 0; }
+  @media (max-width: 1060px) {
+    .topbar-files-btn span { display: none; }
+    .topbar-files-btn { padding: 0 8px; }
+  }
   .user-badge:hover { border-color: var(--accent); }
   /* Caret hidden — redesign treats the whole pill as the click target
      (standard SaaS pattern). Keep the style block for legacy markup. */
@@ -17320,6 +17364,12 @@
     </div>
 
     <div class="topbar-actions">
+      <!-- Files — открывает модалку текущего здания сразу на вкладке Files
+           (агрегатор всех файлов: планы, контракты, фото, lease-доки). -->
+      <button class="topbar-files-btn" onclick="openBuildingFilesCurrent()" title="Files — all documents, plans, photos & contracts for the current building" aria-label="Files">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        <span>Files</span>
+      </button>
       <!-- Live-sync indicator removed from topbar — kept in DOM (hidden)
            so existing fbUpdateTopbarIndicator() code paths don't crash.
            Sync status is still surfaced via the Settings → Firebase panel
@@ -19602,117 +19652,114 @@
           <button class="icon-btn" id="moreActionsBtn" onclick="toggleMoreActionsPopover(event)" title="More actions">
             <svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
           </button>
-          <div class="snap-popover" id="moreActionsPopover" style="display:none; right:0; left:auto; min-width:260px;">
-            <div class="snap-popover-title">Floor actions</div>
-            <button class="snap-opt" onclick="(function(){ closeMoreActionsPopover(); startCropBgFromMenu(); })()">
-              <span class="snap-opt-dot" style="background:#dbeafe;"></span>
-              <div>
-                <div class="snap-opt-name">✂️ Crop background image</div>
-                <div class="snap-opt-hint">Drag a box over the area to keep — everything outside is trimmed. Units stay aligned.</div>
-              </div>
-            </button>
-            <button class="snap-opt" onclick="(function(){ closeMoreActionsPopover(); removeBg(); })()">
-              <span class="snap-opt-dot" style="background:#fee2e2;"></span>
-              <div>
-                <div class="snap-opt-name">🗑 Remove background image</div>
-                <div class="snap-opt-hint">Clears the floor plan PDF/PNG. Units stay.</div>
-              </div>
-            </button>
-            <button class="snap-opt" onclick="(function(){ closeMoreActionsPopover(); startFloorOutlineFromMenu(); })()">
-              <span class="snap-opt-dot" style="background:#ffedd5;"></span>
-              <div>
-                <div class="snap-opt-name">📐 Set / re-draw floor outline</div>
-                <div class="snap-opt-hint">Trace the building perimeter — click corners, double-click to close. Auto-enables Edit Mode.</div>
-              </div>
-            </button>
-            <button class="snap-opt" onclick="(function(){ closeMoreActionsPopover(); clearFloorOutline(); })()">
-              <span class="snap-opt-dot" style="background:#fef3c7;"></span>
-              <div>
-                <div class="snap-opt-name">🗑 Remove floor outline</div>
-                <div class="snap-opt-hint">Clears the orange building boundary.</div>
-              </div>
-            </button>
-            <!-- Background scale — перенесено из главной Layers панели сюда
-                 (2026-05-12 запрос оператора): меняется редко, освобождает
-                 место в главных настройках. Слайдер использует тот же id
-                 bgScale, что и раньше — input-handler (см. ~line 88180)
-                 работает без изменений. Popover остаётся открытым при
-                 движении слайдера (range-input не закрывает попап). -->
-            <div style="height:1px; background:var(--border); margin:8px 0;"></div>
-            <div class="snap-popover-title">Background scale</div>
-            <div style="padding:0 10px 8px;">
-              <div style="display:flex; align-items:center; gap:8px;">
-                <input type="range" id="bgScale" min="30" max="300" value="100" style="flex:1;">
-                <span class="val" id="bgScaleVal" style="min-width:40px; font-size:11px; color:var(--muted);">100%</span>
-              </div>
-              <div style="font-size:10px; color:var(--muted); margin:4px 0 0; line-height:1.4;">
-                Stretches the floor plan PDF/PNG to match real building scale.
-              </div>
-            </div>
-            <!-- Divider then Capacity section. Inputs + buttons hosted
-                 directly in the popover; not a "snap-opt" item because
-                 typing into a number field has to live inside the dropdown
-                 without closing it. -->
-            <div style="height:1px; background:var(--border); margin:8px 0;"></div>
-            <div class="snap-popover-title">Capacity</div>
-            <div style="padding:0 10px 8px;">
-              <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:4px;">Sqft per person</label>
-              <input id="moreActSqftPP" type="number" min="5" max="500" step="1" value="30"
-                     style="width:100%; padding:6px 8px; border:1px solid var(--border); border-radius:6px;
-                            font-size:13px; box-sizing:border-box; background:var(--surface);">
-              <div style="font-size:10px; color:var(--muted); margin:4px 0 8px; line-height:1.4;">
-                Default 30 (US OSHA min). cap = floor(sqft / value)
-              </div>
-              <div style="display:flex; flex-direction:column; gap:6px;">
-                <button type="button" id="moreActRecomputeFloor"
-                        style="padding:7px 10px; background:#f97316; color:#fff; border:0; border-radius:6px;
-                               font-weight:700; font-size:11px; cursor:pointer;">
-                  ↻ Recompute current floor
+          <div class="snap-popover more-actions-popover" id="moreActionsPopover" style="display:none; right:0; left:auto;">
+            <div class="ma-cols">
+              <!-- Колонка 1: действия с фоном / outline + шаблон договора этажа -->
+              <div class="ma-col">
+                <div class="snap-popover-title">Floor actions</div>
+                <button class="snap-opt" onclick="(function(){ closeMoreActionsPopover(); startCropBgFromMenu(); })()">
+                  <span class="snap-opt-dot" style="background:#dbeafe;"></span>
+                  <div>
+                    <div class="snap-opt-name">✂️ Crop background image</div>
+                    <div class="snap-opt-hint">Drag a box over the area to keep — everything outside is trimmed. Units stay aligned.</div>
+                  </div>
                 </button>
-                <button type="button" id="moreActRecomputeAll"
-                        style="padding:7px 10px; background:var(--surface); color:var(--text); border:1px solid var(--border);
-                               border-radius:6px; font-weight:600; font-size:11px; cursor:pointer;">
-                  ↻ Recompute everything
+                <button class="snap-opt" onclick="(function(){ closeMoreActionsPopover(); removeBg(); })()">
+                  <span class="snap-opt-dot" style="background:#fee2e2;"></span>
+                  <div>
+                    <div class="snap-opt-name">🗑 Remove background image</div>
+                    <div class="snap-opt-hint">Clears the floor plan PDF/PNG. Units stay.</div>
+                  </div>
                 </button>
+                <button class="snap-opt" onclick="(function(){ closeMoreActionsPopover(); startFloorOutlineFromMenu(); })()">
+                  <span class="snap-opt-dot" style="background:#ffedd5;"></span>
+                  <div>
+                    <div class="snap-opt-name">📐 Set / re-draw floor outline</div>
+                    <div class="snap-opt-hint">Trace the building perimeter — click corners, double-click to close. Auto-enables Edit Mode.</div>
+                  </div>
+                </button>
+                <button class="snap-opt" onclick="(function(){ closeMoreActionsPopover(); clearFloorOutline(); })()">
+                  <span class="snap-opt-dot" style="background:#fef3c7;"></span>
+                  <div>
+                    <div class="snap-opt-name">🗑 Remove floor outline</div>
+                    <div class="snap-opt-hint">Clears the orange building boundary.</div>
+                  </div>
+                </button>
+                <div style="height:1px; background:var(--border); margin:8px 0;"></div>
+                <!-- Floor-level lease template controls — «весь этаж = один договор». -->
+                <div class="snap-popover-title">Lease template</div>
+                <div style="padding:0 10px 10px; display:flex; flex-direction:column; gap:6px;">
+                  <div id="floorLeaseTplCurrent" style="font-size:11px; color:var(--muted); line-height:1.4; padding:4px 0;">
+                    Loading…
+                  </div>
+                  <button type="button" onclick="(function(){ closeMoreActionsPopover(); _openFloorLeaseTplPicker('default'); })()"
+                          style="padding:7px 10px; background:var(--surface); color:var(--text); border:1px solid var(--border);
+                                 border-radius:6px; font-weight:600; font-size:11px; cursor:pointer; text-align:left;">
+                    ⚙ Set floor default…
+                  </button>
+                  <button type="button" onclick="(function(){ closeMoreActionsPopover(); _openFloorLeaseTplPicker('apply-all'); })()"
+                          style="padding:7px 10px; background:#fef3c7; color:#92400e; border:1px solid #fcd34d;
+                                 border-radius:6px; font-weight:700; font-size:11px; cursor:pointer; text-align:left;">
+                    📋 Apply to all suites on floor…
+                  </button>
+                  <div style="font-size:10px; color:var(--muted); line-height:1.35;">
+                    Default = inherited by suites without a personal pick. Apply = stamps every suite on this floor.
+                  </div>
+                </div>
               </div>
-            </div>
-            <div style="height:1px; background:var(--border); margin:4px 0 8px;"></div>
-            <div class="snap-popover-title">Geometry</div>
-            <div style="padding:0 10px 10px;">
-              <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:4px;">Snap tolerance (px)</label>
-              <input id="moreActAlignTol" type="number" min="1" max="50" step="1" value="8"
-                     style="width:100%; padding:6px 8px; border:1px solid var(--border); border-radius:6px;
-                            font-size:13px; box-sizing:border-box; background:var(--surface);">
-              <div style="font-size:10px; color:var(--muted); margin:4px 0 8px; line-height:1.4;">
-                Edges within this distance get welded to their median.
-              </div>
-              <button type="button" id="moreActAlignEdges"
-                      style="width:100%; padding:7px 10px; background:#0ea5e9; color:#fff; border:0;
-                             border-radius:6px; font-weight:700; font-size:11px; cursor:pointer;">
-                ↔ Align nearby edges (this floor)
-              </button>
-            </div>
-            <div style="height:1px; background:var(--border); margin:4px 0 8px;"></div>
-            <!-- Step 3: Floor-level lease template controls. Лежит здесь
-                 потому что сценарий «весь этаж — одинаковый договор» обычно
-                 настраивается раз и редко меняется. -->
-            <div class="snap-popover-title">Lease template</div>
-            <div style="padding:0 10px 10px; display:flex; flex-direction:column; gap:6px;">
-              <div id="floorLeaseTplCurrent" style="font-size:11px; color:var(--muted); line-height:1.4; padding:4px 0;">
-                Loading…
-              </div>
-              <button type="button" onclick="(function(){ closeMoreActionsPopover(); _openFloorLeaseTplPicker('default'); })()"
-                      style="padding:7px 10px; background:var(--surface); color:var(--text); border:1px solid var(--border);
-                             border-radius:6px; font-weight:600; font-size:11px; cursor:pointer; text-align:left;">
-                ⚙ Set floor default…
-              </button>
-              <button type="button" onclick="(function(){ closeMoreActionsPopover(); _openFloorLeaseTplPicker('apply-all'); })()"
-                      style="padding:7px 10px; background:#fef3c7; color:#92400e; border:1px solid #fcd34d;
-                             border-radius:6px; font-weight:700; font-size:11px; cursor:pointer; text-align:left;">
-                📋 Apply to all suites on floor…
-              </button>
-              <div style="font-size:10px; color:var(--muted); line-height:1.35;">
-                Default = inherited by suites without a personal pick. Apply = stamps every suite on this floor.
+              <!-- Колонка 2: масштаб фона + вместимость + геометрия -->
+              <div class="ma-col">
+                <!-- Background scale — слайдер использует тот же id bgScale
+                     (input-handler ~line 88180 работает без изменений). -->
+                <div class="snap-popover-title">Background scale</div>
+                <div style="padding:0 10px 8px;">
+                  <div style="display:flex; align-items:center; gap:8px;">
+                    <input type="range" id="bgScale" min="30" max="300" value="100" style="flex:1;">
+                    <span class="val" id="bgScaleVal" style="min-width:40px; font-size:11px; color:var(--muted);">100%</span>
+                  </div>
+                  <div style="font-size:10px; color:var(--muted); margin:4px 0 0; line-height:1.4;">
+                    Stretches the floor plan PDF/PNG to match real building scale.
+                  </div>
+                </div>
+                <div style="height:1px; background:var(--border); margin:8px 0;"></div>
+                <div class="snap-popover-title">Capacity</div>
+                <div style="padding:0 10px 8px;">
+                  <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:4px;">Sqft per person</label>
+                  <input id="moreActSqftPP" type="number" min="5" max="500" step="1" value="30"
+                         style="width:100%; padding:6px 8px; border:1px solid var(--border); border-radius:6px;
+                                font-size:13px; box-sizing:border-box; background:var(--surface);">
+                  <div style="font-size:10px; color:var(--muted); margin:4px 0 8px; line-height:1.4;">
+                    Default 30 (US OSHA min). cap = floor(sqft / value)
+                  </div>
+                  <div style="display:flex; flex-direction:column; gap:6px;">
+                    <button type="button" id="moreActRecomputeFloor"
+                            style="padding:7px 10px; background:#f97316; color:#fff; border:0; border-radius:6px;
+                                   font-weight:700; font-size:11px; cursor:pointer;">
+                      ↻ Recompute current floor
+                    </button>
+                    <button type="button" id="moreActRecomputeAll"
+                            style="padding:7px 10px; background:var(--surface); color:var(--text); border:1px solid var(--border);
+                                   border-radius:6px; font-weight:600; font-size:11px; cursor:pointer;">
+                      ↻ Recompute everything
+                    </button>
+                  </div>
+                </div>
+                <div style="height:1px; background:var(--border); margin:8px 0;"></div>
+                <div class="snap-popover-title">Geometry</div>
+                <div style="padding:0 10px 10px;">
+                  <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:4px;">Snap tolerance (px)</label>
+                  <input id="moreActAlignTol" type="number" min="1" max="50" step="1" value="8"
+                         style="width:100%; padding:6px 8px; border:1px solid var(--border); border-radius:6px;
+                                font-size:13px; box-sizing:border-box; background:var(--surface);">
+                  <div style="font-size:10px; color:var(--muted); margin:4px 0 8px; line-height:1.4;">
+                    Edges within this distance get welded to their median.
+                  </div>
+                  <button type="button" id="moreActAlignEdges"
+                          style="width:100%; padding:7px 10px; background:#0ea5e9; color:#fff; border:0;
+                                 border-radius:6px; font-weight:700; font-size:11px; cursor:pointer;">
+                    ↔ Align nearby edges (this floor)
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -60939,6 +60986,15 @@ function openBuildingInfoCurrent() {
   const b = currentBuilding();
   if (!b) { toast('No building selected', 'error'); return; }
   openBuildingInfo(b.id);
+}
+// Открыть модалку текущего здания сразу на вкладке Files — точка входа для
+// отдельной кнопки Files в .topbar-actions. openBuildingInfo → openEditBuilding
+// синхронен и в конце ставит вкладку 'overview', поэтому переключаем после него.
+function openBuildingFilesCurrent() {
+  const b = currentBuilding();
+  if (!b) { toast('No building selected', 'error'); return; }
+  openBuildingInfo(b.id);
+  bmSelectTab('files');
 }
 function openBuildingInfo(bid) {
   openEditBuilding(bid);
