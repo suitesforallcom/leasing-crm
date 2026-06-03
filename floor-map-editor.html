@@ -12147,6 +12147,13 @@
   .lease-esc-table tr.is-current td { background: #faf5ff; font-weight: 700; }
   .lease-esc-wrap { margin-top: 14px; }
   .lease-esc-wrap .lease-esc-head { font: 800 12px inherit; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); margin-bottom: 2px; }
+  /* Full lease abstract — grouped key/value (modal summary + Lease tab). */
+  .la-ab-sec { margin-top: 8px; }
+  .la-ab-sec-t { font: 700 10.5px inherit; text-transform: uppercase; letter-spacing: .4px; color: #7c3aed; margin-bottom: 3px; }
+  .la-ab-row { display: flex; gap: 10px; justify-content: space-between; padding: 2px 0; border-bottom: 1px dotted var(--border); font-size: 11.5px; }
+  .la-ab-row:last-child { border-bottom: 0; }
+  .la-ab-k { color: var(--muted); flex-shrink: 0; }
+  .la-ab-v { color: var(--text); text-align: right; }
   .lease-ai-doc {
     border-right: 1px solid var(--border); overflow: auto; background: #475569;
     padding: 16px; display: flex; flex-direction: column; align-items: center; gap: 12px;
@@ -76904,6 +76911,7 @@ function _renderUnitLeasePane(u, editOn, ro) {
     ${hasLease ? '' : leaseDates}
     ${_renderLeaseBusinessTerms(u, editOn, ro)}
     ${_renderLeaseEscalation(u)}
+    ${_renderLeaseAbstract(u)}
     ${_renderLeaseRenewal(u, editOn, ro)}
     ${_renderLeaseGuarantor(u, editOn, ro)}
     ${_renderLeaseInsurance(u, editOn, ro)}
@@ -86184,6 +86192,35 @@ const LEASE_AI_SYSTEM_PROMPT = [
   '    // personal / corporate guaranty, assignment & subletting, TI allowance, operating-expense / CAM / NNN pass-throughs & caps, holdover rent,',
   '    // exclusive-use / co-tenancy, default & cure, insurance & indemnity, relocation rights, unusual or tenant-favorable clauses. severity=high for anything risky or costly.',
   '  ],',
+  '  "lease_abstract": {',
+  '    // FULL abstract so the system can auto-bill + run ops without re-reading the lease. Use null for anything truly absent. Numbers digits-only.',
+  '    "lease_structure": "NNN | Modified Gross | Full-Service Gross | Industrial Gross | unknown",',
+  '    "rent_due_day": <int day-of-month rent is due, or null>,',
+  '    "proration_method": "string or null (how partial months are computed)",',
+  '    "payment_method": "string or null (e.g. PayLink portal, ACH, check + remit address)",',
+  '    "additional_rent": {',
+  '      "monthly_estimate": <number or null (monthly CAM/OpEx + taxes + insurance estimate billed WITH base rent; 0 for full-service gross)>,',
+  '      "cam_opex": "string or null", "real_estate_taxes": "string or null", "insurance": "string or null",',
+  '      "pro_rata_share_pct": <number or null (tenant share of building)>,',
+  '      "base_year": "string or null (for modified gross)", "expense_stop": "string or null",',
+  '      "expense_cap": "string or null (controllable cap %, cumulative vs annual)", "admin_fee_pct": <number or null>,',
+  '      "reconciliation": "string or null (annual true-up timing/terms)"',
+  '    },',
+  '    "sales_tax": { "applies": <true|false|null>, "rate_pct": <number or null>, "note": "string or null (e.g. FL commercial rent tax + county surtax)" },',
+  '    "parking": { "spaces": <number or null>, "monthly_cost": <number or null>, "note": "string or null" },',
+  '    "recurring_charges": [ { "name": "string", "monthly": <number or null> } ],',
+  '    "late_fee": { "grace_days": <int or null>, "amount": "string or null (% or $)", "default_interest_pct": <number or null> },',
+  '    "deposit": { "amount": <number or null>, "form": "string or null (cash/LOC)", "burn_down": "string or null", "last_month_prepaid": <true|false|null> },',
+  '    "options": {',
+  '      "renewal": [ { "term_months": <int or null>, "rate_basis": "FMV | fixed | percent | null", "notice_days": <int or null>, "notice_deadline": "YYYY-MM-DD or null" } ],',
+  '      "early_termination": "string or null (date, fee, notice)", "expansion_rofo_rofr": "string or null", "holdover": "string or null (% of base)"',
+  '    },',
+  '    "permitted_use": "string or null", "exclusive_use": "string or null", "assignment_subletting": "string or null",',
+  '    "ti_allowance": "string or null", "insurance_required": "string or null", "guaranty": "string or null (guarantor, type, cap)",',
+  '    "parties": { "landlord": "string or null", "landlord_notice": "string or null", "property_manager": "string or null", "tenant_notice": "string or null", "guarantor": "string or null" },',
+  '    "premises": { "building": "string or null", "suite": "string or null", "rsf": <number or null>, "usf": <number or null> },',
+  '    "critical_dates": [ { "label": "string", "date": "YYYY-MM-DD or null", "note": "string" } ]',
+  '  },',
   '  "_sources": {',
   '    "<field>": "for EACH non-null scalar field above, a SHORT verbatim quote (5-18 words) copied EXACTLY, character-for-character, from the document where you found that value; null if the field is null"',
   '  }',
@@ -86426,6 +86463,7 @@ async function _leaseAiAnalyze() {
     _leaseAiState.sources = (parsed && parsed._sources && typeof parsed._sources === 'object') ? parsed._sources : {};
     _leaseAiState.rentSchedule = Array.isArray(parsed.rent_schedule) ? parsed.rent_schedule : [];
     _leaseAiState.keyPoints = Array.isArray(parsed.key_points) ? parsed.key_points : [];
+    _leaseAiState.abstract = (parsed && parsed.lease_abstract && typeof parsed.lease_abstract === 'object') ? parsed.lease_abstract : null;
     // ── Текущая аренда из расписания (Tony) ──────────────────────────────
     // MONTHLY RENT должен показывать ренту, действующую СЕЙЧАС, а не цифру из
     // тела договора (модель часто берёт «$X thru <дата>» = прошлый период).
@@ -86446,6 +86484,7 @@ async function _leaseAiAnalyze() {
     }
     _leaseAiRenderFields(parsed);
     _leaseAiRenderEscalation(_leaseAiState.rentSchedule);
+    _leaseAiRenderAbstractSummary(_leaseAiState.abstract);
     _leaseAiRenderAnalysis(_leaseAiState.keyPoints);
     const got = LEASE_AI_FIELD_DEFS.filter(d => parsed[d.key] != null && parsed[d.key] !== '').length;
     const hint = _leaseAiState.hasTextLayer ? ' · click a field to see its source in the lease' : '';
@@ -86520,6 +86559,89 @@ function _leaseAiRenderEscalation(schedule) {
   host.appendChild(wrap);
 }
 
+// Группированный HTML полного абстракта (модалка-сводка + Lease-вкладка).
+// Показывает только заполненные поля. ЧИСТО СПРАВОЧНО — биллинг не трогает.
+function _leaseAbstractHtml(abs) {
+  if (!abs || typeof abs !== 'object') return '';
+  const has = (x) => !(x == null || x === '' || (Array.isArray(x) && !x.length));
+  const money = (x) => (x == null || x === '' || isNaN(+x)) ? (has(x) ? String(x) : null) : '$' + Number(+x).toLocaleString(undefined, { maximumFractionDigits: 2 });
+  const rows = (pairs) => pairs.filter(p => has(p[1])).map(p => `<div class="la-ab-row"><span class="la-ab-k">${esc(p[0])}</span><span class="la-ab-v">${esc(String(p[1]))}</span></div>`).join('');
+  const section = (title, html) => html ? `<div class="la-ab-sec"><div class="la-ab-sec-t">${esc(title)}</div>${html}</div>` : '';
+  const ar = abs.additional_rent || {}, st = abs.sales_tax || {}, pk = abs.parking || {}, lf = abs.late_fee || {}, dep = abs.deposit || {}, op = abs.options || {}, pa = abs.parties || {}, pr = abs.premises || {};
+  let out = '';
+  out += section('Economics', rows([
+    ['Lease structure', (abs.lease_structure && abs.lease_structure !== 'unknown') ? abs.lease_structure : null],
+    ['Rent due day', abs.rent_due_day != null ? ('day ' + abs.rent_due_day) : null],
+    ['Payment method', abs.payment_method], ['Proration', abs.proration_method],
+  ]));
+  out += section('Additional rent / pass-throughs', rows([
+    ['Monthly estimate', ar.monthly_estimate != null ? money(ar.monthly_estimate) : null],
+    ['Pro-rata share', ar.pro_rata_share_pct != null ? ar.pro_rata_share_pct + '%' : null],
+    ['Base year', ar.base_year], ['Expense stop', ar.expense_stop], ['Expense cap', ar.expense_cap],
+    ['Admin fee', ar.admin_fee_pct != null ? ar.admin_fee_pct + '%' : null],
+    ['CAM / OpEx', ar.cam_opex], ['RE taxes', ar.real_estate_taxes], ['Insurance', ar.insurance], ['Reconciliation', ar.reconciliation],
+  ]));
+  out += section('Sales tax', rows([
+    ['Applies', st.applies == null ? null : (st.applies ? 'Yes' : 'No')],
+    ['Rate', st.rate_pct != null ? st.rate_pct + '%' : null], ['Note', st.note],
+  ]));
+  out += section('Parking', rows([['Spaces', pk.spaces], ['Monthly', pk.monthly_cost != null ? money(pk.monthly_cost) : null], ['Note', pk.note]]));
+  if (Array.isArray(abs.recurring_charges) && abs.recurring_charges.length) {
+    out += section('Recurring charges', abs.recurring_charges.filter(c => c && (c.name || c.monthly != null)).map(c => `<div class="la-ab-row"><span class="la-ab-k">${esc(c.name || '—')}</span><span class="la-ab-v">${c.monthly != null ? esc(money(c.monthly)) : '—'}</span></div>`).join(''));
+  }
+  out += section('Late fee & deposit', rows([
+    ['Grace days', lf.grace_days], ['Late fee', lf.amount], ['Default interest', lf.default_interest_pct != null ? lf.default_interest_pct + '%' : null],
+    ['Deposit', dep.amount != null ? money(dep.amount) : null], ['Deposit form', dep.form], ['Burn-down', dep.burn_down],
+    ['Last month prepaid', dep.last_month_prepaid == null ? null : (dep.last_month_prepaid ? 'Yes' : 'No')],
+  ]));
+  let optHtml = '';
+  if (Array.isArray(op.renewal) && op.renewal.length) optHtml += op.renewal.filter(Boolean).map((r, i) => `<div class="la-ab-row"><span class="la-ab-k">Renewal ${i + 1}</span><span class="la-ab-v">${esc([r.term_months ? r.term_months + ' mo' : null, r.rate_basis && r.rate_basis !== 'null' ? r.rate_basis : null, r.notice_days ? 'notice ' + r.notice_days + 'd' : null, r.notice_deadline ? 'by ' + r.notice_deadline : null].filter(Boolean).join(' · ') || '—')}</span></div>`).join('');
+  optHtml += rows([['Early termination', op.early_termination], ['Expansion/ROFO/ROFR', op.expansion_rofo_rofr], ['Holdover', op.holdover]]);
+  out += section('Options & rights', optHtml);
+  out += section('Clauses', rows([
+    ['Permitted use', abs.permitted_use], ['Exclusive use', abs.exclusive_use], ['Assignment/subletting', abs.assignment_subletting],
+    ['TI allowance', abs.ti_allowance], ['Insurance required', abs.insurance_required], ['Guaranty', abs.guaranty],
+  ]));
+  out += section('Parties & premises', rows([
+    ['Landlord', pa.landlord], ['Landlord notice', pa.landlord_notice], ['Property manager', pa.property_manager], ['Tenant notice', pa.tenant_notice], ['Guarantor', pa.guarantor],
+    ['Building', pr.building], ['Suite', pr.suite], ['RSF', pr.rsf], ['USF', pr.usf],
+  ]));
+  if (Array.isArray(abs.critical_dates) && abs.critical_dates.length) {
+    out += section('Critical dates', abs.critical_dates.filter(c => c && (c.label || c.date)).map(c => `<div class="la-ab-row"><span class="la-ab-k">${esc(c.label || '—')}</span><span class="la-ab-v">${esc([c.date, c.note].filter(Boolean).join(' · ') || '—')}</span></div>`).join(''));
+  }
+  return out;
+}
+// Компактная сводка абстракта под полями в модалке.
+function _leaseAiRenderAbstractSummary(abs) {
+  const host = document.getElementById('leaseAiFields');
+  if (!host) return;
+  let wrap = document.getElementById('leaseAiAbstractWrap');
+  if (wrap) wrap.remove();
+  const html = abs ? _leaseAbstractHtml(abs) : '';
+  if (!html) return;
+  wrap = document.createElement('div');
+  wrap.id = 'leaseAiAbstractWrap';
+  wrap.className = 'lease-esc-wrap';
+  wrap.innerHTML = `<div class="lease-esc-head">📑 Full lease abstract</div>` + html
+    + `<div style="font-size:10px; color:var(--muted); margin-top:4px;">Saved to the lease — basis for future auto-billing &amp; ops.</div>`;
+  host.appendChild(wrap);
+}
+// Lease-вкладка: полный абстракт (сворачиваемая карточка).
+function _renderLeaseAbstract(u) {
+  const abs = u && u.leaseAbstract;
+  if (!abs || typeof abs !== 'object') return '';
+  const html = (typeof _leaseAbstractHtml === 'function') ? _leaseAbstractHtml(abs) : '';
+  if (!html) return '';
+  return `
+    <details class="lease-subcard">
+      <summary>
+        <span class="lease-subcard-title">📑 Lease abstract</span>
+        <span class="lease-subcard-meta">AI · reference</span>
+      </summary>
+      ${html}
+    </details>`;
+}
+
 // Рендер юр-анализа (key points) в 3-ю колонку.
 function _leaseAiRenderAnalysis(keyPoints) {
   const el = document.getElementById('leaseAiAnalysis');
@@ -86563,6 +86685,9 @@ function _leaseAiCreateTenant() {
       }
       if (Array.isArray(_leaseAiState.keyPoints) && _leaseAiState.keyPoints.length) {
         u.leaseAnalysis = _leaseAiState.keyPoints;
+      }
+      if (_leaseAiState.abstract && typeof _leaseAiState.abstract === 'object') {
+        u.leaseAbstract = _leaseAiState.abstract;
       }
     }
   } catch (e) { console.warn('[lease-ai] persist extras failed', e); }
