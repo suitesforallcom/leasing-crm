@@ -12175,6 +12175,13 @@
   .lease-ai-warn span { flex: 1; }
   .lease-ai-warn button { flex-shrink: 0; padding: 4px 10px; border: 1px solid #f59e0b; background: #fff; color: #92400e; border-radius: 6px; font-size: 11px; font-weight: 700; cursor: pointer; }
   .lease-ai-warn button:hover { background: #fef3c7; }
+  /* Stage 3b — multi-document strip */
+  .lease-ai-docstrip { flex-shrink: 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 7px 14px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+  .lease-ai-docstrip .la-ds-label { font-size: 11px; font-weight: 700; color: var(--muted); }
+  .lease-ai-docstrip .la-ds-chip { font-size: 11px; padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); cursor: pointer; white-space: nowrap; }
+  .lease-ai-docstrip .la-ds-chip b { text-transform: capitalize; }
+  .lease-ai-docstrip .la-ds-chip.active { border-color: var(--accent); background: var(--accent-light); color: var(--accent); }
+  .lease-ai-docstrip .la-ds-chip:hover { border-color: var(--accent); }
   .lease-ai-doc {
     border-right: 1px solid var(--border); overflow: auto; background: #475569;
     padding: 16px; display: flex; flex-direction: column; align-items: center; gap: 12px;
@@ -22714,14 +22721,15 @@
       <button class="lease-ai-x" onclick="closeLeaseAiModal()" aria-label="Close">×</button>
     </div>
     <div class="lease-ai-banner" id="leaseAiBanner" style="display:none;"></div>
+    <div class="lease-ai-docstrip" id="leaseAiDocStrip" style="display:none;"></div>
     <div class="lease-ai-body">
       <div class="lease-ai-doc" id="leaseAiDoc">
         <div class="lease-ai-drop" id="leaseAiDrop" onclick="document.getElementById('leaseAiFileInput').click()">
           <div style="font-size:40px; line-height:1;">📄</div>
-          <div style="font-weight:800; margin-top:10px; font-size:14px;">Upload the signed lease</div>
-          <div style="font-size:12px; opacity:.85; margin-top:6px;">PDF, JPG or PNG · click or drop a file here</div>
+          <div style="font-weight:800; margin-top:10px; font-size:14px;">Upload the lease (+ amendments, estoppel…)</div>
+          <div style="font-size:12px; opacity:.85; margin-top:6px;">PDF, JPG or PNG · click or drop · multiple files OK</div>
         </div>
-        <input type="file" id="leaseAiFileInput" accept="application/pdf,image/png,image/jpeg" style="display:none" onchange="_leaseAiOnFile(this.files[0])">
+        <input type="file" id="leaseAiFileInput" accept="application/pdf,image/png,image/jpeg" multiple style="display:none" onchange="_leaseAiOnFiles(this.files, false)">
       </div>
       <div class="lease-ai-fields" id="leaseAiFields">
         <div style="color:var(--muted); font-size:12.5px; line-height:1.5;">
@@ -22740,6 +22748,7 @@
     </div>
     <div class="lease-ai-foot">
       <span class="laf-status" id="leaseAiStatus"></span>
+      <button id="leaseAiAddDocBtn" onclick="_leaseAiAddDocument()" disabled>+ Add document</button>
       <button id="leaseAiReanalyzeBtn" onclick="_leaseAiAnalyze()" disabled>↻ Re-analyze</button>
       <button class="primary" id="leaseAiCreateBtn" onclick="_leaseAiCreateTenant()" disabled>Review &amp; create tenant →</button>
     </div>
@@ -86193,6 +86202,9 @@ const LEASE_AI_SYSTEM_PROMPT = [
   'Read the lease and extract ONLY the fields below. Do not summarize or advise.',
   'Return ONLY valid JSON (no prose, no markdown fences). Schema:',
   '{',
+  '  "document_type": "lease | amendment | renewal_amendment | commencement_date_agreement | estoppel | guaranty | assignment | sublease | work_letter | parking_agreement | exhibit | other",',
+  '  "document_date": "YYYY-MM-DD or null (the document\'s own date / execution date)",',
+  '  "executed": <true if signed/fully-executed, false if draft/unsigned, null if unknown>,',
   '  "tenant_name": "string or null (the individual signer / primary tenant)",',
   '  "company": "string or null (tenant legal entity / DBA, if any)",',
   '  "email": "string or null",',
@@ -86267,9 +86279,11 @@ function openLeaseAiModal() {
   if (doc) doc.innerHTML =
     `<div class="lease-ai-drop" id="leaseAiDrop" onclick="document.getElementById('leaseAiFileInput').click()">`
     + `<div style="font-size:40px; line-height:1;">📄</div>`
-    + `<div style="font-weight:800; margin-top:10px; font-size:14px;">Upload the signed lease</div>`
-    + `<div style="font-size:12px; opacity:.85; margin-top:6px;">PDF, JPG or PNG · click or drop a file here</div></div>`
-    + `<input type="file" id="leaseAiFileInput" accept="application/pdf,image/png,image/jpeg" style="display:none" onchange="_leaseAiOnFile(this.files[0])">`;
+    + `<div style="font-weight:800; margin-top:10px; font-size:14px;">Upload the lease (+ amendments, estoppel…)</div>`
+    + `<div style="font-size:12px; opacity:.85; margin-top:6px;">PDF, JPG or PNG · click or drop · multiple files OK</div></div>`
+    + `<input type="file" id="leaseAiFileInput" accept="application/pdf,image/png,image/jpeg" multiple style="display:none" onchange="_leaseAiOnFiles(this.files, false)">`;
+  const strip = document.getElementById('leaseAiDocStrip');
+  if (strip) { strip.style.display = 'none'; strip.innerHTML = ''; }
   const fields = document.getElementById('leaseAiFields');
   if (fields) fields.innerHTML =
     `<div style="color:var(--muted); font-size:12.5px; line-height:1.5;">Upload a lease on the left. The AI reads it and fills these fields — you review everything before anything is saved.</div>`;
@@ -86281,6 +86295,7 @@ function openLeaseAiModal() {
   _leaseAiSetStatus('');
   const rb = document.getElementById('leaseAiReanalyzeBtn'); if (rb) rb.disabled = true;
   const cb = document.getElementById('leaseAiCreateBtn');    if (cb) cb.disabled = true;
+  const ab = document.getElementById('leaseAiAddDocBtn');    if (ab) ab.disabled = true;
   document.getElementById('leaseAiModal')?.classList.add('active');
 }
 function closeLeaseAiModal() {
@@ -86295,44 +86310,66 @@ function _leaseAiSetStatus(msg, kind) {
 
 // Загрузка файла: рендерим превью слева + готовим вход для модели (текст или
 // картинки), затем сразу анализируем.
-async function _leaseAiOnFile(file) {
-  if (!file) return;
-  if (file.size > 25 * 1024 * 1024) { toast('File too large (max 25 MB)', 'error'); return; }
-  const doc = document.getElementById('leaseAiDoc');
-  _leaseAiState = { fields: null, sources: null, text: '', imageBlocks: [], pages: [], hasTextLayer: false, modelId: '', manualFields: {} };
-  _leaseAiSetStatus('Reading document…');
-  try {
-    const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
-    if (isPdf) {
-      // Превью с текстовым слоем pdf.js (Stage 2 — чтобы потом подсветить
-      // источник прямо на странице). Параллельно тянем текст для модели;
-      // если скан без текстового слоя — vision-картинки.
-      try {
-        _leaseAiState.pages = await _leaseAiRenderPdfDoc(file, doc);
-        _leaseAiState.hasTextLayer = _leaseAiState.pages.some(p => p.spans && p.spans.length);
-      } catch (e) { console.warn('[lease-ai] page render failed', e); }
-      try {
-        _leaseAiState.text = await _loiExtractTextFromPdf(file);
-      } catch (e) {
-        if (e && e.code === 'PDF_NO_TEXT_LAYER') {
-          const { urls: visUrls } = await _renderPdfPagesToDataUrls(file, { maxPages: 8, scale: 1.6 });
-          _leaseAiState.imageBlocks = visUrls.map(_leaseAiUrlToImageBlock);
-        } else { throw e; }
-      }
-    } else {
-      // Картинка — показываем + шлём как vision. Текстового слоя нет →
-      // источник покажем выноской с цитатой (fallback).
-      const dataUrl = await readAsDataURL(file);
-      if (doc) doc.innerHTML = `<img src="${dataUrl}" alt="Lease" style="max-width:100%; box-shadow:0 4px 14px rgba(0,0,0,.3); border-radius:4px; background:#fff;">`;
-      _leaseAiState.imageBlocks = [_leaseAiUrlToImageBlock(dataUrl)];
+// Stage 3b: несколько документов (lease + amendments + estoppel + CDA…).
+// append=false → свежий импорт (сброс docs[]); append=true → «+ Add document».
+async function _leaseAiOnFiles(fileList, append) {
+  const files = Array.from(fileList || []).filter(Boolean);
+  if (!files.length) return;
+  if (!append || !_leaseAiState || !Array.isArray(_leaseAiState.docs)) {
+    _leaseAiState = { fields: null, sources: null, text: '', imageBlocks: [], pages: [], hasTextLayer: false, modelId: '', manualFields: {}, docs: [] };
+  }
+  for (const file of files) {
+    if (file.size > 25 * 1024 * 1024) { toast('File too large (max 25 MB): ' + file.name, 'error'); continue; }
+    try {
+      await _leaseAiPrepInput(file);   // per-file: render pages + text/vision
+      await _leaseAiAnalyze();         // AI → parsed → upsert doc → merge+render
+    } catch (err) {
+      console.warn('[lease-ai] file failed', file && file.name, err);
+      _leaseAiSetStatus('Could not read ' + (file && file.name) + ': ' + (err && err.message ? err.message : err), 'error');
     }
-    const rb = document.getElementById('leaseAiReanalyzeBtn'); if (rb) rb.disabled = false;
-    await _leaseAiAnalyze();
-  } catch (err) {
-    console.warn('[lease-ai] file read failed', err);
-    _leaseAiSetStatus('Could not read document: ' + (err && err.message ? err.message : err), 'error');
+  }
+  const rb = document.getElementById('leaseAiReanalyzeBtn'); if (rb) rb.disabled = false;
+}
+// Back-compat single-file entry (inline onchange).
+async function _leaseAiOnFile(file) { return _leaseAiOnFiles([file], false); }
+// Подготовка ОДНОГО файла: рендер страниц (текстовый слой) + текст/vision.
+// Пишет в _leaseAiState.text/imageBlocks/pages/hasTextLayer/_fileName/_activeFile.
+async function _leaseAiPrepInput(file) {
+  const doc = document.getElementById('leaseAiDoc');
+  _leaseAiState.text = ''; _leaseAiState.imageBlocks = []; _leaseAiState.pages = []; _leaseAiState.hasTextLayer = false;
+  _leaseAiState._fileName = file.name || 'Document';
+  _leaseAiState._activeFile = file;
+  _leaseAiSetStatus('Reading ' + (file.name || 'document') + '…');
+  const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+  if (isPdf) {
+    try {
+      _leaseAiState.pages = await _leaseAiRenderPdfDoc(file, doc);
+      _leaseAiState.hasTextLayer = _leaseAiState.pages.some(p => p.spans && p.spans.length);
+    } catch (e) { console.warn('[lease-ai] page render failed', e); }
+    try {
+      _leaseAiState.text = await _loiExtractTextFromPdf(file);
+    } catch (e) {
+      if (e && e.code === 'PDF_NO_TEXT_LAYER') {
+        const { urls: visUrls } = await _renderPdfPagesToDataUrls(file, { maxPages: 8, scale: 1.6 });
+        _leaseAiState.imageBlocks = visUrls.map(_leaseAiUrlToImageBlock);
+      } else { throw e; }
+    }
+  } else {
+    const dataUrl = await readAsDataURL(file);
+    if (doc) doc.innerHTML = `<img src="${dataUrl}" alt="Lease" style="max-width:100%; box-shadow:0 4px 14px rgba(0,0,0,.3); border-radius:4px; background:#fff;">`;
+    _leaseAiState.imageBlocks = [_leaseAiUrlToImageBlock(dataUrl)];
   }
 }
+window._leaseAiOnFiles = _leaseAiOnFiles;
+// Кнопка «+ Add document» — дописать ещё документ к текущему набору.
+function _leaseAiAddDocument() {
+  const inp = document.getElementById('leaseAiFileInput');
+  if (!inp) return;
+  inp.value = '';
+  inp.onchange = function () { const fs = this.files; this.onchange = function(){ _leaseAiOnFiles(this.files, false); }; _leaseAiOnFiles(fs, true); };
+  inp.click();
+}
+window._leaseAiAddDocument = _leaseAiAddDocument;
 function _leaseAiUrlToImageBlock(dataUrl) {
   const m = /^data:(image\/[a-z.+-]+);base64,(.*)$/i.exec(dataUrl || '');
   if (!m) return null;
@@ -86483,45 +86520,163 @@ async function _leaseAiAnalyze() {
     let parsed;
     try { parsed = JSON.parse(cleaned); }
     catch (e) { throw new Error('AI returned invalid JSON. Raw: ' + cleaned.slice(0, 200)); }
-    _leaseAiState.fields = parsed;
-    _leaseAiState.sources = (parsed && parsed._sources && typeof parsed._sources === 'object') ? parsed._sources : {};
-    _leaseAiState.rentSchedule = Array.isArray(parsed.rent_schedule) ? parsed.rent_schedule : [];
-    _leaseAiState.keyPoints = Array.isArray(parsed.key_points) ? parsed.key_points : [];
-    _leaseAiState.abstract = (parsed && parsed.lease_abstract && typeof parsed.lease_abstract === 'object') ? parsed.lease_abstract : null;
-    // ── Текущая аренда из расписания (Tony) ──────────────────────────────
-    // MONTHLY RENT должен показывать ренту, действующую СЕЙЧАС, а не цифру из
-    // тела договора (модель часто берёт «$X thru <дата>» = прошлый период).
-    // Детерминированно перебиваем monthly_rent ступенью, покрывающей сегодня.
-    if (_leaseAiState.rentSchedule.length) {
-      const _d = new Date();
-      const _nowYm = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, '0')}`;
-      const _cur = _rentScheduleRowForYm(_leaseAiState.rentSchedule, _nowYm);
-      if (_cur && isFinite(+_cur.monthly_rent) && +_cur.monthly_rent >= 0
-          && +_cur.monthly_rent !== +parsed.monthly_rent) {
-        parsed.monthly_rent = +_cur.monthly_rent;
-        // Источник → метка текущего периода (она есть в таблице договора, клик подсветит).
-        parsed._sources = parsed._sources || {};
-        if (_cur.period) parsed._sources.monthly_rent = String(_cur.period);
-        _leaseAiState.sources = parsed._sources;
-        _leaseAiState.currentPeriod = _cur.period || _nowYm;
-      }
-    }
-    _leaseAiRenderWarnings(parsed);
-    _leaseAiRenderFields(parsed);
-    _leaseAiRenderEscalation(_leaseAiState.rentSchedule);
-    _leaseAiRenderVerification();
-    _leaseAiRenderAbstractSummary(_leaseAiState.abstract);
-    _leaseAiRenderMissing();
-    _leaseAiRenderAnalysis(_leaseAiState.keyPoints);
-    const got = LEASE_AI_FIELD_DEFS.filter(d => parsed[d.key] != null && parsed[d.key] !== '').length;
-    const hint = _leaseAiState.hasTextLayer ? ' · click a field to see its source in the lease' : '';
-    _leaseAiSetStatus(`Recognized ${got}/${LEASE_AI_FIELD_DEFS.length} fields${_leaseAiState.rentSchedule.length ? ' · ' + _leaseAiState.rentSchedule.length + '-step rent schedule' : ''} — review, then create${hint}`, 'ok');
+    // Сохраняем результат как ОТДЕЛЬНЫЙ документ в docs[] (re-analyze заменяет
+    // одноимённый), затем сливаем все документы по приоритету и рендерим.
+    _leaseAiState.docs = Array.isArray(_leaseAiState.docs) ? _leaseAiState.docs : [];
+    const rec = {
+      name: _leaseAiState._fileName || 'Document',
+      type: parsed.document_type || 'lease',
+      date: (/^\d{4}-\d{2}-\d{2}$/.test(parsed.document_date || '')) ? parsed.document_date : null,
+      executed: parsed.executed !== false,
+      parsed,
+      schedule: Array.isArray(parsed.rent_schedule) ? parsed.rent_schedule : [],
+      abstract: (parsed.lease_abstract && typeof parsed.lease_abstract === 'object') ? parsed.lease_abstract : null,
+      keyPoints: Array.isArray(parsed.key_points) ? parsed.key_points : [],
+      sources: (parsed._sources && typeof parsed._sources === 'object') ? parsed._sources : {},
+      pages: _leaseAiState.pages, hasTextLayer: _leaseAiState.hasTextLayer, file: _leaseAiState._activeFile,
+    };
+    const exIdx = _leaseAiState.docs.findIndex(d => d.name === rec.name);
+    if (exIdx >= 0) _leaseAiState.docs[exIdx] = rec; else _leaseAiState.docs.push(rec);
+    _leaseAiState._activeDoc = rec;   // последний → контекст превью/подсветки
+    _leaseAiMergeAndRender();
     if (cb) cb.disabled = false;
   } catch (err) {
     console.warn('[lease-ai] analyze failed', err);
     _leaseAiSetStatus('Recognition failed: ' + (err && err.message ? err.message : err), 'error');
   }
 }
+
+// Чистое слияние документов по приоритету (amendment/CDA > lease > assignment >
+// прочее; estoppel НИКОГДА не источник — только сверка). Возвращает merged
+// поля/расписание/abstract + конфликты + estoppel-факты. 1 документ = identity.
+function _leaseMergeDocs(docs) {
+  docs = Array.isArray(docs) ? docs : [];
+  if (!docs.length) return { fields: {}, sources: {}, schedule: [], abstract: null, keyPoints: [], conflicts: [], estoppelFacts: [] };
+  if (docs.length === 1) {
+    const d = docs[0];
+    return { fields: { ...d.parsed }, sources: { ...(d.sources || {}) }, schedule: d.schedule || [], abstract: d.abstract || null, keyPoints: d.keyPoints || [], conflicts: [], estoppelFacts: [] };
+  }
+  const isEstoppel = d => (d.type || 'lease') === 'estoppel';
+  const sourceDocs = docs.filter(d => !isEstoppel(d));
+  const rank = (d, dateField) => {
+    const t = d.type || 'lease';
+    if (t === 'amendment' || t === 'renewal_amendment') return 4;
+    if (t === 'commencement_date_agreement') return dateField ? 4 : 1;
+    if (t === 'lease') return 3;
+    if (t === 'assignment' || t === 'sublease') return 2;
+    return 1;
+  };
+  const dateVal = d => d.date ? (Date.parse(d.date + 'T00:00:00') || 0) : 0;
+  const DATE_FIELDS = new Set(['lease_start', 'lease_end', 'term_months']);
+  const fields = {}, sources = {}, conflicts = [];
+  (typeof LEASE_AI_FIELD_DEFS !== 'undefined' ? LEASE_AI_FIELD_DEFS : []).forEach(def => {
+    const key = def.key, isDate = DATE_FIELDS.has(key);
+    const cands = sourceDocs.map(d => ({ d, v: d.parsed ? d.parsed[key] : null })).filter(c => _leaseFieldFilled(c.v));
+    if (!cands.length) return;
+    cands.sort((a, b) => (rank(b.d, isDate) - rank(a.d, isDate)) || (dateVal(b.d) - dateVal(a.d)));
+    fields[key] = cands[0].v;
+    if (cands[0].d.sources && cands[0].d.sources[key] != null) sources[key] = cands[0].d.sources[key];
+    const topRank = rank(cands[0].d, isDate);
+    const top = cands.filter(c => rank(c.d, isDate) === topRank);
+    if (new Set(top.map(c => String(c.v))).size > 1) {
+      conflicts.push({ field: key, label: def.label, values: top.map(c => ({ value: c.v, doc: c.d.name, type: c.d.type, date: c.d.date })) });
+    }
+  });
+  // schedule — высший приоритет с непустым графиком
+  let schedDoc = null;
+  sourceDocs.forEach(d => {
+    if (Array.isArray(d.schedule) && d.schedule.length) {
+      if (!schedDoc || rank(d, false) > rank(schedDoc, false) || (rank(d, false) === rank(schedDoc, false) && dateVal(d) > dateVal(schedDoc))) schedDoc = d;
+    }
+  });
+  const schedule = schedDoc ? schedDoc.schedule : [];
+  // abstract — база от высшего приоритета, заполняем null'ы из нижних
+  const ordered = sourceDocs.slice().sort((a, b) => (rank(b, false) - rank(a, false)) || (dateVal(b) - dateVal(a)));
+  let abstract = null;
+  ordered.forEach(d => { if (d.abstract) abstract = _leaseDeepFill(abstract, d.abstract); });
+  // keyPoints — объединяем (dedup по title)
+  const seen = new Set(), keyPoints = [];
+  docs.forEach(d => (d.keyPoints || []).forEach(k => { const t = (k && k.title) || ''; if (t && !seen.has(t)) { seen.add(t); keyPoints.push(k); } }));
+  // estoppel — сверка с merged
+  const estoppelFacts = [];
+  docs.filter(isEstoppel).forEach(d => {
+    ['monthly_rent', 'deposit', 'lease_end', 'tenant_name'].forEach(k => {
+      const ev = d.parsed ? d.parsed[k] : null;
+      if (_leaseFieldFilled(ev)) estoppelFacts.push({ field: k, estoppel: ev, current: fields[k], match: String(ev) === String(fields[k]), doc: d.name });
+    });
+  });
+  return { fields, sources, schedule, abstract, keyPoints, conflicts, estoppelFacts };
+}
+function _leaseDeepFill(base, src) {
+  if (base == null) { try { return JSON.parse(JSON.stringify(src || {})); } catch { return src || {}; } }
+  if (typeof base !== 'object' || typeof src !== 'object' || Array.isArray(base) || Array.isArray(src)) return base;
+  const out = { ...base };
+  Object.keys(src || {}).forEach(k => {
+    if (!(k in out) || out[k] == null || out[k] === '') out[k] = src[k];
+    else if (out[k] && src[k] && typeof out[k] === 'object' && typeof src[k] === 'object' && !Array.isArray(out[k]) && !Array.isArray(src[k])) out[k] = _leaseDeepFill(out[k], src[k]);
+  });
+  return out;
+}
+// Слить docs[] → выставить активный merged-вид → применить current-rent override → отрендерить всё.
+function _leaseAiMergeAndRender() {
+  const docs = (_leaseAiState && _leaseAiState.docs) || [];
+  const merged = _leaseMergeDocs(docs);
+  _leaseAiState.fields = merged.fields;
+  _leaseAiState.sources = merged.sources || {};
+  _leaseAiState.rentSchedule = merged.schedule || [];
+  _leaseAiState.abstract = merged.abstract || null;
+  _leaseAiState.keyPoints = merged.keyPoints || [];
+  _leaseAiState.conflicts = merged.conflicts || [];
+  _leaseAiState.estoppelFacts = merged.estoppelFacts || [];
+  if (_leaseAiState._activeDoc) { _leaseAiState.pages = _leaseAiState._activeDoc.pages || []; _leaseAiState.hasTextLayer = !!_leaseAiState._activeDoc.hasTextLayer; }
+  const parsed = merged.fields;
+  // current-rent override на merged-расписании
+  if (_leaseAiState.rentSchedule.length) {
+    const d = new Date(); const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const cur = _rentScheduleRowForYm(_leaseAiState.rentSchedule, ym);
+    if (cur && isFinite(+cur.monthly_rent) && +cur.monthly_rent >= 0) {
+      parsed.monthly_rent = +cur.monthly_rent;
+      if (cur.period) _leaseAiState.sources.monthly_rent = String(cur.period);
+    }
+  }
+  _leaseAiRenderDocStrip();
+  const _ab = document.getElementById('leaseAiAddDocBtn'); if (_ab) _ab.disabled = !docs.length;
+  _leaseAiRenderWarnings(parsed);
+  _leaseAiRenderFields(parsed);
+  _leaseAiRenderEscalation(_leaseAiState.rentSchedule);
+  _leaseAiRenderVerification();
+  _leaseAiRenderAbstractSummary(_leaseAiState.abstract);
+  _leaseAiRenderMissing();
+  _leaseAiRenderAnalysis(_leaseAiState.keyPoints);
+  const got = (typeof LEASE_AI_FIELD_DEFS !== 'undefined' ? LEASE_AI_FIELD_DEFS : []).filter(d => parsed[d.key] != null && parsed[d.key] !== '').length;
+  const nDocs = docs.length, confN = (merged.conflicts || []).length;
+  const total = (typeof LEASE_AI_FIELD_DEFS !== 'undefined' ? LEASE_AI_FIELD_DEFS.length : 0);
+  _leaseAiSetStatus(`${nDocs} doc${nDocs === 1 ? '' : 's'} · ${got}/${total} fields${_leaseAiState.rentSchedule.length ? ' · ' + _leaseAiState.rentSchedule.length + '-step schedule' : ''}${confN ? ' · ⚠ ' + confN + ' conflict' + (confN === 1 ? '' : 's') : ''} — review, then create`, confN ? 'warn' : 'ok');
+}
+// Полоса документов над/в превью.
+function _leaseAiRenderDocStrip() {
+  const el = document.getElementById('leaseAiDocStrip');
+  if (!el) return;
+  const docs = (_leaseAiState && _leaseAiState.docs) || [];
+  if (docs.length <= 1) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  el.style.display = 'flex';
+  el.innerHTML = `<span class="la-ds-label">${docs.length} documents:</span>` + docs.map((d, i) =>
+    `<span class="la-ds-chip${_leaseAiState._activeDoc === d ? ' active' : ''}" onclick="_leaseAiViewDoc(${i})" title="${esc(d.name)}">`
+    + `<b>${esc((d.type || 'lease').replace(/_/g, ' '))}</b>${d.date ? ' · ' + esc(d.date) : ''}${d.executed === false ? ' · ⚠ draft' : ''}</span>`
+  ).join('');
+}
+function _leaseAiViewDoc(i) {
+  const d = (_leaseAiState.docs || [])[i];
+  if (!d || !d.file) return;
+  _leaseAiState._activeDoc = d;
+  _leaseAiPrepInput(d.file).then(() => {
+    // после ре-рендера страниц вернём merged-вид + активный контекст подсветки
+    _leaseAiState.pages = d.pages = (_leaseAiState.pages || d.pages);
+    _leaseAiState.hasTextLayer = d.hasTextLayer = _leaseAiState.hasTextLayer;
+    _leaseAiRenderDocStrip();
+  }).catch(() => {});
+}
+window._leaseAiViewDoc = _leaseAiViewDoc;
 
 function _leaseAiRenderFields(fields) {
   const el = document.getElementById('leaseAiFields');
@@ -86889,6 +87044,15 @@ function _leaseAiMatchWarnings(parsed) {
       }
     }
   }
+  // 4) Multi-doc conflicts (different docs disagree on the same field)
+  (_leaseAiState && _leaseAiState.conflicts || []).forEach(c => {
+    const vals = (c.values || []).map(v => `<b>${esc(String(v.value))}</b> (${esc((v.type||'doc').replace(/_/g,' '))}${v.date ? ' ' + esc(v.date) : ''})`).join(' vs ');
+    out.push({ level: 'warn', msg: `Conflict on <b>${esc(c.label || c.field)}</b>: ${vals}. Using the highest-priority document — verify.` });
+  });
+  // 5) Estoppel reconciliation (estoppel asserts a value ≠ merged)
+  (_leaseAiState && _leaseAiState.estoppelFacts || []).forEach(e => {
+    if (!e.match) out.push({ level: 'warn', msg: `Estoppel says <b>${esc(e.field)}</b> = <b>${esc(String(e.estoppel))}</b>, but extracted value is <b>${esc(String(e.current))}</b>. Reconcile (${esc(e.doc)}).` });
+  });
   return out;
 }
 function _leaseAiRenderWarnings(parsed) {
