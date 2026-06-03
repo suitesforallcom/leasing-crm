@@ -23,6 +23,8 @@ Format:
 
 ## 2026-06-03
 
+- 🔧 `ec46734` **Lease-AI default model → Claude Opus** (Tony «Поставь по умолчанию модель Claude Opus самую серьёзную»). `_leaseAiSelectedModel()` now returns `claude-opus-4-5` whenever an Anthropic key is configured, overriding a stale saved pick — the import modal had been opening on a previously-selected Grok. Operator can still switch per import via the MODEL dropdown; with no Anthropic key it falls back to the available model. Verified in-browser: Anthropic key + saved Grok → resolves to `claude-opus-4-5` and the dropdown opens on Opus; no Anthropic key → falls back to `grok-4-latest`. Parse-check 0, no console errors. Deployed (meta `ec46734825b7`).
+
 ### Crop background tool (floor-map editor)
 
 - ⚠️ `7c34ef7` **Crop background image (drag-on-canvas)** — ⚠️ **SUPERSEDED by `9e3f69e` (same day).** Added a bottom-menu crop as a NEW drag-on-canvas mode `crop-bg`, not realising a proper **Crop Floor Plan modal already existed** (`openCropModal`/`applyCrop`). My version wrote a large data-URL bg that didn't go through `finalizeBlueprintUpload` → exceeded `bgMax` (100KB) → got nulled / not persisted → operator saw the crop "restore back". Entire `crop-bg` implementation removed in `9e3f69e`.
