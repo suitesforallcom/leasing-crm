@@ -19657,11 +19657,11 @@
               <!-- Колонка 1: действия с фоном / outline + шаблон договора этажа -->
               <div class="ma-col">
                 <div class="snap-popover-title">Floor actions</div>
-                <button class="snap-opt" onclick="(function(){ closeMoreActionsPopover(); startCropBgFromMenu(); })()">
+                <button class="snap-opt" onclick="(function(){ closeMoreActionsPopover(); openCropModal(); })()">
                   <span class="snap-opt-dot" style="background:#dbeafe;"></span>
                   <div>
                     <div class="snap-opt-name">✂️ Crop background image</div>
-                    <div class="snap-opt-hint">Drag a box over the area to keep — everything outside is trimmed. Units stay aligned.</div>
+                    <div class="snap-opt-hint">Opens the crop window — drag / resize the box, only what's inside is kept. Stays clear of the orange outline so units aren't cut.</div>
                   </div>
                 </button>
                 <button class="snap-opt" onclick="(function(){ closeMoreActionsPopover(); removeBg(); })()">
@@ -69150,45 +69150,6 @@ function renderOverlay() {
       overlayG.appendChild(t);
     }
   }
-
-  // ===== Crop background draft =====
-  // Синяя пунктирная рамка = область которую ОСТАВЛЯЕМ. Снаружи —
-  // полупрозрачная заливка (показываем что будет отрезано). Размер в px.
-  if (mode === 'crop-bg' && _cropDraft) {
-    const d = _cropDraft;
-    const x2 = d.x2 != null ? d.x2 : (d.cur ? d.cur.x : d.x);
-    const y2 = d.y2 != null ? d.y2 : (d.cur ? d.cur.y : d.y);
-    const rx = Math.min(d.x, x2), ry = Math.min(d.y, y2);
-    const rw = Math.abs(x2 - d.x), rh = Math.abs(y2 - d.y);
-    // Затемнение всего полотна с «вырезанным» окном через even-odd path —
-    // оператор сразу видит, что именно отсечётся.
-    const shade = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    shade.setAttribute('d',
-      `M0 0 H${baseVB.w} V${baseVB.h} H0 Z ` +
-      `M${rx} ${ry} V${ry + rh} H${rx + rw} V${ry} Z`);
-    shade.setAttribute('fill', 'rgba(15, 23, 42, 0.45)');
-    shade.setAttribute('fill-rule', 'evenodd');
-    overlayG.appendChild(shade);
-    const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    r.setAttribute('x', rx); r.setAttribute('y', ry);
-    r.setAttribute('width', rw); r.setAttribute('height', rh);
-    r.setAttribute('fill', 'none');
-    r.setAttribute('stroke', '#3b82f6');
-    r.setAttribute('stroke-width', _zsw(2));
-    r.setAttribute('stroke-dasharray', '6 4');
-    overlayG.appendChild(r);
-    if (rw > 30 && rh > 16) {
-      const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      t.setAttribute('x', rx + rw / 2);
-      t.setAttribute('y', ry + rh / 2 + 5);
-      t.setAttribute('text-anchor', 'middle');
-      t.setAttribute('fill', '#3b82f6');
-      t.setAttribute('font-weight', '700');
-      t.setAttribute('font-size', _zfs(13));
-      t.textContent = `${Math.round(rw)}×${Math.round(rh)} px`;
-      overlayG.appendChild(t);
-    }
-  }
 }
 
 // ===== Snap logic =====
@@ -69916,15 +69877,14 @@ svg.addEventListener('pointerdown', e => {
   const _bypassUnitGuard = (
     mode === 'calibrate' || mode === 'calibrate-area' ||
     mode === 'polygon'   || mode === 'floor-outline' ||
-    mode === 'door-single' || mode === 'door-double' ||
-    mode === 'crop-bg'
+    mode === 'door-single' || mode === 'door-double'
   );
   if (!_bypassUnitGuard && (e.target.closest('.unit-group') || e.target.classList?.contains?.('handle'))) return;
   const p = svgPoint(e);
 
   // In View Mode, drawing and measuring tools are disabled; pan + select still work.
   const readOnly = !state.settings.editMode;
-  if (readOnly && (mode === 'rect' || mode === 'wall' || mode === 'measure' || mode === 'calibrate' || mode === 'calibrate-area' || mode === 'cut-wall' || mode === 'polygon' || mode === 'floor-outline' || mode === 'door-single' || mode === 'door-double' || mode === 'crop-bg')) return;
+  if (readOnly && (mode === 'rect' || mode === 'wall' || mode === 'measure' || mode === 'calibrate' || mode === 'calibrate-area' || mode === 'cut-wall' || mode === 'polygon' || mode === 'floor-outline' || mode === 'door-single' || mode === 'door-double')) return;
 
   // Middle-mouse button OR explicit Pan tool → pan. In View Mode we ALSO
   // hijack the primary click on empty canvas so a plain drag pans the map
@@ -70017,10 +69977,6 @@ svg.addEventListener('pointerdown', e => {
     // Drag-rectangle calibration: press → start, drag → resize, release
     // → modal opens asking for the real-world area in ft²/m².
     _calibrateAreaStart(p);
-  } else if (mode === 'crop-bg') {
-    // Drag-rectangle crop: press → start, drag → resize, release →
-    // обрезаем фон по выделенной области (см. _cropBgApply).
-    _cropBgStart(p);
   } else if (mode === 'measure') {
     if (!measure || (measure.x1 !== undefined && measure.y1 !== undefined && !measure.drawing)) {
       measure = { x0: p.x, y0: p.y, x1: p.x, y1: p.y, drawing: true };
@@ -71159,176 +71115,6 @@ function startFloorOutlineFromMenu() {
 }
 window.startFloorOutlineFromMenu = startFloorOutlineFromMenu;
 
-// =========================================================================
-// Crop background — обрезка фонового чертежа на любом этапе работы.
-// Оператор тянет прямоугольник по карте; всё ВНЕ него отсекается.
-// Юниты / стены / outline остаются на месте: обрезанная картинка
-// переставляется в ТУ ЖЕ world-область, что и видимый кусок до обрезки
-// (scale / x / y пересчитываются). Поэтому калибровка (pxPerFt) НЕ
-// требует пересчёта — world-координаты не двигаются. Точка входа —
-// «⋯ More» → «✂️ Crop background image».
-// =========================================================================
-let _cropDraft = null;
-
-function startCropBgFromMenu() {
-  if (!state) state = {};
-  if (!state.settings) state.settings = {};
-  const f = currentFloor();
-  if (!f || !f.bg || !f.bg.src) {
-    if (typeof toast === 'function') toast('No background on this floor to crop', 'error');
-    return;
-  }
-  // Инструмент рисующий — нужен Edit Mode. Включаем сами, чтобы «на любом
-  // этапе» работало без ручного клика по EDIT (тот же паттерн, что и
-  // startFloorOutlineFromMenu).
-  if (!state.settings.editMode) {
-    state.settings.editMode = true;
-    try { saveState && saveState(); } catch {}
-    try { renderAll && renderAll(); } catch {}
-    if (typeof toast === 'function') toast('Edit Mode enabled — drag a box over the area to keep.', 'success');
-  } else if (typeof toast === 'function') {
-    toast('Drag a box over the area to keep — everything outside is trimmed.', 'info');
-  }
-  if (typeof setMode === 'function') setMode('crop-bg');
-}
-window.startCropBgFromMenu = startCropBgFromMenu;
-
-function _cropBgStart(p) {
-  _cropDraft = { x: p.x, y: p.y, x2: p.x, y2: p.y, cur: { x: p.x, y: p.y } };
-  window.addEventListener('pointermove', _cropBgMove);
-  window.addEventListener('pointerup', _cropBgEnd, { once: true });
-  renderOverlay();
-}
-
-function _cropBgMove(e) {
-  if (!_cropDraft) return;
-  const p = svgPoint(e);
-  _cropDraft.x2 = p.x; _cropDraft.y2 = p.y; _cropDraft.cur = p;
-  renderOverlay();
-}
-
-function _cropBgEnd() {
-  window.removeEventListener('pointermove', _cropBgMove);
-  if (!_cropDraft) return;
-  const d = _cropDraft;
-  const wx = Math.min(d.x, d.x2), wy = Math.min(d.y, d.y2);
-  const ww = Math.abs(d.x2 - d.x), wh = Math.abs(d.y2 - d.y);
-  _cropDraft = null;
-  renderOverlay();
-  if (ww < 8 || wh < 8) {
-    if (typeof toast === 'function') toast('Crop box too small — drag a larger area', 'error');
-    return;
-  }
-  _cropBgApply(wx, wy, ww, wh);
-}
-
-function _cropBgCancel() {
-  window.removeEventListener('pointermove', _cropBgMove);
-  _cropDraft = null;
-  renderOverlay();
-}
-
-// Рисует выбранную world-область из исходной картинки на offscreen-canvas,
-// получает новый data-URL и переставляет его так, чтобы видимый кусок
-// остался ровно на месте (юниты не съезжают).
-function _cropBgApply(wx, wy, ww, wh) {
-  const f = currentFloor();
-  const bg = f && f.bg;
-  if (!bg || !bg.src) return;
-  const srcOld = bg.src;
-
-  const probe = new Image();
-  // Для cross-origin (Storage URL) нужен anonymous, иначе canvas «портится»
-  // и toDataURL бросит SecurityError. Для data: URL — no-op.
-  if (!/^data:/i.test(srcOld)) probe.crossOrigin = 'anonymous';
-  probe.onload = () => {
-    try {
-      const W0 = probe.naturalWidth || probe.width;
-      const H0 = probe.naturalHeight || probe.height;
-      if (!W0 || !H0) { if (typeof toast === 'function') toast('Image not ready — try again', 'error'); return; }
-
-      // Текущее размещение картинки в world-координатах (как в renderBg).
-      const baseS0 = Math.min(baseVB.w / W0, baseVB.h / H0);
-      const s0 = baseS0 * (bg.scale || 1);
-      const imgX0 = (baseVB.w - W0 * s0) / 2 + (bg.x || 0);
-      const imgY0 = (baseVB.h - H0 * s0) / 2 + (bg.y || 0);
-
-      // world-rect → пиксели исходника, с клампом к границам картинки
-      // (если оператор увёл рамку за край листа).
-      let sx = (wx - imgX0) / s0;
-      let sy = (wy - imgY0) / s0;
-      let sxEnd = (wx + ww - imgX0) / s0;
-      let syEnd = (wy + wh - imgY0) / s0;
-      sx = Math.max(0, Math.min(W0, sx));
-      sy = Math.max(0, Math.min(H0, sy));
-      sxEnd = Math.max(0, Math.min(W0, sxEnd));
-      syEnd = Math.max(0, Math.min(H0, syEnd));
-      const sw = sxEnd - sx, sh = syEnd - sy;
-      if (sw < 2 || sh < 2) {
-        if (typeof toast === 'function') toast('Crop area falls outside the image', 'error');
-        return;
-      }
-
-      // Отрисовка кропа на canvas → новый data-URL.
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.round(sw));
-      canvas.height = Math.max(1, Math.round(sh));
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(probe, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-      let newSrc;
-      try {
-        // JPEG-источник → сохраняем JPEG (фото), иначе PNG (чёткие линии чертежа).
-        const asJpeg = /^data:image\/jpe?g/i.test(srcOld);
-        newSrc = asJpeg ? canvas.toDataURL('image/jpeg', 0.92) : canvas.toDataURL('image/png');
-      } catch (secErr) {
-        console.warn('[crop] toDataURL failed (tainted canvas?)', secErr);
-        if (typeof toast === 'function') toast('Could not crop this image (cross-origin). Re-upload the floor plan, then crop.', 'error');
-        return;
-      }
-
-      // Реальная world-область обрезанных пикселей (после клампа).
-      const realWx = imgX0 + sx * s0;
-      const realWy = imgY0 + sy * s0;
-      const realWw = sw * s0;
-      const realWh = sh * s0;
-
-      // Новое размещение: ставим обрезанную картинку в ту же world-область,
-      // чтобы юниты/стены/outline не сдвинулись.
-      const baseS1 = Math.min(baseVB.w / canvas.width, baseVB.h / canvas.height);
-      const newScale = realWw / (canvas.width * baseS1);
-      const newX = realWx - (baseVB.w - realWw) / 2;
-      const newY = realWy - (baseVB.h - realWh) / 2;
-
-      // История + локальный бэкап — Ctrl+Z вернёт целую картинку.
-      try { pushHistory(); } catch {}
-      try { if (typeof _localBackupCreate === 'function') _localBackupCreate('pre-mutation', 'Before crop background'); } catch {}
-
-      const live = currentFloor();
-      live.bg = { ...live.bg, src: newSrc, scale: newScale, x: newX, y: newY, storagePath: null };
-      // Не даём renderBg авто-фитнуть вид (src сменился) — оператор не теряет зум.
-      window._sfaLastBgSrc = newSrc;
-
-      // Слайдер Background scale показывает новый %.
-      const sl = document.getElementById('bgScale');
-      const slv = document.getElementById('bgScaleVal');
-      if (sl) sl.value = Math.max(30, Math.min(300, Math.round(newScale * 100)));
-      if (slv) slv.textContent = Math.round(newScale * 100) + '%';
-
-      saveState();
-      renderAll();
-      if (typeof setMode === 'function') setMode('select');
-      if (typeof toast === 'function') toast('Background cropped — Undo (Ctrl+Z) to restore the full image', 'success');
-    } catch (err) {
-      console.warn('[crop] failed', err);
-      if (typeof toast === 'function') toast('Crop failed: ' + (err && err.message ? err.message : err), 'error');
-    }
-  };
-  probe.onerror = () => {
-    if (typeof toast === 'function') toast('Could not load the background image to crop', 'error');
-  };
-  probe.src = srcOld;
-}
-
 // Centroid of a simple polygon — used to position the suite-ID / price /
 // tenant labels INSIDE the visible polygon shape rather than at the
 // empty top-left corner of the bounding box (which is outside the
@@ -71409,13 +71195,6 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && polyDraft) {
     _polyCancel();
     if (typeof toast === 'function') toast('Polygon canceled', 'info');
-    return;
-  }
-  // Esc cancels crop-background mode (draft drag in progress or just armed).
-  if (e.key === 'Escape' && mode === 'crop-bg') {
-    _cropBgCancel();
-    if (typeof setMode === 'function') setMode('select');
-    if (typeof toast === 'function') toast('Crop canceled', 'info');
     return;
   }
   // Don't hijack typing in form fields
@@ -72719,7 +72498,7 @@ function setMode(m) {
   // previously we silently downgraded to 'select', which left the calibrate /
   // polygon / wall tools looking broken when really the operator just had
   // edit mode turned off.
-  const drawingTools = ['rect','wall','cut-wall','calibrate','calibrate-area','polygon','floor-outline','door-single','door-double','label','crop-bg'];
+  const drawingTools = ['rect','wall','cut-wall','calibrate','calibrate-area','polygon','floor-outline','door-single','door-double','label'];
   if (!state.settings.editMode && drawingTools.includes(m)) {
     if (typeof toast === 'function') {
       toast('Drawing tools require Edit Mode. Click the EDIT button on the left.', 'error');
@@ -72818,10 +72597,6 @@ function setMode(m) {
     helpT.innerHTML = '<b>Move label:</b> click + drag the dashed box on any unit to reposition its number/price block. Drag inside the unit, or up to 40 px outside. Press <b>V</b> to exit, or pick a fixed position from the unit’s side panel.';
     help.classList.remove('hidden');
     svg.classList.add('grab');
-  } else if (m === 'crop-bg') {
-    helpT.innerHTML = '<b>Crop background:</b> drag a box over the part of the floor plan you want to keep — everything outside it is trimmed. Units, walls and outline stay put. Press <b>Esc</b> to cancel, <b>Ctrl+Z</b> to undo after.';
-    help.classList.remove('hidden');
-    svg.classList.add('crosshair');
   }
   renderAll();
 }
@@ -97775,6 +97550,37 @@ function cropPointerUp() {
   window.removeEventListener('pointermove', cropPointerMove);
 }
 
+// BBox (в world-координатах) того, что НЕЛЬЗЯ отрезать при обрезке фона:
+// оранжевый outline этажа + футпринты юнитов. Полигоны outline/юнитов
+// хранятся в АБСОЛЮТНЫХ world-координатах (см. sfaFitToContent). Возвращает
+// {minX,minY,maxX,maxY} или null, если защищать нечего (пустой этаж).
+function _floorProtectedWorldBbox(f) {
+  if (!f) return null;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const expand = (x, y) => {
+    if (!isFinite(x) || !isFinite(y)) return;
+    if (x < minX) minX = x; if (y < minY) minY = y;
+    if (x > maxX) maxX = x; if (y > maxY) maxY = y;
+  };
+  for (const u of (f.units || [])) {
+    if (u.parentId) continue;                                   // саб-комнаты внутри родителя
+    if (typeof isArchived === 'function' && isArchived(u)) continue;
+    const upts = (u.points !== undefined && typeof _normalizePointsField === 'function')
+      ? _normalizePointsField(u.points) : null;
+    if (upts && upts.length >= 3) {
+      for (const [x, y] of upts) expand(x, y);
+    } else {
+      expand(u.x || 0, u.y || 0);
+      expand((u.x || 0) + (u.w || 0), (u.y || 0) + (u.h || 0));
+    }
+  }
+  if (f.outline && f.outline.points !== undefined && typeof _normalizePointsField === 'function') {
+    for (const [x, y] of _normalizePointsField(f.outline.points)) expand(x, y);
+  }
+  if (!isFinite(minX)) return null;
+  return { minX, minY, maxX, maxY };
+}
+
 function applyCrop() {
   if (!cropRectNorm) { toast('Nothing to crop', 'error'); return; }
   const img = document.getElementById('cropImage');
@@ -97787,6 +97593,52 @@ function applyCrop() {
   const sy = Math.max(0, Math.round(cropRectNorm.y * ih));
   const sw = Math.max(10, Math.min(iw - sx, Math.round(cropRectNorm.w * iw)));
   const sh = Math.max(10, Math.min(ih - sy, Math.round(cropRectNorm.h * ih)));
+
+  // Размещение картинки в world-координатах ДО обрезки (как в renderBg).
+  // Нужно и для guard'а (контур → image-px), и для сохранения выравнивания.
+  // Действительно только при нулевом повороте: после rotate соответствие
+  // world↔image теряется (юниты рисовались относительно неповёрнутого плана).
+  const fNow = (typeof currentFloor === 'function') ? currentFloor() : null;
+  const bg0 = (typeof currentBg === 'function') ? { ...currentBg() } : { ...((fNow && fNow.bg) || {}) };
+  const prot = (cropRotation === 0) ? _floorProtectedWorldBbox(fNow) : null;
+  let placement = null;
+  if (cropRotation === 0) {
+    const baseS0 = Math.min(baseVB.w / iw, baseVB.h / ih);
+    const s0 = baseS0 * (bg0.scale || 1);
+    placement = {
+      s0,
+      imgX0: (baseVB.w - iw * s0) / 2 + (bg0.x || 0),
+      imgY0: (baseVB.h - ih * s0) / 2 + (bg0.y || 0),
+    };
+  }
+
+  // === Защита по оранжевому контуру + юнитам (Tony 2026-06-03) ===
+  // Обрезка ВНЕ контура безопасна (режем только поля чертежа / штамп).
+  // Если рамка заезжает на контур/юниты — часть здания была бы потеряна,
+  // и юниты перестали бы совпадать с планом → предупреждаем и не применяем,
+  // пока оператор явно не подтвердит.
+  if (placement && prot) {
+    const pMinX = (prot.minX - placement.imgX0) / placement.s0;
+    const pMinY = (prot.minY - placement.imgY0) / placement.s0;
+    const pMaxX = (prot.maxX - placement.imgX0) / placement.s0;
+    const pMaxY = (prot.maxY - placement.imgY0) / placement.s0;
+    const tol = Math.max(2, Math.min(iw, ih) * 0.004);   // ~0.4% допуск на округление
+    const cutsBuilding =
+      (pMinX < sx - tol) || (pMinY < sy - tol) ||
+      (pMaxX > sx + sw + tol) || (pMaxY > sy + sh + tol);
+    if (cutsBuilding) {
+      const ok = confirm(
+        '⚠️ This crop reaches into the building outline (orange) / units.\n\n' +
+        'Part of the floor plan that has rooms on it would be cut off, and your ' +
+        'units would no longer line up with the plan.\n\n' +
+        'Pull the selection OUT so it fully contains the orange frame to crop only ' +
+        'the empty margins / title block.\n\n' +
+        'OK = crop anyway (not recommended)\n' +
+        'Cancel = go back and adjust the selection'
+      );
+      if (!ok) return;
+    }
+  }
 
   const canvas = document.createElement('canvas');
   canvas.width = sw;
@@ -97801,10 +97653,35 @@ function applyCrop() {
     const f = currentFloor();
     const priorPath = (f.bg && f.bg.storagePath) || window._pendingBlueprintUpload?.priorPath || null;
     f.bg.src = newSrc;
-    f.bg.x = 0;
-    f.bg.y = 0;
-    f.bg.scale = 1;
     f.bg.storagePath = null;     // will be set by finalizeBlueprintUpload
+
+    // === Размещение обрезанной картинки ===
+    // Если на этаже УЖЕ есть контент (юниты/outline) — СОХРАНЯЕМ выравнивание:
+    // ставим обрезок в ту же world-область, что он занимал до обрезки, чтобы
+    // юниты/стены/outline не съехали и калибровка осталась валидной.
+    // Если этаж пустой (свежая загрузка) или был поворот — нейтральное
+    // размещение (scale 1 / центр) + авто-фит, как было раньше.
+    let aligned = false;
+    if (placement && prot) {
+      const worldX = placement.imgX0 + sx * placement.s0;
+      const worldY = placement.imgY0 + sy * placement.s0;
+      const worldW = sw * placement.s0;
+      const worldH = sh * placement.s0;
+      const baseS1 = Math.min(baseVB.w / sw, baseVB.h / sh);
+      const newScale = worldW / (sw * baseS1);
+      if (isFinite(newScale) && newScale > 0) {
+        f.bg.scale = newScale;
+        f.bg.x = worldX - (baseVB.w - worldW) / 2;
+        f.bg.y = worldY - (baseVB.h - worldH) / 2;
+        window._sfaLastBgSrc = newSrc;   // не авто-фитить — вид/выравнивание остаются
+        aligned = true;
+      }
+    }
+    if (!aligned) {
+      f.bg.x = 0;
+      f.bg.y = 0;
+      f.bg.scale = 1;
+    }
     // Cache the cropped dataUrl so canvas-pixel features stay working
     // after Firebase replaces f.bg.src with its cross-origin URL.
     if (typeof _bgCacheDataUrl === 'function') {
