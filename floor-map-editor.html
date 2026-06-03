@@ -33189,6 +33189,9 @@ window.syncBuildingsReadEnabled = syncBuildingsReadEnabled;
 
 let _v2BuildingsListenerUnsub = null;
 let _v2BuildingsListenerDocsApplied = 0;
+// Stage 4 read-switch (DORMANT): получен ли первый снимок коллекции buildings.
+// Пока false при включённом read-switch → селектор показывает «loading…».
+let _v2BuildingsFirstSnapshotDone = false;
 let _v2BuildingsRerenderTimer = null;
 
 function _v2BuildingsAttachListener() {
@@ -33250,6 +33253,8 @@ function _v2BuildingsAttachListener() {
           changed++;
           _v2BuildingsListenerDocsApplied++;
         });
+        // Первый снимок коллекции получен → снимаем «loading…» в селекторе.
+        _v2BuildingsFirstSnapshotDone = true;
         if (changed > 0) {
           if (_v2BuildingsRerenderTimer) clearTimeout(_v2BuildingsRerenderTimer);
           _v2BuildingsRerenderTimer = setTimeout(() => {
@@ -33286,6 +33291,7 @@ function _v2BuildingsDetachListener() {
   if (!_v2BuildingsListenerUnsub) return;
   try { _v2BuildingsListenerUnsub(); } catch {}
   _v2BuildingsListenerUnsub = null;
+  _v2BuildingsFirstSnapshotDone = false;   // повторное включение read-switch → снова «loading…»
   if (_v2BuildingsRerenderTimer) {
     clearTimeout(_v2BuildingsRerenderTimer);
     _v2BuildingsRerenderTimer = null;
@@ -58672,6 +58678,18 @@ function buildingVisualHtml(b, ctx) {
 }
 
 function renderBuildingSelector() {
+  // Stage 4 read-switch (DORMANT): пока не пришёл первый снимок из коллекции
+  // buildings, state.buildings ещё пуст — показываем «loading…» вместо мигающего
+  // пустого селектора. При выключенном флаге условие ложно → рендер без изменений.
+  if (typeof syncBuildingsReadEnabled === 'function' && syncBuildingsReadEnabled()
+      && typeof _v2BuildingsFirstSnapshotDone !== 'undefined' && !_v2BuildingsFirstSnapshotDone
+      && (state.buildings || []).length === 0) {
+    const _n = document.getElementById('bpName'); if (_n) _n.textContent = 'Loading buildings…';
+    const _a = document.getElementById('bpAddr'); if (_a) _a.textContent = '';
+    const _l = document.getElementById('buildingList');
+    if (_l) _l.innerHTML = '<div class="bd-item" style="opacity:.6; cursor:default; padding:10px 12px;">Loading buildings…</div>';
+    return;
+  }
   const b = currentBuilding();
   // Topbar pill: photo / icon + name + address. We replace a leading
   // .bp-visual node if present so the class toggles cleanly between
