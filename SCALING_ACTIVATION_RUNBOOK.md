@@ -152,8 +152,8 @@ Now every `saveState()` call automatically mirrors changed buildings (via the ho
 
 Run `sfaReconcileBuildingsV2()` after 24-48h of normal operation. Drift should stay zero.
 
-### Known activation gap — building deletion
-The current saveState hook only handles upserts. When you delete a building (via `deleteBuildingFromModal`), the v2 collection retains an orphan doc. **Fix needed at activation:** find every `state.buildings.splice(...)` callsite and add `_mirrorBuildingDeleteV2(buildingId)` next to it. Alternatively, change the reconcile to detect+delete orphans by ID (but **never** by content-diff per [SCALING_PLAN_v2.md §0 rule 2](SCALING_PLAN_v2.md)).
+### Known activation gap — building deletion — ✅ VERIFIED CLOSED 2026-06-03
+Audit of all building-removal callsites: the ONLY user-initiated delete is `deleteBuildingFromModal` (line ~62570), which already calls `_mirrorBuildingDeleteV2(editingBuildingId)` right before the `state.buildings.filter` (commit `360ccc9`). The other `state.buildings.splice` (in `_v2BuildingsAttachListener`, ~line 33217) is the read-switch listener applying a `removed` change FROM the collection — correctly does NOT mirror (would be circular). No uncovered delete path remains.
 
 ### Step 3.5 — Rollback if needed
 ```js
@@ -183,8 +183,8 @@ Per [SCALING_AUDIT_2026-05-31.md Part B](SCALING_AUDIT_2026-05-31.md), 5 helper 
 
 These should ship as their own commit BEFORE flipping the read-switch flag. ~30 min work + parse-check + deploy.
 
-### Step 4.3 — Add loading sentinel (separate commit)
-Per audit, building selector should show "loading..." during the initial onSnapshot window (100-500ms). Currently it would briefly flash empty. Add a simple CSS class toggle + sentinel render.
+### Step 4.3 — Add loading sentinel (separate commit) — ✅ DONE 2026-06-03 (commit `361d3ab`)
+Per audit, building selector should show "loading..." during the initial onSnapshot window (100-500ms). Currently it would briefly flash empty. **Shipped DORMANT:** module flag `_v2BuildingsFirstSnapshotDone` (set true after first collection snapshot; reset on detach) + `renderBuildingSelector` early-returns a "Loading buildings…" pill+list ONLY when `syncBuildingsReadEnabled() && !firstSnapshotDone && state.buildings.length===0`. With the read-switch off the condition short-circuits → byte-identical. Verified both branches in-browser.
 
 ### Step 4.4 — Flip
 ```js
