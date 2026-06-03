@@ -74490,7 +74490,16 @@ function _renderUnitV2Header(u, editOn) {
           ${editPrimaryPencil}
         </span>
       </div>
-      ${(effectiveRate > 0 && (showRatePerSqft || isRented)) ? `
+      ${/* $/ft²/yr ставка под Asking rent. Запрос Tony 2026-06-03:
+            «выводи под Asking rent мелким шрифтом цену за кв.фут в год».
+            Раньше для ВАКАНТНЫХ юнитов строка гейтилась тоглом
+            showRatePerSqft (для занятых всегда видна через isRented),
+            поэтому при выключенном тогле вакантная карточка показывала
+            только Asking rent без ставки. Теперь ставка показывается
+            всегда, когда она вычислима (effectiveRate > 0) — это
+            стандартный CRE-показатель и ключевая цифра для прайсинга
+            пустой комнаты. */''}
+      ${(effectiveRate > 0) ? `
       <div class="upv2-rent-row sub">
         <span class="upv2-rent-sublabel">${isRented ? 'Effective rate' : 'Asking rate'}</span>
         <span class="upv2-rent-subvalue">
