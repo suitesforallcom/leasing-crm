@@ -31932,7 +31932,7 @@ function _fbStripLeaseDocsFromPayload(payload) {
 // --- Операторские включатели (root-admin). НЕ автономные. Жёсткая пред-проверка:
 //     read-switch обязан быть включён (иначе strip = потеря видимости данных). ---
 function sfaEnableStripPaymentsV2() {
-  if (typeof isRootAdmin === 'function' && !isRootAdmin()) { console.warn('root-admin only'); return; }
+  if (typeof isRootAdmin === 'function' && !isRootAdmin(fbSync?.user?.email)) { console.warn('root-admin only'); return; }
   if (!(typeof syncV2Enabled === 'function' && syncV2Enabled() && typeof syncV2ReadEnabled === 'function' && syncV2ReadEnabled())) {
     console.error('✗ Strip отказан: сначала включи dual-write (syncV2) И read-switch (syncV2Read).');
     return;
@@ -31948,7 +31948,7 @@ function sfaDisableStripPaymentsV2() {
   console.log('✓ syncV2StripPayments = OFF — монолит снова несёт payments.');
 }
 function sfaEnableStripBuildingsV2() {
-  if (typeof isRootAdmin === 'function' && !isRootAdmin()) { console.warn('root-admin only'); return; }
+  if (typeof isRootAdmin === 'function' && !isRootAdmin(fbSync?.user?.email)) { console.warn('root-admin only'); return; }
   if (!(typeof buildingsSyncV2Enabled === 'function' && buildingsSyncV2Enabled() && typeof syncBuildingsReadEnabled === 'function' && syncBuildingsReadEnabled())) {
     console.error('✗ Strip отказан: сначала включи buildings dual-write (syncBuildingsV2) И read-switch (syncBuildingsRead).');
     return;
@@ -31964,7 +31964,7 @@ function sfaDisableStripBuildingsV2() {
   console.log('✓ syncBuildingsStrip = OFF — монолит снова несёт buildings.');
 }
 function sfaEnableStripLeaseDocs() {
-  if (typeof isRootAdmin === 'function' && !isRootAdmin()) { console.warn('root-admin only'); return; }
+  if (typeof isRootAdmin === 'function' && !isRootAdmin(fbSync?.user?.email)) { console.warn('root-admin only'); return; }
   if (!(typeof leaseDocsSyncV2Enabled === 'function' && leaseDocsSyncV2Enabled() && typeof leaseDocsReadEnabled === 'function' && leaseDocsReadEnabled())) {
     console.error('✗ Strip отказан: сначала включи leaseDocs dual-write (leaseDocsV2) И read-switch (leaseDocsRead).');
     return;
@@ -32019,7 +32019,7 @@ function _fbCapOutreachInPayload(payload) {
   return n;
 }
 function sfaEnableOutreachCap(n) {
-  if (typeof isRootAdmin === 'function' && !isRootAdmin()) { console.warn('root-admin only'); return; }
+  if (typeof isRootAdmin === 'function' && !isRootAdmin(fbSync?.user?.email)) { console.warn('root-admin only'); return; }
   if (!state.settings) state.settings = {};
   if (typeof n === 'number' && n > 0) state.settings.syncOutreachCapN = n;
   state.settings.syncOutreachCap = true; if (typeof saveState === 'function') saveState();
@@ -32878,6 +32878,12 @@ window.syncV2ReadEnabled = syncV2ReadEnabled;
 let _v2PaymentsListenerUnsub = null;
 let _v2PaymentsListenerDocsApplied = 0;
 let _v2PaymentsRerenderTimer = null;
+// Кэш платежей read-switch'а: bid|uid → { ym: rec }. Наполняется на КАЖДОМ
+// снапшоте payments (даже если юнит ещё не в state). Нужен buildings read-switch'у,
+// чтобы наполнить платежи в зданиях, пришедших после снапшота платежей ИЛИ когда
+// монолит уже без зданий (Stage-6 strip). Без него платёж, применённый до
+// появления здания, терялся навсегда → ложные late fees (инцидент 2026-06-03).
+const _v2PaymentsCache = {};
 
 function _v2PaymentsAttachListener() {
   if (_v2PaymentsListenerUnsub) return;  // уже attached, idempotent
@@ -32898,10 +32904,16 @@ function _v2PaymentsAttachListener() {
           if (!data || data._schema !== 'v2') return;
           const { buildingId, unitId, ym } = data;
           if (!buildingId || !unitId || !ym) return;
+          // Обновляем кэш ВСЕГДА (до поиска юнита) — чтобы buildings read-switch
+          // мог наполнить платежи в здании, которое появится позже / придёт при strip.
+          const _ck = buildingId + '|' + unitId;
+          _v2PaymentsCache[_ck] = _v2PaymentsCache[_ck] || {};
+          if (ch.type === 'removed') delete _v2PaymentsCache[_ck][ym];
+          else _v2PaymentsCache[_ck][ym] = data.rec || {};
           // Locate the unit in current state. Если здания/юнита нет в
-          // state (например, ещё не подгружен в эту сессию) — пропускаем.
-          // На следующем fbApplyRemote оно появится, и Firestore listener
-          // refetch'нет через cache.
+          // state (например, ещё не подгружен в эту сессию) — пропускаем
+          // применение в память; кэш выше всё равно обновлён, и buildings
+          // read-switch наполнит платежи при подмене здания.
           let u = null;
           outer: for (const b of (state.buildings || [])) {
             if (b.id !== buildingId) continue;
@@ -33532,6 +33544,16 @@ function _v2BuildingsAttachListener() {
           for (const f of (incoming.floors || [])) {
             for (const u of (f.units || [])) {
               if (preservedPayments[u.id]) u.payments = preservedPayments[u.id];
+              // Наполняем платежи из кэша payments read-switch'а — КРИТИЧНО для
+              // нового здания (idx<0) и при strip монолита, когда prior-в-памяти
+              // нет. Без этого подменённое здание приходит без платежей →
+              // юниты выглядят неоплаченными (ложные late fees). Не затираем уже
+              // выставленные ym.
+              const _cp = _v2PaymentsCache[bid + '|' + u.id];
+              if (_cp && Object.keys(_cp).length) {
+                u.payments = u.payments || {};
+                for (const ym in _cp) if (!(ym in u.payments)) u.payments[ym] = _cp[ym];
+              }
             }
           }
           if (idx >= 0) state.buildings[idx] = incoming;
