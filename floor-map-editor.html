@@ -33834,6 +33834,13 @@ window.sfaScalingStatusV2 = async function () {
   console.log('  settings.syncBuildingsRead (read):' + stamp(!!s.syncBuildingsRead), css(!!s.syncBuildingsRead));
   console.log('  v2 buildings listener attached:   ', !!_v2BuildingsListenerUnsub, '(' + _v2BuildingsListenerDocsApplied + ' docs applied)');
   console.log(' ');
+  console.log('%c── Phase 3 (leaseDocuments, ~113 KB) ──', 'font-weight:bold');
+  console.log('  settings.leaseDocsV2 (mirror):    ' + stamp(!!s.leaseDocsV2), css(!!s.leaseDocsV2));
+  console.log('  settings.leaseDocsRead (read):    ' + stamp(!!s.leaseDocsRead), css(!!s.leaseDocsRead));
+  console.log('  settings.leaseDocsStrip (strip):  ' + stamp(!!s.leaseDocsStrip), css(!!s.leaseDocsStrip));
+  console.log('  v2 leaseDocs listener attached:   ', (typeof _v2LeaseDocsListenerUnsub !== 'undefined' ? !!_v2LeaseDocsListenerUnsub : false), '(' + (typeof _v2LeaseDocsListenerDocsApplied !== 'undefined' ? _v2LeaseDocsListenerDocsApplied : 0) + ' docs applied)');
+  console.log('  %c⚠ activation needs match /leaseDocs/ (read+write) in firestore.rules first', 'color:#a16207');
+  console.log(' ');
   console.log('%c── State doc size (proxy via lbk snapshot) ──', 'font-weight:bold');
   try {
     const lbkSize = JSON.stringify(state).length;
