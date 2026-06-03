@@ -64754,6 +64754,64 @@ function renderBg() {
   probe.src = bg.src;
 }
 
+// Можно ли юнит безопасно нарисовать на карте? Защита от «битой» геометрии:
+// x/y = NaN/undefined → <g transform="translate(undefined,undefined)">, а
+// NaN-точки → <polygon points="NaN,NaN"> — SVG-парсер ругается сотнями ошибок
+// и валит мусорные подписи в левый-верхний угол (0,0). Такие юниты НЕ рисуем
+// (данные/история/платежи не трогаем — юнит просто невидим на плане, чинится
+// через Rent Roll / sfaDiagnoseStrayUnits). Прямой rect — нужны конечные w/h;
+// полигон — все точки конечны.
+function _unitRenderable(u) {
+  if (!u) return false;
+  if (!Number.isFinite(+u.x) || !Number.isFinite(+u.y)) return false;
+  if (u.points !== undefined) {
+    const pp = (typeof _normalizePointsField === 'function') ? _normalizePointsField(u.points) : null;
+    if (pp && pp.length >= 3) {
+      return pp.every(p => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]));
+    }
+    // points присутствует, но не образует полигон → трактуем как rect (w/h ниже)
+  }
+  return Number.isFinite(+u.w) && Number.isFinite(+u.h);
+}
+
+// Read-only диагностика: что за юниты «потерялись» / висят мусором в углу.
+// Печатает таблицу по текущему этажу — id / тип / координаты / рисуется ли /
+// расстояние от основного кластера. Битые (NaN/undefined) идут первыми.
+// Ничего НЕ меняет. Запуск в консоли: sfaDiagnoseStrayUnits()
+window.sfaDiagnoseStrayUnits = function () {
+  const f = (typeof currentFloor === 'function') ? currentFloor() : null;
+  if (!f) { console.log('No current floor'); return []; }
+  const us = (f.units || []).filter(u => !u.parentId);
+  const ctr = (u) => {
+    const pp = (u.points !== undefined && typeof _normalizePointsField === 'function') ? _normalizePointsField(u.points) : null;
+    if (pp && pp.length) {
+      const xs = pp.map(p => +p[0]).filter(Number.isFinite), ys = pp.map(p => +p[1]).filter(Number.isFinite);
+      if (xs.length && ys.length) return [(Math.min.apply(0, xs) + Math.max.apply(0, xs)) / 2, (Math.min.apply(0, ys) + Math.max.apply(0, ys)) / 2];
+    }
+    return [(+u.x || 0) + (+u.w || 0) / 2, (+u.y || 0) + (+u.h || 0) / 2];
+  };
+  const valid = us.filter(_unitRenderable);
+  const cs = valid.map(ctr);
+  const med = (arr) => { const s = arr.slice().sort((a, b) => a - b); return s[s.length >> 1] || 0; };
+  const mX = med(cs.map(c => c[0])), mY = med(cs.map(c => c[1]));
+  const rows = us.map(u => {
+    const renderable = _unitRenderable(u);
+    const c = ctr(u);
+    return {
+      id: u.id, type: u.type, status: u.status,
+      x: (Number.isFinite(+u.x) ? Math.round(+u.x) : (u.x === undefined ? 'undefined' : u.x)),
+      y: (Number.isFinite(+u.y) ? Math.round(+u.y) : (u.y === undefined ? 'undefined' : u.y)),
+      renderable,
+      distFromCluster: renderable ? Math.round(Math.hypot(c[0] - mX, c[1] - mY)) : null,
+    };
+  }).sort((a, b) => (a.renderable === b.renderable) ? ((b.distFromCluster || 0) - (a.distFromCluster || 0)) : (a.renderable ? 1 : -1));
+  const broken = rows.filter(r => !r.renderable);
+  console.log('%cStray/broken unit diagnostic — floor ' + f.id, 'font-weight:700');
+  console.log('Hidden from map (broken geometry): ' + broken.length, broken.map(r => r.id));
+  console.table(rows.slice(0, 25));
+  return { floor: f.id, brokenCount: broken.length, brokenIds: broken.map(r => r.id), rows };
+};
+
 function renderUnits() {
   clearG(unitsG);
   if (!state.settings.showUnits) return;
@@ -64789,7 +64847,21 @@ function renderUnits() {
   // Archived units are hidden from the floor plan. They still live in
   // state.buildings[].floors[].units until permanently deleted, so payment
   // history + Stripe links are preserved — just invisible to the operator.
-  const units = currentUnits().filter(u => !isArchived(u));
+  // Сначала отсекаем архивные, затем «битые» по геометрии (NaN/undefined
+  // x/y/points) — единым фильтром, чтобы ВСЕ проходы (PASS 1/2/2.5…) работали
+  // только с рисуемыми юнитами и не плодили SVG-ошибки + мусор в углу.
+  const _allLive = currentUnits().filter(u => !isArchived(u));
+  const units = _allLive.filter(_unitRenderable);
+  const _skipped = _allLive.filter(u => !_unitRenderable(u));
+  if (_skipped.length) {
+    window._sfaSkippedGeomIds = window._sfaSkippedGeomIds || new Set();
+    const _fresh = _skipped.filter(u => !window._sfaSkippedGeomIds.has(u.id));
+    if (_fresh.length) {
+      _fresh.forEach(u => window._sfaSkippedGeomIds.add(u.id));
+      console.warn('[renderUnits] hid ' + _skipped.length + ' unit(s) with invalid geometry (NaN/undefined coords) — not drawn on the map, data untouched:',
+        _skipped.map(u => u.id));
+    }
+  }
   // View mode = fully opaque (see status colors clearly). Edit Mode = translucent (see plan through).
   const effectiveOpacity = state.settings.editMode
     ? (state.settings.editModeOpacity || 0.4)
