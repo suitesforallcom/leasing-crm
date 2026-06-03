@@ -86426,6 +86426,24 @@ async function _leaseAiAnalyze() {
     _leaseAiState.sources = (parsed && parsed._sources && typeof parsed._sources === 'object') ? parsed._sources : {};
     _leaseAiState.rentSchedule = Array.isArray(parsed.rent_schedule) ? parsed.rent_schedule : [];
     _leaseAiState.keyPoints = Array.isArray(parsed.key_points) ? parsed.key_points : [];
+    // ── Текущая аренда из расписания (Tony) ──────────────────────────────
+    // MONTHLY RENT должен показывать ренту, действующую СЕЙЧАС, а не цифру из
+    // тела договора (модель часто берёт «$X thru <дата>» = прошлый период).
+    // Детерминированно перебиваем monthly_rent ступенью, покрывающей сегодня.
+    if (_leaseAiState.rentSchedule.length) {
+      const _d = new Date();
+      const _nowYm = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, '0')}`;
+      const _cur = _rentScheduleRowForYm(_leaseAiState.rentSchedule, _nowYm);
+      if (_cur && isFinite(+_cur.monthly_rent) && +_cur.monthly_rent >= 0
+          && +_cur.monthly_rent !== +parsed.monthly_rent) {
+        parsed.monthly_rent = +_cur.monthly_rent;
+        // Источник → метка текущего периода (она есть в таблице договора, клик подсветит).
+        parsed._sources = parsed._sources || {};
+        if (_cur.period) parsed._sources.monthly_rent = String(_cur.period);
+        _leaseAiState.sources = parsed._sources;
+        _leaseAiState.currentPeriod = _cur.period || _nowYm;
+      }
+    }
     _leaseAiRenderFields(parsed);
     _leaseAiRenderEscalation(_leaseAiState.rentSchedule);
     _leaseAiRenderAnalysis(_leaseAiState.keyPoints);
