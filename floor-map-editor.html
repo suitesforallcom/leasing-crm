@@ -86376,6 +86376,46 @@ function _leaseAiUrlToImageBlock(dataUrl) {
   return { type: 'image', source: { type: 'base64', media_type: m[1], data: m[2] } };
 }
 
+// Устойчивый разбор JSON-ответа модели. Снимает ```-ограждения; при усечённом
+// ответе (большая схема — иногда обрезается) пытается восстановить: берёт самый
+// большой полностью-закрытый префикс, иначе авто-закрывает открытые {}/[]/строки.
+// Возвращает объект или null.
+function _leaseAiSafeParse(raw) {
+  let s = String(raw || '').replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+  try { return JSON.parse(s); } catch {}
+  const i = s.indexOf('{');
+  if (i < 0) return null;
+  s = s.slice(i);
+  // 1) самый большой полностью-сбалансированный префикс
+  let depth = 0, inStr = false, esc = false, lastGood = -1;
+  for (let k = 0; k < s.length; k++) {
+    const c = s[k];
+    if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+    if (c === '"') { inStr = true; continue; }
+    if (c === '{' || c === '[') depth++;
+    else if (c === '}' || c === ']') { depth--; if (depth === 0) lastGood = k; }
+  }
+  if (lastGood >= 0) { try { return JSON.parse(s.slice(0, lastGood + 1)); } catch {} }
+  // 2) авто-закрытие: отрезаем висящий частичный токен (key: / key:"partial /
+  //    или просто незакрытый "partialKey) и закрываем открытые структуры.
+  let t = s
+    .replace(/,?\s*"[^"]*"\s*:\s*("[^"\\]*)?$/, '')  // ..."key":  или  ..."key":"partial
+    .replace(/,?\s*"[^"\\]*$/, '')                    // ...,"partialKey (незакрытая строка без двоеточия)
+    .replace(/,\s*$/, '');
+  const stack = []; let is = false, es = false;
+  for (let k = 0; k < t.length; k++) {
+    const c = t[k];
+    if (is) { if (es) es = false; else if (c === '\\') es = true; else if (c === '"') is = false; continue; }
+    if (c === '"') { is = true; continue; }
+    if (c === '{') stack.push('}'); else if (c === '[') stack.push(']');
+    else if (c === '}' || c === ']') stack.pop();
+  }
+  if (is) t += '"';
+  while (stack.length) t += stack.pop();
+  try { return JSON.parse(t); } catch {}
+  return null;
+}
+
 // Нормализация для поиска источника: lowercase + только буквы/цифры как токены.
 function _leaseAiNorm(s) {
   return String(s || '').toLowerCase().match(/[a-z0-9]+/g) || [];
@@ -86514,12 +86554,14 @@ async function _leaseAiAnalyze() {
       modelId,
       system: LEASE_AI_SYSTEM_PROMPT,
       userMessage,
-      maxTokens: 1500,
+      // Схема большая (core + schedule + key_points + полный abstract + _sources)
+      // — мало токенов => JSON обрезается. Даём с запасом (как LOI-анализ).
+      maxTokens: 8000,
     });
-    const cleaned = String(reply).replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
-    let parsed;
-    try { parsed = JSON.parse(cleaned); }
-    catch (e) { throw new Error('AI returned invalid JSON. Raw: ' + cleaned.slice(0, 200)); }
+    const parsed = _leaseAiSafeParse(reply);
+    if (!parsed) {
+      throw new Error('AI returned invalid JSON (likely truncated). Try ↻ Re-analyze, or switch to Claude Opus — it follows long JSON schemas best. Raw: ' + String(reply).slice(0, 200));
+    }
     // Сохраняем результат как ОТДЕЛЬНЫЙ документ в docs[] (re-analyze заменяет
     // одноимённый), затем сливаем все документы по приоритету и рендерим.
     _leaseAiState.docs = Array.isArray(_leaseAiState.docs) ? _leaseAiState.docs : [];
