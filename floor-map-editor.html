@@ -30470,6 +30470,15 @@ function _computeUnitFillImpl(u, mode) {
         });
         if (matching.some(r => r.bucket === 'paid')) return SETTLED_GREEN;
       }
+      // Быстрый путь из localStorage-кэша статусов (мгновенно, без ожидания
+      // ~4с Stripe-фетча) — для ТЕКУЩЕГО месяца, где u.stripe.lastInvoiceId =
+      // инвойс текущего периода. Цвет появляется сразу после загрузки state;
+      // подъехавший _invoicesCache потом перекрасит точно (invCacheKey меняется
+      // → memo сбрасывается).
+      if (typeof _todayYm === 'function' && ym === _todayYm()
+          && u.stripe?.lastInvoiceId && typeof _loadInvoiceBucketDisk === 'function') {
+        if (_loadInvoiceBucketDisk()[u.stripe.lastInvoiceId] === 'paid') return SETTLED_GREEN;
+      }
       return null;
     })();
     if (_paymentExplicitFill) return _paymentExplicitFill;
@@ -30507,6 +30516,14 @@ function _computeUnitFillImpl(u, mode) {
         if (alive.some(r => ['open', 'past_due', 'pending', 'sent', 'overdue', 'late'].includes(r.bucket))) {
           return true;
         }
+      }
+      // Быстрый путь из localStorage-кэша (мгновенно): статус инвойса текущего
+      // месяца из sfa_inv_buckets через u.stripe.lastInvoiceId — синий до того,
+      // как подъедет Stripe-кэш. Только для ТЕКУЩЕГО месяца.
+      if (typeof _todayYm === 'function' && ym === _todayYm()
+          && u.stripe?.lastInvoiceId && typeof _loadInvoiceBucketDisk === 'function') {
+        const _b = _loadInvoiceBucketDisk()[u.stripe.lastInvoiceId];
+        if (['open', 'past_due', 'pending', 'sent', 'overdue', 'late'].includes(_b)) return true;
       }
       return false;
     })();
