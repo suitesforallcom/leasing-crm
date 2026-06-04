@@ -83549,7 +83549,10 @@ function _monthBilling(rent, ym, leaseStartIso, graceDays, nowOpt, unit) {
 // shared _lastStripeCacheFetchMs guard so we don't double-fetch.
 function _prefetchInvoicesForMapBadges() {
   if (!fbSync?.enabled) return;
-  if (Array.isArray(_invoicesCache) && _invoicesCache.length > 0) return;
+  // Полную постраничную загрузку делаем ОДИН раз за сессию. Старый guard
+  // (length>0) пропускал загрузку, если ленивые per-unit фетчи уже засеяли
+  // ~20 строк — из-за чего полная раскраска карты никогда не наступала.
+  if (_mapBadgesPrefetchedFull) return;
   // Only fetch if any unit in the workspace has a Stripe stamp — no
   // point hitting the API for an empty workspace.
   let anyStamp = false;
@@ -83572,8 +83575,21 @@ function _prefetchInvoicesForMapBadges() {
   _lastStripeCacheFetchMs = now;
   (async () => {
     try {
-      const res = await stripeListInvoices({ limit: 100 });
-      _mergeIntoInvoicesCache(res.rows || []);
+      // Тянем ВСЕ инвойсы постранично, а не первые 100. В рабочем
+      // пространстве может быть несколько сотен инвойсов (на момент фикса
+      // — 615). При лимите 100 без пагинации карта красилась только по
+      // первой сотне; остальные занятые юниты оставались кремовыми, т.к.
+      // для раскраски «invoice sent» нужен инвойс юнита в _invoicesCache.
+      let cursor = null, page = 0, capped = false;
+      do {
+        const res = await stripeListInvoices({ limit: 100, startingAfter: cursor });
+        _mergeIntoInvoicesCache(res.rows || []);
+        cursor = res.hasMore ? res.nextCursor : null;
+        page++;
+        if (cursor && page >= 25) { capped = true; break; } // потолок 2500 — защита от бесконечного цикла
+      } while (cursor);
+      if (capped) console.warn('[boot-prefetch-invoices] достигнут потолок 2500 инвойсов — старые юниты на карте могут недокраситься');
+      _mapBadgesPrefetchedFull = true;
       try { _persistInvoiceBucketsFromCache(); } catch {}
       // Re-render the map so badges flip from grey "no cache" to their
       // real status colors. renderDetail too in case a unit panel was
@@ -83591,6 +83607,10 @@ function _prefetchInvoicesForMapBadges() {
 // stale stamps (wrong tenant / wrong amount) because the cache is
 // empty. Throttled to once per 30 seconds across the app.
 let _lastStripeCacheFetchMs = 0;
+// Полную постраничную загрузку инвойсов для раскраски карты делаем один
+// раз за сессию (а не при каждом вызове): иначе ленивые per-unit фетчи
+// засевают кэш частично и блокируют полную загрузку → карта недокрашена.
+let _mapBadgesPrefetchedFull = false;
 function _maybePrefetchInvoicesCache(u) {
   if (!fbSync?.enabled) return;
   // Previously this required an existing stamp before prefetching, which
