@@ -60,6 +60,22 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 40. fbApplyRemote MUST NOT apply monolith `buildings` under the buildings read-switch (2026-06-04)
+
+- **Status:** active
+- **Branch / commit:** `main` — fix `229b9b4`
+- **Area:** Scaling V2 / Phase 2 buildings strip + read-switch / fbApplyRemote / data-loss (display)
+- **Files:** `floor-map-editor.html` — `fbApplyRemote()` key-merge loop (~:34531, the `for (const k of ['buildings','tenants',…])`).
+- **Bug it fixed (operator-visible):** With the buildings strip ON, the app **emptied itself after ~5 minutes of idle** ("everything disappears"). The monolith state doc carries `buildings: []` under the strip (geometry lives in the per-building `buildings` collection). `fbApplyRemote`'s merge loop did `state[k] = remote[k]` unconditionally, so ANY later remote monolith snapshot (Firebase ID-token refresh, a push echo, a long-polling reconnect re-delivery) applied the empty array and **wiped the live, collection-rehydrated `state.buildings`** (and their nested `u.payments`). The buildings read-switch listener does not re-deliver them (no `docChanges` since its last snapshot), so the map stayed blank until a manual reload.
+- **Invariant — DO NOT BREAK:** In `fbApplyRemote`'s key-merge loop, **skip `'buildings'` whenever `syncBuildingsReadEnabled()` is true** (`if (k === 'buildings' && syncBuildingsReadEnabled()) continue;`). Under the read-switch the **collection** (onSnapshot listener + getDocs fallback) is the authoritative source for buildings — the monolith is NOT, and its (stripped/empty) buildings must never clobber the live ones. Only `'buildings'` is skipped; `tenants`/`leases`/`settings` (not stripped) still apply from the monolith normally.
+- **Data safety:** NOT a real data-loss bug — the buildings collection is intact throughout (the monolith never deletes collection docs; building deletes are explicit-event only, see Entry 37/SESSION_LOG 361d3ab). The wipe was in-memory/display only; a reload restored everything from the collection. The fix removes the need to reload.
+- **Edge case (not deployed):** if payments-strip were ON with buildings-read-switch OFF, applying `remote.buildings` (carrying `u.payments={}`) would wipe payments. Current prod runs both read-switches together, so the `syncBuildingsReadEnabled()` skip covers it. If that config ever ships, also preserve `u.payments` when applying monolith buildings.
+- **How to verify:** `grep -c "k === 'buildings' && typeof syncBuildingsReadEnabled" floor-map-editor.html` ≥ 1. Functional: with the buildings strip ON, load the app, leave it idle 5-10 min (or trigger a monolith write from another tab) → `state.buildings` stays populated, map does not blank.
+- **Regression test:** none — manual UI only (timing/sync-dependent).
+- **Related PR / issue:** none.
+
+---
+
 ### 39. Firestore MUST use long-polling transport (experimentalForceLongPolling) (2026-06-03)
 
 - **Status:** active
