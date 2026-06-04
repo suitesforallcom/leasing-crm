@@ -151710,13 +151710,16 @@ function fixFloorAssignments(silent = false) {
 
 // Seed real data on first run only (respects user modifications afterwards)
 (function ensureRealDataSeeded() {
-  // Always dedupe floors on every init — defends against state corruption across versions
-  const dupeFloors = dedupeAllFloors(true);
-  if (dupeFloors > 0) console.warn(`[init] Merged ${dupeFloors} duplicate floor${dupeFloors===1?'':'s'} (same floor number appeared twice)`);
-
-  // Always dedupe units within each floor — this is what fixes "two 428s"
-  const dupeUnits = dedupeUnitsEverywhere(true);
-  if (dupeUnits > 0) console.warn(`[init] Merged ${dupeUnits} duplicate unit${dupeUnits===1?'':'s'} (same suite ID appeared twice on a floor)`);
+  // ⚠️ FROZEN 2026-06-04 (АВАРИЙНО, anti-data-loss): авто-ремонты этажей на
+  // загрузке прогрессивно УДАЛЯЛИ комнаты (fixFloorAssignments — move-and-drop
+  // при дублирующемся id на целевом этаже) → этажи таяли 114→67, 23→0 на каждой
+  // перезагрузке. Отключены до починки пути удаления. Лог счётчика — для проверки,
+  // что «кровотечение» остановлено. Снять заморозку: вернуть вызовы ниже.
+  let _tuFreeze = 0;
+  try { (state.buildings || []).forEach(b => (b.floors || []).forEach(f => _tuFreeze += (f.units || []).length)); } catch (e) {}
+  console.warn('[init] FLOOR-REPAIRS FROZEN (anti-data-loss). Комнат в памяти: ' + _tuFreeze + ' — авто-dedupe/fix отключены');
+  const dupeFloors = 0; // dedupeAllFloors(true) — FROZEN
+  const dupeUnits = 0;  // dedupeUnitsEverywhere(true) — FROZEN
 
   if (dupeFloors > 0 || dupeUnits > 0) saveState();
 
@@ -151736,8 +151739,11 @@ function fixFloorAssignments(silent = false) {
       }
     }
     if (mismatches > 3) {
-      console.warn(`[init] Detected ${mismatches} units on wrong floors — auto-fixing`);
-      fixFloorAssignments(true);
+      // ⚠️ FROZEN 2026-06-04: fixFloorAssignments удалял комнаты при перемещении
+      // (если на целевом этаже уже есть id — комната снималась с источника и НЕ
+      // добавлялась на цель = удаление). Отключено до починки. См. заморозку выше.
+      console.warn(`[init] ${mismatches} units on wrong floors — auto-fix FROZEN (он удалял комнаты), пропускаю`);
+      // fixFloorAssignments(true);  // FROZEN — was deleting units on dup-id targets
     }
     // [DISABLED 2026-04-30] Same data-loss bug as above — auto-fill
     // re-created deleted units on every page load. Gated behind opt-in.
