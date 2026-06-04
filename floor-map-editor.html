@@ -33120,7 +33120,7 @@ window._v2PaymentsFallbackFetch = _v2PaymentsFallbackFetch;
 function _v2PaymentsAttachIfFlagged() {
   if (syncV2ReadEnabled() && !_v2PaymentsListenerUnsub) {
     _v2PaymentsAttachListener();
-    setTimeout(function () { _v2PaymentsFallbackFetch('3s-timeout'); }, 3000);
+    setTimeout(function () { _v2PaymentsFallbackFetch('1.5s-timeout'); }, 1500);
   }
 }
 window._v2PaymentsAttachIfFlagged = _v2PaymentsAttachIfFlagged;
@@ -33790,7 +33790,7 @@ window._v2BuildingsFallbackFetch = _v2BuildingsFallbackFetch;
 function _v2BuildingsAttachIfFlagged() {
   if (syncBuildingsReadEnabled() && !_v2BuildingsListenerUnsub) {
     _v2BuildingsAttachListener();
-    setTimeout(function () { _v2BuildingsFallbackFetch('3s-timeout'); }, 3000);
+    setTimeout(function () { _v2BuildingsFallbackFetch('1.5s-timeout'); }, 1500);
   }
 }
 window._v2BuildingsAttachIfFlagged = _v2BuildingsAttachIfFlagged;
@@ -83598,6 +83598,11 @@ function _prefetchInvoicesForMapBadges() {
         _mergeIntoInvoicesCache(res.rows || []);
         cursor = res.hasMore ? res.nextCursor : null;
         page++;
+        // Инкрементальная перекраска после КАЖДОЙ страницы: свежие инвойсы
+        // (текущий месяц) приходят первыми → карта окрашивается уже после
+        // 1-й страницы (~2-3с), а не после всех ~7 (они тянутся последовательно
+        // через Cloud Function → иначе оператор ждёт ~20с до правильного цвета).
+        try { renderUnits(); } catch {}
         if (cursor && page >= 25) { capped = true; break; } // потолок 2500 — защита от бесконечного цикла
       } while (cursor);
       if (capped) console.warn('[boot-prefetch-invoices] достигнут потолок 2500 инвойсов — старые юниты на карте могут недокраситься');
