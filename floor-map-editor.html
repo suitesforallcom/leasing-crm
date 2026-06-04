@@ -33107,7 +33107,7 @@ window._v2PaymentsFallbackFetch = _v2PaymentsFallbackFetch;
 function _v2PaymentsAttachIfFlagged() {
   if (syncV2ReadEnabled() && !_v2PaymentsListenerUnsub) {
     _v2PaymentsAttachListener();
-    setTimeout(function () { _v2PaymentsFallbackFetch('6s-timeout'); }, 6000);
+    setTimeout(function () { _v2PaymentsFallbackFetch('3s-timeout'); }, 3000);
   }
 }
 window._v2PaymentsAttachIfFlagged = _v2PaymentsAttachIfFlagged;
@@ -33770,7 +33770,7 @@ window._v2BuildingsFallbackFetch = _v2BuildingsFallbackFetch;
 function _v2BuildingsAttachIfFlagged() {
   if (syncBuildingsReadEnabled() && !_v2BuildingsListenerUnsub) {
     _v2BuildingsAttachListener();
-    setTimeout(function () { _v2BuildingsFallbackFetch('6s-timeout'); }, 6000);
+    setTimeout(function () { _v2BuildingsFallbackFetch('3s-timeout'); }, 3000);
   }
 }
 window._v2BuildingsAttachIfFlagged = _v2BuildingsAttachIfFlagged;
