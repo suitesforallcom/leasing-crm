@@ -60,6 +60,22 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 38. Map color prefetch must paginate ALL Stripe invoices + once-per-session gate (2026-06-03)
+
+- **Status:** active
+- **Branch / commit:** `main` — fix `cd51c01`
+- **Area:** Floor-map / payment-status coloring / Stripe invoice cache / display-only
+- **Files:** `floor-map-editor.html` — `_prefetchInvoicesForMapBadges()` (~:83550), `_mapBadgesPrefetchedFull` flag decl (next to `_lastStripeCacheFetchMs`, ~:83610).
+- **Bug it fixed:** In Payment-status map mode, occupied units rendered the cream "Occupied" tint instead of blue (`#0EA5E9` invoice-sent·unpaid) / green (`#A7F3D0` paid). The current-month "invoice sent" color is derived from Stripe invoices in `_invoicesCache` (NOT from `u.payments`, which has no record for an invoiced-but-unpaid current month), and the cache was only partially populated.
+- **Root cause (two-fold):** (a) `_prefetchInvoicesForMapBadges` fetched a single `stripeListInvoices({limit:100})` with no pagination — the workspace has **615** invoices, so only the first 100 reached the cache; (b) the guard `if (_invoicesCache.length > 0) return` let the lazy per-unit fetches (`_maybePrefetchInvoicesCache`, `[unit invoice fetch]`) seed ~20 rows and thereby **block the full prefetch from ever running**. Live cache was stuck at 21 → most units had no invoice → cream.
+- **Invariant — DO NOT BREAK:** `_prefetchInvoicesForMapBadges` MUST paginate through ALL invoices via `res.hasMore` / `res.nextCursor` (cap 25 pages = 2500, with a `console.warn` when capped — no silent truncation), and MUST gate the full load behind the once-per-session flag `_mapBadgesPrefetchedFull` (set true only AFTER the loop succeeds), NOT behind `_invoicesCache.length > 0`. The 30s throttle (`_lastStripeCacheFetchMs`) and `anyStamp` gate stay.
+- **Blast radius:** display only. `stripeListInvoices` is a passive read (same call the Invoices page makes); no money-computation path touched, no writes. Worst case if reverted: map under-colors; balances/owed/collections unaffected.
+- **Verification:** load the app in Payment-status mode → after the boot prefetch, occupied invoiced units are blue and paid units green (not cream). Console diag: `_invoicesCache.length` should reach the full invoice count (~615), not ~100. `grep -c "startingAfter: cursor" floor-map-editor.html` ≥ 1; `grep -c "_mapBadgesPrefetchedFull" floor-map-editor.html` ≥ 3.
+- **Regression test:** none — manual UI only (Stripe-backed, needs live invoices).
+- **Related PR / issue:** none.
+
+---
+
 ### 37. Buildings read-switch must re-merge u.payments from cache (2026-06-03)
 
 - **Status:** active
