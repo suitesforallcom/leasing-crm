@@ -151585,6 +151585,13 @@ function fixFloorAssignments(silent = false) {
   let dupeUnits = 0;
   for (const f of b.floors) dupeUnits += dedupeUnitsInFloor(f);
 
+  // Множество всех id юнитов здания — чтобы распознавать суб-комнату по
+  // ПАТТЕРНУ номера (id суб-комнаты = id родителя + цифра), а не только по
+  // полю parentId. Это закрывает КОРЕНЬ инцидента 2026-06-04: у части
+  // суб-комнат parentId временно терялся → они переставали пропускаться →
+  // Math.floor(2041/100)=20 / (2101/100)=21 → синтезировался фантомный этаж.
+  const _allUnitIds = new Set();
+  for (const f of b.floors) for (const u of f.units) _allUnitIds.add(String(u.id));
   const misplaced = [];
   for (const f of b.floors) {
     for (const u of f.units) {
@@ -151596,6 +151603,10 @@ function fixFloorAssignments(silent = false) {
       if (u.parentId) continue;
       const sn = parseInt(u.id);
       if (isNaN(sn) || sn < 100) continue; // only numeric IDs like 301, 402, etc.
+      // Доп. защита (parentId-independent): 4+-значный id, чей «родитель»
+      // (id без последней цифры) есть среди юнитов → это суб-комната, едет с
+      // родителем, НЕ маршрутизируем по номеру. Напр. 2041→родитель 204 есть.
+      if (sn >= 1000 && _allUnitIds.has(String(Math.floor(sn / 10)))) continue;
       const expected = Math.floor(sn / 100);
       if (expected !== f.number) misplaced.push({ unit: u, fromFloor: f, expected });
     }

@@ -60,6 +60,23 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 43. fixFloorAssignments must NOT synthesize phantom floors from sub-room IDs (2026-06-04)
+
+- **Status:** active
+- **Branch / commit:** `main` — fixes `cbfa2fc` (max-floor guard) + a follow-up (sub-room-by-pattern skip)
+- **Area:** Floor assignment / data integrity / phantom floors
+- **Files:** `floor-map-editor.html` — `fixFloorAssignments()` (~:151574): the `misplaced` detection loop (sub-room pattern skip + `_allUnitIds` set) and the floor-creation block (`expected > maxFloor + 1` guard).
+- **Bug it fixed (operator-visible):** A phantom **"Floor 21"** appeared in the New Tampa building — a duplicate holding 33 of Floor 2's rooms. Cause: `fixFloorAssignments` routes each unit to floor `Math.floor(parseInt(id)/100)` and CREATES that floor if missing. Sub-rooms have 4+-digit ids (e.g. `2041` = a subdivision of suite 204, `2101` = sub-room of 210). They're meant to be skipped (`if (u.parentId) continue`), but when a sub-room's `parentId` was temporarily lost (during the night's sync churn), it got routed: `Math.floor(2101/100) = 21` → a phantom **Floor 21** was synthesized and the sub-room (plus, via downstream merge, a copy of Floor 2's units) landed there.
+- **Invariant — DO NOT BREAK:** Two independent guards in `fixFloorAssignments`, keep BOTH:
+  1. **Sub-room-by-pattern skip** (parentId-independent): skip routing a unit when `id >= 1000` AND its parent id (`Math.floor(id/10)`) exists among the building's units — it's a sub-room, rides with its parent. (`_allUnitIds` set built before the loop.)
+  2. **Max-floor guard:** when the target floor doesn't exist, do NOT create it if `expected > maxExistingFloor + 1` — leave the unit in place + warn. Prevents materializing implausible floors (20/21/101) from bad ids. Legit incremental floors (max+1) still allowed.
+- **Why both:** the parentId skip is the first line; guard #1 covers parentId loss (the actual trigger); guard #2 covers any other bad id (typo, corruption) regardless of sub-room status, and doesn't depend on maxFloor being clean.
+- **How to verify:** `grep -c "_allUnitIds" floor-map-editor.html` ≥ 1 and `grep -c "expected > _maxFloor + 1" floor-map-editor.html` ≥ 1. Functional: a sub-room (e.g. 2041) on Floor 2 with parentId stripped must NOT create a Floor 20; `fixFloorAssignments` leaves it on Floor 2.
+- **Cleanup of the existing phantom:** the already-created Floor 21 is removed once via console (gated splice that only deletes the floor if every one of its units also exists on another floor — no unique unit lost). Removing it also restores a clean `maxFloor` so guard #2 is at full strength.
+- **Regression test:** none — manual UI only.
+
+---
+
 ### 42. Building selector must NOT rebuild dropdown DOM when unchanged (2026-06-04)
 
 - **Status:** active
