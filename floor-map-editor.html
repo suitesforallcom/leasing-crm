@@ -33035,9 +33035,43 @@ window.sfaReadSwitchSmoke = async function () {
 // from previous session). Гарантирует что read-switch survives reload без
 // требования каждый раз руками гонять sfaTestReadSwitchV2(true).
 // Триггерим из fbApplyRemote через _v2PaymentsAttachIfFlagged (см. hook).
+// getDocs-fallback: если watch-стрим не применил платежи за 6 сек (медленный/
+// застрявший стрим — особенно при strip, когда монолит уже без платежей), догружаем
+// одноразовым getDocs (REST, всегда надёжен — в отличие от WebChannel-стрима).
+// Идемпотентно (no-op если стрим уже доставил) + лечит «ложные late fees / пустой
+// экран при транзиенте стрима» (инцидент 2026-06-03). Только при включённом read-switch.
+let _v2PaymentsFallbackInflight = false;
+async function _v2PaymentsFallbackFetch(reason) {
+  if (!syncV2ReadEnabled()) return;
+  if (_v2PaymentsListenerDocsApplied > 0) return;            // стрим уже применил — не нужно
+  if (_v2PaymentsFallbackInflight) return;
+  if (typeof fbSync === 'undefined' || !fbSync || !fbSync.sdk || !fbSync.db) return;
+  _v2PaymentsFallbackInflight = true;
+  try {
+    const { sdk, db } = fbSync;
+    const snap = await sdk.getDocs(sdk.collection(db, 'workspaces', WORKSPACE_ID, 'payments'));
+    let n = 0;
+    snap.forEach(d => {
+      const data = d.data(); if (!data || data._schema !== 'v2') return;
+      const bId = data.buildingId, uId = data.unitId, ym = data.ym; if (!bId || !uId || !ym) return;
+      const ck = bId + '|' + uId;
+      _v2PaymentsCache[ck] = _v2PaymentsCache[ck] || {}; _v2PaymentsCache[ck][ym] = data.rec || {};
+      for (const b of (state.buildings || [])) { if (b.id !== bId) continue; for (const f of (b.floors || [])) for (const u of (f.units || [])) if (u.id === uId) { u.payments = u.payments || {}; if (!(ym in u.payments)) u.payments[ym] = data.rec || {}; n++; } }
+    });
+    if (n > 0) {
+      console.warn('[v2-read] FALLBACK getDocs применил ' + n + ' платежей (' + reason + ') — watch-стрим был медленным');
+      try { if (typeof renderDetail === 'function') renderDetail(); } catch {}
+      try { if (state && state.ui && state.ui.activeView === 'payments' && typeof renderPayments === 'function') renderPayments(); } catch {}
+    }
+  } catch (e) { console.warn('[v2-read] payments fallback getDocs failed', (e && e.message) || e); }
+  finally { _v2PaymentsFallbackInflight = false; }
+}
+window._v2PaymentsFallbackFetch = _v2PaymentsFallbackFetch;
+
 function _v2PaymentsAttachIfFlagged() {
   if (syncV2ReadEnabled() && !_v2PaymentsListenerUnsub) {
     _v2PaymentsAttachListener();
+    setTimeout(function () { _v2PaymentsFallbackFetch('6s-timeout'); }, 6000);
   }
 }
 window._v2PaymentsAttachIfFlagged = _v2PaymentsAttachIfFlagged;
@@ -33651,9 +33685,55 @@ window.sfaBuildingsReadSwitchSmoke = async function () {
   return r;
 };
 
+// getDocs-fallback для зданий: если watch-стрим не наполнил state.buildings за 6 сек
+// (медленный/застрявший стрим — критично при strip, когда монолит без зданий), догружаем
+// одноразовым getDocs. Это и есть лекарство от «пустого экра�на при strip + транзиент
+// стрима» (инцидент 2026-06-03): монолит-фолбэк убран → надёжный fetch заменяет его.
+// Идемпотентно (no-op если стрим уже наполнил). После наполнения дёргает payments-fallback,
+// чтобы платежи легли в свежесозданные юниты.
+let _v2BuildingsFallbackInflight = false;
+async function _v2BuildingsFallbackFetch(reason) {
+  if (!syncBuildingsReadEnabled()) return;
+  if (_v2BuildingsFirstSnapshotDone && (state.buildings || []).length > 0) return;  // стрим уже наполнил
+  if (_v2BuildingsFallbackInflight) return;
+  if (typeof fbSync === 'undefined' || !fbSync || !fbSync.sdk || !fbSync.db) return;
+  _v2BuildingsFallbackInflight = true;
+  try {
+    const { sdk, db } = fbSync;
+    const snap = await sdk.getDocs(sdk.collection(db, 'workspaces', WORKSPACE_ID, 'buildings'));
+    if (_v2BuildingsFirstSnapshotDone && (state.buildings || []).length > 0) return;  // стрим выиграл гонку
+    state.buildings = state.buildings || [];
+    let applied = 0;
+    snap.forEach(d => {
+      const data = d.data(); if (!data || data._schema !== 'v2' || !data.doc) return;
+      const incoming = data.doc; const bid = data.buildingId || incoming.id || d.id; if (!bid) return;
+      _buildingFromV2Restore(incoming);
+      for (const f of (incoming.floors || [])) for (const u of (f.units || [])) {
+        const cp = _v2PaymentsCache[bid + '|' + u.id];
+        if (cp && Object.keys(cp).length) { u.payments = u.payments || {}; for (const ym in cp) if (!(ym in u.payments)) u.payments[ym] = cp[ym]; }
+      }
+      const idx = state.buildings.findIndex(b => b && b.id === bid);
+      if (idx >= 0) state.buildings[idx] = incoming; else state.buildings.push(incoming);
+      applied++;
+    });
+    if (applied > 0) {
+      _v2BuildingsFirstSnapshotDone = true;
+      console.warn('[v2-buildings-read] FALLBACK getDocs наполнил ' + applied + ' зданий (' + reason + ') — watch-стрим был медленным');
+      try { if (typeof renderBuildingSelector === 'function') renderBuildingSelector(); } catch {}
+      try { if (typeof _ensureValidUiBuilding === 'function') _ensureValidUiBuilding('v2-buildings-fallback'); } catch {}
+      try { if (typeof renderUnits === 'function') renderUnits(); } catch {}
+      try { if (typeof renderDetail === 'function') renderDetail(); } catch {}
+      try { if (typeof _v2PaymentsFallbackFetch === 'function') _v2PaymentsFallbackFetch('after-buildings-fallback'); } catch {}
+    }
+  } catch (e) { console.warn('[v2-buildings-read] fallback getDocs failed', (e && e.message) || e); }
+  finally { _v2BuildingsFallbackInflight = false; }
+}
+window._v2BuildingsFallbackFetch = _v2BuildingsFallbackFetch;
+
 function _v2BuildingsAttachIfFlagged() {
   if (syncBuildingsReadEnabled() && !_v2BuildingsListenerUnsub) {
     _v2BuildingsAttachListener();
+    setTimeout(function () { _v2BuildingsFallbackFetch('6s-timeout'); }, 6000);
   }
 }
 window._v2BuildingsAttachIfFlagged = _v2BuildingsAttachIfFlagged;
