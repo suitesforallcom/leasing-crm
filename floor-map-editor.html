@@ -33035,6 +33035,35 @@ window.sfaReadSwitchSmoke = async function () {
 // from previous session). Гарантирует что read-switch survives reload без
 // требования каждый раз руками гонять sfaTestReadSwitchV2(true).
 // Триггерим из fbApplyRemote через _v2PaymentsAttachIfFlagged (см. hook).
+// ── Scaling diagnostic logger (DORMANT — settings.scalingDiag) ───────────
+// Пишет снимок состояния в localStorage-кольцо на КАЖДОЙ загрузке + при срабатывании
+// getDocs-fallback. Переживает перезагрузки — нужен для наблюдения за strip-retry
+// (он делает reload'ы, консольный скрипт их бы не пережил). Вкл: sfaScalingDiagOn();
+// дамп: sfaScalingDiagDump(); выкл: sfaScalingDiagOff(). Чистый no-op при флаге off.
+const _SCALING_DIAG_KEY = 'sfa_scaling_diag';
+function _scalingDiagEnabled() { try { return !!(state && state.settings && state.settings.scalingDiag); } catch (e) { return false; } }
+function _scalingDiagLog(tag, extra) {
+  if (!_scalingDiagEnabled()) return;
+  try {
+    const arr = JSON.parse(localStorage.getItem(_SCALING_DIAG_KEY) || '[]');
+    arr.push(new Date().toISOString().slice(11, 23) + ' ' + tag + (extra ? ' ' + extra : ''));
+    localStorage.setItem(_SCALING_DIAG_KEY, JSON.stringify(arr.slice(-400)));
+  } catch (e) {}
+}
+function _scalingDiagSnapshot(when) {
+  if (!_scalingDiagEnabled()) return;
+  let units = 0, pay431 = '-';
+  for (const b of (state.buildings || [])) for (const f of ((b && b.floors) || [])) for (const u of ((f && f.units) || [])) { units++; if (u && u.id === '431') pay431 = Object.keys(u.payments || {}).length; }
+  const s = state.settings || {};
+  _scalingDiagLog(when, 'bld=' + (state.buildings || []).length + ' units=' + units + ' pay431=' + pay431 +
+    ' online=' + (typeof navigator !== 'undefined' ? navigator.onLine : '?') +
+    ' strips={p:' + !!s.syncV2StripPayments + ',b:' + !!s.syncBuildingsStrip + '} reads={p:' + !!s.syncV2Read + ',b:' + !!s.syncBuildingsRead + '}');
+}
+window.sfaScalingDiagOn = function () { state.settings = state.settings || {}; state.settings.scalingDiag = true; try { saveState(); } catch (e) {} _scalingDiagSnapshot('diag-on'); console.log('%c[scalingDiag] ON — пишет на каждой загрузке + при fallback. Дамп: sfaScalingDiagDump()', 'color:green;font-weight:bold'); };
+window.sfaScalingDiagOff = function () { state.settings = state.settings || {}; state.settings.scalingDiag = false; try { saveState(); } catch (e) {} console.log('[scalingDiag] OFF'); };
+window.sfaScalingDiagDump = function () { try { const a = JSON.parse(localStorage.getItem(_SCALING_DIAG_KEY) || '[]'); console.log('%c=== scalingDiag timeline (' + a.length + ' строк) ===', 'font-weight:bold;color:#06c'); console.log(a.join('\n')); return a.join('\n'); } catch (e) { return '(empty)'; } };
+window.sfaScalingDiagClear = function () { try { localStorage.removeItem(_SCALING_DIAG_KEY); } catch (e) {} console.log('[scalingDiag] cleared'); };
+
 // getDocs-fallback: если watch-стрим не применил платежи за 6 сек (медленный/
 // застрявший стрим — особенно при strip, когда монолит уже без платежей), догружаем
 // одноразовым getDocs (REST, всегда надёжен — в отличие от WebChannel-стрима).
@@ -33060,6 +33089,7 @@ async function _v2PaymentsFallbackFetch(reason) {
     });
     if (n > 0) {
       console.warn('[v2-read] FALLBACK getDocs применил ' + n + ' платежей (' + reason + ') — watch-стрим был медленным');
+      try { _scalingDiagLog('fallback-payments', n + ' платежей (' + reason + ')'); } catch {}
       try { if (typeof renderDetail === 'function') renderDetail(); } catch {}
       try { if (state && state.ui && state.ui.activeView === 'payments' && typeof renderPayments === 'function') renderPayments(); } catch {}
     }
@@ -33719,6 +33749,7 @@ async function _v2BuildingsFallbackFetch(reason) {
     if (applied > 0) {
       _v2BuildingsFirstSnapshotDone = true;
       console.warn('[v2-buildings-read] FALLBACK getDocs наполнил ' + applied + ' зданий (' + reason + ') — watch-стрим был медленным');
+      try { _scalingDiagLog('fallback-buildings', applied + ' зданий (' + reason + ')'); } catch {}
       try { if (typeof renderBuildingSelector === 'function') renderBuildingSelector(); } catch {}
       try { if (typeof _ensureValidUiBuilding === 'function') _ensureValidUiBuilding('v2-buildings-fallback'); } catch {}
       try { if (typeof renderUnits === 'function') renderUnits(); } catch {}
@@ -151814,6 +151845,9 @@ if (typeof initBottomToolbarDrag === 'function') initBottomToolbarDrag();
 console.log('[init] SuitesForAll ready. Buildings:', state.buildings.length,
   'state.ui:', JSON.stringify(state.ui || {}));
 toast('Ready', 'info');
+// scalingDiag (DORMANT): снимок состояния на загрузке + через 8с (после окна
+// гидрации стрима/fallback) — переживает reload'ы, для наблюдения за strip-retry.
+try { if (typeof _scalingDiagSnapshot === 'function') { _scalingDiagSnapshot('load'); setTimeout(function () { try { _scalingDiagSnapshot('load+8s'); } catch (e) {} }, 8000); } } catch (e) {}
 
 // Phase 2b/2c — one-off bonus lifecycle sweep at boot so the Bonuses
 // tab opens with up-to-date statuses. Deferred so initial render /
