@@ -60,6 +60,21 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 39. Firestore MUST use long-polling transport (experimentalForceLongPolling) (2026-06-03)
+
+- **Status:** active
+- **Branch / commit:** `main` — fix `d0723c8`
+- **Area:** Firebase / Firestore transport / sync reliability / scaling-strip prerequisite
+- **Files:** `floor-map-editor.html` — SDK loader exposes `initializeFirestore` (~:28475); `fbSync.db` init (~:31263-31275).
+- **Bug it fixed:** The default Firestore WebChannel watch stream (`onSnapshot`) was unreliable for the operator under load — a storm of `webchannel_blob` errors, slow/never-arriving snapshots — while one-shot `getDocs` (REST) always worked. This caused the empty-app incidents when the monolith was stripped (the app depends on the read-switch snapshot to repopulate; a stalled stream → empty $0 app).
+- **Invariant — DO NOT BREAK:** `fbSync.db` MUST be created via `sdk.initializeFirestore(app, { experimentalForceLongPolling: true })`, NOT `sdk.getFirestore(app)`. `initializeFirestore` MUST run before ANY Firestore access (it throws if Firestore was already initialized). Keep the `getFirestore` fallback inside the `try/catch` for SDK builds lacking `initializeFirestore`. Do NOT "simplify" this back to `getFirestore` — that reintroduces the flaky WebChannel stream and breaks the strip (empty-app on reload).
+- **Why this works:** long-polling avoids the long-lived WebChannel connection that extensions / middleboxes / load were tearing down. Confirmed via lp-test: 1297 payments + 5 buildings delivered in 0.0s from SERVER with 0 errors. This is the transport fix that made the Stage 5/6 strip safe to leave ON (together with Entry 37 cache re-merge + the `afed377` getDocs fallback + Entry 38 color prefetch).
+- **Verification:** `grep -c "experimentalForceLongPolling" floor-map-editor.html` ≥ 1 and it must be the path assigned to `fbSync.db`. Functional: reload prod → Network shows Firestore `Listen` channel as repeated long-poll requests (not a single hanging stream); snapshots arrive promptly; no `webchannel` error storm in console.
+- **Regression test:** none — manual / network-tab only (transport-level).
+- **Related PR / issue:** none. Closes the root cause behind the 2026-06-03 strip reverts (the earlier "transient stream delay" theory in Entry 37's follow-up was the symptom; long-polling is the cure).
+
+---
+
 ### 38. Map color prefetch must paginate ALL Stripe invoices + once-per-session gate (2026-06-03)
 
 - **Status:** active
