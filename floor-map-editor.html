@@ -28472,6 +28472,7 @@ async function fbLoadSdk() {
     signOut: authMod.signOut,
     // Firestore
     getFirestore: fsMod.getFirestore,
+    initializeFirestore: fsMod.initializeFirestore,
     doc: fsMod.doc,
     collection: fsMod.collection,
     setDoc: fsMod.setDoc,
@@ -31259,7 +31260,19 @@ async function fbBootstrap() {
     fbSync.sdk = sdk;
     fbSync.app = sdk.initializeApp(cfg);
     fbSync.auth = sdk.getAuth(fbSync.app);
-    fbSync.db = sdk.getFirestore(fbSync.app);
+    // Long-polling вместо дефолтного WebChannel-стрима: устойчиво к
+    // расширениям/мидлвару/нагрузке, которые рвали watch-стрим (инцидент
+    // 2026-06-03 — onSnapshot штормил, getDocs работал). initializeFirestore
+    // ДОЛЖЕН вызываться до любого обращения к Firestore (здесь — первое).
+    // Fallback на getFirestore, если по какой-то причине initializeFirestore нет.
+    try {
+      fbSync.db = (typeof sdk.initializeFirestore === 'function')
+        ? sdk.initializeFirestore(fbSync.app, { experimentalForceLongPolling: true })
+        : sdk.getFirestore(fbSync.app);
+    } catch (e) {
+      console.warn('[fb] initializeFirestore(long-polling) failed, fallback to getFirestore:', e && e.message || e);
+      fbSync.db = sdk.getFirestore(fbSync.app);
+    }
     fbSync.storage = sdk.getStorage(fbSync.app);
     // Cloud Functions client (region must match functions/index.js)
     fbSync.functions = sdk.getFunctions(fbSync.app, 'us-central1');
