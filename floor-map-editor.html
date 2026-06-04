@@ -33655,6 +33655,9 @@ function _v2BuildingsAttachListener() {
             try { if (typeof updateTopbarOutstandingPill === 'function') updateTopbarOutstandingPill(); } catch {}
             try { if (typeof renderUnits === 'function') renderUnits(); } catch {}
             try { if (typeof renderDetail === 'function') renderDetail(); } catch {}
+            // Здания пришли через watch-стрим → подтянуть инвойсы для payment-раскраски
+            // (boot-prefetch мог отработать до прихода зданий). Guard'ы внутри не дадут дубля.
+            try { if (typeof _prefetchInvoicesForMapBadges === 'function') _prefetchInvoicesForMapBadges(); } catch {}
             try {
               const v = state?.ui?.activeView;
               if (v === 'rentroll' && typeof renderRentRoll === 'function') renderRentRoll();
@@ -33774,6 +33777,10 @@ async function _v2BuildingsFallbackFetch(reason) {
       try { if (typeof renderUnits === 'function') renderUnits(); } catch {}
       try { if (typeof renderDetail === 'function') renderDetail(); } catch {}
       try { if (typeof _v2PaymentsFallbackFetch === 'function') _v2PaymentsFallbackFetch('after-buildings-fallback'); } catch {}
+      // Здания пришли поздно (fallback) → boot-prefetch инвойсов (200/800ms) уже
+      // отработал вхолостую (зданий не было). Перезапускаем — иначе карта в
+      // payment-режиме останется в lease-цветах (жёлтый) вместо invoice-sent (синий).
+      try { if (typeof _prefetchInvoicesForMapBadges === 'function') _prefetchInvoicesForMapBadges(); } catch {}
     }
   } catch (e) { console.warn('[v2-buildings-read] fallback getDocs failed', (e && e.message) || e); }
   finally { _v2BuildingsFallbackInflight = false; }
@@ -83569,10 +83576,15 @@ function _prefetchInvoicesForMapBadges() {
       }
     }
   }
-  if (!anyStamp) return;
-  const now = Date.now();
-  if (now - _lastStripeCacheFetchMs < 30_000) return;
-  _lastStripeCacheFetchMs = now;
+  if (!anyStamp) return; // здания ещё не загрузились / нет Stripe — перевызовут после загрузки зданий
+  // Inflight-guard вместо 30s-throttle: один полный проход за сессию гарантирует
+  // флаг _mapBadgesPrefetchedFull, а inflight не даёт запустить параллельно. Это
+  // позволяет БЕЗОПАСНО перевызвать prefetch ПОСЛЕ позднего прихода зданий (3s
+  // getDocs fallback под read-switch): на boot-таймерах (200/800ms) зданий ещё
+  // нет → anyStamp=false → ранний выход без установки флага; без перевызова карта
+  // в payment-режиме осталась бы в lease-цветах (жёлтый) вместо синего.
+  if (_mapBadgesPrefetchInflight) return;
+  _mapBadgesPrefetchInflight = true;
   (async () => {
     try {
       // Тянем ВСЕ инвойсы постранично, а не первые 100. В рабочем
@@ -83598,6 +83610,8 @@ function _prefetchInvoicesForMapBadges() {
       try { renderDetail(); } catch {}
     } catch (err) {
       console.warn('[boot-prefetch-invoices]', err);
+    } finally {
+      _mapBadgesPrefetchInflight = false;
     }
   })();
 }
@@ -83611,6 +83625,10 @@ let _lastStripeCacheFetchMs = 0;
 // раз за сессию (а не при каждом вызове): иначе ленивые per-unit фетчи
 // засевают кэш частично и блокируют полную загрузку → карта недокрашена.
 let _mapBadgesPrefetchedFull = false;
+// Inflight-страж: prefetch перевызывается после поздней загрузки зданий (3s
+// fallback под read-switch), поэтому нужен guard от параллельного запуска
+// (раньше эту роль играл 30s-throttle, но он мешал нужному перевызову).
+let _mapBadgesPrefetchInflight = false;
 function _maybePrefetchInvoicesCache(u) {
   if (!fbSync?.enabled) return;
   // Previously this required an existing stamp before prefetching, which
