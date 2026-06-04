@@ -60,6 +60,33 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 42. Building selector must NOT rebuild dropdown DOM when unchanged (2026-06-04)
+
+- **Status:** active
+- **Branch / commit:** `main` — fix `468f7b1`
+- **Area:** UI / building selector / dropdown click handling
+- **Files:** `floor-map-editor.html` — `renderBuildingSelector()` (~:59218), `_buildingSelectorSig` decl (just above the function).
+- **Bug it fixed:** Building-switch clicks needed 2-3 tries (intermittent). `renderBuildingSelector()` rewrote `buildingList.innerHTML` on EVERY call, recreating the `.bd-item` nodes (inline `onclick`). When a background re-render fired between the operator's mousedown and mouseup, the clicked node was replaced → the browser never generated a `click` → the switch was dropped. Today's read-switch listener attach (Entry 41) increased re-render frequency, making the collision common.
+- **Invariant — DO NOT BREAK:** `renderBuildingSelector` must compute a signature (`_buildingSelectorSig` = currentBuildingId + each accessible building's id/name/address/photo) and **skip the `list.innerHTML` rewrite when the signature is unchanged** (`if (_bsSig === _buildingSelectorSig && list.children.length) return;`). The pill + manager strip still update every call (not click targets); only the click-target list is guarded. Rebuild still fires on genuine changes (add/remove/rename/switch). Do NOT revert to an unconditional `list.innerHTML = …`.
+- **General principle:** any menu/list built via `innerHTML` and re-rendered on data ticks has this latent click-loss bug. Guard the rebuild behind a content signature (or don't rebuild while the menu is open). Watch for the same pattern in other dropdowns.
+- **How to verify:** `grep -c "_buildingSelectorSig" floor-map-editor.html` ≥ 3. Functional: open the building dropdown, click a building → switches first try, repeatedly.
+- **Regression test:** none — manual UI only.
+
+---
+
+### 41. Read-switch listeners MUST attach after fbSync.enabled=true (2026-06-04)
+
+- **Status:** active
+- **Branch / commit:** `main` — fix `7ab691c`
+- **Area:** Scaling V2 / read-switch listener attach / sync init / realtime + load speed
+- **Files:** `floor-map-editor.html` — `fbActivateWorkspaceSync()` right after `fbSync.enabled = true` (~:31417).
+- **Bug it fixed:** Symptom `[v2-read] Firestore not ready, cannot attach listener` + the app running ONLY on the one-shot getDocs fallback (slow ~1.5-3s load, NO realtime updates). In `fbActivateWorkspaceSync`, when the cloud doc is newer (remoteRev > localRev — the normal case), `fbApplyRemote()` runs at ~:31410 BEFORE `fbSync.enabled = true` (:31417). The v2 read-switch attach (`_v2*AttachIfFlagged`, called from fbApplyRemote) checks `fbSync.enabled`, sees false, bails — and nothing ever retried, so buildings/payments never arrived via onSnapshot.
+- **Invariant — DO NOT BREAK:** immediately after `fbSync.enabled = true` in `fbActivateWorkspaceSync`, explicitly call `_v2PaymentsAttachIfFlagged()` + `_v2BuildingsAttachIfFlagged()` + `_v2LeaseDocsAttachIfFlagged()`. Idempotent (each attaches only if not already attached) + flag-gated (read-switch off → no-op). Without this, read-switch sessions silently fall back to one-shot getDocs (no realtime; the buildings strip then can't get live building updates either).
+- **How to verify:** `grep -A12 "fbSync.status = 'syncing'" floor-map-editor.html | grep -c "AttachIfFlagged"` ≥ 3. Functional: reload a read-switch session → console shows `[v2-read] listener attached` + `[v2-buildings-read] listener attached` (not just "Firestore not ready" + fallback); realtime payment/building updates appear without reload.
+- **Related:** together with Entry 40 (no-clobber) + Entry 39 (long-polling) + the `afed377` getDocs fallback, this makes the buildings strip safe + fast. Verified live on BOTH tony@al-en.com and architecture@zhukdev.com (employee): 804/804 units mirrored, push 992→44 KB, sync resumed.
+
+---
+
 ### 40. fbApplyRemote MUST NOT apply monolith `buildings` under the buildings read-switch (2026-06-04)
 
 - **Status:** active
@@ -104,6 +131,10 @@ to the replacement entry) if a fix is intentionally rewritten.
 - **Verification:** load the app in Payment-status mode → after the boot prefetch, occupied invoiced units are blue and paid units green (not cream). Console diag: `_invoicesCache.length` should reach the full invoice count (~615), not ~100. `grep -c "startingAfter: cursor" floor-map-editor.html` ≥ 1; `grep -c "_mapBadgesPrefetchedFull" floor-map-editor.html` ≥ 3.
 - **Regression test:** none — manual UI only (Stripe-backed, needs live invoices).
 - **Related PR / issue:** none.
+- **Follow-ups (2026-06-04, same area — keep all):**
+  - `5906531` — re-fire `_prefetchInvoicesForMapBadges()` AFTER buildings load (in `_v2BuildingsFallbackFetch` + the buildings listener render block) + inflight-guard instead of the 30s throttle. Under the read-switch, buildings arrive ~3s late (getDocs fallback); the boot prefetch (200/800ms) ran with 0 buildings → `anyStamp=false` → never fetched → units stayed lease-yellow instead of payment-blue. Invariant: re-fire the prefetch once buildings are applied; guard it with `_mapBadgesPrefetchInflight` (NOT the shared 30s throttle) so it can be re-invoked.
+  - `51c626c` — incremental recolor: call `renderUnits()` after EACH invoice page (Stripe lists created-desc → current month lands in page 1, so colors appear ~2-3s instead of ~20s). Also lowered the buildings + payments read-switch getDocs fallback 3s→1.5s.
+  - `1a03921` — instant colors from the localStorage bucket cache: in `_computeUnitFillImpl` payment mode, read the unit's last-invoice status from `sfa_inv_buckets_v1` (via `u.stripe.lastInvoiceId`, current month only) as a fast path so the map paints paid/blue immediately on load without waiting for the ~4s Stripe fetch (which then refines via the invCacheKey memo invalidation). Display-only.
 
 ---
 
