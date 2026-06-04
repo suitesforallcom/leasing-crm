@@ -31416,6 +31416,16 @@ async function fbActivateWorkspaceSync() {
     }
     fbSync.enabled = true;
     fbSync.status = 'syncing';
+    // Read-switch listeners: первый fbApplyRemote (ветка remoteRev>localRev,
+    // ~строка 31410) выполняется ДО fbSync.enabled=true → его попытка attach
+    // отваливается с "Firestore not ready", и больше никто attach не повторяет.
+    // Подключаем здесь, когда sync уже готов — иначе buildings/payments живут
+    // ТОЛЬКО на одноразовом getDocs-fallback: нет live-обновлений + карта
+    // грузится медленно (через таймаут). Идемпотентно (attach только если ещё
+    // не подключён) и под флагами (read-switch off → no-op).
+    try { if (typeof _v2PaymentsAttachIfFlagged === 'function') _v2PaymentsAttachIfFlagged(); } catch {}
+    try { if (typeof _v2BuildingsAttachIfFlagged === 'function') _v2BuildingsAttachIfFlagged(); } catch {}
+    try { if (typeof _v2LeaseDocsAttachIfFlagged === 'function') _v2LeaseDocsAttachIfFlagged(); } catch {}
     fbUpdateStatusBadge();
     renderUserBadge();
     applyRoleVisibility();
