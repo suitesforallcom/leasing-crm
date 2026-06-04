@@ -59215,6 +59215,10 @@ function buildingVisualHtml(b, ctx) {
   return `<span class="${cls}">${buildingIconSvg(getBuildingIcon(b), { size: iconSize, strokeWidth: 2 })}</span>`;
 }
 
+// Сигнатура последнего отрисованного списка зданий — чтобы не пересобирать
+// DOM выпадающего меню (и не ломать клик оператора), когда содержимое не
+// изменилось. См. инцидент 2026-06-04 (клики по зданиям терялись).
+let _buildingSelectorSig = '';
 function renderBuildingSelector() {
   // Stage 4 read-switch (DORMANT): пока не пришёл первый снимок из коллекции
   // buildings, state.buildings ещё пуст — показываем «loading…» вместо мигающего
@@ -59254,6 +59258,18 @@ function renderBuildingSelector() {
   // Dropdown list: thumbnail + name + address + edit pencil.
   // Non-admin roles only see the buildings they're scoped to.
   const list = document.getElementById('buildingList');
+  // Пересобираем innerHTML списка ТОЛЬКО при реальном изменении содержимого.
+  // Иначе частые перерисовки (read-switch listeners, эхо пушей) пересоздают
+  // пункты с inline-onclick прямо во время клика оператора → mousedown на
+  // старом узле, mouseup на новом → браузер не генерирует click → клик
+  // «теряется», приходится кликать 2-3 раза. Инцидент 2026-06-04. (Pill и
+  // менеджер-стрип выше обновляются всегда — гард только на click-таргеты.)
+  const _bsSig = (state.ui.currentBuildingId || '') + '|' + (state.buildings || [])
+    .filter(bb => canAccessBuilding(bb.id))
+    .map(bb => bb.id + ':' + (bb.name || '') + ':' + (bb.address || '') + ':' + (buildingPhotoUrl(bb) || ''))
+    .join('~');
+  if (_bsSig === _buildingSelectorSig && list.children.length) return;
+  _buildingSelectorSig = _bsSig;
   list.innerHTML = state.buildings.filter(bb => canAccessBuilding(bb.id)).map(bb => `
     <div class="bd-item ${bb.id === state.ui.currentBuildingId ? 'active' : ''}" style="display:flex; align-items:center;">
       ${buildingVisualHtml(bb, 'dropdown')}
