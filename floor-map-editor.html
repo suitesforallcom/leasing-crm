@@ -33090,7 +33090,13 @@ async function _v2PaymentsFallbackFetch(reason) {
     if (n > 0) {
       console.warn('[v2-read] FALLBACK getDocs применил ' + n + ' платежей (' + reason + ') — watch-стрим был медленным');
       try { _scalingDiagLog('fallback-payments', n + ' платежей (' + reason + ')'); } catch {}
+      // Перерисовываем КАРТУ (payment-status цвета) + панели — как делает payments-листенер
+      // (строка ~32943). Без renderUnits карта остаётся с дефолтным жёлтым (юниты без
+      // платежей), пока fallback не догрузит — баг 2026-06-03.
+      try { if (typeof renderUnits === 'function') renderUnits(); } catch {}
       try { if (typeof renderDetail === 'function') renderDetail(); } catch {}
+      try { if (typeof renderAgingPanel === 'function') renderAgingPanel(); } catch {}
+      try { if (typeof updateTopbarOutstandingPill === 'function') updateTopbarOutstandingPill(); } catch {}
       try { if (state && state.ui && state.ui.activeView === 'payments' && typeof renderPayments === 'function') renderPayments(); } catch {}
     }
   } catch (e) { console.warn('[v2-read] payments fallback getDocs failed', (e && e.message) || e); }
