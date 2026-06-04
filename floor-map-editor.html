@@ -34529,6 +34529,14 @@ function fbApplyRemote(doc) {
   // bypass'ят coerce, как и settings.
   const _OBJECT_TYPE_KEYS = new Set(['settings', 'dailyHistory', 'calendarEvents', 'callActivity', 'aircallUserNumbers']);
   for (const k of ['buildings', 'tenants', 'leases', 'contracts', 'settings', 'bankConnections', 'gmailActivity', 'dailyHistory', 'calendarEvents', 'callActivity', 'aircallUserNumbers']) {
+    // КРИТИЧНО (strip): под buildings read-switch монолит НЕ источник истины
+    // для зданий — они приходят из коллекции (listener + getDocs fallback).
+    // Урезанный strip-монолит несёт buildings:[]; применение его затёрло бы
+    // живые здания (вместе с вложенными u.payments) → приложение пустеет.
+    // Инцидент 2026-06-04: через ~5 мин прилетает повторный снимок монолита
+    // (токен-рефреш / эхо пуша / reconnect) и стирал карту. Коллекция
+    // авторитетна — пропускаем применение buildings из монолита.
+    if (k === 'buildings' && typeof syncBuildingsReadEnabled === 'function' && syncBuildingsReadEnabled()) continue;
     if (remote[k] !== undefined) {
       if (_OBJECT_TYPE_KEYS.has(k)) {
         // Genuinely an object (email-keyed map or generic object).
