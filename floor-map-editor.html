@@ -151619,6 +151619,17 @@ function fixFloorAssignments(silent = false) {
   for (const { unit, fromFloor, expected } of misplaced) {
     let target = b.floors.find(f => f.number === expected);
     if (!target) {
+      // ЗАЩИТА ОТ ФАНТОМНЫХ ЭТАЖЕЙ (инцидент 2026-06-04: «этаж 21» = копия
+      // этажа 2). НЕ синтезируем этаж с номером, выходящим далеко за предел
+      // существующих: такой expected почти всегда от кривого id (4-значная
+      // суб-комната/опечатка, напр. 2105 → Math.floor/100 = 21). Оставляем
+      // юнит на месте, фантом не создаём. Легальный следующий этаж (max+1)
+      // по-прежнему разрешён (напр. suite 701 в 6-этажке создаёт этаж 7).
+      const _maxFloor = Math.max(0, ...b.floors.map(f => +f.number || 0));
+      if (expected > _maxFloor + 1) {
+        if (!silent) console.warn('[fix] пропуск фантомного этажа ' + expected + ' для юнита ' + unit.id + ' (макс. этаж ' + _maxFloor + ') — оставляю на месте');
+        continue;
+      }
       target = {
         id: `${b.id}-f${expected}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,5)}`,
         buildingId: b.id,
