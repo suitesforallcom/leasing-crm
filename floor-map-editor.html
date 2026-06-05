@@ -33656,6 +33656,17 @@ function _v2BuildingsAttachListener() {
         if (!syncBuildingsReadEnabled()) return;
         let changed = 0;
         snap.docChanges().forEach((ch) => {
+          // КОРЕНЬ лишних перерисовок: игнорируем СВОИ ЖЕ записи. Когда клиент
+          // сохраняет здание (_mirrorBuildingsToV2), Firestore присылает это
+          // изменение обратно ЭТОМУ ЖЕ клиенту (эхо, hasPendingWrites=true). Без
+          // фильтра листенер пере-применял своё же здание и делал ПОЛНУЮ
+          // перерисовку (renderUnits + renderBg + пилюли) — отсюда мигание
+          // подложки при правке юнита и общий churn. Монолит-листенер давно
+          // фильтрует эхо (ignoreNext, ~:34539); листенер зданий — НЕ фильтровал.
+          // Своё эхо пропускаем — у нас это здание уже в state (мы его и записали).
+          // Чужие изменения (другой пользователь / CF-зеркало) приходят с
+          // hasPendingWrites=false и применяются как раньше.
+          if (ch.doc.metadata && ch.doc.metadata.hasPendingWrites) return;
           const data = ch.doc.data();
           if (!data || data._schema !== 'v2' || !data.doc) return;
           const incoming = data.doc;
