@@ -2957,6 +2957,16 @@
     #topNavMap span, #topNavRent span { display: none; }
   }
 
+  /* Muted "zero" state for ALL topbar pills (Tony 2026-06-05). Pills stay
+     visible at 0 so "0" can't be confused with "not loaded yet", but a 0 is
+     desaturated + dimmed (and its alert-dot stops pulsing) so it reads as
+     "calm, nothing here" instead of an alarm. Toggled via .pill-zero in each
+     pill's updater when its count is 0. */
+  .pill-zero { filter: grayscale(0.92); opacity: 0.5; }
+  .pill-zero .op-dot, .pill-zero .ap-dot {
+    animation: none !important; background: #9ca3af !important; box-shadow: none !important;
+  }
+
   /* --- Overdue pill (warm-rose, matches THEME.overdueSoft/.overdueInk) --- */
   .outstanding-pill {
     display: inline-flex; align-items: center; gap: 8px;
@@ -36854,6 +36864,7 @@ function updateTopbarOutstandingPill() {
   const amount = '$' + Math.round(outstanding).toLocaleString();
   el.innerHTML = `<span class="op-dot"></span><span class="op-count">${tenants}</span><b>${amount}</b>`;
   el.title = `${tenants} overdue · ${amount} outstanding this month · click for details`;
+  el.classList.toggle('pill-zero', outstanding <= 0);
 }
 
 // =========================================================================
@@ -36921,6 +36932,7 @@ function renderExpiringPill() {
   const soon = list.filter(r => r.daysLeft <= 30).length;
   el.title = `${list.length} lease${list.length === 1 ? '' : 's'} expiring within ${RENEWAL_WINDOW_DAYS} days${soon ? ` (${soon} within 30d)` : ''} — click to review & add renewal notes`;
   el.innerHTML = `<span class="ap-dot"></span><span class="ap-count">${list.length}</span><span class="ap-label">expiring &lt;60d</span>`;
+  el.classList.toggle('pill-zero', list.length === 0);
   if (document.getElementById('expPop')) _renderExpPop(list);
 }
 function _toggleExpPop() {
@@ -54860,6 +54872,7 @@ function updateTopbarActivityPill() {
     <span class="ap-label">${pillLabel}</span>
     ${pillAmountHtml}
   `;
+  el.classList.toggle('pill-zero', stats.signed.count === 0 && stats.moveOut.count === 0);
   // Month-to-date label (since 1st of current month, per operator 2026-05-11).
   // Edge: на 1-е число окно сжимается до 0 часов — fallback на rolling 7 days
   // (см. _compute30DayActivity → windowKind).
@@ -55645,6 +55658,7 @@ function updateTopbarLeasePill() {
   el._latestPending = pendingItems;
   el.innerHTML = `<span class="lp-ico">📝</span> <b>${pending}</b> pending`;
   el.title = `${pending} lease${pending===1?'':'s'} awaiting signature · click for details`;
+  el.classList.toggle('pill-zero', pending <= 0);
 }
 
 // Tick every couple of minutes so webhook-driven status flips surface
@@ -55771,6 +55785,7 @@ function updateTopbarContractPill() {
   el._latestExpiring = expiringItems;
   el.innerHTML = `<span class="lp-ico">📄</span> <b>${expiring}</b> expiring`;
   el.title = `${expiring} contract${expiring===1?'':'s'} expiring within 30 days · click for details`;
+  el.classList.toggle('pill-zero', expiring <= 0);
 }
 window._topbarTimers = window._topbarTimers || [];
 window._topbarTimers.push(
