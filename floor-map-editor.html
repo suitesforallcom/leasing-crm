@@ -33172,7 +33172,14 @@ window._v2PaymentsFallbackFetch = _v2PaymentsFallbackFetch;
 function _v2PaymentsAttachIfFlagged() {
   if (syncV2ReadEnabled() && !_v2PaymentsListenerUnsub) {
     _v2PaymentsAttachListener();
-    setTimeout(function () { _v2PaymentsFallbackFetch('1.5s-timeout'); }, 1500);
+    // Сразу дёргаем getDocs ПАРАЛЛЕЛЬНО watch-стриму: под strip монолит без
+    // платежей, а WebChannel-стрим стабильно медленный (>1.5с) — верхние пилюли
+    // (overdue/expiring), карта и aging ждали платежи всё это время. getDocs
+    // (REST) отдаёт все доки за один round-trip. Идемпотентно (no-op если стрим
+    // уже применил). 1.5с оставляем БЭКАП-ретраем — если немедленный getDocs
+    // упал (сеть), а стрим ещё молчит.
+    _v2PaymentsFallbackFetch('immediate');
+    setTimeout(function () { _v2PaymentsFallbackFetch('1.5s-retry'); }, 1500);
   }
 }
 window._v2PaymentsAttachIfFlagged = _v2PaymentsAttachIfFlagged;
@@ -33842,7 +33849,11 @@ window._v2BuildingsFallbackFetch = _v2BuildingsFallbackFetch;
 function _v2BuildingsAttachIfFlagged() {
   if (syncBuildingsReadEnabled() && !_v2BuildingsListenerUnsub) {
     _v2BuildingsAttachListener();
-    setTimeout(function () { _v2BuildingsFallbackFetch('1.5s-timeout'); }, 1500);
+    // Аналогично платежам: сразу getDocs параллельно стриму (зданий мало — дёшево),
+    // чтобы карта + верхние пилюли не ждали медленный watch-стрим. Идемпотентно
+    // (3 гарда внутри). 1.5с — бэкап-ретрай.
+    _v2BuildingsFallbackFetch('immediate');
+    setTimeout(function () { _v2BuildingsFallbackFetch('1.5s-retry'); }, 1500);
   }
 }
 window._v2BuildingsAttachIfFlagged = _v2BuildingsAttachIfFlagged;
