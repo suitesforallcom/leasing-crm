@@ -60,6 +60,19 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 48. ALL per-user display/view settings are PER-USER — must NOT sync (2026-06-05)
+
+- **Status:** active
+- **Branch / commit:** `main` — `0cd2e29` (generalizes Entry 47)
+- **Area:** Multi-user sync / settings / per-user display & view preferences
+- **Files:** `floor-map-editor.html` — `PER_USER_SETTINGS_KEYS` Set (declared just above `fbPushNow` ~:32078), the strip loop in `fbPushNow` (~:32092), and the capture/restore loops in `fbApplyRemote` (~:34548).
+- **Bug it fixed (operator-visible):** like `editMode` (Entry 47), many other VISUAL / VIEW / DRAWING preferences lived in the SYNCED `settings` object, so one person changing their map view changed everyone's: theme (dark/light flipping for all), every `show*` map/panel toggle (labels, rent, sqft, tenant, sink, compact-status, lease/rent/new/overdue/onboarding icons, unit price/rate/proforma, grid, bg, units, walls), the opacities (`unitOpacity`/`editModeOpacity`/`priceTextOpacity`/`unitTextOpacity`), `labelScale`, and `snap`/`snapEdge`.
+- **Invariant — DO NOT BREAK:** these per-user keys are listed in `PER_USER_SETTINGS_KEYS` and decoupled by TWO guards (keep both): (1) `fbPushNow` deletes every key in the set from the outgoing `payload.settings` (never pushed to others); (2) `fbApplyRemote` captures the local values for those keys before the wholesale `state.settings = remote.settings` merge and restores them after (incoming remote never overwrites your visual prefs). **Business/workspace settings are deliberately NOT in the set and MUST keep syncing:** `defaultRent`/`defaultRate`/`defaultSqft`/`defaultCap`, `sqftPerPerson`, `customUnitTypes`, `accessControl`, `people`, scaling flags (`syncV2`/`syncBuildingsStrip`/...), billing, cap-rate. When adding a new setting: if it controls how an individual SEES/DRAWS the map → add it to `PER_USER_SETTINGS_KEYS`; if it's shared business config → leave it out.
+- **How to verify:** `grep -c "PER_USER_SETTINGS_KEYS" floor-map-editor.html` ≥ 3. Functional: two sessions — one changes theme / hides labels / changes opacity → the other's screen is unchanged.
+- **Regression test:** none — manual UI only.
+
+---
+
 ### 47. Edit Mode is PER-USER — must NOT sync between sessions (2026-06-04)
 
 - **Status:** active
