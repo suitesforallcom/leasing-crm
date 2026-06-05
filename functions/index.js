@@ -155,24 +155,151 @@ async function requireEditor(auth) {
 const stateDocRef = () => db.doc(`workspaces/${WORKSPACE_ID}/data/state`);
 
 // Read — returns the inner `state` object, or {} if doc doesn't exist yet.
-async function readWorkspaceState() {
+// ─── Strip-aware state I/O (scaling buildings-strip — серверная поддержка) ───
+// Под settings.syncBuildingsStrip монолит несёт buildings:[]; реальные здания
+// живут в коллекции workspaces/{ws}/buildings, платежи — в .../payments. Хелперы
+// ниже дотягивают их для серверных функций (findUnit, waiver-math, инвойсы), а на
+// записи зеркалят ИЗМЕНЁННЫЕ здания обратно в коллекцию. ВСЁ под флагом strip —
+// когда он выключен, поведение байт-в-байт прежнее (DORMANT, безопасный деплой).
+
+// Сырое чтение state-дока без гидрации (для peek по флагу + для readWorkspaceState).
+async function _readStateRaw() {
   const snap = await stateDocRef().get();
   const data = snap.data() || {};
-  // Support both shapes: wrapped (expected) and legacy flat (fallback).
   return data.state && typeof data.state === 'object' ? data.state : data;
+}
+
+function _stripOnCF(state) {
+  return !!(state && state.settings && state.settings.syncBuildingsStrip);
+}
+
+// stable-serialize — чтобы зеркалить только реально изменившиеся здания.
+function _stableStringCF(v) {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v);
+  if (Array.isArray(v)) return '[' + v.map(_stableStringCF).join(',') + ']';
+  return '{' + Object.keys(v).filter(k => v[k] !== undefined).sort()
+    .map(k => JSON.stringify(k) + ':' + _stableStringCF(v[k])).join(',') + '}';
+}
+
+// Читает все здания из коллекции (raw doc, pointsFlat-форма — findUnit матчит по id).
+async function _loadBuildingsForCF() {
+  const out = [];
+  const colSnap = await db.collection(`workspaces/${WORKSPACE_ID}/buildings`).get();
+  colSnap.forEach((d) => { const x = d.data(); if (x && x._schema === 'v2' && x.doc) out.push(x.doc); });
+  return out;
+}
+
+// Дотягивает платежи из коллекции в u.payments (для waiver / already-paid math).
+async function _mergePaymentsIntoBuildingsCF(buildings) {
+  if (!Array.isArray(buildings) || !buildings.length) return;
+  const colSnap = await db.collection(`workspaces/${WORKSPACE_ID}/payments`).get();
+  const byUnit = {};
+  colSnap.forEach((d) => {
+    const x = d.data();
+    if (!x || x._schema !== 'v2' || !x.unitId || !x.ym) return;
+    const k = (x.buildingId || '') + '|' + x.unitId;
+    (byUnit[k] = byUnit[k] || {})[x.ym] = x.rec || {};
+  });
+  for (const b of buildings) {
+    for (const f of (b.floors || [])) {
+      for (const u of (f.units || [])) {
+        const rec = byUnit[(b.id || '') + '|' + u.id];
+        if (rec) { u.payments = u.payments || {}; for (const ym in rec) u.payments[ym] = rec[ym]; }
+      }
+    }
+  }
+}
+
+// Полная гидрация state под strip: здания + платежи. No-op если strip off
+// или здания уже в монолите.
+async function _rehydrateStateForStripCF(state) {
+  try {
+    if (!_stripOnCF(state)) return;
+    if (Array.isArray(state.buildings) && state.buildings.length) return;
+    const buildings = await _loadBuildingsForCF();
+    await _mergePaymentsIntoBuildingsCF(buildings);
+    state.buildings = buildings;
+  } catch (e) {
+    logger.warn(`[strip-cf:rehydrate] ${(e && e.message) || e}`);
+  }
+}
+
+// Серверный аналог клиентского _buildingForV2: снять payments + сплющить
+// points → pointsFlat. Идемпотентно на уже-сплющенных (rehydrated) зданиях.
+function _buildingForV2CF(b) {
+  const clone = JSON.parse(JSON.stringify(b));
+  for (const f of (clone.floors || [])) {
+    for (const u of (f.units || [])) {
+      delete u.payments;
+      if (Array.isArray(u.points) && u.points.length && Array.isArray(u.points[0])) {
+        const flat = []; for (const pt of u.points) flat.push(+pt[0] || 0, +pt[1] || 0);
+        u.pointsFlat = flat; delete u.points;
+      }
+    }
+    if (f.outline && Array.isArray(f.outline.points) && f.outline.points.length && Array.isArray(f.outline.points[0])) {
+      const flat = []; for (const pt of f.outline.points) flat.push(+pt[0] || 0, +pt[1] || 0);
+      f.outline.pointsFlat = flat; delete f.outline.points;
+    }
+  }
+  return clone;
+}
+
+// Зеркалит одно здание в коллекцию (формат 1-в-1 с клиентским _mirrorBuildingsToV2).
+async function _mirrorBuildingV2CF(b) {
+  if (!b || !b.id) return;
+  try {
+    await db.doc(`workspaces/${WORKSPACE_ID}/buildings/${b.id}`).set({
+      _schema: 'v2',
+      buildingId: b.id,
+      doc: _buildingForV2CF(b),
+      _mirroredAt: admin.firestore.FieldValue.serverTimestamp(),
+      _mirroredBy: 'cloud-function',
+    });
+  } catch (e) {
+    logger.warn(`[strip-cf:mirror] ${b.id}: ${(e && e.message) || e}`);
+  }
+}
+
+async function readWorkspaceState() {
+  const state = await _readStateRaw();
+  await _rehydrateStateForStripCF(state);  // no-op когда strip выключен
+  return state;
 }
 
 // Write — runs a transactional mutation of the `state` sub-object. `mutate`
 // receives the current state and may modify it in place. We bump _rev so
 // the client's onSnapshot picks up our change and does not echo it back.
 async function mutateWorkspaceState(mutate) {
+  // Под strip предзагружаем здания+платежи ВНЕ транзакции (коллекция — источник
+  // истины; _rev-лок монолита защищает settings/ui/прочее). null когда strip off.
+  let stripBuildings = null;
+  try {
+    const peek = await _readStateRaw();
+    if (_stripOnCF(peek)) {
+      stripBuildings = await _loadBuildingsForCF();
+      await _mergePaymentsIntoBuildingsCF(stripBuildings);
+    }
+  } catch (e) {
+    logger.warn(`[strip-cf:mutate-peek] ${(e && e.message) || e}`);
+  }
+  let toMirror = null;
   await db.runTransaction(async (tx) => {
     const ref = stateDocRef();
     const snap = await tx.get(ref);
     const data = snap.data() || {};
     const isWrapped = data.state && typeof data.state === 'object';
     const state = isWrapped ? data.state : data;
+    let preShape = null;
+    if (stripBuildings) {
+      state.buildings = JSON.parse(JSON.stringify(stripBuildings)); // свежая копия на каждый retry
+      preShape = {};
+      for (const b of state.buildings) if (b && b.id) preShape[b.id] = _stableStringCF(b);
+    }
     await mutate(state);
+    if (stripBuildings) {
+      toMirror = (state.buildings || []).filter((b) => b && b.id && preShape[b.id] !== _stableStringCF(b));
+      state.buildings = []; // ре-стрип: монолит остаётся маленьким
+    }
     const out = isWrapped ? {
       ...data,
       state,
@@ -187,6 +314,10 @@ async function mutateWorkspaceState(mutate) {
     };
     tx.set(ref, out);
   });
+  // После транзакции — зеркалим только реально изменившиеся здания в коллекцию.
+  if (toMirror && toMirror.length) {
+    for (const b of toMirror) await _mirrorBuildingV2CF(b);
+  }
 }
 
 function findUnit(state, {buildingId, floorId, unitId}) {
