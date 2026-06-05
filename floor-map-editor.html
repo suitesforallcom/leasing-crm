@@ -80889,6 +80889,13 @@ function renderUnitInvoiceReportBody(u) {
 // also pick them up), and self-heals by stamping u.stripe.lastInvoiceId
 // for the most recent rent invoice if the unit had no stamps. Idempotent
 // + safe to call repeatedly. Returns the rows it fetched (possibly []).
+// Троттл фетча инвойсов — МОДУЛЬНАЯ карта по Stripe customerId, НЕ поле юнита.
+// Под buildings-strip листенер зданий заменяет объект здания целиком
+// (state.buildings[idx] = incoming) → новые объекты юнитов приходят без
+// u._lastStripeFetchAt → троттл сбрасывался на каждом событии листенера →
+// шторм перезапросов Stripe → «прыгающие цифры» в карточке. Карта по customerId
+// переживает подмену объекта. customerId — естественный ключ (фетч per-customer).
+const _stripeFetchThrottleAt = {};
 async function _fetchUnitInvoicesFromStripe(u, opts = {}) {
   if (!u) return [];
   const customerId = (u.stripe && u.stripe.customerId || '').trim();
@@ -80903,10 +80910,11 @@ async function _fetchUnitInvoicesFromStripe(u, opts = {}) {
   // the throttle entirely (used by the Refresh button).
   const THROTTLE_MS = 5000;
   const now = Date.now();
-  if (!opts.force && u._lastStripeFetchAt && (now - u._lastStripeFetchAt) < THROTTLE_MS) {
+  const _lastFetchAt = _stripeFetchThrottleAt[customerId] || 0;
+  if (!opts.force && _lastFetchAt && (now - _lastFetchAt) < THROTTLE_MS) {
     return [];
   }
-  u._lastStripeFetchAt = now;
+  _stripeFetchThrottleAt[customerId] = now;
   // Hard timeout on the network call — if Stripe (or our Cloud
   // Function) hangs, we must not leave the throttle/UI stuck. After
   // FETCH_TIMEOUT_MS we resolve to [] and let the UI fall back to
@@ -80943,7 +80951,7 @@ async function _fetchUnitInvoicesFromStripe(u, opts = {}) {
       console.warn('[unit invoice fetch] failed for suite ' + (u.id || '?') + ':', e.message || e);
       // On error, allow another attempt sooner — clear throttle so the
       // next render can retry (e.g. transient network hiccup).
-      u._lastStripeFetchAt = 0;
+      _stripeFetchThrottleAt[customerId] = 0;
       // Still rerender so the empty/diagnostic state is up to date.
       if (opts.rerender !== false && typeof renderDetail === 'function') {
         try { renderDetail(); } catch {}
