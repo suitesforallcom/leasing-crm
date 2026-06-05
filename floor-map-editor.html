@@ -36770,7 +36770,8 @@ function updateTopbarOutstandingPill() {
   overdueUnits.sort((a, b) => b.owed - a.owed);
 
   let el = document.getElementById('outstandingPill');
-  if (outstanding <= 0) { el?.remove(); return; }
+  // Always-visible (Tony 2026-06-05): рендерим «0 $0» вместо скрытия на нуле,
+  // чтобы оператор видел «загружено и ноль», а не «спрятано/не догрузилось».
 
   if (!el) {
     el = document.createElement('div');
@@ -36901,7 +36902,7 @@ function renderExpiringPill() {
   _expEnsureStyle();
   const list = _expiringUnits();
   let el = document.getElementById('expiringPill');
-  if (list.length === 0) { el?.remove(); document.getElementById('expPop')?.remove(); return; }
+  // Always-visible (Tony 2026-06-05): показываем «0 expiring &lt;60d» вместо скрытия.
   if (!el) {
     el = document.createElement('button');
     el.type = 'button';
@@ -54789,10 +54790,7 @@ function updateTopbarActivityPill() {
   // Only show the pill when there's something to brag about — zero
   // signed and zero moved-out means nothing happened, no value in
   // taking topbar real estate. Toggle off cleanly.
-  if (stats.signed.count === 0 && stats.moveOut.count === 0) {
-    el?.remove();
-    return;
-  }
+  // Always-visible (Tony 2026-06-05): показываем «0 new leases» вместо скрытия на нуле.
 
   if (!el) {
     el = document.createElement('button');
@@ -54854,7 +54852,7 @@ function updateTopbarActivityPill() {
     pillCount = stats.signed.count;
     pillLabel = stats.signed.count === 1 ? 'new lease' : 'new leases';
     const dollars = '$' + Math.round(stats.signed.monthly).toLocaleString();
-    pillAmountHtml = `<b class="ap-amount">+${dollars}/mo</b>`;
+    pillAmountHtml = stats.signed.monthly > 0 ? `<b class="ap-amount">+${dollars}/mo</b>` : '';
   }
   el.innerHTML = `
     <span class="ap-dot"></span>
@@ -55578,7 +55576,7 @@ function updateTopbarLeasePill() {
   pendingItems.sort((a, b) => (b.daysWaiting || 0) - (a.daysWaiting || 0));
 
   let el = document.getElementById('leasePill');
-  if (pending <= 0) { el?.remove(); return; }
+  // Always-visible (Tony 2026-06-05): показываем «📝 0 pending» вместо скрытия.
 
   if (!el) {
     el = document.createElement('div');
@@ -55701,7 +55699,7 @@ function updateTopbarContractPill() {
   expiringItems.sort((a, b) => a.daysLeft - b.daysLeft);
 
   let el = document.getElementById('contractPill');
-  if (expiring <= 0) { el?.remove(); return; }
+  // Always-visible (Tony 2026-06-05): показываем «📄 0 expiring» вместо скрытия.
 
   if (!el) {
     el = document.createElement('div');
