@@ -38,6 +38,32 @@ audit-trail mandates, reconciliation invariants, defensive UI patterns.
 Mirrors how industry-standard PMS/accounting software (Yardi, AppFolio,
 QuickBooks, Stripe) enforce correctness internally.
 
+## 0.1 Data-safety operating rules (added 2026-06-04 after a DATA-LOSS incident)
+
+A latent bug (`fixFloorAssignments` deleting units, FIXES_LOG **Entry 44**)
+combined with a backup gap caused **permanent loss of two floors** of the
+architect's work. Non-negotiable rules so it never repeats:
+
+- **Backup BEFORE any structural operation** (strip/cutover, floor or unit
+  delete, restore, schema change) — take a full snapshot AND verify it
+  actually contains the data (not a stripped shell), then proceed.
+- **NEVER run `sfaWipeBackups()` (or otherwise prune backups) while the
+  workspace is unstable / mid-incident.** It removed the only local recovery
+  snapshots during the incident.
+- **Backups must cover the collections, not just the monolith.** Under the
+  strip, buildings/payments live in per-entity collections that the server
+  backup CF does NOT capture. **Firestore PITR is now ENABLED (7-day)** and
+  is the standing safety net — keep it on. If PITR is ever disabled, the
+  backup CF MUST be extended to snapshot the collections first.
+- **Destructive auto-repairs must never run on page load** (they compound
+  loss across reloads). `dedupeAllFloors` / `dedupeUnitsEverywhere` /
+  `fixFloorAssignments` auto-run is frozen on init — keep it frozen until the
+  workspace is demonstrably stable.
+- **When debugging suspected data loss: FREEZE mutations + secure a verified
+  copy FIRST, then diagnose.** Do not iterate destructive console scripts.
+  Make a methodical plan (preserve → ground-truth → instrument → isolate →
+  confirm-with-evidence → fix) before touching anything.
+
 ## 1. Safety
 - Always check `git status` before editing.
 - If the working tree has uncommitted changes, stop and ask the user.

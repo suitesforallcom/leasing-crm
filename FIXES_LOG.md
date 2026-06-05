@@ -60,6 +60,22 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 44. fixFloorAssignments move-loop must NEVER delete a unit + backup/PITR gaps (DATA LOSS, 2026-06-04)
+
+- **Status:** active
+- **Branch / commit:** `main` — emergency freeze `451f866`, proper fix `c3e5fa7`; PITR enabled out-of-band.
+- **Area:** Floor assignment / data integrity / backups / DATA LOSS incident
+- **Files:** `floor-map-editor.html` — `fixFloorAssignments()` move loop (~:151654) and the `ensureRealDataSeeded` on-init auto-run (~:151712).
+- **Incident (operator-visible, severe):** New Tampa floors progressively LOST units on every reload (floor 2 114→67, floor 4 23→0, floor 5 17→0; ~100 units deleted per pass). The architect's floors 4/5 were **permanently lost** (unrecoverable — see backup gap below).
+- **Root cause (deletion):** the `fixFloorAssignments` move loop did, in order: `fromFloor.units = filter(u=>u!==unit)` (remove from source) → `if (target.units.some(u=>u.id===unit.id)) continue` (skip add when target already has the id). When cross-floor **dup ids** existed (from the phantom-floor / multi-writer sync churn), the unit was removed from source AND not added to target = **silently DELETED**. The function auto-ran on every load (`mismatches>3` → `fixFloorAssignments(true)`), so each reload deleted ~100 units.
+- **Invariant — DO NOT BREAK:** in the move loop, **check for a dup id on the target BEFORE removing from the source**: `if (target.units.some(u=>u.id===unit.id)) continue;` must come FIRST; only `filter`-out-of-source when the push to target is certain. `fixFloorAssignments` must be incapable of deleting a unit — worst case a misplaced unit stays on its (wrong) floor. The on-init auto-run is ALSO frozen (`451f866`) — keep it disabled until the workspace is demonstrably stable; re-enabling must keep this no-delete invariant.
+- **Backup gap (why it was unrecoverable — ARCHITECTURAL):** the server backup system (`/workspaces/{ws}/backups/`) snapshots ONLY the monolith state doc. The **buildings strip** moved buildings into the per-entity `buildings` collection, which the backup system does NOT capture — so under the strip, auto-backups are ~45 KB shells with no buildings. The architect's floors 4/5 lived only in the collection (synced today, post-strip) → no backup contained them. Full Firestore **PITR was DISABLED** (only a 1-hour version window existed; the loss predated it). **Fix: PITR now ENABLED (7-day, covers all collections).** If a future change strips data into collections, EITHER keep PITR on OR extend the backup CF to snapshot the collections.
+- **Process lessons (do NOT repeat):** (1) take + VERIFY a full backup before any structural op (strip, floor/unit delete, restore); (2) NEVER run `sfaWipeBackups()` during instability (it removed local recovery snapshots mid-incident); (3) destructive auto-repairs must not run on load (they compound loss across reloads); (4) when debugging data loss, FREEZE mutations + secure a copy first, then diagnose — don't iterate destructive scripts.
+- **How to verify:** `grep -B1 "fromFloor.units = fromFloor.units.filter" floor-map-editor.html` — the `if (target.units.some(...id...)) continue;` line must appear ABOVE the filter, not below. `grep -c "FLOOR-REPAIRS FROZEN" floor-map-editor.html` ≥ 1. PITR: `gcloud firestore databases describe --database='(default)' --project=suitesforall --format='value(pointInTimeRecoveryEnablement)'` → `POINT_IN_TIME_RECOVERY_ENABLED`.
+- **Regression test:** none — manual UI only.
+
+---
+
 ### 43. fixFloorAssignments must NOT synthesize phantom floors from sub-room IDs (2026-06-04)
 
 - **Status:** active
