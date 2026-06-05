@@ -32089,6 +32089,10 @@ async function fbPushNow() {
   const { sdk, db, uid } = fbSync;
   try {
     const payload = fbSanitizeState(state);
+    // Edit Mode персональный (per-user) — НЕ синкаем: убираем из payload, чтобы
+    // чужой editMode не долетал до других сессий. Локально (state + localStorage)
+    // он остаётся; fbApplyRemote дополнительно сохраняет свой editMode при приёме.
+    try { if (payload.settings && 'editMode' in payload.settings) delete payload.settings.editMode; } catch (e) {}
     // Слайс 6b — write-cutover платежей (инертно пока syncV2Strip выкл).
     // Зеркалит платежи в коллекцию и СТРИПает их из payload, чтобы монолит
     // перестал нести ~195KB платежей. Безопасно: payload — копия; при сбое
@@ -34545,6 +34549,12 @@ function fbApplyRemote(doc) {
   // в Firestore полные, а в localStorage пустые». Object-type ключи
   // bypass'ят coerce, как и settings.
   const _OBJECT_TYPE_KEYS = new Set(['settings', 'dailyHistory', 'calendarEvents', 'callActivity', 'aircallUserNumbers']);
+  // Edit Mode — ПЕРСОНАЛЬНЫЙ (per-user), НЕ синкается между пользователями.
+  // settings приходят из remote целиком (state.settings = remote.settings ниже),
+  // что затёрло бы локальный editMode чужим (архитектор включил Edit → у тебя
+  // тоже включался). Запоминаем СВОЙ режим и восстанавливаем после применения.
+  const _localEditMode = (state.settings && typeof state.settings.editMode !== 'undefined')
+    ? state.settings.editMode : undefined;
   for (const k of ['buildings', 'tenants', 'leases', 'contracts', 'settings', 'bankConnections', 'gmailActivity', 'dailyHistory', 'calendarEvents', 'callActivity', 'aircallUserNumbers']) {
     // КРИТИЧНО (strip): под buildings read-switch монолит НЕ источник истины
     // для зданий — они приходят из коллекции (listener + getDocs fallback).
@@ -34567,6 +34577,9 @@ function fbApplyRemote(doc) {
       }
     }
   }
+  // Восстанавливаем локальный Edit Mode поверх применённых remote-settings —
+  // он персональный, чужой editMode не должен переключать твою сессию.
+  if (state.settings && _localEditMode !== undefined) state.settings.editMode = _localEditMode;
   // Защита: если cloud _rev похож на микросекундный timestamp
   // (значение > 1e12 — это ~год в микросекундах от эпохи),
   // значит счётчик _rev был «отравлен» источником вне текущего кода.
