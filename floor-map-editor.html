@@ -65639,18 +65639,24 @@ function renderBg() {
   // если та же картинка с теми же параметрами уже отрисована — НЕ трогаем bgG
   // (без clearG и без перезагрузки) → мигание исчезает. Перерисовываем только
   // когда src / scale / позиция / opacity реально изменились.
-  const _bgSig = (bg && bg.src && state.settings.showBg)
-    ? (bg.src + '|' + (bg.scale || 1) + '|' + (bg.x || 0) + '|' + (bg.y || 0) + '|' + (bg.opacity || 0.7))
+  // Сигнатуру считаем по БАЗОВОМУ URL (без ?token): download-URL Firebase
+  // Storage может пере-токенизироваться при пере-доставке здания из коллекции
+  // (под strip это часто) — иначе та же картинка считалась бы «новой» и зря
+  // перезагружалась → мигание (BG-watcher поймал: DOM IMG-EST→IMG-NET, data=URL).
+  const _bgKey = (bg && bg.src) ? String(bg.src).split('?')[0] : '';
+  const _bgSig = (_bgKey && state.settings.showBg)
+    ? (_bgKey + '|' + (bg.scale || 1) + '|' + (bg.x || 0) + '|' + (bg.y || 0) + '|' + (bg.opacity || 0.7))
     : '';
   // Skip-если-не-изменилось: уже отрисована та же картинка ИЛИ её загрузка
   // прямо сейчас идёт (in-flight) → не дёргаем clearG/reload (иначе синк-churn
   // во время асинхронной загрузки сам по себе мигает подложкой).
   if (_bgSig && window._bgRenderedSig === _bgSig && (bgG.querySelector('image') || window._bgLoadingSig === _bgSig)) return;
-  clearG(bgG);
   window._bgRenderedSig = _bgSig;
-  // The corner upload button's visibility is entirely CSS-driven (Edit Mode + plan view);
-  // just bail early if there's no image to render.
-  if (!bg.src || !state.settings.showBg) { window._bgLoadingSig = ''; return; }
+  // НЕ стираем подложку здесь (вверху) — иначе на время асинхронной загрузки
+  // новой картинки холст пуст (то самое мигание: DOM image IMG-EST→IMG-NET при
+  // живой ссылке). Старую стираем ТОЛЬКО в onload, прямо перед добавлением новой
+  // — атомарная замена. Если подложки нет / скрыта — стираем сразу.
+  if (!bg.src || !state.settings.showBg) { clearG(bgG); window._bgLoadingSig = ''; return; }
 
   window._bgLoadingSig = _bgSig;  // загрузка началась — пока идёт, повторные renderBg не перезагружают
   const probe = new Image();
@@ -65668,6 +65674,7 @@ function renderBg() {
     img.setAttribute('height', h);
     img.setAttribute('opacity', bg.opacity || 0.7);
     img.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    clearG(bgG);                // стираем старую РОВНО СЕЙЧАС — атомарная замена, холст не пустует
     bgG.appendChild(img);
     window._bgLoadingSig = '';  // загрузка завершена, картинка в DOM
     // Re-fit the viewBox to include the bg image — ТОЛЬКО при ПЕРВОЙ
