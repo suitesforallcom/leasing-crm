@@ -151716,41 +151716,26 @@ function fixFloorAssignments(silent = false) {
 
 // Seed real data on first run only (respects user modifications afterwards)
 (function ensureRealDataSeeded() {
-  // ⚠️ FROZEN 2026-06-04 (АВАРИЙНО, anti-data-loss): авто-ремонты этажей на
-  // загрузке прогрессивно УДАЛЯЛИ комнаты (fixFloorAssignments — move-and-drop
-  // при дублирующемся id на целевом этаже) → этажи таяли 114→67, 23→0 на каждой
-  // перезагрузке. Отключены до починки пути удаления. Лог счётчика — для проверки,
-  // что «кровотечение» остановлено. Снять заморозку: вернуть вызовы ниже.
-  let _tuFreeze = 0;
-  try { (state.buildings || []).forEach(b => (b.floors || []).forEach(f => _tuFreeze += (f.units || []).length)); } catch (e) {}
-  console.warn('[init] FLOOR-REPAIRS FROZEN (anti-data-loss). Комнат в памяти: ' + _tuFreeze + ' — авто-dedupe/fix отключены');
-  const dupeFloors = 0; // dedupeAllFloors(true) — FROZEN
-  const dupeUnits = 0;  // dedupeUnitsEverywhere(true) — FROZEN
-
-  if (dupeFloors > 0 || dupeUnits > 0) saveState();
+  // ───────────────────────────────────────────────────────────────────────
+  // АВТО-РАСКЛАДКА/DEDUP КОМНАТ НА ЗАГРУЗКЕ — УБРАНА НАВСЕГДА (2026-06-04, по
+  // решению оператора; инцидент потери данных — FIXES_LOG Entry 44).
+  // Раньше тут на КАЖДОЙ загрузке бежали dedupeAllFloors + dedupeUnitsEverywhere
+  // + fixFloorAssignments: они пересортировывали комнаты по правилу «номер ÷ 100»
+  // и (из-за бага move-and-drop) УДАЛЯЛИ их, перетирая осознанное размещение
+  // архитектора (этажи 4/5 потеряны). Источник истины — ГДЕ комнату поставил
+  // оператор, а НЕ формула из номера. Раскладку/очистку дублей теперь можно
+  // запустить ТОЛЬКО ВРУЧНУЮ кнопкой «🔧 Fix Floor Assignments» (она уже с фиксом
+  // «никогда не удалять»). На загрузке состояние комнат/этажей не трогаем.
+  // ───────────────────────────────────────────────────────────────────────
+  try {
+    let _tuOnLoad = 0;
+    (state.buildings || []).forEach(b => (b.floors || []).forEach(f => _tuOnLoad += (f.units || []).length));
+    console.info('[init] авто-раскладка/dedup на загрузке отключены навсегда (ручная кнопка остаётся). Комнат: ' + _tuOnLoad);
+  } catch (e) {}
 
   if (state._seeded) {
-    // Already seeded before — but check if units are on wrong floors (state corruption from old versions)
-    let mismatches = 0;
-    for (const b of state.buildings) {
-      for (const f of b.floors) {
-        for (const u of f.units) {
-          // Skip sub-rooms — see fixFloorAssignments comment for the
-          // 20th-floor incident (2026-04-30). Sub-rooms have numeric IDs
-          // derived from their parent and must NOT be auto-routed.
-          if (u.parentId) continue;
-          const sn = parseInt(u.id);
-          if (!isNaN(sn) && sn >= 100 && Math.floor(sn/100) !== f.number) mismatches++;
-        }
-      }
-    }
-    if (mismatches > 3) {
-      // ⚠️ FROZEN 2026-06-04: fixFloorAssignments удалял комнаты при перемещении
-      // (если на целевом этаже уже есть id — комната снималась с источника и НЕ
-      // добавлялась на цель = удаление). Отключено до починки. См. заморозку выше.
-      console.warn(`[init] ${mismatches} units on wrong floors — auto-fix FROZEN (он удалял комнаты), пропускаю`);
-      // fixFloorAssignments(true);  // FROZEN — was deleting units on dup-id targets
-    }
+    // Авто-раскладка по этажам убрана (см. выше) — комнаты остаются там, где их
+    // поставил оператор. На загрузке ничего не пересортировываем и не удаляем.
     // [DISABLED 2026-04-30] Same data-loss bug as above — auto-fill
     // re-created deleted units on every page load. Gated behind opt-in.
     if (state?.settings?.autoSeedMissingSuites === true) {
