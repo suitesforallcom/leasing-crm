@@ -60,6 +60,21 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 45. Server CFs must be strip-aware (read + write) for the buildings-strip (2026-06-04)
+
+- **Status:** active
+- **Branch / commit:** `main` — `8e9735a` (functions/index.js); deployed + verified live the same day.
+- **Area:** Cloud Functions / scaling buildings-strip / invoicing / waiver math / revenue-critical
+- **Files:** `functions/index.js` — `readWorkspaceState()` + `mutateWorkspaceState()` (~:230-330) and helpers `_readStateRaw` / `_stripOnCF` / `_stableStringCF` / `_loadBuildingsForCF` / `_mergePaymentsIntoBuildingsCF` / `_rehydrateStateForStripCF` / `_buildingForV2CF` / `_mirrorBuildingV2CF`.
+- **Bug it fixed (revenue-critical):** with the buildings-strip ON the monolith carries `buildings:[]` (real buildings live in the `workspaces/{ws}/buildings` collection, payments in `.../payments`). Server functions read units from the monolith via `findUnit(state,…)` (21 callers) and write stamps via `mutateWorkspaceState`. Under the strip BOTH broke: invoice send threw `"Unit not found in workspace state"`, waiver pro-rate saw no `u.payments` (→ over-billing), `u.stripe` stamps were lost (→ double-billing risk). **This is exactly why employees could not send invoices** until the workspace was reverted to ~925 KB earlier today.
+- **Invariant — DO NOT BREAK:** the strip-aware I/O is **GATED on `state.settings.syncBuildingsStrip`** — when OFF, behavior is byte-identical (DORMANT). Keep it gated. `readWorkspaceState()` must rehydrate buildings + payments from the collections when the strip is on so `findUnit` / waiver math see the data. `mutateWorkspaceState()` must (a) pre-load buildings OUTSIDE the transaction, (b) let the mutate modify them, (c) mirror ONLY the shape-changed buildings back to the collection — 1:1 with the client `_buildingForV2` / `_mirrorBuildingsToV2` format: **payments stripped, points flattened to `pointsFlat`, doc key = `building.id`, `_schema:'v2'`** — and (d) re-strip `state.buildings=[]` before the monolith write so it stays small. Payments keep going via `_writePaymentV2` (NOT inside the building doc). **Do NOT write rehydrated buildings into the monolith** (that un-strips it → over the 1 MB cap).
+- **Verified live (2026-06-04):** strip ON → push 925→**48 KB**; a rent invoice for Suite 243 then succeeded — `[nto-rent] ✓ invoice created in_1Teo4U2nq2bZh3q65IvV9fo6`, no "Unit not found". 679 units intact pre/post.
+- **Known follow-up (perf, NOT correctness):** under the strip `_mergePaymentsIntoBuildingsCF` reads the FULL payments collection (~1297 docs) on every `readWorkspaceState` / `mutateWorkspaceState` call. Fine for operator-triggered sends; optimize to lazy/targeted (per-unit) loads before relying on it in the high-volume auto-billing cron.
+- **How to verify:** `grep -c "_rehydrateStateForStripCF\|_mirrorBuildingV2CF" functions/index.js` ≥ 2; `node --check functions/index.js`. Functional: with `syncBuildingsStrip=true`, send a rent invoice → it creates on Stripe (no "Unit not found").
+- **Regression test:** none — manual UI + live Stripe test.
+
+---
+
 ### 44. fixFloorAssignments move-loop must NEVER delete a unit + backup/PITR gaps (DATA LOSS, 2026-06-04)
 
 - **Status:** active
