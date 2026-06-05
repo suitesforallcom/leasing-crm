@@ -60,6 +60,19 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 47. Edit Mode is PER-USER — must NOT sync between sessions (2026-06-04)
+
+- **Status:** active
+- **Branch / commit:** `main` — `662dab0`
+- **Area:** Edit/View mode / multi-user sync / settings
+- **Files:** `floor-map-editor.html` — `fbApplyRemote()` (~:34548, capture+restore of `_localEditMode`) and the push path (~:32092, `delete payload.settings.editMode`). Toggle: `toggleEditMode()` (~:100284) writes `state.settings.editMode` + `saveState()`.
+- **Bug it fixed (operator-visible):** `state.settings.editMode` lived in the SYNCED `settings` object and `toggleEditMode()` calls `saveState()`, so one editor turning on Edit Mode pushed the flag to EVERY session — the architect entering Edit flipped Tony's session into edit too (editable inputs/handles appeared). Edit Mode is inherently per-user.
+- **Invariant — DO NOT BREAK:** Edit Mode must stay PER-USER. Two guards, keep BOTH: (1) `fbApplyRemote` captures the local `settings.editMode` before the wholesale `state.settings = remote.settings` merge and restores it after — incoming remote never changes your view/edit mode. (2) the push path deletes `payload.settings.editMode` so a session's mode is never sent to others (stays in local `state` + localStorage). Do NOT remove either guard, and do NOT add `editMode` back into the synced payload. Note `state.settings = remote.settings` is a WHOLESALE replace — any other field that must stay per-user needs the same capture/restore treatment (like `ui`, which is skipped entirely at ~:34556 / the `k === 'ui'` continue).
+- **How to verify:** `grep -c "_localEditMode" floor-map-editor.html` ≥ 2 and `grep -c "delete payload.settings.editMode" floor-map-editor.html` ≥ 1. Functional: two sessions; one toggles Edit Mode → the other stays in its own mode.
+- **Regression test:** none — manual UI only.
+
+---
+
 ### 46. Stripe-fetch throttle must NOT live on the unit object (strip flicker, 2026-06-04)
 
 - **Status:** active
