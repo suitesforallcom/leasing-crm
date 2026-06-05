@@ -80988,7 +80988,7 @@ async function _fetchUnitInvoicesFromStripe(u, opts = {}) {
   const promise = (async () => {
     let rows = [];
     try {
-      const fetchP = stripeListInvoices({ customer: customerId, limit: 100 });
+      const fetchP = stripeListInvoices({ customer: customerId, limit: 100, lean: true });
       const timeoutP = new Promise((_, rej) =>
         setTimeout(() => rej(new Error('stripe fetch timeout')), FETCH_TIMEOUT_MS));
       const abortP = ac
@@ -83705,7 +83705,7 @@ function _prefetchInvoicesForMapBadges() {
       // для раскраски «invoice sent» нужен инвойс юнита в _invoicesCache.
       let cursor = null, page = 0, capped = false;
       do {
-        const res = await stripeListInvoices({ limit: 100, startingAfter: cursor });
+        const res = await stripeListInvoices({ limit: 100, startingAfter: cursor, lean: true });
         _mergeIntoInvoicesCache(res.rows || []);
         cursor = res.hasMore ? res.nextCursor : null;
         page++;

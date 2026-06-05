@@ -1645,12 +1645,18 @@ exports.listStripeInvoices = onCall(
   {secrets: [STRIPE_SECRET_KEY]},
   async (req) => {
     await requireEditor(req.auth);
-    const {limit, startingAfter, status, customer} = req.data || {};
+    const {limit, startingAfter, status, customer, lean} = req.data || {};
     const stripe = getStripe();
     const args = {
       limit: Math.min(Math.max(+limit || 50, 1), 100),
-      expand: ['data.customer'],
     };
+    // expand:['data.customer'] дотягивает ПОЛНЫЙ объект клиента на КАЖДЫЙ инвойс —
+    // это ~5с на 100 инвойсов (замер 2026-06-05: 7 страниц = 28с). Карте/бейджам
+    // он НЕ нужен: имя/email/id клиента уже есть на самом инвойсе
+    // (customer_name / customer_email / customer-string) — фоллбэки ниже их берут.
+    // lean=true (префетч карты + per-unit бейджи) → пропускаем expand → ~1с/стр.
+    // Без lean (если кому-то нужен актуальный клиент) поведение прежнее.
+    if (!lean) args.expand = ['data.customer'];
     if (startingAfter) args.starting_after = startingAfter;
     if (status && ['draft','open','paid','uncollectible','void'].includes(status)) {
       args.status = status;
