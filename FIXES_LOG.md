@@ -60,6 +60,19 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 46. Stripe-fetch throttle must NOT live on the unit object (strip flicker, 2026-06-04)
+
+- **Status:** active
+- **Branch / commit:** `main` — `b567815`
+- **Area:** Invoicing / Stripe fetch / buildings-strip regression / UI flicker
+- **Files:** `floor-map-editor.html` — `_fetchUnitInvoicesFromStripe()` (~:80898) + the module-level `_stripeFetchThrottleAt` map declared just above it.
+- **Bug it fixed (operator-visible):** with the buildings-strip live, the unit card / "New tenant added" move-in modal showed "jumping numbers" — a storm of Stripe re-fetches (repeated `[unit invoice fetch] returned=N` + `[verify-Deposit]` in console). Root: the per-unit 5 s re-fetch throttle was stored on the unit object (`u._lastStripeFetchAt`). The `_v2BuildingsAttachListener` read-switch replaces the WHOLE building object on every event (`state.buildings[idx] = incoming`); the incoming units (from the collection doc) carry no runtime fields → the throttle reset on every tick → re-fetch storm (the strip fires the buildings listener far more often than the monolith ever did).
+- **Invariant — DO NOT BREAK:** runtime/ephemeral per-unit fields that must survive sync (fetch throttles, in-flight handles, render caches) must NOT live on the unit object when the buildings-strip / read-switch can replace it. The Stripe-fetch throttle is keyed by `customerId` in the module-level `_stripeFetchThrottleAt` map (the natural per-fetch key; invoice rows already live in the module-level `_invoicesCache`, not on the unit). Do NOT reintroduce `u._lastStripeFetchAt` or any `u._*` throttle that the building swap wipes.
+- **How to verify:** `grep -c "_stripeFetchThrottleAt" floor-map-editor.html` ≥ 3 and `grep -c "_lastStripeFetchAt" floor-map-editor.html` == 0. Functional: open a unit card under the strip → number/verify state stays stable (no re-fetch storm in console).
+- **Regression test:** none — manual UI only.
+
+---
+
 ### 45. Server CFs must be strip-aware (read + write) for the buildings-strip (2026-06-04)
 
 - **Status:** active
