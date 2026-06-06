@@ -66171,26 +66171,30 @@ function renderUnits() {
         const _numScaleV   = _clampSc(state.settings.unitNumScale);
         const _priceScaleV = _clampSc(state.settings.priceScale);
         const _availLabelW = Math.max(8, u.w - _PAD * 2);
-        // Помещается ли строка из chars символов размером px в ширину юнита.
-        const _fitsW = (px, chars) => (Math.max(1, chars) * px * 0.62) <= _availLabelW;
         // ЦЕНА — непрерывный авто-подгон по ширине (чтобы $ не наезжал на соседей).
         const _fitLabelFont = (desiredPx, text) => {
           const chars = Math.max(1, String(text == null ? '' : text).length);
           return Math.max(3, Math.min(desiredPx, _availLabelW / (chars * 0.62)));
         };
-        // НОМЕР — не больше ТРЁХ стандартных размеров (по просьбе оператора:
-        // непрерывный подгон давал «прыгающие» размеры). Тиры производны от
-        // желаемого (слайдер Size). Для каждого юнита берём САМЫЙ КРУПНЫЙ тир,
-        // который влезает по ширине → номера притягиваются к максимально большому
-        // стандарту, а юниты одинаковой ширины получают одинаковый размер. Если
-        // не влезает даже мелкий тир (длинный ID на узком юните) — берём мелкий
-        // (приоритет «крупно»; редкий небольшой выход за край допустим).
+        // НОМЕР — не больше ТРЁХ стандартных размеров (тиров), производных от
+        // желаемого (слайдер Size). Тиры сжаты к верху ([1, .82, .66]), а выбор
+        // идёт с ДОПУСКОМ _TIER_TOL: номер может занять более КРУПНЫЙ стандарт,
+        // даже если чуть выходит за ширину (~18%). Цель (просьба оператора): в
+        // маленьких юнитах размер максимально близок к большому стандарту. На
+        // юнитах с запасом по ширине допуск просто заполняет поля (крупнее, без
+        // наезда); юниты одинаковой ширины → одинаковый размер.
         const _mkTier = (mult) => Math.max(3, Math.round(17 * _numScaleV * mult));
-        const _numTiers = [_mkTier(1), _mkTier(0.72), _mkTier(0.52)];
+        const _numTiers = [_mkTier(1), _mkTier(0.82), _mkTier(0.66)];
+        const _TIER_TOL = 1.18;
         const _tierFont = (text) => {
           const chars = Math.max(1, String(text == null ? '' : text).length);
-          for (let i = 0; i < _numTiers.length; i++) { if (_fitsW(_numTiers[i], chars)) return _numTiers[i]; }
-          return _numTiers[_numTiers.length - 1];
+          for (let i = 0; i < _numTiers.length; i++) {
+            if (chars * _numTiers[i] * 0.62 <= _availLabelW * _TIER_TOL) return _numTiers[i];
+          }
+          // Даже мелкий тир грубо не влезает (длинный временный ID на узком
+          // юните) — непрерывный подгон ТОЛЬКО для него, чтобы не было сильного
+          // наезда; обычные номера остаются на ≤3 стандартах.
+          return Math.max(3, Math.min(_numTiers[_numTiers.length - 1], _availLabelW / (chars * 0.62)));
         };
 
         const num = document.createElementNS('http://www.w3.org/2000/svg', 'text');
