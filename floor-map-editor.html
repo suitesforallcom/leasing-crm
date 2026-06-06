@@ -13214,6 +13214,17 @@
   .range-row label { font-size: 12px; color: var(--muted); width: 100px; font-weight: 500; }
   .range-row input[type=range] { flex: 1; accent-color: var(--accent); }
   .range-row .val { font-size: 12px; color: var(--text); width: 46px; text-align: right; font-variant-numeric: tabular-nums; }
+  /* Ручной числовой ввод рядом со слайдером (правило «слайдер + numeric»).
+     Number-поле допускает значения вне диапазона слайдера — слайдер лишь
+     отображает кламп. Прячем нативные стрелки спиннера для чистого вида. */
+  .range-row input[type=number].range-num {
+    width: 52px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px;
+    font-size: 12px; box-sizing: border-box; background: var(--surface); color: var(--text);
+    text-align: right; font-variant-numeric: tabular-nums; -moz-appearance: textfield;
+  }
+  .range-row input[type=number].range-num::-webkit-outer-spin-button,
+  .range-row input[type=number].range-num::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  .range-row .range-unit { font-size: 11px; color: var(--muted); width: 8px; text-align: left; }
 
   /* ===== TOAST ===== */
   /* Toast notification — bottom-center with a solid background so it's
@@ -20246,22 +20257,40 @@
           <label>Translucent units (edit mode)</label>
           <div class="toggle" id="tglEdit" onclick="toggleEditMode()"></div>
         </div>
-        <div class="range-row">
-          <label>Unit opacity</label>
+        <div class="panel-title">Units</div>
+        <div class="range-row" title="Brightness (opacity) of the unit fill. Does not change the unit border.">
+          <label>Fill brightness</label>
           <input type="range" id="unitOpacity" min="10" max="100" value="100">
-          <span class="val" id="unitOpacityVal">100%</span>
+          <input type="number" class="range-num" id="unitOpacityNum" min="10" max="100" value="100">
+          <span class="range-unit">%</span>
         </div>
 
-        <div class="panel-title">Text Brightness</div>
-        <div class="range-row" title="Brightness of the price line on each unit (e.g. $1,200). Lower = dimmer / less attention-grabbing.">
-          <label>Price text</label>
-          <input type="range" id="priceTextOpacity" min="10" max="100" value="100">
-          <span class="val" id="priceTextOpacityVal">100%</span>
-        </div>
-        <div class="range-row" title="Brightness of suite number + size + tenant name on each unit. Lower = dimmer.">
-          <label>Other text</label>
+        <div class="panel-title">Unit number</div>
+        <div class="range-row" title="Brightness of the suite number (plus size / tenant text). Lower = dimmer.">
+          <label>Brightness</label>
           <input type="range" id="unitTextOpacity" min="10" max="100" value="100">
-          <span class="val" id="unitTextOpacityVal">100%</span>
+          <input type="number" class="range-num" id="unitTextOpacityNum" min="10" max="100" value="100">
+          <span class="range-unit">%</span>
+        </div>
+        <div class="range-row" title="Font size of the suite number. 100% = default. Type a value for sizes beyond the slider range.">
+          <label>Size</label>
+          <input type="range" id="unitNumScale" min="50" max="200" step="5" value="100">
+          <input type="number" class="range-num" id="unitNumScaleNum" min="30" max="400" step="5" value="100">
+          <span class="range-unit">%</span>
+        </div>
+
+        <div class="panel-title">Price</div>
+        <div class="range-row" title="Brightness of the price line on each unit (e.g. $1,200). Lower = dimmer / less attention-grabbing.">
+          <label>Brightness</label>
+          <input type="range" id="priceTextOpacity" min="10" max="100" value="100">
+          <input type="number" class="range-num" id="priceTextOpacityNum" min="10" max="100" value="100">
+          <span class="range-unit">%</span>
+        </div>
+        <div class="range-row" title="Font size of the price line. 100% = default. Type a value for sizes beyond the slider range.">
+          <label>Size</label>
+          <input type="range" id="priceScale" min="50" max="200" step="5" value="100">
+          <input type="number" class="range-num" id="priceScaleNum" min="30" max="400" step="5" value="100">
+          <span class="range-unit">%</span>
         </div>
 
         <div class="panel-title">Background Settings</div>
@@ -26552,6 +26581,11 @@ let state = {
     // --unit-price-opacity / --unit-text-opacity на #planSvg.
     priceTextOpacity: 1.0,   // .unit-price (рент)
     unitTextOpacity: 1.0,    // .unit-num + .unit-rate + .unit-dim (suite # / $/ft² / tenant)
+    // Отдельные множители РАЗМЕРА шрифта номера сьюта и цены (Layers-панель).
+    // Накладываются поверх глобального labelScale внутри _labelFontFor.
+    // 1.0 = 100% (как раньше). Только размер — яркость отдельными слайдерами.
+    unitNumScale: 1.0,       // размер .unit-num (база 17)
+    priceScale: 1.0,         // размер .unit-price (база 14)
     // Множитель размера ВСЕХ подписей-данных на карте (номер юнита, цена,
     // $/ft²/yr, арендатор). Управляется блоком «Label size» (кнопка Aa) в
     // нижней панели; применяется внутри _labelFontFor. 1.0 = 100% (как было).
@@ -32115,6 +32149,7 @@ const PER_USER_SETTINGS_KEYS = new Set([
   'showUnitPrice', 'showRatePerSqft', 'showProformaPrice', 'showProformaRate',
   'showGrid', 'showBg', 'showUnits', 'showWalls',
   'unitOpacity', 'editModeOpacity', 'priceTextOpacity', 'unitTextOpacity', 'labelScale',
+  'unitNumScale', 'priceScale',
 ]);
 
 async function fbPushNow() {
@@ -65860,6 +65895,12 @@ function renderUnits() {
     if (!Number.isFinite(sizeUnits) || sizeUnits <= 0) return targetScreenPx;
     return Math.min(1000, Math.max(0.5, sizeUnits));
   };
+  // Отдельные множители размера для номера сьюта и цены (слайдеры «Size» в
+  // Layers-панели). Накладываются поверх _labelScale. Клампим, чтобы битый
+  // стейт не разнёс рендер. 1 = как раньше.
+  const _clampScale = (v) => (Number.isFinite(v) && v > 0) ? Math.min(4, Math.max(0.3, v)) : 1;
+  const _unitNumScale = _clampScale((state && state.settings && typeof state.settings.unitNumScale === 'number') ? state.settings.unitNumScale : 1);
+  const _priceScale   = _clampScale((state && state.settings && typeof state.settings.priceScale   === 'number') ? state.settings.priceScale   : 1);
 
   // Archived units are hidden from the floor plan. They still live in
   // state.buildings[].floors[].units until permanently deleted, so payment
@@ -66130,7 +66171,7 @@ function renderUnits() {
         num.setAttribute('opacity', effectiveOpacity);
         // Inline font-size перебивает CSS-default (17 user-units) — даёт
         // константу в screen-px и cap по unit-size.
-        num.setAttribute('font-size', _labelFontFor(u, 17));
+        num.setAttribute('font-size', _labelFontFor(u, 17 * _unitNumScale));
         // Drop the "Suite " prefix — the map cell is obviously a suite, and
         // the extra word forces us to shrink the unit number on narrow units.
         // Keeping only the ID matches the redesign mock.
@@ -66193,7 +66234,7 @@ function renderUnits() {
           price.setAttribute('y', 39 + _labelYShift);
           if (_labelAnchor !== 'start') price.setAttribute('text-anchor', _labelAnchor);
           price.setAttribute('opacity', effectiveOpacity);
-          price.setAttribute('font-size', _labelFontFor(u, 14));
+          price.setAttribute('font-size', _labelFontFor(u, 14 * _priceScale));
           price.textContent = '$' + _labelRent.toLocaleString();
           g.appendChild(price);
         }
@@ -100532,7 +100573,7 @@ function applyTextBrightness() {
   svg.style.setProperty('--unit-price-opacity', String(pp));
   svg.style.setProperty('--unit-text-opacity',  String(tp));
 }
-['bgOpacity', 'bgScale', 'bgX', 'bgY', 'unitOpacity', 'priceTextOpacity', 'unitTextOpacity'].forEach(id => {
+['bgOpacity', 'bgScale', 'bgX', 'bgY'].forEach(id => {
   const inp = document.getElementById(id);
   if (!inp) return;
   inp.addEventListener('input', e => {
@@ -100541,12 +100582,41 @@ function applyTextBrightness() {
     else if (id === 'bgScale') { currentFloor().bg.scale = v/100; document.getElementById('bgScaleVal').textContent = v + '%'; renderBg(); }
     else if (id === 'bgX') { currentFloor().bg.x = v; document.getElementById('bgXVal').textContent = v; renderBg(); }
     else if (id === 'bgY') { currentFloor().bg.y = v; document.getElementById('bgYVal').textContent = v; renderBg(); }
-    else if (id === 'unitOpacity') { state.settings.unitOpacity = v/100; document.getElementById('unitOpacityVal').textContent = v + '%'; renderUnits(); }
-    else if (id === 'priceTextOpacity') { state.settings.priceTextOpacity = v/100; document.getElementById('priceTextOpacityVal').textContent = v + '%'; applyTextBrightness(); }
-    else if (id === 'unitTextOpacity')  { state.settings.unitTextOpacity  = v/100; document.getElementById('unitTextOpacityVal').textContent  = v + '%'; applyTextBrightness(); }
     saveState();
   });
 });
+
+// Контролы яркости/размера юнита в Layers-панели: связка «range + number».
+// number допускает ввод вне диапазона слайдера (точные/расширенные значения —
+// по просьбе оператора); слайдер лишь отображает кламп своего диапазона.
+// apply(v) пишет в state и применяет: renderUnits() для размеров и яркости
+// заливки, applyTextBrightness() для яркости текста (без полной перерисовки).
+// Персист на 'change' (релиз контрола), не на каждый 'input' — не штормим запись.
+function _wireRangeNum(rangeId, numId, apply) {
+  const rng = document.getElementById(rangeId);
+  const num = document.getElementById(numId);
+  if (!rng && !num) return;
+  const lo = num ? +num.min : +rng.min;
+  const hi = num ? +num.max : +rng.max;
+  const sLo = rng ? +rng.min : lo;
+  const sHi = rng ? +rng.max : hi;
+  const run = (raw, persist) => {
+    let v = Math.round(+raw);
+    if (!Number.isFinite(v)) v = lo;
+    v = Math.max(lo, Math.min(hi, v));
+    apply(v);
+    if (rng && rng !== document.activeElement) rng.value = Math.max(sLo, Math.min(sHi, v));
+    if (num && num !== document.activeElement) num.value = v;
+    if (persist) { try { saveState(); } catch {} }
+  };
+  if (rng) { rng.addEventListener('input', e => run(e.target.value, false)); rng.addEventListener('change', e => run(e.target.value, true)); }
+  if (num) { num.addEventListener('input', e => run(e.target.value, false)); num.addEventListener('change', e => run(e.target.value, true)); }
+}
+_wireRangeNum('unitOpacity',      'unitOpacityNum',      v => { state.settings.unitOpacity     = v/100; renderUnits(); });
+_wireRangeNum('unitTextOpacity',  'unitTextOpacityNum',  v => { state.settings.unitTextOpacity  = v/100; applyTextBrightness(); });
+_wireRangeNum('unitNumScale',     'unitNumScaleNum',     v => { state.settings.unitNumScale     = v/100; renderUnits(); });
+_wireRangeNum('priceTextOpacity', 'priceTextOpacityNum', v => { state.settings.priceTextOpacity = v/100; applyTextBrightness(); });
+_wireRangeNum('priceScale',       'priceScaleNum',       v => { state.settings.priceScale       = v/100; renderUnits(); });
 
 // =========================================================================
 // ===== AI Assistant (multi-provider: Grok / Claude) ======================
@@ -152093,16 +152163,24 @@ document.getElementById('tglEdit')?.classList.toggle('on', state.settings.editMo
 document.getElementById('editBtn')?.classList.toggle('active', state.settings.editMode);
 document.getElementById('gridBtn')?.classList.toggle('active', state.settings.showGrid);
 document.getElementById('labelsBtn')?.classList.toggle('active', state.settings.showLabels);
-document.getElementById('unitOpacity').value = Math.round((state.settings.unitOpacity || 1) * 100);
-document.getElementById('unitOpacityVal').textContent = Math.round((state.settings.unitOpacity || 1) * 100) + '%';
-// Восстанавливаем позицию слайдеров яркости текста + применяем к CSS-переменным.
-// Defensive: если поля нет в legacy state — fallback на 1.0 (полная яркость).
-const _ptp = Math.round(((typeof state.settings.priceTextOpacity === 'number') ? state.settings.priceTextOpacity : 1) * 100);
-const _utp = Math.round(((typeof state.settings.unitTextOpacity  === 'number') ? state.settings.unitTextOpacity  : 1) * 100);
-const _ptpEl = document.getElementById('priceTextOpacity');
-const _utpEl = document.getElementById('unitTextOpacity');
-if (_ptpEl) { _ptpEl.value = _ptp; document.getElementById('priceTextOpacityVal').textContent = _ptp + '%'; }
-if (_utpEl) { _utpEl.value = _utp; document.getElementById('unitTextOpacityVal').textContent  = _utp + '%'; }
+// Layers-панель: яркость заливки / номера / цены + размеры номера и цены.
+// Выставляем слайдеры И числовые поля из сохранённого state. Defensive:
+// пустой / legacy state → 100%. Яркость текста дополнительно прокидываем в
+// CSS-переменные через applyTextBrightness().
+(function _initLayerControls() {
+  const pct = (x) => Math.round(((typeof x === 'number') ? x : 1) * 100);
+  const set = (id, val, sLo, sHi) => {
+    const sl = document.getElementById(id);
+    const nm = document.getElementById(id + 'Num');
+    if (sl) sl.value = Math.max(sLo, Math.min(sHi, val));
+    if (nm) nm.value = val;
+  };
+  set('unitOpacity',      pct(state.settings.unitOpacity),      10, 100);
+  set('unitTextOpacity',  pct(state.settings.unitTextOpacity),  10, 100);
+  set('unitNumScale',     pct(state.settings.unitNumScale),     50, 200);
+  set('priceTextOpacity', pct(state.settings.priceTextOpacity), 10, 100);
+  set('priceScale',       pct(state.settings.priceScale),       50, 200);
+})();
 if (typeof applyTextBrightness === 'function') applyTextBrightness();
 // Label-size block — выставляем контролы из сохранённого labelScale.
 const _lsp = Math.round(((typeof state.settings.labelScale === 'number') ? state.settings.labelScale : 1) * 100);
