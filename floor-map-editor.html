@@ -66164,19 +66164,33 @@ function renderUnits() {
           else                                  _labelYShift = Math.round((u.h - _BLOCK_HEIGHT) / 2 - _BLOCK_TOP_Y);
         }
 
-        // Желаемый размер номера/цены = базовый × множитель из слайдеров Size
-        // (state.settings.unitNumScale / priceScale), затем АВТО-ПОДГОН по
-        // ширине юнита: на узких ячейках шрифт ужимается, чтобы строка влезла и
-        // не наезжала на соседей (выравнивание остаётся top-left). ~0.62 —
-        // приблизительная доля ширины символа от font-size (та же, что в
-        // hit-rect номера ниже). Низ ограничен 3, чтобы текст не схлопнулся.
+        // Желаемый размер = базовый × множитель из слайдеров Size
+        // (state.settings.unitNumScale / priceScale). ~0.62 — приблизительная
+        // доля ширины символа от font-size (та же, что в hit-rect номера ниже).
         const _clampSc = (v) => (Number.isFinite(v) && v > 0) ? Math.min(4, Math.max(0.3, v)) : 1;
         const _numScaleV   = _clampSc(state.settings.unitNumScale);
         const _priceScaleV = _clampSc(state.settings.priceScale);
         const _availLabelW = Math.max(8, u.w - _PAD * 2);
+        // Помещается ли строка из chars символов размером px в ширину юнита.
+        const _fitsW = (px, chars) => (Math.max(1, chars) * px * 0.62) <= _availLabelW;
+        // ЦЕНА — непрерывный авто-подгон по ширине (чтобы $ не наезжал на соседей).
         const _fitLabelFont = (desiredPx, text) => {
           const chars = Math.max(1, String(text == null ? '' : text).length);
           return Math.max(3, Math.min(desiredPx, _availLabelW / (chars * 0.62)));
+        };
+        // НОМЕР — не больше ТРЁХ стандартных размеров (по просьбе оператора:
+        // непрерывный подгон давал «прыгающие» размеры). Тиры производны от
+        // желаемого (слайдер Size). Для каждого юнита берём САМЫЙ КРУПНЫЙ тир,
+        // который влезает по ширине → номера притягиваются к максимально большому
+        // стандарту, а юниты одинаковой ширины получают одинаковый размер. Если
+        // не влезает даже мелкий тир (длинный ID на узком юните) — берём мелкий
+        // (приоритет «крупно»; редкий небольшой выход за край допустим).
+        const _mkTier = (mult) => Math.max(3, Math.round(17 * _numScaleV * mult));
+        const _numTiers = [_mkTier(1), _mkTier(0.72), _mkTier(0.52)];
+        const _tierFont = (text) => {
+          const chars = Math.max(1, String(text == null ? '' : text).length);
+          for (let i = 0; i < _numTiers.length; i++) { if (_fitsW(_numTiers[i], chars)) return _numTiers[i]; }
+          return _numTiers[_numTiers.length - 1];
         };
 
         const num = document.createElementNS('http://www.w3.org/2000/svg', 'text');
@@ -66185,9 +66199,9 @@ function renderUnits() {
         num.setAttribute('y', 18 + _labelYShift);
         if (_labelAnchor !== 'start') num.setAttribute('text-anchor', _labelAnchor);
         num.setAttribute('opacity', textOpacity);
-        // Inline-style font-size перебивает CSS-правило .unit-num и даёт
-        // пер-юнит размер с авто-подгоном под ширину ячейки.
-        num.style.fontSize = _fitLabelFont(17 * _numScaleV, u.id) + 'px';
+        // Inline-style font-size перебивает CSS-правило .unit-num. Номер берёт
+        // один из ≤3 стандартных тиров — самый крупный, влезающий по ширине.
+        num.style.fontSize = _tierFont(u.id) + 'px';
         // Drop the "Suite " prefix — the map cell is obviously a suite, and
         // the extra word forces us to shrink the unit number on narrow units.
         // Keeping only the ID matches the redesign mock.
