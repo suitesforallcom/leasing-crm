@@ -66209,9 +66209,11 @@ function renderUnits() {
         num.setAttribute('y', 18 + _labelYShift);
         if (_labelAnchor !== 'start') num.setAttribute('text-anchor', _labelAnchor);
         num.setAttribute('opacity', textOpacity);
-        // Inline-style font-size перебивает CSS-правило .unit-num. Номер берёт
-        // один из ≤3 стандартных тиров — самый крупный, влезающий по ширине.
-        num.style.fontSize = _tierFont(u.id) + 'px';
+        // Inline-style font-size перебивает CSS-правило .unit-num. По умолчанию
+        // номер берёт авто-тир; но если оператор задал фикс. размер этому юниту
+        // через панель мульти-выбора (u.labelNumPx) — используем его (override).
+        const _numOverride = (typeof u.labelNumPx === 'number' && u.labelNumPx >= 3) ? u.labelNumPx : null;
+        num.style.fontSize = (_numOverride != null ? _numOverride : _tierFont(u.id)) + 'px';
         // Drop the "Suite " prefix — the map cell is obviously a suite, and
         // the extra word forces us to shrink the unit number on narrow units.
         // Keeping only the ID matches the redesign mock.
@@ -66274,8 +66276,11 @@ function renderUnits() {
         // по нему решаем, не станет ли строка нечитаемой на узком юните. Не
         // зависит от того, какой размер цены выбран слайдером.
         const _priceWidthFit = _availLabelW / (Math.max(1, _priceText.length) * 0.62);
-        const _priceFs = _fitLabelFont(14 * _priceScaleV, _priceText);
-        if (showRent && _labelRent > 0 && _priceWidthFit >= 9) {
+        // Override фикс. размера цены для юнита (панель мульти-выбора). Если задан
+        // — используем его и ПОКАЗЫВАЕМ цену независимо от авто-скрытия по ширине.
+        const _priceOverride = (typeof u.labelPricePx === 'number' && u.labelPricePx >= 3) ? u.labelPricePx : null;
+        const _priceFs = (_priceOverride != null) ? _priceOverride : _fitLabelFont(14 * _priceScaleV, _priceText);
+        if (showRent && _labelRent > 0 && (_priceOverride != null || _priceWidthFit >= 9)) {
           // Pushed down +4px from the prior y=35 to give the suite ID
           // a bit more breathing room before the price line. Matches
           // the airier vertical rhythm of the ZIP redesign mock.
@@ -74061,6 +74066,14 @@ function renderDetail() {
     window._msTotalSqft     = totSqftAll;
     window._msSelectedCount = selectedUnits.length;
 
+    // Текущий размер подписей по выбранным: если у ВСЕХ один и тот же override —
+    // показываем его, иначе дефолт (24/14). px = user-units карты.
+    const _numPxVals   = selectedUnits.map(u => (typeof u.labelNumPx   === 'number') ? u.labelNumPx   : null);
+    const _pricePxVals = selectedUnits.map(u => (typeof u.labelPricePx === 'number') ? u.labelPricePx : null);
+    const _allSame = (a) => a.length > 0 && a[0] != null && a.every(v => v === a[0]);
+    const _commonNum   = _allSame(_numPxVals)   ? _numPxVals[0]   : 24;
+    const _commonPrice = _allSame(_pricePxVals) ? _pricePxVals[0] : 14;
+
     el.innerHTML = `
       <div class="detail-num">${selectedIds.length} units selected</div>
       <div class="detail-sub">${editOn ? 'Use the alignment tools at the bottom-right to align or distribute them.' : 'Apply a rate to all selected suites or edit any one individually.'}</div>
@@ -74197,6 +74210,33 @@ function renderDetail() {
           <div class="ms-unit-list">
             ${unitRows || '<div class="ms-empty">Selection has no rentable suites.</div>'}
           </div>
+        </div>
+
+        <!-- Label size — фикс. размер номера/цены для выбранных юнитов. Пишет
+             per-unit override (u.labelNumPx / u.labelPricePx), перекрывающий
+             авто-подгон в renderUnits. «Back to auto» удаляет override. -->
+        <div class="ms-section">
+          <div class="ms-section-title">Label size — ${selectedUnits.length} ${selectedUnits.length === 1 ? 'suite' : 'suites'}</div>
+          <div style="font-size:11px; color:var(--muted); margin:0 0 10px; line-height:1.4;">
+            Set how big the suite number and rent print on these units. Overrides the automatic sizing.
+          </div>
+          <div class="range-row" style="margin-bottom:10px;">
+            <label style="width:84px;">Unit number</label>
+            <input type="range" id="msNumSize" min="8" max="56" step="1" value="${Math.min(56, _commonNum)}"
+                   oninput="_msSetLabelSize('num', this.value, false)" onchange="_msSetLabelSize('num', this.value, true)">
+            <input type="number" class="range-num" id="msNumSizeNum" min="8" max="80" step="1" value="${_commonNum}"
+                   oninput="_msSetLabelSize('num', this.value, false)" onchange="_msSetLabelSize('num', this.value, true)">
+            <span class="range-unit">px</span>
+          </div>
+          <div class="range-row" style="margin-bottom:10px;">
+            <label style="width:84px;">Rent price</label>
+            <input type="range" id="msPriceSize" min="6" max="48" step="1" value="${Math.min(48, _commonPrice)}"
+                   oninput="_msSetLabelSize('price', this.value, false)" onchange="_msSetLabelSize('price', this.value, true)">
+            <input type="number" class="range-num" id="msPriceSizeNum" min="6" max="80" step="1" value="${_commonPrice}"
+                   oninput="_msSetLabelSize('price', this.value, false)" onchange="_msSetLabelSize('price', this.value, true)">
+            <span class="range-unit">px</span>
+          </div>
+          <button type="button" class="save-btn" onclick="_msResetLabelSize()" style="margin-top:2px;">↺ Back to auto</button>
         </div>
       ` : ''}
 
@@ -75984,6 +76024,52 @@ function _msSetUtil(mode, evt) {
   if (evt) evt.preventDefault();
 }
 window._msSetUtil = _msSetUtil;
+
+// === Multi-select label sizing — ФИКС. размер номера/цены для ВЫБРАННЫХ юнитов.
+// Пишет per-unit override (u.labelNumPx / u.labelPricePx, в user-units карты),
+// который перекрывает авто-подгон в renderUnits. Кнопка «Auto» (_msResetLabelSize)
+// удаляет поля → возврат к авто. Размер применяется ко всем выбранным сразу. ===
+function _msSetLabelSize(which, value, persist) {
+  if (typeof canEdit === 'function' && !canEdit()) {
+    if (typeof toast === 'function') toast('Your role cannot edit', 'error');
+    return;
+  }
+  const isNum = (which === 'num');
+  const lo = isNum ? 8 : 6, hi = 80;
+  let v = Math.round(+value);
+  if (!Number.isFinite(v)) v = isNum ? 24 : 14;
+  v = Math.max(lo, Math.min(hi, v));
+  const field = isNum ? 'labelNumPx' : 'labelPricePx';
+  const allUnits = (typeof currentUnits === 'function') ? currentUnits() : [];
+  const targets = (Array.isArray(selectedIds) ? selectedIds : [])
+    .map(id => allUnits.find(x => x.id === id)).filter(Boolean);
+  targets.forEach(u => { u[field] = v; });
+  // Синхронизируем парный контрол (слайдер/число), не трогая тот, что в фокусе.
+  const sl = document.getElementById(isNum ? 'msNumSize' : 'msPriceSize');
+  const nm = document.getElementById(isNum ? 'msNumSizeNum' : 'msPriceSizeNum');
+  const slMax = isNum ? 56 : 48;
+  if (sl && sl !== document.activeElement) sl.value = Math.min(slMax, v);
+  if (nm && nm !== document.activeElement) nm.value = v;
+  if (typeof renderUnits === 'function') renderUnits();
+  if (persist) { try { saveState(); } catch {} }
+}
+window._msSetLabelSize = _msSetLabelSize;
+
+function _msResetLabelSize() {
+  if (typeof canEdit === 'function' && !canEdit()) {
+    if (typeof toast === 'function') toast('Your role cannot edit', 'error');
+    return;
+  }
+  const allUnits = (typeof currentUnits === 'function') ? currentUnits() : [];
+  const targets = (Array.isArray(selectedIds) ? selectedIds : [])
+    .map(id => allUnits.find(x => x.id === id)).filter(Boolean);
+  targets.forEach(u => { delete u.labelNumPx; delete u.labelPricePx; });
+  if (typeof renderUnits === 'function') renderUnits();
+  try { saveState(); } catch {}
+  if (typeof renderDetail === 'function') renderDetail();   // обновить дефолты панели
+  if (typeof toast === 'function') toast('Label size reset to auto', 'success');
+}
+window._msResetLabelSize = _msResetLabelSize;
 
 function _msRecalc(which) {
   window._msLastField = which;
