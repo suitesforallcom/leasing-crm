@@ -66203,17 +66203,27 @@ function renderUnits() {
           return Math.max(3, Math.min(_numTiers[_numTiers.length - 1], _availLabelW / (chars * 0.62)));
         };
 
+        // Размер номера: override (панель мульти-выбора, u.labelNumPx) или
+        // авто-тир. Считаем ДО позиции — вертикаль подписей строится адаптивно
+        // под фактический размер номера.
+        const _numOverride = (typeof u.labelNumPx === 'number' && u.labelNumPx >= 3) ? u.labelNumPx : null;
+        const _numFs = (_numOverride != null) ? _numOverride : _tierFont(u.id);
+        // Адаптивный вертикальный стек подписей: верхняя строка с отступом от
+        // верха ячейки, каждая следующая — под предыдущей с зазором, масштабом к
+        // размеру шрифта. Раньше базлайны были фиксированы (18/39/53/68) под
+        // шрифт 17 → с крупным номером цена «улетала» вниз, а сам номер прижимался
+        // к верху. _stackY ведёт текущий baseline сверху вниз.
+        const _LBL_TOP = 5, _LBL_GAP = 4, _LBL_CAP = 0.74;
+        const _numBaseY = _LBL_TOP + _numFs * _LBL_CAP + _labelYShift;
+        let _stackY = _numBaseY;
         const num = document.createElementNS('http://www.w3.org/2000/svg', 'text');
         num.setAttribute('class', 'unit-num');
         num.setAttribute('x', _labelX);
-        num.setAttribute('y', 18 + _labelYShift);
+        num.setAttribute('y', _numBaseY);
         if (_labelAnchor !== 'start') num.setAttribute('text-anchor', _labelAnchor);
         num.setAttribute('opacity', textOpacity);
-        // Inline-style font-size перебивает CSS-правило .unit-num. По умолчанию
-        // номер берёт авто-тир; но если оператор задал фикс. размер этому юниту
-        // через панель мульти-выбора (u.labelNumPx) — используем его (override).
-        const _numOverride = (typeof u.labelNumPx === 'number' && u.labelNumPx >= 3) ? u.labelNumPx : null;
-        num.style.fontSize = (_numOverride != null ? _numOverride : _tierFont(u.id)) + 'px';
+        // Inline-style font-size перебивает CSS-правило .unit-num.
+        num.style.fontSize = _numFs + 'px';
         // Drop the "Suite " prefix — the map cell is obviously a suite, and
         // the extra word forces us to shrink the unit number on narrow units.
         // Keeping only the ID matches the redesign mock.
@@ -66287,7 +66297,8 @@ function renderUnits() {
           const price = document.createElementNS('http://www.w3.org/2000/svg', 'text');
           price.setAttribute('class', 'unit-price');
           price.setAttribute('x', _labelX);
-          price.setAttribute('y', 39 + _labelYShift);
+          _stackY += _LBL_GAP + _priceFs * _LBL_CAP;
+          price.setAttribute('y', _stackY);
           if (_labelAnchor !== 'start') price.setAttribute('text-anchor', _labelAnchor);
           price.setAttribute('opacity', textOpacity);
           price.style.fontSize = _priceFs + 'px';
@@ -66309,16 +66320,17 @@ function renderUnits() {
           const rate = document.createElementNS('http://www.w3.org/2000/svg', 'text');
           rate.setAttribute('class', 'unit-rate');
           rate.setAttribute('x', _labelX);
-          rate.setAttribute('y', 53 + _labelYShift);
+          const _rateFs = _labelFontFor(u, 10);
+          _stackY += _LBL_GAP + _rateFs * _LBL_CAP;
+          rate.setAttribute('y', _stackY);
           if (_labelAnchor !== 'start') rate.setAttribute('text-anchor', _labelAnchor);
           rate.setAttribute('opacity', textOpacity * 0.85);
-          rate.setAttribute('font-size', _labelFontFor(u, 10));
+          rate.setAttribute('font-size', _rateFs);
           rate.textContent = '$' + perYr.toFixed(0) + '/ft²/yr';
           g.appendChild(rate);
         }
-        // Cache flag for the tenant-line block below to nudge its y
-        // when the rate row has consumed the space at y=53/56.
-        const _tenantBumpY = _rateRendered ? 68 : 56;
+        // Минимальная высота юнита, при которой показываем строку арендатора/
+        // размера (позиция теперь адаптивная через _stackY, не фикс. baseline).
         const _tenantMinHeight = _rateRendered ? 68 : 55;
         // Third line: tenant name (if showTenant) or size (if showSqft).
         // Names that don't fit on one line wrap to two lines — split at
@@ -66380,10 +66392,11 @@ function renderUnits() {
             const info = document.createElementNS('http://www.w3.org/2000/svg', 'text');
             info.setAttribute('class', 'unit-dim');
             info.setAttribute('x', _labelX);
-            info.setAttribute('y', _tenantBumpY + _labelYShift);
+            const _tenantFont = _labelFontFor(u, 16);
+            _stackY += _LBL_GAP + _tenantFont * _LBL_CAP;
+            info.setAttribute('y', _stackY);
             if (_labelAnchor !== 'start') info.setAttribute('text-anchor', _labelAnchor);
             info.setAttribute('opacity', textOpacity);
-            const _tenantFont = _labelFontFor(u, 16);
             info.setAttribute('font-size', _tenantFont);
             for (let i = 0; i < lines.length; i++) {
               const tspan = document.createElementNS('http://www.w3.org/2000/svg', 'tspan');
@@ -66411,7 +66424,7 @@ function renderUnits() {
           // фиксированным; в итоге box не покрывал текст и
           // вылезал на соседей. Теперь считаем по фактическому
           // font-size + длине строки, плюс крошечный padding.
-          const _numFont = _labelFontFor(u, 17);
+          const _numFont = _numFs;
           const _idText  = String(u.id);
           const _CHAR_W  = 0.62;  // приблизительная ширина цифры / font-size
           const _hitW = Math.max(_numFont * 0.8, _idText.length * _numFont * _CHAR_W) + _numFont * 0.3;
@@ -66423,7 +66436,7 @@ function renderUnits() {
           if (_labelAnchor === 'start')      _hitX = _labelX - _numFont * 0.15;
           else if (_labelAnchor === 'end')   _hitX = _labelX - _hitW + _numFont * 0.15;
           else /* middle */                  _hitX = _labelX - _hitW / 2;
-          const _hitY = _labelYShift + _BLOCK_TOP_Y - _numFont * 0.85;
+          const _hitY = _numBaseY - _numFont * 0.85;
 
           const labelHit = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
           labelHit.setAttribute('x', _hitX);
