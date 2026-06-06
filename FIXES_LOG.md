@@ -60,6 +60,45 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 51. renderBg must NOT blank the canvas on re-render (blueprint flicker, 2026-06-05)
+
+- **Status:** active
+- **Branch / commit:** `main` — `dda0192` (sig-guard) + `44ada65` (atomic swap + token-stable sig)
+- **Area:** Floor-map render / blueprint background / cross-origin Storage image
+- **Files:** `floor-map-editor.html` — `renderBg()` (~:65631).
+- **Bug it fixed (operator-visible):** the floor-plan background (Storage, cross-origin, async-loaded) flickered "disappears then reappears" on re-renders. `renderBg` did `clearG(bgG)` IMMEDIATELY, then appended the new `<image>` only in `probe.onload` — so during the async load the canvas was BLANK. A BG-watcher proved it: `bg.src` stayed a URL the whole time (data intact), but the DOM `<image>` was removed for ~280ms. `clearG(bgG)` exists ONLY in renderBg (no external clearer).
+- **Invariant — DO NOT BREAK:** renderBg must (1) compute a signature from the **base URL (strip `?token`)** + scale/x/y/opacity — Firebase Storage download URLs re-tokenize on building re-delivery, so the full URL would look "changed" and force needless reloads; (2) skip entirely when the sig is unchanged AND an `<image>` exists or a load is in-flight (`_bgRenderedSig` / `_bgLoadingSig`); (3) **NOT clearG at the top** — clear the old `<image>` only inside `onload`, right before appending the new one (atomic swap → canvas never empty). `onerror` resets the sig so a failed load retries. Do NOT reintroduce a top-of-function `clearG(bgG)`.
+- **How to verify:** `grep -c "_bgRenderedSig\|_bgLoadingSig" floor-map-editor.html` ≥ 6; `grep -c "clearG(bgG)" floor-map-editor.html` == 3 (1 comment + no-bg branch + onload; NO top-level one). Functional: a BG-watcher (poll `currentFloor().bg.src` + `bgG.querySelector('image')`) shows no `IMG-EST→IMG-NET` while the data stays URL.
+- **Regression test:** none — manual UI only.
+
+---
+
+### 50. Buildings read-switch listener must ignore its OWN write echoes (over-render root, 2026-06-05)
+
+- **Status:** active
+- **Branch / commit:** `main` — `83b1f6f`
+- **Area:** Scaling buildings read-switch / sync / over-rendering
+- **Files:** `floor-map-editor.html` — `_v2BuildingsAttachListener()` onSnapshot docChanges loop (~:33658).
+- **Bug it fixed:** the buildings-collection listener re-applied + fully re-rendered (renderUnits + renderBg + pills) on EVERY docChange — INCLUDING the client's own writes echoing back (Firestore delivers your own write to your own listener). The monolith listener has echo-suppression (`ignoreNext`, ~:34539) but the buildings listener had NONE. So every saveState → `_mirrorBuildingsToV2` → own echo → full re-render (this was the renderBg flicker trigger on unit edits, plus general churn). Idle churn itself is low (~1 apply/min, measured) — this is about the SELF-inflicted re-render on each save, not a runaway loop.
+- **Invariant — DO NOT BREAK:** the buildings listener must skip docChanges where `ch.doc.metadata.hasPendingWrites` is true (the client's own un-acked local write) — we already have that building in state. Other users' / CF-mirror changes arrive with `hasPendingWrites=false` and apply as before. Do NOT remove this guard.
+- **How to verify:** `grep -c "hasPendingWrites" floor-map-editor.html` ≥ 1 (the buildings listener). Functional: editing a unit must not spike `[bld-trace:v2-buildings-read]` from the editor's own save.
+- **Regression test:** none — manual UI only.
+
+---
+
+### 49. Topbar pills: per-building refresh on switch + always-visible with muted zero (2026-06-05)
+
+- **Status:** active
+- **Branch / commit:** `main` — `be67190` (refresh on switch) + `921e948` (always-visible) + `bfc1c37` (muted zero)
+- **Area:** Topbar KPI pills (overdue / expiring / lease-pending / contract / activity) / per-building scope
+- **Files:** `floor-map-editor.html` — `switchBuilding()` (~:61620), `updateTopbarOutstandingPill` / `renderExpiringPill` / `updateTopbarActivityPill` / `updateTopbarLeasePill` / `updateTopbarContractPill`, `.pill-zero` CSS (~:2961).
+- **Bugs fixed:** (a) pills are scoped per active building via `_matchesActiveBuilding(currentBuildingId)`, but `switchBuilding → renderAll()` did NOT recompute them, so after a building switch the pills showed the PREVIOUS building's $ until a listener/timer fired ("нет совпадения" — operator saw one building's overdue while viewing another). (b) pills hid entirely at zero, so "no pill" was ambiguous with "not loaded".
+- **Invariant — DO NOT BREAK:** (a) `switchBuilding` must call `renderUserBadge()` (the canonical refresh of ALL topbar pills) synchronously right after `renderAll()` — `renderAll` does NOT recompute the pills. (b) the five pills are always-visible (show their 0 state, no hide-at-zero) and toggle the shared `.pill-zero` class (grayscale + dim, dot pulse off) when their count is 0; `canSeeFinance` gates still hide them for non-finance roles. Do NOT re-add hide-at-zero, and do NOT drop the switchBuilding pill-refresh.
+- **How to verify:** `grep -c "renderUserBadge()" floor-map-editor.html` (switchBuilding includes one); `grep -c "classList.toggle('pill-zero'" floor-map-editor.html` == 5. Functional: switch buildings → overdue pill matches the building immediately; a $0 building shows a muted "0".
+- **Regression test:** none — manual UI only.
+
+---
+
 ### 48. ALL per-user display/view settings are PER-USER — must NOT sync (2026-06-05)
 
 - **Status:** active
