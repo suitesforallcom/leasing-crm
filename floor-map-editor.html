@@ -66183,7 +66183,13 @@ function renderUnits() {
         // маленьких юнитах размер максимально близок к большому стандарту. На
         // юнитах с запасом по ширине допуск просто заполняет поля (крупнее, без
         // наезда); юниты одинаковой ширины → одинаковый размер.
-        const _mkTier = (mult) => Math.max(3, Math.round(17 * _numScaleV * mult));
+        // Потолок РАЗМЕРА номера — не раздувать на крупных юнитах. Иначе на
+        // одном этаже «цирк»: огромные номера в больших юнитах рядом с мелкими
+        // в маленьких. Клампим базу → все три тира в узком диапазоне → номера
+        // по всему этажу выглядят консистентно (профессиональная подача).
+        const _NUM_CAP = 28;
+        const _numBase = Math.min(17 * _numScaleV, _NUM_CAP);
+        const _mkTier = (mult) => Math.max(3, Math.round(_numBase * mult));
         const _numTiers = [_mkTier(1), _mkTier(0.82), _mkTier(0.66)];
         const _TIER_TOL = 1.18;
         const _tierFont = (text) => {
@@ -66258,7 +66264,18 @@ function renderUnits() {
         const _labelRent    = _isGroupShadow ? 0
                             : _isUnitRented  ? (+u.contractRent || 0)
                                              : (+u.rent || 0);
-        if (showRent && _labelRent > 0) {
+        // Цена под номером. Считаем подогнанный по ширине размер ЗАРАНЕЕ и
+        // СКРЫВАЕМ строку, если он получился бы нечитаемо мелким (< 7) — на
+        // крошечных юнитах показываем только номер, без каши из мелкого текста
+        // (как в профессиональных стэкинг-планах). Порог по фактическому
+        // размеру → не зависит от абсолютного масштаба координат.
+        const _priceText = '$' + _labelRent.toLocaleString();
+        // Размер цены, ограниченный ТОЛЬКО шириной юнита (без учёта желаемого) —
+        // по нему решаем, не станет ли строка нечитаемой на узком юните. Не
+        // зависит от того, какой размер цены выбран слайдером.
+        const _priceWidthFit = _availLabelW / (Math.max(1, _priceText.length) * 0.62);
+        const _priceFs = _fitLabelFont(14 * _priceScaleV, _priceText);
+        if (showRent && _labelRent > 0 && _priceWidthFit >= 9) {
           // Pushed down +4px from the prior y=35 to give the suite ID
           // a bit more breathing room before the price line. Matches
           // the airier vertical rhythm of the ZIP redesign mock.
@@ -66268,8 +66285,7 @@ function renderUnits() {
           price.setAttribute('y', 39 + _labelYShift);
           if (_labelAnchor !== 'start') price.setAttribute('text-anchor', _labelAnchor);
           price.setAttribute('opacity', textOpacity);
-          const _priceText = '$' + _labelRent.toLocaleString();
-          price.style.fontSize = _fitLabelFont(14 * _priceScaleV, _priceText) + 'px';
+          price.style.fontSize = _priceFs + 'px';
           price.textContent = _priceText;
           g.appendChild(price);
         }
