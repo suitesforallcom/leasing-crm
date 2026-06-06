@@ -65190,11 +65190,20 @@ function switchFloor(fid) {
   } else {
     renderAll();
   }
-  // Auto-fit to the new floor's content so it fills the canvas (no
-  // huge beige margins around small floors). Defer one tick so the
-  // SVG has been re-rendered with this floor's units before we read
-  // their bounding box.
-  setTimeout(() => { try { zoomReset(); } catch {} }, 0);
+  // Auto-fit to the new floor so it fills the canvas. Раньше звали zoomReset(),
+  // но он фитит ТОЛЬКО по units/walls (getBBox) и ИГНОРИРУЕТ картинку-подложку
+  // → на пустых/малозаполненных/битых этажах (нет юнитов — напр. 6-й, или 47
+  // юнитов с NaN-координатами на 4-м) ему не к чему привязаться → кривой зум,
+  // подложка «увеличена». sfaFitToContent учитывает И bg (см. ~:100232), поэтому
+  // этаж всегда показывается целиком. Сбрасываем ручной зум, чтобы renderBg.onload
+  // пере-фитнул точно после асинхронной загрузки картинки (он уважает _userHasPanned).
+  _userHasPanned = false;
+  setTimeout(() => {
+    try {
+      if (typeof sfaFitToContent === 'function') sfaFitToContent();
+      else zoomReset();
+    } catch {}
+  }, 0);
 }
 
 function ordinalFloorName(n) {
