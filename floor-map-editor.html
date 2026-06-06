@@ -29794,6 +29794,19 @@ function dataUrlToBlob(dataUrl) {
 // Storage (cleanup can be done manually or via Cloud Functions later).
 async function deleteMediaByPath(path) {
   if (!path || !fbSync.enabled || !fbSync.storage) return;
+  // ЗАЩИТА ПОДЛОЖЕК (КОРЕНЬ инцидента NT 2nd/4th, 2026-06-05): НИКОГДА не
+  // удаляем файлы чертежей (/blueprints/). Механизм потери: при перезаливке/
+  // кропе старый файл удалялся, bg.src переключался на новый — НО под
+  // мульти-райтером устаревшая сессия пере-зеркалила СТАРОЕ здание (bg.src на
+  // старый файл) поверх нового → в коллекции снова старый bg.src, а файл уже
+  // удалён → 403/404, подложка исчезает. Storage дёшев, перезаливки редки —
+  // пусть старые версии копятся, зато bg.src НИКОГДА не укажет на удалённый
+  // объект. Чистку старых подложек, если понадобится, делаем отдельным
+  // осознанным проходом, а не авто-удалением на каждый upload.
+  if (/\/blueprints\//.test(path)) {
+    console.info('[storage] подложка сохранена (без удаления):', path);
+    return;
+  }
   try {
     const ref = fbSync.sdk.storageRef(fbSync.storage, path);
     await fbSync.sdk.deleteObject(ref);
@@ -65639,6 +65652,32 @@ function saveAddUnitModal(opts) {
 // ===== Rendering =====
 function clearG(g) { while (g.firstChild) g.removeChild(g.firstChild); }
 
+// Self-heal подложки: если файл в Storage пропал (403/404), но чертёж есть в
+// локальном IDB-кэше (его кэширует _bgCacheDataUrl при загрузке/кропе) —
+// АВТОМАТИЧЕСКИ перезаливаем его обратно и чиним bg.src. Один раз на этаж за
+// сессию (без петель). Зовётся из probe.onerror. Так подложка восстанавливается
+// сама, без ручных скриптов. Работает в паре с guard'ом в deleteMediaByPath
+// (файлы подложек больше не удаляются → восстановленная ссылка durable).
+const _bgHealedFloors = {};
+async function _bgSelfHealFromCache(floor) {
+  try {
+    if (!floor || !floor.id || !floor.bg || !floor.bg.src) return;
+    if (String(floor.bg.src).startsWith('data:')) return;   // уже data-URL, не Storage-файл
+    if (_bgHealedFloors[floor.id]) return;                    // уже пробовали в этой сессии
+    if (typeof _bgIdbExec !== 'function' || typeof finalizeBlueprintUpload !== 'function') return;
+    const cached = await _bgIdbExec('readonly', s => s.get(floor.id));
+    if (!cached || !String(cached).startsWith('data:')) return;  // в кэше нет — восстановить нечем
+    _bgHealedFloors[floor.id] = true;
+    console.info('[bg-selfheal] Storage-файл пропал — восстанавливаю подложку из кэша:', floor.id);
+    floor.bg.src = cached;
+    delete floor.bg.storagePath;
+    await finalizeBlueprintUpload(floor);   // перезаливает + чинит bg.src + пушит
+    window._bgRenderedSig = ''; window._bgLoadingSig = '';
+    if (typeof renderBg === 'function') renderBg();
+    if (typeof toast === 'function') toast('✓ Blueprint restored from local cache', 'success');
+  } catch (e) { console.warn('[bg-selfheal]', (e && e.message) || e); }
+}
+
 function renderBg() {
   const bg = currentBg();
   // Подложка хранится в Storage (cross-origin) и грузится АСИНХРОННО. Раньше
@@ -65708,6 +65747,9 @@ function renderBg() {
     // попробовал заново (а не залипал на «уже отрисовано», когда картинки нет).
     window._bgLoadingSig = '';
     window._bgRenderedSig = '';
+    // Self-heal: файл в Storage мог пропасть (403/404) — пробуем восстановить
+    // подложку из локального IDB-кэша автоматически (см. _bgSelfHealFromCache).
+    try { _bgSelfHealFromCache(currentFloor()); } catch {}
     toast('Could not display background image', 'error');
   };
   probe.src = bg.src;
