@@ -74073,6 +74073,10 @@ function renderDetail() {
     const _allSame = (a) => a.length > 0 && a[0] != null && a.every(v => v === a[0]);
     const _commonNum   = _allSame(_numPxVals)   ? _numPxVals[0]   : 24;
     const _commonPrice = _allSame(_pricePxVals) ? _pricePxVals[0] : 14;
+    // Текущая общая позиция номера по выбранным (для дефолта дропдауна).
+    const _posVals = selectedUnits.map(u => u.labelPosition || 'top-left');
+    const _commonPos = (_posVals.length && _posVals.every(v => v === _posVals[0])) ? _posVals[0] : 'top-left';
+    const _posOpt = (val, lbl) => `<option value="${val}" ${_commonPos === val ? 'selected' : ''}>${lbl}</option>`;
 
     el.innerHTML = `
       <div class="detail-num">${selectedIds.length} units selected</div>
@@ -74236,7 +74240,15 @@ function renderDetail() {
                    oninput="_msSetLabelSize('price', this.value, false)" onchange="_msSetLabelSize('price', this.value, true)">
             <span class="range-unit">px</span>
           </div>
-          <button type="button" class="save-btn" onclick="_msResetLabelSize()" style="margin-top:2px;">↺ Back to auto</button>
+          <div class="range-row" style="margin-bottom:10px;">
+            <label style="width:84px;">Position</label>
+            <select id="msLabelPos" onchange="_msSetLabelPos(this.value, false)"
+                    style="flex:1; padding:5px 6px; border:1px solid var(--border); border-radius:6px; font-size:12px; background:var(--surface); color:var(--text); cursor:pointer;">
+              ${_posOpt('top-left','↖ Top-left')}${_posOpt('top','↑ Top center')}${_posOpt('top-right','↗ Top-right')}${_posOpt('left','← Left')}${_posOpt('center','● Center')}${_posOpt('right','→ Right')}${_posOpt('bottom-left','↙ Bottom-left')}${_posOpt('bottom','↓ Bottom center')}${_posOpt('bottom-right','↘ Bottom-right')}
+            </select>
+          </div>
+          <button type="button" class="save-btn" onclick="_msAlignAllOnFloor()" style="margin-top:2px;">⤢ Apply this position to ALL units on floor</button>
+          <button type="button" class="save-btn" onclick="_msResetLabelSize()" style="margin-top:6px;">↺ Back to auto (size)</button>
         </div>
       ` : ''}
 
@@ -76070,6 +76082,38 @@ function _msResetLabelSize() {
   if (typeof toast === 'function') toast('Label size reset to auto', 'success');
 }
 window._msResetLabelSize = _msResetLabelSize;
+
+// === Позиция номера для выбранных юнитов (или всех на этаже). Пишет
+// u.labelPosition (или удаляет при top-left = дефолт) и ОЧИЩАЕТ кастомное
+// перетаскивание labelDX/DY, чтобы выбранная позиция реально применилась.
+// _msAlignAllOnFloor — та же позиция из дропдауна, но ко ВСЕМ юнитам этажа. ===
+const _MS_VALID_POS = ['top-left','top','top-right','left','center','right','bottom-left','bottom','bottom-right'];
+function _msSetLabelPos(value, allFloor) {
+  if (typeof canEdit === 'function' && !canEdit()) {
+    if (typeof toast === 'function') toast('Your role cannot edit', 'error');
+    return;
+  }
+  const pos = _MS_VALID_POS.includes(value) ? value : 'top-left';
+  const allUnits = (typeof currentUnits === 'function') ? currentUnits() : [];
+  const targets = allFloor
+    ? allUnits.slice()
+    : (Array.isArray(selectedIds) ? selectedIds : []).map(id => allUnits.find(x => x.id === id)).filter(Boolean);
+  targets.forEach(u => {
+    if (pos === 'top-left') delete u.labelPosition; else u.labelPosition = pos;
+    delete u.labelDX; delete u.labelDY;   // сброс кастомного перетаскивания
+  });
+  if (typeof renderUnits === 'function') renderUnits();
+  try { saveState(); } catch {}
+}
+window._msSetLabelPos = _msSetLabelPos;
+
+function _msAlignAllOnFloor() {
+  const sel = document.getElementById('msLabelPos');
+  const pos = sel ? sel.value : 'top-left';
+  _msSetLabelPos(pos, true);
+  if (typeof toast === 'function') toast('Aligned every unit on this floor', 'success');
+}
+window._msAlignAllOnFloor = _msAlignAllOnFloor;
 
 function _msRecalc(which) {
   window._msLastField = which;
