@@ -8802,10 +8802,10 @@
      drop down to price when scanning a row, and only read tenant names
      when actually focused on a unit. */
   .unit-num   { font-family: "Inter Tight", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-                font-weight: 700; font-size: 17px;
+                font-weight: 700; font-size: calc(17px * var(--unit-num-scale, 1));
                 letter-spacing: -0.01em; fill: #14120F; pointer-events: none; }
   .unit-price { font-family: "Inter Tight", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-                font-weight: 500; font-size: 14px;
+                font-weight: 500; font-size: calc(14px * var(--unit-price-scale, 1));
                 font-variant-numeric: tabular-nums;
                 letter-spacing: -0.005em; fill: #6B665C; pointer-events: none; }
   .unit-rate  { font-family: "Inter Tight", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
@@ -65895,12 +65895,6 @@ function renderUnits() {
     if (!Number.isFinite(sizeUnits) || sizeUnits <= 0) return targetScreenPx;
     return Math.min(1000, Math.max(0.5, sizeUnits));
   };
-  // Отдельные множители размера для номера сьюта и цены (слайдеры «Size» в
-  // Layers-панели). Накладываются поверх _labelScale. Клампим, чтобы битый
-  // стейт не разнёс рендер. 1 = как раньше.
-  const _clampScale = (v) => (Number.isFinite(v) && v > 0) ? Math.min(4, Math.max(0.3, v)) : 1;
-  const _unitNumScale = _clampScale((state && state.settings && typeof state.settings.unitNumScale === 'number') ? state.settings.unitNumScale : 1);
-  const _priceScale   = _clampScale((state && state.settings && typeof state.settings.priceScale   === 'number') ? state.settings.priceScale   : 1);
 
   // Archived units are hidden from the floor plan. They still live in
   // state.buildings[].floors[].units until permanently deleted, so payment
@@ -65924,6 +65918,13 @@ function renderUnits() {
   const effectiveOpacity = state.settings.editMode
     ? (state.settings.editModeOpacity || 0.4)
     : (state.settings.unitOpacity || 1.0);
+  // Яркость ТЕКСТА подписей НЕ зависит от яркости заливки (unitOpacity):
+  // в view-режиме текст всегда непрозрачный (opacity=1), а его яркость задаёт
+  // CSS-переменная fill-opacity (слайдеры «Brightness» номера/цены). В edit-mode
+  // текст всё равно полупрозрачный, чтобы видеть план под юнитами.
+  const textOpacity = state.settings.editMode
+    ? (state.settings.editModeOpacity || 0.4)
+    : 1;
 
   // === PASS 1: draw fills + labels ===
   const mapViewMode = (typeof getMapViewMode === 'function') ? getMapViewMode() : 'lease';
@@ -66168,10 +66169,11 @@ function renderUnits() {
         num.setAttribute('x', _labelX);
         num.setAttribute('y', 18 + _labelYShift);
         if (_labelAnchor !== 'start') num.setAttribute('text-anchor', _labelAnchor);
-        num.setAttribute('opacity', effectiveOpacity);
-        // Inline font-size перебивает CSS-default (17 user-units) — даёт
-        // константу в screen-px и cap по unit-size.
-        num.setAttribute('font-size', _labelFontFor(u, 17 * _unitNumScale));
+        num.setAttribute('opacity', textOpacity);
+        // Размером номера управляет CSS-переменная --unit-num-scale на .unit-num
+        // (font-size: calc(17px * var)), т.к. CSS-правило перебивает этот
+        // font-size-атрибут — атрибут оставляем лишь как fallback.
+        num.setAttribute('font-size', _labelFontFor(u, 17));
         // Drop the "Suite " prefix — the map cell is obviously a suite, and
         // the extra word forces us to shrink the unit number on narrow units.
         // Keeping only the ID matches the redesign mock.
@@ -66233,8 +66235,8 @@ function renderUnits() {
           price.setAttribute('x', _labelX);
           price.setAttribute('y', 39 + _labelYShift);
           if (_labelAnchor !== 'start') price.setAttribute('text-anchor', _labelAnchor);
-          price.setAttribute('opacity', effectiveOpacity);
-          price.setAttribute('font-size', _labelFontFor(u, 14 * _priceScale));
+          price.setAttribute('opacity', textOpacity);
+          price.setAttribute('font-size', _labelFontFor(u, 14));
           price.textContent = '$' + _labelRent.toLocaleString();
           g.appendChild(price);
         }
@@ -66255,7 +66257,7 @@ function renderUnits() {
           rate.setAttribute('x', _labelX);
           rate.setAttribute('y', 53 + _labelYShift);
           if (_labelAnchor !== 'start') rate.setAttribute('text-anchor', _labelAnchor);
-          rate.setAttribute('opacity', effectiveOpacity * 0.85);
+          rate.setAttribute('opacity', textOpacity * 0.85);
           rate.setAttribute('font-size', _labelFontFor(u, 10));
           rate.textContent = '$' + perYr.toFixed(0) + '/ft²/yr';
           g.appendChild(rate);
@@ -66326,7 +66328,7 @@ function renderUnits() {
             info.setAttribute('x', _labelX);
             info.setAttribute('y', _tenantBumpY + _labelYShift);
             if (_labelAnchor !== 'start') info.setAttribute('text-anchor', _labelAnchor);
-            info.setAttribute('opacity', effectiveOpacity);
+            info.setAttribute('opacity', textOpacity);
             const _tenantFont = _labelFontFor(u, 16);
             info.setAttribute('font-size', _tenantFont);
             for (let i = 0; i < lines.length; i++) {
@@ -100573,6 +100575,17 @@ function applyTextBrightness() {
   svg.style.setProperty('--unit-price-opacity', String(pp));
   svg.style.setProperty('--unit-text-opacity',  String(tp));
 }
+// applyLabelSizes — множители РАЗМЕРА номера сьюта и цены в CSS-переменные на
+// #planSvg. Размер этих подписей задаёт CSS-правило (.unit-num/.unit-price:
+// font-size: calc(.. * var)), а не атрибут — поэтому меняем мгновенно через
+// переменную, без перерисовки. Клампим 0.3–4, чтобы битый стейт не сломал верстку.
+function applyLabelSizes() {
+  const svg = document.getElementById('planSvg');
+  if (!svg) return;
+  const clamp = (x) => { const v = (typeof x === 'number') ? x : 1; return (Number.isFinite(v) && v > 0) ? Math.min(4, Math.max(0.3, v)) : 1; };
+  svg.style.setProperty('--unit-num-scale',   String(clamp(state.settings.unitNumScale)));
+  svg.style.setProperty('--unit-price-scale', String(clamp(state.settings.priceScale)));
+}
 ['bgOpacity', 'bgScale', 'bgX', 'bgY'].forEach(id => {
   const inp = document.getElementById(id);
   if (!inp) return;
@@ -100614,9 +100627,9 @@ function _wireRangeNum(rangeId, numId, apply) {
 }
 _wireRangeNum('unitOpacity',      'unitOpacityNum',      v => { state.settings.unitOpacity     = v/100; renderUnits(); });
 _wireRangeNum('unitTextOpacity',  'unitTextOpacityNum',  v => { state.settings.unitTextOpacity  = v/100; applyTextBrightness(); });
-_wireRangeNum('unitNumScale',     'unitNumScaleNum',     v => { state.settings.unitNumScale     = v/100; renderUnits(); });
+_wireRangeNum('unitNumScale',     'unitNumScaleNum',     v => { state.settings.unitNumScale     = v/100; applyLabelSizes(); });
 _wireRangeNum('priceTextOpacity', 'priceTextOpacityNum', v => { state.settings.priceTextOpacity = v/100; applyTextBrightness(); });
-_wireRangeNum('priceScale',       'priceScaleNum',       v => { state.settings.priceScale       = v/100; renderUnits(); });
+_wireRangeNum('priceScale',       'priceScaleNum',       v => { state.settings.priceScale       = v/100; applyLabelSizes(); });
 
 // =========================================================================
 // ===== AI Assistant (multi-provider: Grok / Claude) ======================
@@ -152182,6 +152195,7 @@ document.getElementById('labelsBtn')?.classList.toggle('active', state.settings.
   set('priceScale',       pct(state.settings.priceScale),       50, 200);
 })();
 if (typeof applyTextBrightness === 'function') applyTextBrightness();
+if (typeof applyLabelSizes === 'function') applyLabelSizes();
 // Label-size block — выставляем контролы из сохранённого labelScale.
 const _lsp = Math.round(((typeof state.settings.labelScale === 'number') ? state.settings.labelScale : 1) * 100);
 const _lsSl = document.getElementById('labelScaleSlider');
