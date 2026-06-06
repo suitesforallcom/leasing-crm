@@ -60,6 +60,20 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 52. NEVER delete blueprint Storage files + self-heal bg from cache (DATA LOSS, 2026-06-05)
+
+- **Status:** active
+- **Branch / commit:** `main` — `dcca813`
+- **Area:** Floor-plan blueprints / Firebase Storage / data loss
+- **Files:** `floor-map-editor.html` — `deleteMediaByPath()` (~:29795, `/blueprints/` guard), `_bgSelfHealFromCache()` + `renderBg()` onerror (~:65640).
+- **Incident:** New Tampa 2nd + 4th floor blueprints vanished → "Could not display background image". Diagnosis: `bg.src` was a valid Storage URL but `getDownloadURL`/fetch returned 403/404 — the Storage OBJECT was deleted. Root: `finalizeBlueprintUpload` deletes the prior blueprint on re-upload/crop (`deleteMediaByPath(priorPath)`), but under the multi-writer race a stale session re-mirrors the OLD building (bg.src → the just-deleted file) over the new one → bg.src references a deleted object → 403/404. (NT 2nd recovered from the browser IndexedDB cache + re-upload; NT 4th not cached on the operator's machine.)
+- **Invariant — DO NOT BREAK:** (1) `deleteMediaByPath` MUST skip any path matching `/blueprints/` — blueprint files are NEVER deleted (Storage is cheap, re-uploads rare; old versions accumulate, but `bg.src` can never point to a deleted object). Do NOT re-enable blueprint deletion on re-upload/crop/floor-delete. (2) `renderBg`'s `probe.onerror` calls `_bgSelfHealFromCache(currentFloor())` — if a blueprint's Storage file is gone but the data-URL is in the local IDB cache (`_bgIdbExec`, populated by `_bgCacheDataUrl`), it re-uploads it and fixes `bg.src` automatically (once per floor/session, `_bgHealedFloors` guard). The two work together: never-delete keeps the re-linked URL durable.
+- **How to verify:** `grep -c "blueprints" floor-map-editor.html` in deleteMediaByPath shows the guard; `grep -c "_bgSelfHealFromCache" floor-map-editor.html` ≥ 2. Functional: a blueprint whose Storage object is missing auto-restores from cache on floor open (toast "Blueprint restored from local cache").
+- **Recovery for blueprints with NO cache anywhere:** re-upload the original file (manual, one-time). PITR does NOT cover Storage; the IDB cache + this self-heal are the safety net.
+- **Regression test:** none — manual UI only.
+
+---
+
 ### 51. renderBg must NOT blank the canvas on re-render (blueprint flicker, 2026-06-05)
 
 - **Status:** active
