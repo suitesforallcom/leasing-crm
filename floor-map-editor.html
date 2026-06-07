@@ -35765,7 +35765,7 @@ async function fbListInvites() {
   const snap = await sdk.getDocs(sdk.collection(db, 'workspaces', WORKSPACE_ID, 'invites'));
   const invites = [];
   snap.forEach(d => invites.push({ token: d.id, ...d.data() }));
-  return invites.filter(i => !i.used && (!i.expiresAt || i.expiresAt > Date.now()));
+  return invites.filter(i => !i.used && (!i.expiresAtMs || i.expiresAtMs > Date.now())); // аудит H2: сравниваем мс-число, а не Firestore Timestamp (иначе все инвайты скрыты)
 }
 
 async function fbChangeMemberRole(memberUid, newRole) {
@@ -55253,6 +55253,11 @@ function _apComputeManagerBreakdown() {
         if (!u.tenant && !u.company) continue;
         const isRented = (u.status === 'occupied') || !!u.tenant;
         if (!isRented) continue;
+        // аудит H3: пропускаем non-head членов group-лизы, чтобы многосуитная
+        // лиза считалась как ОДНА (паритет с _compute30DayActivity pill). NB:
+        // полный паритет атрибуции (signed/deposit вместо leaseStart) — отдельная
+        // правка (нужен общий _leaseTriggerMs-хелпер), см. AUDIT-отчёт.
+        if (typeof _isFinanceShadow === 'function' && _isFinanceShadow(u)) continue;
         let startMs = null;
         if (u.leaseStart) {
           const t = new Date(u.leaseStart + 'T00:00:00').getTime();
@@ -105810,17 +105815,17 @@ function _empFillContractHTML(emp) {
     dob:                emp.dob ? formatDisplayDate(emp.dob) : '—',
     hireDate:           emp.hireDate ? formatDisplayDate(emp.hireDate) : '—',
     ssnLast4,
-    providerName:       ld.providerName || 'KIWI RENTALS LLC',
-    providerEntityType: ld.providerEntityType || 'Delaware limited liability company',
-    providerLegalAddr:  ld.providerLegalAddr || '108 West 13th Street, Wilmington, Delaware',
+    providerName:       ld.provider_legal_name    || 'KIWI RENTALS LLC',          // аудит H4: leaseDefaults хранит snake_case
+    providerEntityType: ld.provider_entity_type   || 'Delaware limited liability company',
+    providerLegalAddr:  ld.provider_legal_address || '108 West 13th Street, Wilmington, Delaware',
     bonusNewLease:      bonusCfg.newLease ?? 100,
     bonusRenewal:       bonusCfg.renewal ?? 50,
     vacationRate:       accVac.rate,
     vacationPeriod:     periodLabels[accVac.period] || accVac.period,
     sickRate:           accSick.rate,
     sickPeriod:         periodLabels[accSick.period] || accSick.period,
-    govState:           ld.govState || 'Florida',
-    venueCounty:        ld.venueCounty || 'Pinellas County',
+    govState:           ld.governing_state || 'Florida',      // аудит H4: snake_case ключ
+    venueCounty:        ld.venue_county    || 'Pinellas County',
     currentDate:        new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
     empId:              emp.id || '',
   };
@@ -138322,7 +138327,7 @@ function _renderTenantDrawerPaymentTimeline(u, rent) {
       <h4>Payment timeline <span style="text-transform:none; letter-spacing:0; font-weight:500;">(last 12 mo)</span></h4>
       <div class="td-pay-list">
         ${rows.map(r => `
-          <div class="td-pay-row" onclick="openManualPaymentModal('${esc(currentBuilding()?.id || '')}','${esc(currentFloor()?.id || '')}','${esc(u.id)}','${esc(r.ym)}')">
+          <div class="td-pay-row" onclick="openManualPaymentModal('${esc(_drawerCtx?.buildingId || currentBuilding()?.id || '')}','${esc(_drawerCtx?.floorId || currentFloor()?.id || '')}','${esc(u.id)}','${esc(r.ym)}')">
             <div class="td-pay-left">
               <span class="td-pay-mo">${esc(r.label)}</span>
               ${r.subLine ? `<span class="td-pay-sub">${r.subLine}</span>` : ''}
