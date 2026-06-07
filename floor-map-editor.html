@@ -20309,6 +20309,23 @@
           <span class="range-unit">%</span>
         </div>
 
+        <div class="panel-title">Label position (all units)</div>
+        <div class="range-row" title="Where the number + price + $/ft² + tenant block sits inside each unit. Applies to ALL units on this floor at once — keeps the whole floor aligned consistently.">
+          <label style="width:84px;">Align</label>
+          <select id="layersLabelPos" onchange="_msSetLabelPos(this.value, true)"
+                  style="flex:1; padding:5px 6px; border:1px solid var(--border); border-radius:6px; font-size:12px; background:var(--surface); color:var(--text); cursor:pointer;">
+            <option value="top-left">↖ Top-left</option>
+            <option value="top">↑ Top center</option>
+            <option value="top-right">↗ Top-right</option>
+            <option value="left">← Left</option>
+            <option value="center">● Center</option>
+            <option value="right">→ Right</option>
+            <option value="bottom-left">↙ Bottom-left</option>
+            <option value="bottom">↓ Bottom center</option>
+            <option value="bottom-right">↘ Bottom-right</option>
+          </select>
+        </div>
+
         <div class="panel-title">Background Settings</div>
         <div class="range-row">
           <label>Opacity</label>
@@ -152404,6 +152421,15 @@ document.getElementById('labelsBtn')?.classList.toggle('active', state.settings.
   set('priceScale',       pct(state.settings.priceScale),       50, 200);
   set('rateScale',        pct(state.settings.rateScale),        50, 200);
   set('tenantScale',      pct(state.settings.tenantScale),      50, 200);
+})();
+// Глобальный дропдаун позиции подписей (Layers) — выставляем из общей позиции
+// юнитов (если у всех одинаковая) или top-left.
+(function _initLabelPosCtl() {
+  const sel = document.getElementById('layersLabelPos');
+  if (!sel) return;
+  const us = (typeof currentUnits === 'function') ? currentUnits() : [];
+  const ps = us.map(u => u.labelPosition || 'top-left');
+  sel.value = (ps.length && ps.every(v => v === ps[0])) ? ps[0] : 'top-left';
 })();
 if (typeof applyTextBrightness === 'function') applyTextBrightness();
 // Label-size block — выставляем контролы из сохранённого labelScale.
