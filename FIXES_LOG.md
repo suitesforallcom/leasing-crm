@@ -60,6 +60,22 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 59. Move-in rent badge must honor lease-start grace, not raw Stripe past_due (finance-display, 2026-06-07)
+
+- **Status:** active
+- **Branch / commit:** `main` @ `<this commit>`
+- **Area:** Finance display / move-in card / overdue grace anchor
+- **Files:** floor-map-editor.html
+- **Functions:** `_moveInInvoicePill` (+ 3 RENT call sites: `_renderProrateBox`, `_renderMoveInCardForModal`, split-remainder)
+- **Bug it fixed:** Suite 449 (lease starts Jul 1 2026, grace 5d) showed "First month rent — July 2026 **PAST DUE**" while viewing June — before the lease even starts. `_moveInInvoicePill` (~90653) rendered the **raw Stripe bucket** (`_lookupInvoiceBucket` → `past_due` → "PAST DUE", ~90682-90685) with no grace anchor. Stripe buckets the July invoice `past_due` because its `due_date` (created `days_until_due:7` from send date, NOT anchored to lease-start) already elapsed. Meanwhile `_monthBilling` (~84275) already computes the correct lease-start-month due date (`leaseStart + graceDays` = Jul 6) → `isOverdueByDate=false`, which is why the map renders BLUE (not red). Only the move-in pill bypassed the canonical grace. Exactly 3 surfaces wrong, all the same pill, RENT context only; deposit pill + map + `_computeUnitMoney` + Invoices table all already correct.
+- **Fix:** added optional tri-state `graceOverdue` param to `_moveInInvoicePill`. When `graceOverdue === false` AND bucket is `past_due`, render "SENT" (blue, with a "Due <leaseStart+grace>" tooltip) instead of "PAST DUE". The 3 RENT call sites compute `_monthBilling(rent, ym, leaseStart, graceDays, now, u).isOverdueByDate` using `state.settings.lateFee.graceDays ?? 5` — the SAME source as `_computeUnitMoney` (NOT the per-building override) so the pill matches the map. Deposit calls pass no 3rd arg → `undefined` → unchanged. No formula touched — `_monthBilling` is read-only.
+- **Invariant — DO NOT BREAK:** (1) Genuinely-overdue months still show PAST DUE (`graceOverdue===true` → gate is a no-op). (2) The pill's grace source MUST equal `_computeUnitMoney`'s (`state.settings.lateFee.graceDays`), never the per-building late-fee override — else the badge drifts off the map. (3) Deposit pill keeps its own non-rent grace (no 3rd arg). (4) `_isMonthSettled` paid-wins (Entry 55) short-circuits before the gate; lease-start gate (Entry 1) untouched. (5) Only `past_due` is gated (not `open`) — surgical.
+- **Verification:** Suite 449 today → move-in rent badge reads SENT (blue) not PAST DUE; map still blue. Probe (workflow `wbfy9c5z4`) dumps `isOverdueByDate=false`, `dueDate=Jul 6`, `stripeBucket='past_due'`, pill should=SENT. After Jul 6 unpaid → PAST DUE returns.
+- **Regression test:** none — manual UI / live console.
+- **Related PR / issue:** workflow `wbfy9c5z4`. **SEPARATE follow-up (NOT done — needs operator approval, CLAUDE.md §2):** the Stripe invoice `due_date` itself is wrong (senders hardcode `days_until_due:7` from send date — `~85194`/`~91671`/`~91686`; CF `functions/index.js:1273`). Stripe may already be dunning the tenant for July rent. Fix = create the lease-start-month invoice with absolute `due_date = leaseStart + grace`. The display gate does NOT solve the tenant-facing Stripe reality.
+
+---
+
 ### 58. Colored (non-vacant) units stay full-opacity in view mode; Opacity slider dims only vacant (UI, 2026-06-07)
 
 - **Status:** active

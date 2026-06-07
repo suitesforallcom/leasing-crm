@@ -84658,7 +84658,13 @@ function _renderProrateBox(u) {
     firstMonthLabel = `Rent · ${MNS[fm-1]} ${fy} → ${MNS[lm-1]} ${ly} (${_moveInCoveredYms.length} mo)`;
     firstMonthHint  = `Multi-month advance · ${_moveInCoveredYms.length} × $${rent.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}/mo`;
   }
-  const rentBadge = _moveInInvoicePill(rentStatus, rentInvId);
+  // Entry 59: грейс-гейт для rent-бейджа — past_due до (leaseStart+grace)
+  // показываем как SENT. Грейс берём из state.settings (как _computeUnitMoney),
+  // не из per-building override, чтобы пилюля совпадала с картой.
+  const _grace1 = (state?.settings?.lateFee?.graceDays ?? 5);
+  const _mb1 = (typeof _monthBilling === 'function') ? _monthBilling(rent, ymLocal, startIso, _grace1, new Date(), u) : null;
+  const _rentStatus1 = _mb1 ? Object.assign({}, rentStatus, { _graceDueDate: _mb1.dueDate.toLocaleDateString('en-US') }) : rentStatus;
+  const rentBadge = _moveInInvoicePill(_rentStatus1, rentInvId, _mb1 ? _mb1.isOverdueByDate : undefined);
   let   depBadge  = _moveInInvoicePill(depStatus, depInvId);
   // Когда депозит помечен PAID и роль может править — оборачиваем бейдж
   // в кнопку-реверс. Сам markUnitDepositUnpaid содержит confirm()-диалог
@@ -89238,7 +89244,11 @@ function _renderMoveInCardForModal(u) {
     firstMonthLabel = `Rent · ${MNS[fm-1]} ${fy} → ${MNS[lm-1]} ${ly} (${_moveInCoveredYmsM.length} mo)`;
     firstMonthHint  = `Multi-month advance · ${_moveInCoveredYmsM.length} × $${rent.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}/mo`;
   }
-  const makeRentBadge = () => _moveInInvoicePill(rentStatus, rentInvIdM);
+  // Entry 59: грейс-гейт (см. site 1) — для модалки move-in.
+  const _grace2 = (state?.settings?.lateFee?.graceDays ?? 5);
+  const _mb2 = (typeof _monthBilling === 'function') ? _monthBilling(rent, ym, startIso, _grace2, new Date(), u) : null;
+  const _rentStatus2 = _mb2 ? Object.assign({}, rentStatus, { _graceDueDate: _mb2.dueDate.toLocaleDateString('en-US') }) : rentStatus;
+  const makeRentBadge = () => _moveInInvoicePill(_rentStatus2, rentInvIdM, _mb2 ? _mb2.isOverdueByDate : undefined);
   const makeDepBadge  = () => _moveInInvoicePill(depStatus, depInvIdM);
 
   // Button-or-badge: if the row is "sent"/"paid" show a read-only pill;
@@ -89368,7 +89378,10 @@ function _renderMoveInCardForModal(u) {
       if (rem.invoiceId) return { sent: true, paid: false, state: 'sent' };
       return { sent: false, paid: false, state: 'not_sent' };
     })();
-    const remBadge = _moveInInvoicePill(remStatus, rem.invoiceId || null);
+    // Entry 59: грейс-гейт для второго инвойса split-аренды — по его СОБСТВЕННОЙ due_date.
+    const _remOverdue = remDueDate ? (new Date() > remDueDate) : undefined;
+    const _remStatus = remDueDate ? Object.assign({}, remStatus, { _graceDueDate: remDueDate.toLocaleDateString('en-US') }) : remStatus;
+    const remBadge = _moveInInvoicePill(_remStatus, rem.invoiceId || null, _remOverdue);
     const remCanRemind = remStatus.sent && _canRemindInvoice(rem.invoiceId);
     const remBtn = remStatus.sent
       ? (remCanRemind
@@ -90650,7 +90663,7 @@ function _moveInDepositStatus(u) {
 // have a stamped invoiceId — so past_due / void / uncollectible show
 // up correctly instead of a stale local "open" stamp. Falls back to
 // the state resolver when cache isn't populated yet.
-function _moveInInvoicePill(s, invoiceId) {
+function _moveInInvoicePill(s, invoiceId, graceOverdue) {
   // Pre-send / no-invoice state — show an explicit "NOT SENT" pill
   // (muted grey) rather than a bare em-dash. The operator always sees
   // a status badge in the same visual slot, so the column reads as a
@@ -90681,6 +90694,18 @@ function _moveInInvoicePill(s, invoiceId) {
   // Try to read real status from cache (для не-paid case'а: state===sent).
   const realBucket = invoiceId ? _lookupInvoiceBucket(invoiceId) : null;
   if (realBucket) {
+    // FIXES_LOG Entry 59 — грейс-гейт. Stripe помечает rent-инвойс past_due по
+    // СВОЕЙ due_date (days_until_due от даты отправки), не привязанной к
+    // leaseStart+grace. Если НАШ грейс ещё не истёк (graceOverdue === false),
+    // показываем SENT (синий), как карта и _computeUnitMoney, а не PAST DUE.
+    // Передаётся ТОЛЬКО для rent-вызовов; deposit без 3-го арг (undefined) →
+    // прежнее поведение. Реально просроченный (graceOverdue===true) → PAST DUE.
+    if (graceOverdue === false && realBucket === 'past_due') {
+      const _due = (s && s._graceDueDate)
+        ? ` title="Sent — not yet due. Due ${esc(s._graceDueDate)} (lease start + grace). Stripe shows PAST DUE on its own clock."`
+        : '';
+      return `<span class="inv-status-badge open"${_due}>SENT</span>`;
+    }
     const label = realBucket === 'past_due' ? 'PAST DUE' : realBucket.toUpperCase();
     return `<span class="inv-status-badge ${esc(realBucket)}">${esc(label)}</span>`;
   }
