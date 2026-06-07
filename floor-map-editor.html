@@ -247,7 +247,12 @@
        Map/Rent Roll (наложение 16px, 2026-05-29). Адрес всё равно
        эллипсизуется через min-width:0 на .bp-main внутри пилюли.
        Держим в синхроне с .building-pill min-width (84px). */
-    min-width: 84px;
+    /* FIXES_LOG Entry 56: пол поднят 84→160px, чтобы .bp-main не схлопывался
+       flex'ом в 0 (имя+адрес исчезали на Карте/Rent Roll/Stacking, где
+       floor-табы забивают топбар). На узком окне (<1280px) media-query ниже
+       возвращает 84px → адрес уходит в ellipsis, пилюля НЕ вылезает на
+       Map/Rent Roll (инвариант 2026-05-29). */
+    min-width: 160px;
     flex: 0 1 260px;          /* target ~260px, shrink down to content      */
     /* Большой зазор справа — фотография здания не должна визуально
        сливаться с соседней Map-кнопкой ни на каком экране. 20px после
@@ -279,7 +284,11 @@
        пилюли не нужен. */
   }
   .building-pill:hover { background: var(--surface-2); border-color: var(--accent); }
-  .building-pill .bp-main { flex: 1; min-width: 0; max-width: 240px; display: flex; flex-direction: column; line-height: 1.1; }
+  /* FIXES_LOG Entry 56: min-width 0→88px — без пола .bp-main отдавал ВСЮ
+     ширину фиксированным детям (фото+каретка) и схлопывался в 0 на забитом
+     топбаре, унося имя И адрес. 88px держит читаемый минимум; на узком окне
+     media-query ниже возвращает 0 (ellipsis вместо overflow). */
+  .building-pill .bp-main { flex: 1; min-width: 88px; max-width: 240px; display: flex; flex-direction: column; line-height: 1.1; }
   .building-pill .bp-name {
     font-weight: 600;
     font-size: 12px;
@@ -291,6 +300,18 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     line-height: 1.15;
     margin-top: 2px;
+  }
+  /* FIXES_LOG Entry 56 — relax-валв. На узком окне снимаем reservation адреса:
+     .bp-main снова схлопывается (ellipsis), а пол .building-selector падает до
+     84px, чтобы пилюля сжалась и НЕ вылезла поверх Map/Rent Roll, а правый
+     кластер (overdue/pending/user-badge) не выдавился за край (floor-табы
+     приоритетнее адреса по решению оператора 2026-06-07). Порог 1280px —
+     в синхроне с существующим breakpoint'ом сжатия Stacking-лейбла; выше
+     него на десктопе всегда есть запас под адрес даже у многоэтажных зданий. */
+  @media (max-width: 1280px) {
+    .building-pill .bp-main { min-width: 0; }
+    .building-selector { min-width: 84px; }
+    .top-search { min-width: 160px; }
   }
   .building-pill > svg { width: 14px; height: 14px; opacity: 0.5; flex-shrink: 0; }
   /* Building visual in the topbar pill — either a real photo (preferred)
@@ -2896,7 +2917,13 @@
     border-radius: 8px;
     height: 32px;
     flex: 1 1 240px;
-    min-width: 160px;
+    /* FIXES_LOG Entry 56: пол 160→84px. На забитом топбаре (Карта/Rent Roll/
+       Stacking) поиск отдаёт ширину под адрес в пилюле здания — это
+       net-zero по overflow (резерв адреса +76px = усадка поиска −76px),
+       поэтому правый кластер не выдавливается, а floor-табы не трогаются.
+       На roomy-видах поиск всё равно растёт (flex-grow), пол не задействован.
+       На узком окне (<1280px) media-query у .building-pill возвращает 160px. */
+    min-width: 84px;
     /* Removed max-width — with the live-sync indicator gone, the search
        field now owns the right-of-topbar real estate up to the user pill. */
     max-width: 440px;

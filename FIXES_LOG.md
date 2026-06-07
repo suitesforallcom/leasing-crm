@@ -60,6 +60,22 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 56. Building-address pill must not flex-collapse on crowded views (UI, 2026-06-07)
+
+- **Status:** active
+- **Branch / commit:** `main` @ `<this commit>`
+- **Area:** UI / topbar building selector
+- **Files:** floor-map-editor.html (CSS only)
+- **Functions:** none (pure CSS — `.building-selector` / `.building-pill .bp-main` / `.top-search` + a relax `@media`)
+- **Bug it fixed:** The building address (and on the worst views the name too) vanished from the topbar pill on **Floor Plan / Rent Roll / Stacking** but showed on every other view ("на некоторых страницах есть, на некоторых нет"). Root cause: the topbar is a single non-wrapping flex row where `.floor-group` (floor tabs, shown only on those 3 views via the `data-view` whitelist @ ~5786) and `.topbar-actions` are `flex-shrink:0`, so `.building-selector` (`flex:0 1 260px`, the only shrinkable text element) was squeezed to its `min-width:84px`; inside it `.bp-main` had `min-width:0` and collapsed to 0 → name+address ellipsis to nothing, leaving only photo+chevron. Not a media-query (the old `@media(max-width:1180px){.bp-addr{display:none}}` was already removed in `52d8cfb`) and not a data problem (the name vanished too). Verified live: at narrow width `.bp-main` width → 0 with `display:block` (flex-collapse, not a CSS hide).
+- **Fix:** reserve a readable minimum for the text block — `.bp-main min-width:0→88px`, `.building-selector min-width:84→160px` — and **fund it from the expendable search box** (`.top-search min-width:160→84px`) so the reservation is **net-zero on overflow** (selector +76px = search −76px). A relax `@media(max-width:1280px)` restores all three to their old values so on a genuinely narrow window the address yields to ellipsis and the pill never overflows onto Map/Rent Roll. Live-measured: `addedOverflow = 0px` vs the pre-fix baseline at the same width; `selector.right − topNavTabs.left = −40px` (no overlap) before and after.
+- **Invariant — DO NOT BREAK:** (1) `.building-selector` must never shrink below the pill's content min such that the pill overflows right onto Map/Rent Roll (2026-05-29 overlap incident, comment @ ~244-248). (2) The address reservation MUST stay overflow-neutral — if you raise `.bp-main`/`.building-selector` min-width, keep the offsetting `.top-search` reduction (and the `@media` relax) so total shrink capacity is unchanged. (3) Floor tabs are higher priority than the address (operator 2026-06-07): never shrink/scroll `.floor-group` to make room for the address. (4) Keep `.topbar` always-visible (sticky, no scroll-reveal — UX_STANDARDS §15 / Entry 49).
+- **Verification:** at window > 1280px on Floor Plan, `#bpAddr` renders (≥~88px wide); at ≤1280px it ellipsizes and the pill stays within the selector (no overlap). Console: compare `document.querySelector('.topbar').scrollWidth - clientWidth` before/after the style — must not increase.
+- **Regression test:** none — manual UI / live width sweep.
+- **Related PR / issue:** workflow `wigax3hnc` (2026-06-07); supersedes the partial `#3` fix in `52d8cfb` (which only removed the media query, leaving the flex-collapse).
+
+---
+
 ### 55. Overdue/late-fee engine must honor Stripe-paid, not only local stamp (finance, 2026-06-07)
 
 - **Status:** active
