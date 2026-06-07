@@ -60,6 +60,22 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 58. Colored (non-vacant) units stay full-opacity in view mode; Opacity slider dims only vacant (UI, 2026-06-07)
+
+- **Status:** active
+- **Branch / commit:** `main` @ `<this commit>`
+- **Area:** UI / floor-map unit fill rendering
+- **Files:** floor-map-editor.html
+- **Functions:** `renderUnits` (per-unit opacity computation)
+- **Bug it fixed:** The Layers "Opacity" slider (`state.settings.unitOpacity`) was applied uniformly to ALL units, so lowering it (to see the blueprint underlay) also faded the colored/occupied units — their status colors went weak and the blueprint bled through them. Operator wanted colored units to stay full-strength.
+- **Fix:** in `renderUnits` (~66196), compute per-unit opacity with a condition — in VIEW mode, any unit that is NOT a rentable vacant unit (`isVacantUnit = isRentable && u.status === 'vacant'`) renders at `opacity 1` regardless of the slider; only vacant units use `unitOpacity` (so the blueprint shows through empty space). EDIT mode is unchanged (all units stay translucent at `editModeOpacity` so the plan is visible while drawing). Selected-unit 0.7 floor preserved. Applied via the existing `unitOpacity` local that feeds both the rect `opacity` (~66331) and polygon `fill-opacity` (~66329).
+- **Invariant — DO NOT BREAK:** (1) The Opacity slider must dim ONLY vacant units in view mode; non-vacant (occupied/reserved + non-rentable common areas) stay opaque. (2) EDIT mode keeps all units translucent (editModeOpacity) — do not make occupied units opaque in edit mode (the plan must stay visible while editing). (3) Default `unitOpacity=1` → no visible change at 100%; the branch only diverges when the slider is lowered.
+- **Verification:** lower Layers→Opacity to ~40% in view mode → occupied units stay solid, vacant units fade and show the blueprint. Toggle Edit Mode → all units translucent as before. Console: `document.querySelectorAll('.unit-rect')` — vacant rects have `opacity≈0.4`, occupied rects `opacity=1`.
+- **Regression test:** none — manual UI / live.
+- **Related PR / issue:** operator request 2026-06-07 (follow-on to Entry 56/57 background work).
+
+---
+
 ### 57. Background-settings sliders must re-sync from the active floor (UI/data-integrity, 2026-06-07)
 
 - **Status:** active

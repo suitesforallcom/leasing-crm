@@ -66192,8 +66192,18 @@ function renderUnits() {
     const isSelected = selectedIds.includes(u.id);
     const isRotated = !!(u.rotation && u.rotation !== 0);
     const isVacantLease = isRentable && mapViewMode === 'lease' && u.status === 'vacant';
+    // FIXES_LOG Entry 58: в VIEW-режиме залитые цветом (всё КРОМЕ vacant) юниты —
+    // всегда полноценные (opacity 1): не приглушаются слайдером Opacity и не
+    // просвечивают подложку. Слайдер Opacity (unitOpacity) теперь приглушает
+    // ТОЛЬКО vacant-юниты (rentable + status==='vacant') — сквозь них видно план.
+    // В EDIT-режиме поведение прежнее (всё полупрозрачно, чтобы рисовать поверх
+    // плана). По умолчанию unitOpacity=1 → при 100% видимых изменений нет; эффект
+    // только когда оператор убавил слайдер. (Запрос оператора 2026-06-07.)
+    const isVacantUnit = isRentable && u.status === 'vacant';
+    let _baseOpacity = effectiveOpacity;
+    if (!state.settings.editMode && !isVacantUnit) _baseOpacity = 1;
     // Selected units stand out; rotated units need their own stroke (shared-edge won't apply)
-    const unitOpacity = isSelected ? Math.max(0.7, effectiveOpacity) : effectiveOpacity;
+    const unitOpacity = isSelected ? Math.max(0.7, _baseOpacity) : _baseOpacity;
 
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     // Add `dark-fill` class when the unit's background is sky blue
