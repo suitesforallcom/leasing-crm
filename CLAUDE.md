@@ -138,3 +138,90 @@ Every final report uses this structure (full template in DEVELOPMENT_WORKFLOW.md
 9. **SESSION_LOG.md** — chronological log (tail-50 for recent context)
 10. **KNOWN_ISSUES.md** · **RISK_MATRIX.md** · **PM_OPERATING_MODE.md**
 11. Topic files (PAYMENTS_AND_FINANCE_RULES.md · AUTH_AND_PERMISSIONS_RULES.md · DATABASE_RULES.md · FINANCIAL_MODEL_REFERENCE.md) — read when working in those areas
+
+---
+
+<!-- ===== Appended by Claude Code Starter Kit conversion (non-conflicting sections only) ===== -->
+
+## Naming — NEVER Rename Mid-Project
+
+Renaming packages, modules, or key variables mid-project causes cascading failures that are extremely hard to catch. If you must rename:
+
+1. Create a checklist of ALL files and references first
+2. Use IDE semantic rename (not search-and-replace)
+3. Full project search for old name after renaming
+4. Check: .md files, .txt files, .env files, comments, strings, paths
+5. Start a FRESH Claude session after renaming
+
+---
+
+## Plan Mode — Plan First, Code Second
+
+**For any non-trivial task, start in plan mode.** Don't let Claude write code until you've agreed on the plan. Bad plan = bad code. Always.
+
+- Use plan mode for: new features, refactors, architectural changes, multi-file edits
+- Skip plan mode for: typo fixes, single-line changes, obvious bugs
+- One Claude writes the plan. You review it as the engineer. THEN code.
+
+### Step Naming — MANDATORY
+
+Every step in a plan MUST have a consistent, unique name. This is how the user references steps when requesting changes. Claude forgets to update plans — named steps make it unambiguous.
+
+```
+CORRECT — named steps the user can reference:
+  Step 1 (Project Setup): Initialize repo with TypeScript
+  Step 2 (Database Layer): Set up the database layer
+  Step 3 (Auth System): Implement authentication
+  Step 4 (API Routes): Create user endpoints
+  Step 5 (Testing): Write E2E tests for auth flow
+
+WRONG — generic steps nobody can reference:
+  Step 1: Set things up
+  Step 2: Build the backend
+  Step 3: Add tests
+```
+
+### Modifying a Plan — REPLACE, Don't Append
+
+When the user asks to change something in the plan:
+
+1. **FIND** the exact named step being changed
+2. **REPLACE** that step's content entirely with the new approach
+3. **Review ALL other steps** for contradictions with the change
+4. **Rewrite the full updated plan** so the user can see the complete picture
+
+```
+CORRECT:
+  User: "Change Step 3 (Auth System) to use session cookies instead of JWT"
+  Claude: Replaces Step 3 content, checks Steps 4-5 for JWT references,
+          outputs the FULL updated plan with Step 3 rewritten
+
+WRONG:
+  User: "Actually use session cookies instead"
+  Claude: Appends "Also, use session cookies" at the bottom
+          ← Step 3 still says JWT. Now the plan contradicts itself.
+```
+
+**Claude will forget to do this.** If you notice the plan has contradictions, tell Claude: "Rewrite the full plan — Step 3 and Step 7 contradict each other."
+
+- If fundamentally changing direction: `/clear` → state requirements fresh
+
+---
+
+## CLAUDE.md Is Team Memory — The Feedback Loop
+
+Every time Claude makes a mistake, **add a rule to prevent it from happening again.**
+
+This is the single most powerful pattern for improving Claude's behavior over time:
+
+1. Claude makes a mistake (wrong pattern, bad assumption, missed edge case)
+2. You fix the mistake
+3. You tell Claude: "Update CLAUDE.md so you don't make that mistake again"
+4. Claude adds a rule to this file
+5. Mistake rates actually drop over time
+
+**This file is checked into git. The whole team benefits from every lesson learned.**
+
+Don't just fix bugs — fix the rules that allowed the bug. Every mistake is a missing rule.
+
+**If RuleCatch is installed:** also add the rule as a custom RuleCatch rule so it's monitored automatically across all future sessions. CLAUDE.md rules are suggestions — RuleCatch enforces them.
