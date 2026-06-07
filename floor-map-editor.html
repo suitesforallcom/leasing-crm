@@ -20286,26 +20286,11 @@
           <input type="number" class="range-num" id="priceTextOpacityNum" min="10" max="100" value="100">
           <span class="range-unit">%</span>
         </div>
-        <div class="range-row" title="Font size of the price line. 100% = default. Type a value for sizes beyond the slider range.">
+        <div class="panel-title">Data size (rent · $/ft² · tenant)</div>
+        <div class="range-row" title="ONE size for all data lines — rent, $/ft²/yr and tenant/size — so they are the same. 100% = default; type a value for sizes beyond the slider range.">
           <label>Size</label>
           <input type="range" id="priceScale" min="50" max="200" step="5" value="100">
           <input type="number" class="range-num" id="priceScaleNum" min="30" max="400" step="5" value="100">
-          <span class="range-unit">%</span>
-        </div>
-
-        <div class="panel-title">$/ft² rate</div>
-        <div class="range-row" title="Font size of the $/ft²/yr line on each unit (when shown). 100% = default.">
-          <label>Size</label>
-          <input type="range" id="rateScale" min="50" max="200" step="5" value="100">
-          <input type="number" class="range-num" id="rateScaleNum" min="30" max="400" step="5" value="100">
-          <span class="range-unit">%</span>
-        </div>
-
-        <div class="panel-title">Tenant / size</div>
-        <div class="range-row" title="Font size of the tenant name / size line on each unit. 100% = default.">
-          <label>Size</label>
-          <input type="range" id="tenantScale" min="50" max="200" step="5" value="100">
-          <input type="number" class="range-num" id="tenantScaleNum" min="30" max="400" step="5" value="100">
           <span class="range-unit">%</span>
         </div>
 
@@ -66199,14 +66184,13 @@ function renderUnits() {
           else                                  _labelYShift = Math.round((u.h - _BLOCK_HEIGHT) / 2 - _BLOCK_TOP_Y);
         }
 
-        // Желаемый размер = базовый × множитель из слайдеров Size
-        // (state.settings.unitNumScale / priceScale). ~0.62 — приблизительная
-        // доля ширины символа от font-size (та же, что в hit-rect номера ниже).
+        // Множители размера: номер — свой (unitNumScale), а ВСЕ строки данных
+        // (аренда / $/ft² / арендатор) — ОДИН общий множитель «Data size»
+        // (priceScale переиспользуется как data-scale), чтобы данные были одного
+        // размера и регулировались одним бегунком. ~0.62 — доля ширины символа.
         const _clampSc = (v) => (Number.isFinite(v) && v > 0) ? Math.min(4, Math.max(0.3, v)) : 1;
-        const _numScaleV    = _clampSc(state.settings.unitNumScale);
-        const _priceScaleV  = _clampSc(state.settings.priceScale);
-        const _rateScaleV   = _clampSc(state.settings.rateScale);
-        const _tenantScaleV = _clampSc(state.settings.tenantScale);
+        const _numScaleV   = _clampSc(state.settings.unitNumScale);
+        const _dataScaleV  = _clampSc(state.settings.priceScale);
         const _availLabelW = Math.max(8, u.w - _PAD * 2);
         // ЦЕНА — непрерывный авто-подгон по ширине (чтобы $ не наезжал на соседей).
         const _fitLabelFont = (desiredPx, text) => {
@@ -66313,17 +66297,21 @@ function renderUnits() {
         const _labelRent    = _isGroupShadow ? 0
                             : _isUnitRented  ? (+u.contractRent || 0)
                                              : (+u.rent || 0);
-        // Цена под номером — показывается ВСЕГДА при наличии рента; на узких
-        // юнитах автоматически ужимается по ширине (_fitLabelFont), но остаётся
-        // видимой. Раньше тут было авто-скрытие цены на узких юнитах
-        // (_priceWidthFit < 9), но на плотных этажах юниты узкие (ширина ~20-40)
-        // → цена пряталась почти у ВСЕХ, хотя рент задан и оператору она нужна.
-        // Скрытие по ширине убрано (запрос 2026-06-06).
+        // Цена под номером — показывается ВСЕГДА при наличии рента (скрытие по
+        // ширине убрано 2026-06-06).
         const _priceText = '$' + _labelRent.toLocaleString();
-        // Override фикс. размера цены для юнита (панель мульти-выбора), иначе
-        // авто-подгон по ширине.
+        // ЕДИНЫЙ размер всех строк данных (аренда / $/ft² / арендатор): желаемый
+        // 14 × data-scale, ужатый по ширине под САМУЮ ШИРОКУЮ показываемую строку
+        // данных (цена или $/ft²), чтобы все были ОДНОГО размера и влезали.
+        // Арендатор берёт тот же размер и при необходимости переносится.
+        const _sqftForRate = +u.sqft || 0;
+        const _rateWillShow = !!state.settings.showMapRate && _labelRent > 0 && _sqftForRate > 0 && u.h > 50;
+        const _rateLenEst = _rateWillShow ? ('$' + Math.round(_labelRent * 12 / _sqftForRate) + '/ft²/yr').length : 0;
+        const _maxDataLen = Math.max(_priceText.length, _rateLenEst, 4);
+        const _dataFs = Math.max(3, Math.min(14 * _dataScaleV, _availLabelW / (_maxDataLen * 0.62)));
+        // Per-unit override размера цены (панель мульти-выбора) имеет приоритет.
         const _priceOverride = (typeof u.labelPricePx === 'number' && u.labelPricePx >= 3) ? u.labelPricePx : null;
-        const _priceFs = (_priceOverride != null) ? _priceOverride : _fitLabelFont(14 * _priceScaleV, _priceText);
+        const _priceFs = (_priceOverride != null) ? _priceOverride : _dataFs;
         if (showRent && _labelRent > 0) {
           // Pushed down +4px from the prior y=35 to give the suite ID
           // a bit more breathing room before the price line. Matches
@@ -66354,10 +66342,10 @@ function renderUnits() {
           const rate = document.createElementNS('http://www.w3.org/2000/svg', 'text');
           rate.setAttribute('class', 'unit-rate');
           rate.setAttribute('x', _labelX);
-          // Размер ставки: per-unit override (u.labelRatePx) или база 10 ×
-          // глобальный rateScale (Layers). Inline-style перебивает CSS .unit-rate.
+          // Размер ставки: per-unit override (u.labelRatePx) или ЕДИНЫЙ _dataFs
+          // (тот же, что у цены/арендатора). Inline-style перебивает CSS .unit-rate.
           const _rateOverride = (typeof u.labelRatePx === 'number' && u.labelRatePx >= 3) ? u.labelRatePx : null;
-          const _rateFs = (_rateOverride != null) ? _rateOverride : (10 * _rateScaleV);
+          const _rateFs = (_rateOverride != null) ? _rateOverride : _dataFs;
           _stackY += _LBL_GAP + _rateFs * _LBL_CAP;
           rate.setAttribute('y', _stackY);
           if (_labelAnchor !== 'start') rate.setAttribute('text-anchor', _labelAnchor);
@@ -66429,10 +66417,10 @@ function renderUnits() {
             const info = document.createElementNS('http://www.w3.org/2000/svg', 'text');
             info.setAttribute('class', 'unit-dim');
             info.setAttribute('x', _labelX);
-            // Размер арендатора/размера: per-unit override (u.labelTenantPx)
-            // или база 16 × глобальный tenantScale. Inline-style перебивает CSS.
+            // Размер арендатора/размера: per-unit override (u.labelTenantPx) или
+            // ЕДИНЫЙ _dataFs (тот же, что у цены/ставки). Inline перебивает CSS.
             const _tenantOverride = (typeof u.labelTenantPx === 'number' && u.labelTenantPx >= 3) ? u.labelTenantPx : null;
-            const _tenantFont = (_tenantOverride != null) ? _tenantOverride : (16 * _tenantScaleV);
+            const _tenantFont = (_tenantOverride != null) ? _tenantOverride : _dataFs;
             _stackY += _LBL_GAP + _tenantFont * _LBL_CAP;
             info.setAttribute('y', _stackY);
             if (_labelAnchor !== 'start') info.setAttribute('text-anchor', _labelAnchor);
@@ -100851,8 +100839,6 @@ _wireRangeNum('unitTextOpacity',  'unitTextOpacityNum',  v => { state.settings.u
 _wireRangeNum('unitNumScale',     'unitNumScaleNum',     v => { state.settings.unitNumScale     = v/100; renderUnits(); });
 _wireRangeNum('priceTextOpacity', 'priceTextOpacityNum', v => { state.settings.priceTextOpacity = v/100; applyTextBrightness(); });
 _wireRangeNum('priceScale',       'priceScaleNum',       v => { state.settings.priceScale       = v/100; renderUnits(); });
-_wireRangeNum('rateScale',        'rateScaleNum',        v => { state.settings.rateScale        = v/100; renderUnits(); });
-_wireRangeNum('tenantScale',      'tenantScaleNum',      v => { state.settings.tenantScale      = v/100; renderUnits(); });
 
 // =========================================================================
 // ===== AI Assistant (multi-provider: Grok / Claude) ======================
@@ -152416,8 +152402,6 @@ document.getElementById('labelsBtn')?.classList.toggle('active', state.settings.
   set('unitNumScale',     pct(state.settings.unitNumScale),     50, 200);
   set('priceTextOpacity', pct(state.settings.priceTextOpacity), 10, 100);
   set('priceScale',       pct(state.settings.priceScale),       50, 200);
-  set('rateScale',        pct(state.settings.rateScale),        50, 200);
-  set('tenantScale',      pct(state.settings.tenantScale),      50, 200);
 })();
 // Глобальный дропдаун позиции подписей (Layers) — выставляем из общей позиции
 // юнитов (если у всех одинаковая) или top-left.
