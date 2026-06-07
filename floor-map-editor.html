@@ -77262,15 +77262,28 @@ function _computeUnitMoney(u) {
     const monthBase = _escRent(ym);
     const mb = _monthBilling(monthBase, ym, startIso, grace, now, u);
     const monthRent = mb.monthRent;
-    if (p?.status === 'paid') {
-      paidYtd += (+p.amount) || monthBase;
+    // FIXES_LOG Entry 55 — split-brain fix. Месяц считается оплаченным
+    // не только по локальному штампу u.payments[ym].status, но и через
+    // _isMonthSettled — он учитывает Stripe-оплату (cache bucket='paid')
+    // с гардом _stampPointsToDeposit (Entry 34). Без этого месяц,
+    // оплаченный в Stripe, но с локальным штампом ≠ 'paid' (например
+    // застрявшим в 'late'), ловил ложный overdue + late fee, хотя карта
+    // (_computeUnitFillImpl) и история платежей уже красили его PAID.
+    // _isMonthSettled возвращает null для open/past_due, поэтому «счёт
+    // отправлен, не оплачен» по-прежнему остаётся overdue. Fallback на
+    // старый чек — на случай недоступности helper'а (load-order safety).
+    const _settled = (typeof _isMonthSettled === 'function')
+      ? _isMonthSettled(u, ym)
+      : (p?.status === 'paid' ? 'paid' : (p?.status === 'free' ? 'free' : null));
+    if (_settled === 'paid' || _settled === 'stripe-paid') {
+      paidYtd += (+p?.amount) || monthBase;
       continue;
     }
     // Waived month — no debt, no late fee, no overdue overlay. Shares
     // the "skip" semantics with paid months. Without this, a waiver
     // (referral credit, comp month, etc.) would still light up the
     // unit as overdue on the floor map and accrue late fees.
-    if (p?.status === 'free') continue;
+    if (_settled === 'free') continue;
 
     if (i > 0) {
       // Past unpaid month — outstanding + overdue. Используем mb.monthRent
@@ -77303,7 +77316,11 @@ function _computeUnitMoney(u) {
       if (startDate && !isNaN(startDate.getTime()) && lastDay < startDate) continue;
       const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
       const pm = u.payments?.[ym];
-      if (pm?.status === 'paid' || pm?.status === 'free') continue;
+      // FIXES_LOG Entry 55 — как в основном цикле: Stripe-оплаченный месяц
+      // не должен копить late fee, даже если локальный штамп завис в 'late'.
+      const _pmSettled = (typeof _isMonthSettled === 'function') ? _isMonthSettled(u, ym) : null;
+      if (_pmSettled === 'paid' || _pmSettled === 'stripe-paid' || _pmSettled === 'free'
+          || pm?.status === 'paid' || pm?.status === 'free') continue;
       // Late-fee грейс может быть свой (lfCfg.graceDays), поэтому
       // отдельный вызов _monthBilling с этим грейсом — нельзя
       // переиспользовать переменную mb из основного цикла выше.

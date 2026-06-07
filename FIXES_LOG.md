@@ -60,6 +60,22 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 55. Overdue/late-fee engine must honor Stripe-paid, not only local stamp (finance, 2026-06-07)
+
+- **Status:** active
+- **Branch / commit:** `main` @ `<this commit>`
+- **Area:** Finance / overdue detection / late-fee accrual
+- **Files:** floor-map-editor.html
+- **Functions:** `_computeUnitMoney` (main per-month loop + late-fee loop)
+- **Bug it fixed:** Split-brain "paid-but-overdue". A rent month paid on Stripe (`cache.bucket === 'paid'`) but whose local stamp `u.payments[ym].status` ≠ `'paid'`/`'free'` (e.g. stuck at `'late'`) read **OVERDUE** on the red "!" map badge, the Overview "Current month overdue — $X due" banner, the unbilled late-fee accrual, and the topbar/A-R surfaces — while the floor-map "Payment status" fill (`_computeUnitFillImpl`) and the Payment-History grid (`_renderUnitTenantHistoryBlock`) correctly read **PAID** (both honor the Stripe paid-bucket). Confirmed live on Suite 417 / June 2026: `u.payments['2026-06'].status === 'late'` while rent invoice `in_1Tc7Dz…` was `bucket:'paid'` ($350). `_computeUnitMoney` consulted ONLY the local stamp; every "green" surface also consulted Stripe. Same class as Entry 34 (display surfaces were migrated to `_isMonthSettled`; the overdue/late-fee engine was not).
+- **Fix:** route `_computeUnitMoney`'s per-month settled test through the existing consolidated `_isMonthSettled(u, ym)` (returns `'paid'`/`'free'`/`'stripe-paid'`, carries the `_stampPointsToDeposit` deposit-cross-stamp guard, returns `null` for `open`/`past_due`). Both the main loop and the late-fee loop now treat `'paid'` **or** `'stripe-paid'` (or local `'paid'`/`'free'`) as settled. Old narrow check kept as a typeof-guarded fallback for load-order safety. No formula touched (proration, late-fee math, effective-rent unchanged).
+- **Invariant — DO NOT BREAK:** a month is "settled" (no overdue, no late fee) iff `_isMonthSettled` returns `'paid'`/`'free'`/`'stripe-paid'`. A **sent-but-unpaid** invoice (`open`/`past_due`) MUST still count as overdue — `_isMonthSettled` returns `null` for those; never broaden the engine to treat an alive-unpaid invoice as paid. The lease-start gate (Entry 1) and deposit-cross-stamp guard (Entry 34) stay intact.
+- **Verification:** live console `sfaDiagnoseSuitePaid('417','2026-06')` → unit reads PAID via Stripe; after fix `_isUnitOverdue(u)` returns `false`, Overview banner clears, June late fee no longer accrues. The floor-map fill + history grid were already PAID and must stay PAID (now all surfaces agree).
+- **Regression test:** none — manual UI / live console (`_isMonthSettled` vs `_computeUnitMoney.unpaidMonths` agreement).
+- **Related PR / issue:** workflow `wyvnhkho1` root-cause report (2026-06-07). Builds on Entry 34.
+
+---
+
 ### 54. Move-addendum DocuSign anchors must land on the CLIENT line, not PROVIDER (legal, 2026-06-07)
 
 - **Status:** active
