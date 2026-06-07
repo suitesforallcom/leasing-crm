@@ -66313,21 +66313,18 @@ function renderUnits() {
         const _labelRent    = _isGroupShadow ? 0
                             : _isUnitRented  ? (+u.contractRent || 0)
                                              : (+u.rent || 0);
-        // Цена под номером. Считаем подогнанный по ширине размер ЗАРАНЕЕ и
-        // СКРЫВАЕМ строку, если он получился бы нечитаемо мелким (< 7) — на
-        // крошечных юнитах показываем только номер, без каши из мелкого текста
-        // (как в профессиональных стэкинг-планах). Порог по фактическому
-        // размеру → не зависит от абсолютного масштаба координат.
+        // Цена под номером — показывается ВСЕГДА при наличии рента; на узких
+        // юнитах автоматически ужимается по ширине (_fitLabelFont), но остаётся
+        // видимой. Раньше тут было авто-скрытие цены на узких юнитах
+        // (_priceWidthFit < 9), но на плотных этажах юниты узкие (ширина ~20-40)
+        // → цена пряталась почти у ВСЕХ, хотя рент задан и оператору она нужна.
+        // Скрытие по ширине убрано (запрос 2026-06-06).
         const _priceText = '$' + _labelRent.toLocaleString();
-        // Размер цены, ограниченный ТОЛЬКО шириной юнита (без учёта желаемого) —
-        // по нему решаем, не станет ли строка нечитаемой на узком юните. Не
-        // зависит от того, какой размер цены выбран слайдером.
-        const _priceWidthFit = _availLabelW / (Math.max(1, _priceText.length) * 0.62);
-        // Override фикс. размера цены для юнита (панель мульти-выбора). Если задан
-        // — используем его и ПОКАЗЫВАЕМ цену независимо от авто-скрытия по ширине.
+        // Override фикс. размера цены для юнита (панель мульти-выбора), иначе
+        // авто-подгон по ширине.
         const _priceOverride = (typeof u.labelPricePx === 'number' && u.labelPricePx >= 3) ? u.labelPricePx : null;
         const _priceFs = (_priceOverride != null) ? _priceOverride : _fitLabelFont(14 * _priceScaleV, _priceText);
-        if (showRent && _labelRent > 0 && (_priceOverride != null || _priceWidthFit >= 9)) {
+        if (showRent && _labelRent > 0) {
           // Pushed down +4px from the prior y=35 to give the suite ID
           // a bit more breathing room before the price line. Matches
           // the airier vertical rhythm of the ZIP redesign mock.
