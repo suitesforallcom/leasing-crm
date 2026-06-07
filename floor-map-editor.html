@@ -3759,6 +3759,17 @@
     display: none; z-index: 6; cursor: nwse-resize; color: var(--zip-ink-4, #8a8275);
   }
   body.dash-customizing .dash-resize-handle { display: block; }
+  /* Перетаскивание блоков: секции не перехватывают touch-скролл, исходный
+     блок во время drag приглушён (показывает целевое место), за курсором
+     летит клон-«призрак». */
+  body.dash-customizing .hv-body.dash-grid .hv-section { touch-action: none; }
+  body.dash-dragging-active { cursor: grabbing; user-select: none; }
+  .dash-drag-clone {
+    position: fixed; z-index: 9999; margin: 0; pointer-events: none;
+    opacity: .93; border-radius: 14px; overflow: hidden;
+    box-shadow: 0 18px 44px rgba(0,0,0,.28);
+    transform: rotate(1.5deg); transition: none;
+  }
 
   /* Топбар-кнопка «Customize» (иконка-шестерёнка + подпись). В режиме
      редактирования заливается тёмным (.active) и подпись меняется на «Done». */
@@ -129673,7 +129684,6 @@ const DASHBOARDS = {
 
 const DASH_MIN_W = 3, DASH_MAX_W = 12, DASH_MIN_H = 140;
 let _dashCustomizing = null;   // viewId, который сейчас в customize-режиме, либо null
-let _dashDragId = null;        // data-dash-block перетаскиваемой секции
 
 // Иконки affordances (inline SVG — без внешних ассетов).
 const _DASH_ICON_GRIP = '<svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor"><circle cx="6" cy="5" r="1.5"/><circle cx="14" cy="5" r="1.5"/><circle cx="6" cy="10" r="1.5"/><circle cx="14" cy="10" r="1.5"/><circle cx="6" cy="15" r="1.5"/><circle cx="14" cy="15" r="1.5"/></svg>';
@@ -129804,9 +129814,13 @@ function _dashBuildAffordances(viewId) {
       sec.appendChild(rh);
       rh.addEventListener('pointerdown', function (e) { _dashResizeStart(e, viewId, b.id, sec); });
     }
-    sec.setAttribute('draggable', 'true');
+    // Перетаскивание (reorder) — pointer-drag с «живой» перестановкой.
+    // Слушатель вешаем один раз на секцию (id/viewId стабильны).
+    if (!sec._dashPdWired) {
+      sec._dashPdWired = true;
+      sec.addEventListener('pointerdown', function (e) { _dashPointerDown(e, viewId, b.id, sec); });
+    }
   });
-  _wireDashBlockDnD(viewId, root);
 }
 
 // Удаляет все ручки и draggable (выход из customize).
@@ -129881,58 +129895,103 @@ function _dashResizeStart(e, viewId, id, sec) {
   document.addEventListener('pointerup', up);
 }
 
-// HTML5-draggable переупорядочивание секций. Слушатели вешаем на контейнер
-// один раз (делегирование), порядок храним числами order в раскладке.
-function _wireDashBlockDnD(viewId, root) {
-  if (root._dashDndWired) return;
-  root._dashDndWired = true;
-  root.addEventListener('dragstart', function (e) {
-    const sec = e.target.closest && e.target.closest('[data-dash-block]');
-    if (!sec || !document.body.classList.contains('dash-customizing')) return;
-    _dashDragId = sec.getAttribute('data-dash-block');
-    sec.classList.add('dash-dragging');
-    try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', _dashDragId); } catch (_) {}
-  });
-  root.addEventListener('dragend', function (e) {
-    const sec = e.target.closest && e.target.closest('[data-dash-block]'); if (sec) sec.classList.remove('dash-dragging');
-    _dashDragId = null;
-  });
-  root.addEventListener('dragover', function (e) {
-    if (_dashDragId == null) return;
-    e.preventDefault(); try { e.dataTransfer.dropEffect = 'move'; } catch (_) {}
-  });
-  root.addEventListener('drop', function (e) {
-    if (_dashDragId == null) return;
-    e.preventDefault();
-    const target = e.target.closest && e.target.closest('[data-dash-block]');
-    _dashReorder(viewId, _dashDragId, target ? target.getAttribute('data-dash-block') : null, e);
-    _dashDragId = null;
-  });
-}
-
-// Пересчёт числовых order по новой визуальной последовательности.
-function _dashReorder(viewId, dragId, dropId, e) {
-  if (!dragId || dragId === dropId) return;
+// Pointer-drag переупорядочивание с «живой» перестановкой: тащим блок —
+// остальные расступаются, исходный (приглушённый) блок показывает место, куда
+// он встанет, а за курсором летит клон-«призрак». Персистим на отпускании.
+// Esc отменяет. Работает в любую сторону (в т.ч. правые блоки — вверх).
+function _dashPointerDown(e, viewId, id, sec) {
+  if (typeof e.button === 'number' && e.button !== 0) return;            // только ЛКМ
+  if (_dashCustomizing !== viewId) return;                              // только в customize
+  if (e.target.closest('.dash-resize-handle, .dash-affordances')) return; // не тащим за ручки/глаз
   const reg = DASHBOARDS[viewId]; if (!reg) return;
   const lay = _ensureDashboardLayout(viewId);
-  const ids = Object.keys(lay.blocks).sort((a, b) =>
-    ((lay.blocks[a].order == null ? 0 : lay.blocks[a].order)) - ((lay.blocks[b].order == null ? 0 : lay.blocks[b].order)));
-  const from = ids.indexOf(dragId); if (from < 0) return;
-  ids.splice(from, 1);
-  let to = ids.length;
-  if (dropId) {
-    const di = ids.indexOf(dropId);
-    if (di >= 0) {
-      const tEl = document.querySelector(reg.root + ' [data-dash-block="' + dropId + '"]');
-      let after = false;
-      if (tEl) { const r = tEl.getBoundingClientRect(); after = (e.clientX > r.left + r.width / 2); }
-      to = di + (after ? 1 : 0);
+  const startX = e.clientX, startY = e.clientY;
+  const rect = sec.getBoundingClientRect();
+  const grabDX = startX - rect.left, grabDY = startY - rect.top;
+  const origOrders = {}; Object.keys(lay.blocks).forEach(k => origOrders[k] = lay.blocks[k].order);
+  let started = false, clone = null, lastIdx = -1, cancelled = false;
+
+  function posClone(ev) { if (clone) { clone.style.left = (ev.clientX - grabDX) + 'px'; clone.style.top = (ev.clientY - grabDY) + 'px'; } }
+  function begin(ev) {
+    started = true;
+    clone = sec.cloneNode(true);
+    clone.querySelectorAll('.dash-affordances, .dash-resize-handle').forEach(n => n.remove());
+    clone.querySelectorAll('[id]').forEach(n => n.removeAttribute('id'));  // не плодим дубль-id
+    clone.removeAttribute('id');
+    clone.className = 'dash-drag-clone';
+    clone.style.width = rect.width + 'px';
+    clone.style.height = rect.height + 'px';
+    document.body.appendChild(clone);
+    sec.classList.add('dash-dragging');
+    document.body.classList.add('dash-dragging-active');
+    posClone(ev);
+  }
+  function move(ev) {
+    if (!started) {
+      if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 5) return;
+      begin(ev);
+    } else { posClone(ev); }
+    const { idx, sequence } = _dashLiveSequence(reg, id, ev.clientX, ev.clientY);
+    if (idx !== lastIdx) {
+      lastIdx = idx;
+      sequence.forEach((bid, i) => { if (lay.blocks[bid]) lay.blocks[bid].order = i; });
+      _dashApplyOrders(viewId);   // только визуал — без saveState/rebuild ручек
     }
   }
-  ids.splice(to, 0, dragId);
-  ids.forEach((id, i) => { if (lay.blocks[id]) lay.blocks[id].order = i; });
-  saveState();
-  applyDashboardLayout(viewId);
+  function finish() {
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', finish);
+    document.removeEventListener('keydown', onKey);
+    if (clone) { clone.remove(); clone = null; }
+    sec.classList.remove('dash-dragging');
+    document.body.classList.remove('dash-dragging-active');
+    if (started && !cancelled) saveState();
+    if (started) applyDashboardLayout(viewId);
+  }
+  function onKey(ev) {
+    if (ev.key === 'Escape') {
+      cancelled = true;
+      Object.keys(origOrders).forEach(k => { if (lay.blocks[k]) lay.blocks[k].order = origOrders[k]; });
+      finish();
+    }
+  }
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', finish);
+  document.addEventListener('keydown', onKey);
+}
+
+// Желаемая последовательность id для текущего положения курсора (reading-order).
+// Ряды группируем по ВЕРХНЕЙ грани (align-items:start → у соседей по ряду
+// одинаковый top), внутри ряда — по left. Высоты блоков разные, поэтому по
+// центру группировать нельзя.
+function _dashLiveSequence(reg, draggedId, x, y) {
+  const lay = state.settings.dashboardLayouts[reg.viewId];
+  const all = reg.blocks.map(b => b.id);
+  const visible = all
+    .filter(id => id !== draggedId && !(lay.blocks[id] && lay.blocks[id].hidden))
+    .map(id => { const el = document.querySelector(reg.root + ' [data-dash-block="' + id + '"]'); if (!el) return null; const r = el.getBoundingClientRect(); return { id, left: r.left, top: r.top, bottom: r.bottom, midX: r.left + r.width / 2 }; })
+    .filter(Boolean)
+    .sort((a, b) => (Math.abs(a.top - b.top) > 8 ? a.top - b.top : a.left - b.left));
+  let idx = visible.length;
+  for (let i = 0; i < visible.length; i++) {
+    const o = visible[i];
+    if (y < o.top - 4) { idx = i; break; }                  // курсор выше ряда блока → перед ним
+    if (y <= o.bottom + 4 && x < o.midX) { idx = i; break; } // тот же ряд, левее центра → перед ним
+  }
+  const seq = visible.map(o => o.id);
+  seq.splice(idx, 0, draggedId);
+  // скрытые блоки — в хвост, чтобы у всех остался валидный order без коллизий
+  all.filter(id => id !== draggedId && lay.blocks[id] && lay.blocks[id].hidden).forEach(id => seq.push(id));
+  return { idx, sequence: seq };
+}
+
+// Лёгкое применение ТОЛЬКО порядка во время drag (без saveState и без
+// пересборки ручек — иначе мерцание/дёрганье).
+function _dashApplyOrders(viewId) {
+  const reg = DASHBOARDS[viewId]; if (!reg) return;
+  const lay = state.settings && state.settings.dashboardLayouts && state.settings.dashboardLayouts[viewId];
+  if (!lay) return;
+  reg.blocks.forEach(b => { const s = document.querySelector(reg.root + ' [data-dash-block="' + b.id + '"]'); if (s && lay.blocks[b.id]) s.style.order = lay.blocks[b.id].order; });
 }
 
 function renderHomeView() {
