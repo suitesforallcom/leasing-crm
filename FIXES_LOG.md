@@ -60,6 +60,22 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 61. Floor plan must bg-aware auto-fit on every open (building/view/boot), not only floor-switch (UI, 2026-06-07)
+
+- **Status:** active
+- **Branch / commit:** `main` @ `<this commit>`
+- **Area:** UI / floor-plan viewBox auto-fit
+- **Files:** floor-map-editor.html (viewBox/UI only)
+- **Functions:** `switchBuilding`, `showFloorPlan`, boot-fit, the ungated resize listener
+- **Bug it fixed:** Some floors opened filling the canvas, others opened small in the upper-left with a big empty bottom-right (operator: "должна растягиваться на всю ширину/высоту"). Root cause: only `switchFloor` (@65447) ran the **bg-aware** fitter `sfaFitToContent` (@100783) AND reset the two gates (`_userHasPanned=false`, `window._sfaLastBgSrc=null`). `switchBuilding` (@61902) and `showFloorPlan` (@130244) ran NO fit → the viewBox stayed stale from the previous floor → with `preserveAspectRatio="xMidYMin meet"` (X-center, Y-top) the slack pooled bottom-right = the small-upper-left look. Boot (@152722) used the **bg-blind** `zoomReset` (ignores the blueprint extent).
+- **Fix:** mirror `switchFloor`'s ritual on the other open paths — `switchBuilding`: reset both gates after the floor repoint + `setTimeout(sfaFitToContent,0)` after `renderAll()`; `showFloorPlan`: same tail, **guarded by `_wasPlan`** so a redundant in-plan call never clobbers the operator's manual zoom; boot-fit swapped `zoomReset`→`sfaFitToContent`. Also **gated the previously-ungated resize listener** (@100783) with `activeView==='plan'` + `_userHasPanned` checks (it was the only resize path that blew away manual pan on any window resize — had to be gated since this fix makes `sfaFitToContent` canonical).
+- **Invariant — DO NOT BREAK:** (1) Every explicit open of the plan (building/floor/view switch, boot) must bg-aware-fit AND reset both gates (`_userHasPanned` + `_sfaLastBgSrc`) — `_sfaLastBgSrc=null` is required so the async `renderBg.onload` corrective re-fit (@66026, gated `isNewSrc && !_userHasPanned`) upgrades the 0ms baseVB-fallback fit to the true bg extent. (2) The fit must NOT fire on incidental re-renders / resize when `_userHasPanned` (respect manual zoom) — hence the `_wasPlan` guard in `showFloorPlan` and the resize gates. (3) `renderBg` no-blank (Entry 51) untouched. (4) `switchFloor` unchanged.
+- **Verification:** open a building via the dropdown → plan now fills the canvas (was small upper-left); switch floors → still fits; resize after a manual zoom → manual zoom preserved (resize gated). Live probe (workflow `wuqe7lcrj`) dumps current viewBox vs would-be sfaFitToContent bbox → "matches" on every open after the fix.
+- **Regression test:** none — manual UI / live.
+- **Related PR / issue:** workflow `wuqe7lcrj`. Out of scope (flagged): finite-but-wrong outlier unit coords over-zoom both fitters; `sfaFitToContent` doesn't reserve the top-pill slack that `zoomReset` did (minor, only relevant if resize/RO are later swapped too).
+
+---
+
 ### 60. Rent invoices must set Stripe due_date = anchor + grace at issuance (finance/Stripe, 2026-06-07)
 
 - **Status:** active

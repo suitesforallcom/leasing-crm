@@ -61900,6 +61900,14 @@ function switchBuilding(bid) {
   state.ui.currentBuildingId = bid;
   const b = currentBuilding();
   state.ui.currentFloorId = b.floors[b.floors.length - 1].id;
+  // FIXES_LOG Entry 61: авто-фит этажа нового здания к холсту (как switchFloor).
+  // Сбрасываем ОБА гейта: _userHasPanned (иначе корректирующий пере-фит в
+  // renderBg.onload подавлен, если оператор панорамировал прошлое здание) и
+  // _sfaLastBgSrc (иначе isNewSrc=false и onload-рефит не сработает). Без этого
+  // switchBuilding оставлял viewBox прошлого этажа → новый план открывался
+  // мелким в углу (xMidYMin → пустота снизу-справа).
+  _userHasPanned = false;
+  try { window._sfaLastBgSrc = null; } catch {}
   // Сбросить selection: id юнита из ПРЕДЫДУЩЕГО здания не существует
   // в новом, и правая панель упирается в "Unit not found". Очистка
   // selectedIds + selectedUnitId триггерит routing-логику в
@@ -61920,6 +61928,12 @@ function switchBuilding(bid) {
   }
   saveState();
   renderAll();
+  // Entry 61: bg-aware фит к новому этажу. setTimeout(0) — fit читает DOM #bgG;
+  // renderAll() выше синхронно стартует асинхронную загрузку картинки, точный
+  // bg-фит догонит в renderBg.onload (гейты сброшены выше). Fallback на zoomReset.
+  setTimeout(() => {
+    try { if (typeof sfaFitToContent === 'function') sfaFitToContent(); else zoomReset(); } catch {}
+  }, 0);
   // КРИТИЧНО (фин-корректность, 2026-06-05): верхние пилюли (overdue / expiring /
   // lease / contract / activity) — ПЕР-ЗДАНИЕ (scope по currentBuildingId). НО
   // renderAll() их НЕ пересчитывает → при переключении здания они оставались с
@@ -100767,6 +100781,11 @@ window.addEventListener('resize', () => {
   // Throttle: 120ms after the resize stream stops.
   clearTimeout(window._sfaRefitTimer);
   window._sfaRefitTimer = setTimeout(() => {
+    // FIXES_LOG Entry 61: гейтим как остальные resize-листенеры — иначе любой
+    // resize окна сбрасывал ручной зум/пан оператора (этот листенер был
+    // единственным БЕЗ гарда). Только на план-вью и только если не панорамировали.
+    if (state.ui?.activeView && state.ui.activeView !== 'plan') return;
+    if (_userHasPanned) return;
     if (typeof sfaFitToContent === 'function') sfaFitToContent();
   }, 120);
 });
@@ -130228,6 +130247,10 @@ function openQuickAddTenantModalFromRail() {
 }
 
 function showFloorPlan() {
+  // Entry 61: запоминаем, были ли мы уже на плане — чтобы re-фитить ТОЛЬКО при
+  // реальном входе на план-вью (из другого вью), а не при повторных вызовах,
+  // иначе сбросили бы ручной зум оператора прямо на плане.
+  const _wasPlan = state.ui.activeView === 'plan';
   state.ui.activeView = 'plan';
   saveState();
   hideAllSecondaryViews();
@@ -130236,6 +130259,15 @@ function showFloorPlan() {
   renderFloorTabs();
   applyViewClasses('plan');
   try { renderAll(); } catch (err) { console.error('[plan] renderAll failed:', err); }
+  // Entry 61: при входе на план-вью — bg-aware авто-фит к этажу (как switchBuilding/
+  // switchFloor). Гард _wasPlan защищает ручной зум при повторных вызовах.
+  if (!_wasPlan) {
+    _userHasPanned = false;
+    try { window._sfaLastBgSrc = null; } catch {}
+    setTimeout(() => {
+      try { if (typeof sfaFitToContent === 'function') sfaFitToContent(); else zoomReset(); } catch {}
+    }, 0);
+  }
 }
 
 // =========================================================================
@@ -152692,7 +152724,7 @@ renderAll();
 // Auto-fit viewBox to actual content on initial load — hugs the floor
 // plan and removes wasted beige margins around small floors. Deferred
 // so the SVG layout has settled + currentFloor() returns real units.
-setTimeout(() => { try { zoomReset(); } catch {} }, 50);
+setTimeout(() => { try { if (typeof sfaFitToContent === 'function') sfaFitToContent(); else zoomReset(); } catch {} }, 50);  // Entry 61: bg-aware фит на загрузке (раньше zoomReset игнорировал подложку)
 // Boot-time Stripe invoice prefetch — flips the L/$/$ map badges from
 // grey "no cache" placeholders to their real paid/open colors right
 // after load, instead of waiting for the operator to click a unit.
