@@ -28852,7 +28852,7 @@ async function stripeEnsureCustomer({email, name, unitId, buildingId}) {
   return res.data; // {customerId, email, name, reused}
 }
 
-async function stripeCreateInvoice({buildingId, floorId, unitId, ym, daysUntilDue, purpose, description, privateNote, amountOverride, emailOverride, tenantNameOverride, autoPayConsent, allowDuplicate, idempotencyKey, extraLineItems, rollInLateFeeInvoiceId}) {
+async function stripeCreateInvoice({buildingId, floorId, unitId, ym, daysUntilDue, dueDateUnix, purpose, description, privateNote, amountOverride, emailOverride, tenantNameOverride, autoPayConsent, allowDuplicate, idempotencyKey, extraLineItems, rollInLateFeeInvoiceId}) {
   // Multi-suite lease: route every invoice to the lease head so all
   // Stripe state lives on one unit. Without this, a click on member
   // Suite 102 would create a second customer + second invoice stream
@@ -28958,7 +28958,7 @@ async function stripeCreateInvoice({buildingId, floorId, unitId, ym, daysUntilDu
   } catch (_) { /* Sentry может быть выключен — игнорируем */ }
 
   const fn = stripeCallable('createStripeInvoice');
-  const res = await fn({buildingId, floorId, unitId, ym, daysUntilDue, purpose, description, privateNote, amountOverride, emailOverride, tenantNameOverride, autoPayConsent, allowDuplicate, idempotencyKey, extraLineItems, rollInLateFeeInvoiceId});
+  const res = await fn({buildingId, floorId, unitId, ym, daysUntilDue, dueDateUnix, purpose, description, privateNote, amountOverride, emailOverride, tenantNameOverride, autoPayConsent, allowDuplicate, idempotencyKey, extraLineItems, rollInLateFeeInvoiceId});
   // Audit: Stripe invoice создан (Tony Phase 2). Каждое создание счёта =
   // отдельная запись в Unit Activity log. Includes invoiceId for cross-
   // reference + amount + purpose for quick scan.
@@ -84305,6 +84305,21 @@ function _monthBilling(rent, ym, leaseStartIso, graceDays, nowOpt, unit) {
   return { monthRent, isProratedMonth, dueDate, isOverdueByDate, leaseStartYm, proration };
 }
 
+// FIXES_LOG Entry 60 — абсолютная Stripe due_date (Unix SECONDS) для rent-инвойса:
+// anchor = (ym===leaseStartYm ? leaseStart : 1-е месяца) + grace, через тот же
+// _monthBilling, что и карта/overdue. Возвращаем сам anchor (даже если он в
+// прошлом) — решение future-vs-past принимает CF: future → due_date, past →
+// days_until_due:0 (сразу past_due). amount на дату не влияет.
+function _rentDueUnix(rent, ym, leaseStartIso, u) {
+  try {
+    const grace = (state && state.settings && state.settings.lateFee
+        && Number.isFinite(+state.settings.lateFee.graceDays)) ? +state.settings.lateFee.graceDays : 5;
+    const mb = _monthBilling(+rent || 0, ym, leaseStartIso || '', grace, new Date(), u);
+    if (!mb || !mb.dueDate || isNaN(mb.dueDate.getTime())) return undefined;
+    return Math.floor(mb.dueDate.getTime() / 1000);
+  } catch (e) { return undefined; }
+}
+
 // Boot-time prefetch: load the Stripe invoice cache as soon as the
 // app has remote state, so the SVG floor-plan badges (L / $ / $)
 // render with their REAL colors (paid green / open blue / past_due
@@ -85198,6 +85213,7 @@ async function _sendMoveInDirect(mode, btn) {
     const res = await stripeCreateInvoice({
       buildingId: b.id, floorId: f.id, unitId: u.id,
       ym, daysUntilDue: 7,
+      dueDateUnix: _rentDueUnix(amount, ym, startIso, u),   // Entry 60: due = leaseStart+grace
       purpose: 'rent', amountOverride: amount, description,
       emailOverride: u.email,
       tenantNameOverride: (u.tenant || u.company || ''),
@@ -91694,6 +91710,7 @@ async function _confirmSplitMoveInRent(btn) {
     inv1 = await _withTimeout(stripeCreateInvoice({
       buildingId: s.buildingId, floorId: s.floorId, unitId: s.unitId,
       ym, daysUntilDue: 7,
+      dueDateUnix: _rentDueUnix(amountFirst, ym, (u.leaseStart || u.signed || ''), u),   // Entry 60
       purpose: 'rent',
       amountOverride: amountFirst,
       description: desc1,
@@ -91834,6 +91851,7 @@ async function _ntoSendRent(btn) {
     const res = await _withTimeout(stripeCreateInvoice({
       buildingId: ctx.buildingId, floorId: ctx.floorId, unitId: ctx.unitId,
       ym, daysUntilDue: 7,
+      dueDateUnix: _rentDueUnix(amount, ym, (u.leaseStart || u.signed || ''), u),   // Entry 60
       purpose: 'rent',
       amountOverride: amount,
       description,
@@ -92233,6 +92251,7 @@ async function _triggerAutoInvoiceNowIfNeeded(u) {
       buildingId: b.id, floorId: f.id, unitId: u.id,
       ym,
       daysUntilDue: cfg.daysUntilDue,
+      dueDateUnix: _rentDueUnix((u.contractRent || u.rent || 0), ym, (u.leaseStart || u.signed || ''), u),   // Entry 60
       purpose: 'rent',
       description: `Rent for ${_fmtMonthName(ym)} · Suite ${u.id}`,
       emailOverride: u.email,

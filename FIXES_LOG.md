@@ -60,6 +60,21 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 60. Rent invoices must set Stripe due_date = anchor + grace at issuance (finance/Stripe, 2026-06-07)
+
+- **Status:** active
+- **Branch / commit:** `main` @ `<this commit>`
+- **Area:** Finance / Stripe invoice creation / due-date anchor
+- **Files:** functions/index.js (Cloud Function — manual create + auto-invoice cron), floor-map-editor.html (senders + `_rentDueUnix` helper)
+- **Bug it fixed:** RENT invoices were created with `days_until_due:7` (or cron `dueDays`) from the SEND date, never anchored to the lease/billing schedule. For a future lease (Suite 449, starts Jul 1), the July invoice's Stripe `due_date` was in mid-June → Stripe buckets it `past_due` and (collection_method `send_invoice`) may dun the tenant for rent not yet due. Entry 59 fixed only the UI badge; this fixes the actual Stripe `due_date`.
+- **Fix:** client `_rentDueUnix(rent, ym, leaseStartIso, u)` computes the absolute anchor (`ym===leaseStartYm ? leaseStart : 1st-of-ym`) + `state.settings.lateFee.graceDays ?? 5` via the canonical `_monthBilling`, and every RENT sender passes it as `dueDateUnix` (Unix seconds): move-in `sendRent`, split installment 1, NTO rent, catch-up. The CF accepts optional `dueDateUnix` (rent-only) and, **for `send_invoice`**, sets Stripe `due_date` when the anchor is in the FUTURE (`> now+120s, < now+366d`), else `days_until_due:0` = due immediately/`past_due` (operator decision 2026-06-07: late-issued rent shows past_due). The **auto-invoice cron** (`runAutoInvoices`) computes the same anchor server-side (`1st-of-nextYm + grace`). Footer shows the exact date. No `dueDateUnix` / non-rent → unchanged (`days_until_due`). Stripe takes `due_date` XOR `days_until_due`, never both.
+- **Invariant — DO NOT BREAK:** (1) `due_date` only for RENT + `send_invoice` + FUTURE anchor; deposit/late-fee/custom and `charge_automatically` untouched. (2) NEVER pass both `due_date` and `days_until_due`. (3) NEVER pass an absolute past `due_date` (Stripe rejects on finalize → would abort the send); past anchor → `days_until_due:0`. (4) Grace source = `state.settings.lateFee.graceDays` (matches `_computeUnitMoney`/Entry 59), not the per-building override. (5) Split installment 2 keeps its own `daysUntilDue2` anchor. (6) Backward-compatible: old client (no `dueDateUnix`) → CF behaves as before.
+- **Verification:** Stripe TEST mode — send move-in rent for a unit whose lease starts next month → invoice `due_date` = leaseStart+grace, bucket not `past_due`; deposit still send+7d; late-fee still due-now; back-dated lease → falls to `days_until_due:0` and still sends (no finalize throw). `node --check functions/index.js` + client parse-check 3/0.
+- **Regression test:** none — manual / Stripe test-mode UI.
+- **Related PR / issue:** workflow `wa9bj0bx1`. Completes Entry 59. The EXISTING mis-dated 449 invoice is NOT auto-fixed — void + resend via the UI to reissue with correct due_date. Deployed `firebase deploy --only functions` + `--only hosting` (CLAUDE.md §2 operator approval 2026-06-07).
+
+---
+
 ### 59. Move-in rent badge must honor lease-start grace, not raw Stripe past_due (finance-display, 2026-06-07)
 
 - **Status:** active

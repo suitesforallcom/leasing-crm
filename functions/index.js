@@ -727,6 +727,7 @@ exports.createStripeInvoice = onCall(
       buildingId, floorId, unitId,
       ym,                                  // required only for rent invoices
       daysUntilDue,
+      dueDateUnix,                         // FIXES_LOG Entry 60: опц. абсолютная due_date (Unix SECONDS), rent-only; клиент = leaseStart|1-е месяца + grace
       description: customDesc,             // visible to tenant (prefixed onto line item + header)
       privateNote,                         // hidden from tenant; stripe metadata only
       purpose,                             // 'rent' | 'late_fee' | 'keys' | 'damages' | 'cleaning' | 'custom'
@@ -790,6 +791,23 @@ exports.createStripeInvoice = onCall(
     const _defDays   = _isLateFee ? 0 : 30;
     const safeDaysUntilDue = Math.max(_minDays, Math.min(365,
       Number.isFinite(+daysUntilDue) ? Math.floor(+daysUntilDue) : _defDays));
+    // FIXES_LOG Entry 60 — абсолютная due_date для RENT. Клиент шлёт dueDateUnix
+    // (anchor = leaseStart|1-е месяца + grace, Unix SECONDS):
+    //   future anchor (> now+120с, < now+366д) → Stripe due_date (точная дата);
+    //   past/now anchor (поздний выпуск) → days_until_due:0 = сразу due/past_due
+    //     (решение оператора 2026-06-07);
+    //   нет dueDateUnix / не rent → прежний days_until_due (safeDaysUntilDue).
+    // Stripe принимает due_date ЛИБО days_until_due (не оба). collectionMethod
+    // ещё не определён здесь — гейт send_invoice применяется на самом create.
+    const _nowSecDue = Math.floor(Date.now() / 1000);
+    const _dueAtNum  = Number.isFinite(+dueDateUnix) ? Math.floor(+dueDateUnix) : null;
+    const _rentAbsDue = (invPurpose === 'rent' && _dueAtNum
+        && _dueAtNum > _nowSecDue + 120 && _dueAtNum < _nowSecDue + 366 * 86400)
+      ? _dueAtNum : null;
+    const _rentDueNow = !!(invPurpose === 'rent' && _dueAtNum && !_rentAbsDue);
+    const _dueFooter = _rentAbsDue
+      ? `Payment due: ${new Date(_rentAbsDue * 1000).toISOString().slice(0, 10)}`
+      : (_rentDueNow ? `Payment due: immediately (past due)` : `Payment due: within ${safeDaysUntilDue} days`);
     // Stripe invoice description has a 1500-char limit; we cap at 500
     // so the line item, custom_fields, and footer all stay readable.
     const safeCustomDesc = (typeof customDesc === 'string')
@@ -1169,7 +1187,7 @@ exports.createStripeInvoice = onCall(
       `Suite: ${unitId}`,
       invPurpose === 'rent' ? `Billing period: ${monthLabel} ${year}` : `Charge type: ${copy.label}`,
       `Invoice issued: ${nowIso}`,
-      `Payment due: within ${daysDue} days`,
+      _dueFooter,                          // Entry 60: точная дата для rent, иначе «within N days»
       `Landlord: ${landlordName}${landlordEmail ? ' · ' + landlordEmail : ''}`,
     ];
 
@@ -1270,7 +1288,11 @@ exports.createStripeInvoice = onCall(
       customer: customerId,
       auto_advance: false,                // we control the finalize sequence
       collection_method: collectionMethod,
-      ...(collectionMethod === 'send_invoice' ? { days_until_due: daysDue } : {}),
+      // Entry 60: due_date (rent, future anchor) ЛИБО days_until_due. Никогда оба.
+      ...(collectionMethod === 'send_invoice'
+          ? (_rentAbsDue ? { due_date: _rentAbsDue }
+             : (_rentDueNow ? { days_until_due: 0 } : { days_until_due: daysDue }))
+          : {}),
       ...(paymentSettings ? { payment_settings: paymentSettings } : {}),
       description: topSummary,
       footer: footerText,
@@ -4031,12 +4053,26 @@ exports.runAutoInvoices = onSchedule(
             const _autoLandlordName  = String(state.settings?.invoiceLandlordName  || 'SuitesForAll').trim();
             const _autoMonthLabel = nm.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' });
             const _autoYear = nm.getUTCFullYear();
+            // FIXES_LOG Entry 60 (Phase 2) — рекуррентная аренда: due_date = 1-е
+            // месяца nextYm + grace, а не «N дней от отправки». future → due_date;
+            // прошлое (поздний запуск крона) → days_until_due:0 = сразу due/past_due.
+            const _acGrace = (state.settings && state.settings.lateFee
+                && Number.isFinite(+state.settings.lateFee.graceDays)) ? +state.settings.lateFee.graceDays : 5;
+            const _acDueSec = Math.floor(Date.UTC(nm.getUTCFullYear(), nm.getUTCMonth(), 1 + _acGrace) / 1000);
+            const _acNowSec = Math.floor(Date.now() / 1000);
+            const _acAbsDue = (_acDueSec > _acNowSec + 120) ? _acDueSec : null;
+            const _acDueClause = (acMethod === 'send_invoice')
+              ? (_acAbsDue ? { due_date: _acAbsDue } : { days_until_due: 0 })
+              : {};
+            const _acDueFooter = (acMethod === 'send_invoice')
+              ? (_acAbsDue ? `Payment due: ${new Date(_acAbsDue * 1000).toISOString().slice(0, 10)}` : `Payment due: immediately (past due)`)
+              : `Payment due: within ${dueDays} days`;
             const _autoFooter = [
               `Property: ${b.address || b.name || ''}${f.name ? ' · ' + f.name : ''}`,
               `Suite: ${u.id}`,
               `Billing period: ${_autoMonthLabel} ${_autoYear}`,
               `Invoice issued: ${new Date().toISOString().slice(0, 10)}`,
-              `Payment due: within ${dueDays} days`,
+              _acDueFooter,
               `Landlord: ${_autoLandlordName}${_autoLandlordEmail ? ' · ' + _autoLandlordEmail : ''}`,
             ].join(' · ');
 
@@ -4045,7 +4081,7 @@ exports.runAutoInvoices = onSchedule(
               customer: customerId,
               auto_advance: true,
               collection_method: acMethod,
-              ...(acMethod === 'send_invoice' ? { days_until_due: dueDays } : {}),
+              ..._acDueClause,
               ...(acPaymentSettings ? { payment_settings: acPaymentSettings } : {}),
               metadata: { unitId: u.id, buildingId: b.id, floorId: f.id, ym: nextYm, purpose: 'rent', source: 'auto' },
               description,
