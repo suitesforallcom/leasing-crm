@@ -77158,9 +77158,10 @@ function _computeUnitMoney(u) {
     if (p?.status === 'free') continue;
 
     if (i > 0) {
-      // Past unpaid month — outstanding + overdue. monthBase = escalated rent
-      // for THIS month (флаг OFF → === rent, поведение не меняется).
-      if (monthBase > 0) { outstanding += monthBase; owed += monthBase; unpaidMonths++; }
+      // Past unpaid month — outstanding + overdue. Используем mb.monthRent
+      // (аудит M6): для месяца въезда это прорейт-сумма, для полных месяцев
+      // === monthBase, поэтому поведение обычных месяцев не меняется.
+      if (monthRent > 0) { outstanding += monthRent; owed += monthRent; unpaidMonths++; }
     } else if (i === 0) {
       // Current month: rent is owed, but only counts as "overdue"
       // (alarms / red overlay) once past the grace day. Якорь грейса
@@ -97215,7 +97216,7 @@ function openBouncedCheckModal(buildingId, floorId, unitId) {
       const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
       // Stop the moment we walk past the lease start — earlier paid
       // entries belong to a different tenant.
-      if (startMs && d.getTime() + 31 * 86400000 < startMs) break;
+      if (!startMs || d.getTime() + 31 * 86400000 < startMs) break; // аудит H14: без lease-start прошлые месяцы НЕ показываем (Entry 2)
       const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
       const p = u.payments?.[ym];
       if (p?.status !== 'paid') continue;
@@ -130336,7 +130337,7 @@ function saveCommissionModel(next) {
   saveState();
 }
 function computeCommissionForUnit(u, cfg) {
-  const rent = +u.rent || +u.contractRent || 0;
+  const rent = +u.contractRent || +u.rent || 0; // аудит H7: контракт-рента приоритетна (EQ-1), не proforma
   if (cfg.model === 'percent') return Math.round(rent * (cfg.percentRate / 100));
   if (cfg.model === 'flat')    return cfg.flatAmount;
   // tiered: deferred — caller supplies position
@@ -130400,7 +130401,7 @@ function renderCommissions() {
         if (!amAdmin && me && uid !== me) continue;
         const row = byUid.get(uid) || { uid, count: 0, rentSum: 0, units: [] };
         row.count += 1;
-        const rent = (+u.rent || +u.contractRent || 0);
+        const rent = (+u.contractRent || +u.rent || 0); // аудит H7: контракт-рента приоритетна (EQ-1), не proforma
         row.rentSum += rent;
         row.units.push({ bid: b.id, fid: f.id, uid: u.id, suite: u.id, tenant: u.tenant, rent, curUid: uid });
         byUid.set(uid, row);
@@ -149330,6 +149331,7 @@ async function submitManualPayment() {
         waiverEnd:   waiverEnd   || null,
         memo: memo || null,
         paidBy: fbSync?.user?.email || fbSync?.uid || 'admin',
+        recordedBy: fbSync?.user?.email || fbSync?.uid || 'admin', // аудит M17: обяз. поле аудит-трейла (FINANCIAL_INVARIANTS §III)
         recordedAt: new Date().toISOString(),
         // Drop receipt fields — waivers don't have receipts.
       }, { unit: u, save: false });   // save:false — saveState() ниже по функции
@@ -149371,6 +149373,7 @@ async function submitManualPayment() {
         paidReference: reference || null,
         memo: memo || null,
         paidBy: fbSync?.user?.email || fbSync?.uid || 'admin',
+        recordedBy: fbSync?.user?.email || fbSync?.uid || 'admin', // аудит M17: обяз. поле аудит-трейла (FINANCIAL_INVARIANTS §III)
         recordedAt: new Date().toISOString(),
         ...(receiptUrl ? { receiptUrl, receiptPath } : {}),
         ...(linkedBank ? {
@@ -149618,7 +149621,8 @@ function cyclePaymentStatus(buildingId, floorId, unitId, ym) {
       ...existing,
       status: next,
       date: _now.toISOString().slice(0, 10),
-      amount: existing.amount || u.rent || 0,
+      // аудит M15: эффективная/контракт-рента (group-aware), не u.rent (proforma)
+      amount: existing.amount || ((typeof _effectiveMonthlyRent === 'function') ? _effectiveMonthlyRent(u) : (+u.contractRent || +u.rent)) || 0,
     }, { unit: u, save: false });   // save:false — saveState() в конце функции
     // paidAtIso ставим только при переходе в 'paid' и только если ещё
     // нет — повторные клики "paid → paid" не должны двигать timestamp
