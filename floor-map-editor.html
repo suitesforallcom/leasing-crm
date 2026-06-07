@@ -20483,7 +20483,7 @@
       <button onclick="brfeReset()" style="background:transparent; color:var(--muted);">Reset to inherit</button>
       <div style="display:flex; gap:6px;">
         <button onclick="brCloseFloorEdit()">Cancel</button>
-        <button class="primary" onclick="brfeSave()">Save</button>
+        <button class="primary" onclick="brfeSave()">Save floor override now</button>
       </div>
     </div>
   </div>
@@ -62190,7 +62190,7 @@ function openEditBuilding(bid) {
     }
   }
   document.getElementById('bmTitle').textContent = 'Edit Building';
-  document.getElementById('bmSubtitle').textContent = `Editing "${buildingLabel(b)}". Changes apply on Save. Cancel reverts everything.`;
+  document.getElementById('bmSubtitle').textContent = `Editing "${buildingLabel(b)}". Changes apply on Save (per-floor billing overrides save immediately — Cancel won't undo those).`;
   document.getElementById('bmAddr').value = b.address || '';
   document.getElementById('bmName').value = b.name || '';
   document.getElementById('bmCode').value = b.code || _autoBuildingCode(b) || '';
@@ -152248,6 +152248,12 @@ function fixFloorAssignments(silent = false) {
   // функции в файле. Закрывает класс инцидента 2026-06-04 (Entry 44).
   try { if (typeof _localBackupCreate === 'function') _localBackupCreate('pre-mutation', 'Before fixFloorAssignments'); } catch {}
 
+  // Аудит H11/H12 (deeper): снимок истории ДО Step 0 — чтобы dedupe-мутации
+  // были откатываемыми через Undo. Раньше pushHistory() стоял ПОСЛЕ dedupe и
+  // confirm: при отмене dedupe уже изменил b.floors/f.units, а в undo-стеке
+  // этого не было. Теперь Undo откатывает и dedupe, и перемещения одним снимком.
+  pushHistory();
+
   // Step 0: merge any duplicate floors with the same number first,
   // then collapse any duplicate suite IDs within each remaining floor
   const dupes = dedupeFloorsIn(b);
@@ -152295,9 +152301,8 @@ function fixFloorAssignments(silent = false) {
   if (!silent && (misplaced.length > 0 || dupes > 0 || dupeUnits > 0) &&
       !confirm(`Found ${issues.join(' and ')}. Fix them automatically (move units to floors matching their suite numbers, keep the record with real tenant data)?`)) return 0;
 
-  pushHistory();
-
-  // Step 1: move each misplaced unit to the correct floor (skip duplicates)
+  // Step 1 (H11: снимок pushHistory теперь берётся ДО Step 0 dedupe, выше):
+  // move each misplaced unit to the correct floor (skip duplicates)
   for (const { unit, fromFloor, expected } of misplaced) {
     let target = b.floors.find(f => f.number === expected);
     if (!target) {
