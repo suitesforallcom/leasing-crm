@@ -60,6 +60,22 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 62. Degenerate (zero-length) walls render as a clickable black dot — skip them (UI, 2026-06-07)
+
+- **Status:** active
+- **Branch / commit:** `main` @ `<this commit>`
+- **Area:** UI / floor-plan wall rendering
+- **Files:** floor-map-editor.html
+- **Functions:** `renderWalls` (@68260), wall-create handler (@71401)
+- **Bug it fixed:** Operator saw a small black dot floating in empty canvas space (New Tampa 2nd floor) with a hand cursor on hover. It was a wall in `currentBuilding().walls[]` with coincident endpoints (`points:[x1,y1,x2,y2]`, (x1,y1)≈(x2,y2)). `.wall-line { stroke-linecap: round }` (@8954) renders a zero-length line as a filled round dot, and `cursor:pointer` makes it clickable. Created by a click-without-drag in wall-draw mode (@71401) or floor auto-generation.
+- **Fix:** (1) `renderWalls` skips any wall whose endpoint distance < 2px (`Math.hypot(dx,dy) < 2`) or whose `points` is malformed — `forEach` index `i` is preserved so select/splice-by-`i` of the OTHER walls is unaffected; (2) the wall-create handler no longer pushes a wall when start≈end (cancels the draw without writing dead data). Data is NOT mutated — existing degenerate walls are simply not drawn; cleanup of the dead `walls[]` entries is a separate optional data-fix.
+- **Invariant — DO NOT BREAK:** wall select/delete uses the array index from `renderWalls`' `forEach`; skipping a render must NOT reindex (keep `forEach((w,i)=>{ if(degenerate) return; ... })`, never `.filter()` before the loop). `stroke-linecap:round` stays (real walls want rounded ends) — the guard is what prevents the dot.
+- **Verification:** the black dot disappears on reload; drawing a wall with a click-without-drag no longer creates a dot; normal walls render unchanged. parse-check 3/0.
+- **Regression test:** none — manual UI.
+- **Related PR / issue:** identified via live DOM probe (operator 2026-06-07); relates to the "outlier coords" note in Entry 61.
+
+---
+
 ### 61. Floor plan must bg-aware auto-fit on every open (building/view/boot), not only floor-switch (UI, 2026-06-07)
 
 - **Status:** active

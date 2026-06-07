@@ -68261,6 +68261,14 @@ function renderWalls() {
   clearG(wallsG);
   if (!state.settings.showWalls) return;
   currentWalls().forEach((w, i) => {
+    // FIXES_LOG Entry 62: НЕ рисуем вырожденные стены (оба конца в ~одной точке).
+    // CSS .wall-line { stroke-linecap: round } → стена нулевой длины рисовалась
+    // чёрной ТОЧКОЙ в пустоте и была кликабельна (cursor:pointer) — артефакт
+    // клика-без-протяжки в wall-draw / авто-генерации этажа. Индекс i сохраняется
+    // (forEach), поэтому select/splice прочих стен по i не ломается. Данные не
+    // трогаем — мёртвую запись можно вычистить отдельно.
+    if (!Array.isArray(w.points) || w.points.length < 4
+        || Math.hypot((+w.points[2]) - (+w.points[0]), (+w.points[3]) - (+w.points[1])) < 2) return;
     const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
     line.setAttribute('class', 'wall-line');
     line.setAttribute('x1', w.points[0]);
@@ -71397,11 +71405,15 @@ svg.addEventListener('pointerdown', e => {
     } else {
       // Reuse the already-snapped .cur if the cursor matches, so orthogonal lock survives
       const end = wallStart.cur || wp;
-      pushHistory();
-      currentBuilding().walls.push({ points: [wallStart.x, wallStart.y, end.x, end.y], color: '#0f172a' });
+      // Entry 62: не создаём вырожденную стену (клик без протяжки → нулевая длина
+      // = чёрная точка с round-linecap). Просто отменяем рисование без записи.
+      if (Math.hypot(end.x - wallStart.x, end.y - wallStart.y) >= 2) {
+        pushHistory();
+        currentBuilding().walls.push({ points: [wallStart.x, wallStart.y, end.x, end.y], color: '#0f172a' });
+        saveState();
+      }
       window.removeEventListener('pointermove', onWallMove);
       wallStart = null;
-      saveState();
       renderWalls();
       renderOverlay();
       drawSnapGuides(null);
