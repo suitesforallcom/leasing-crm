@@ -3703,6 +3703,67 @@
     display: flex; flex-direction: column; gap: 20px; min-width: 0;
   }
   .hv-section { min-width: 0; }
+
+  /* ── Customizable dashboard grid (Task 10) ─────────────────────────────
+     По умолчанию дашборд остаётся в оригинальном 2fr/1fr flex-layout выше
+     (пиксель-в-пиксель). Как только пользователь меняет раскладку ИЛИ входит
+     в customize-режим, applyDashboardLayout() вешает .dash-grid: .hv-body
+     становится 12-колоночной сеткой, обёртки .hv-main/.hv-side →
+     display:contents (шесть секций становятся прямыми grid-айтемами и могут
+     свободно переупорядочиваться/менять ширину). Ширина блока = span
+     var(--dw) колонок; высота — по контенту (min-height var(--dh), 0=natural);
+     порядок — CSS order. Affordances customize-режима инжектятся динамически
+     и не персистятся. */
+  .hv-body.dash-grid {
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    grid-auto-flow: row;
+    align-items: start;
+  }
+  .hv-body.dash-grid > .hv-main,
+  .hv-body.dash-grid > .hv-side { display: contents; }
+  .hv-body.dash-grid .hv-section {
+    grid-column: span var(--dw, 6);
+    position: relative;   /* якорь для grip / eye / resize-ручки */
+  }
+  .hv-body.dash-grid .hv-section[data-dash-h="1"] { min-height: var(--dh, auto); }
+  .hv-body.dash-grid .hv-section.dash-hidden { display: none; }
+
+  /* Customize-режим — пунктирная рамка + ручки. Содержимое блоков делаем
+     инертным (pointer-events:none), чтобы клики не запускали навигацию;
+     кликабельны только affordances и resize-ручка. */
+  body.dash-customizing .hv-body.dash-grid .hv-section {
+    outline: 1.5px dashed var(--zip-ink-4, #8a8275);
+    outline-offset: 4px; border-radius: 12px; cursor: grab;
+  }
+  body.dash-customizing .hv-body.dash-grid .hv-section.dash-dragging { opacity: .4; cursor: grabbing; }
+  body.dash-customizing .hv-body.dash-grid .hv-section.dash-hidden { display: block; opacity: .38; }
+  body.dash-customizing .hv-body.dash-grid .hv-section > * { pointer-events: none; }
+  body.dash-customizing .hv-body.dash-grid .hv-section > .dash-affordances,
+  body.dash-customizing .hv-body.dash-grid .hv-section > .dash-affordances *,
+  body.dash-customizing .hv-body.dash-grid .hv-section > .dash-resize-handle { pointer-events: auto; }
+  .dash-affordances {
+    position: absolute; top: 8px; right: 8px; z-index: 6;
+    display: none; gap: 6px; align-items: center;
+  }
+  body.dash-customizing .dash-affordances { display: flex; }
+  .dash-aff-btn {
+    width: 26px; height: 26px; border-radius: 7px; padding: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--zip-paper-2, #efeae2); color: var(--zip-ink-2, #3a352c);
+    border: 1px solid var(--zip-line, #d8d2c8); cursor: pointer;
+  }
+  .dash-aff-btn:hover { background: var(--zip-paper, #fff); }
+  .dash-aff-grip { cursor: grab; }
+  .dash-resize-handle {
+    position: absolute; right: 3px; bottom: 3px; width: 18px; height: 18px;
+    display: none; z-index: 6; cursor: nwse-resize; color: var(--zip-ink-4, #8a8275);
+  }
+  body.dash-customizing .dash-resize-handle { display: block; }
+  /* Кнопка Reset в топбаре видна только в customize-режиме. */
+  .hv-dash-reset { display: none !important; }
+  body.dash-customizing .hv-dash-reset { display: inline-flex !important; }
+  .hv-dash-gear.active { background: var(--zip-ink-1, #1a1a1a); color: #fff; }
+
   .hv-section-head {
     display: flex; align-items: flex-end; gap: 16px;
     margin-bottom: 14px; flex-wrap: wrap;
@@ -3988,6 +4049,10 @@
   /* Responsive collapse for narrow viewports */
   @media (max-width: 1100px) {
     .hv-body { grid-template-columns: 1fr; }
+    /* Узкий экран — кастомная сетка тоже схлопывается в одну колонку,
+       каждый блок на всю ширину (порядок пользователя сохраняется). */
+    .hv-body.dash-grid { grid-template-columns: 1fr; }
+    .hv-body.dash-grid .hv-section { grid-column: 1 / -1; }
     .hv-kpi-grid { grid-template-columns: repeat(2, 1fr); }
   }
   @media (max-width: 700px) {
@@ -17718,6 +17783,17 @@
         <div class="hv-topbar">
           <div class="hv-date" id="hvDate">—</div>
           <div class="hv-topbar-actions">
+            <button class="hv-bell-btn hv-dash-reset" onclick="resetDashboardLayout('home')" title="Reset layout to default">
+              <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 10a7 7 0 1 1 2 5"/><path d="M3 15v-4h4"/>
+              </svg>
+            </button>
+            <button class="hv-bell-btn hv-dash-gear" id="hvDashGear" onclick="toggleDashboardCustomize('home')" title="Customize dashboard — drag, resize, hide blocks">
+              <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="10" cy="10" r="2.6"/>
+                <path d="M10 2.5v2M10 15.5v2M17.5 10h-2M4.5 10h-2M15.3 4.7l-1.4 1.4M6.1 13.9l-1.4 1.4M15.3 15.3l-1.4-1.4M6.1 6.1L4.7 4.7"/>
+              </svg>
+            </button>
             <button class="hv-bell-btn" onclick="_hvJumpToOverdue()" title="Overdue invoices">
               <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M5 8a5 5 0 0 1 10 0c0 5 2 6 2 6H3s2-1 2-6z"/>
@@ -17843,7 +17919,7 @@
         <div class="hv-body">
           <div class="hv-main">
             <!-- Needs attention queue -->
-            <section class="hv-section">
+            <section class="hv-section" data-dash-block="queue">
               <div class="hv-section-head">
                 <div>
                   <div class="hv-eyebrow">Queue</div>
@@ -17863,7 +17939,7 @@
             </section>
 
             <!-- Revenue chart — 12 months of collected rent. -->
-            <section class="hv-section">
+            <section class="hv-section" data-dash-block="revenue">
               <div class="hv-card" style="padding: 20px;">
                 <div class="hv-revenue-head">
                   <div>
@@ -17881,7 +17957,7 @@
             </section>
 
             <!-- Portfolio health — buildings with occupancy bars. -->
-            <section class="hv-section">
+            <section class="hv-section" data-dash-block="portfolio">
               <div class="hv-card" style="padding: 20px;">
                 <div class="hv-portfolio-head">
                   <div>
@@ -17899,7 +17975,7 @@
 
           <div class="hv-side">
             <!-- Quick actions -->
-            <section class="hv-section">
+            <section class="hv-section" data-dash-block="quick">
               <div class="hv-card" style="padding: 20px;">
                 <div class="hv-eyebrow" style="margin-bottom: 14px;">Quick actions</div>
                 <div class="hv-quick-grid">
@@ -17933,7 +18009,7 @@
 
             <!-- Upcoming events — derived from lease ends, move-outs,
                  and pending invoices in the next 14 days. -->
-            <section class="hv-section">
+            <section class="hv-section" data-dash-block="upcoming">
               <div class="hv-card" style="padding: 20px;">
                 <div class="hv-upcoming-head">
                   <div>
@@ -17950,7 +18026,7 @@
 
             <!-- Activity feed — recent payments, lease envelope updates,
                  unit changes. Aggregated from state with timestamps. -->
-            <section class="hv-section">
+            <section class="hv-section" data-dash-block="activity">
               <div class="hv-card" style="padding: 20px;">
                 <div class="hv-portfolio-head">
                   <div>
@@ -26648,6 +26724,10 @@ let state = {
   investments: {},
   settings: {
     theme: 'auto',
+    // Per-user раскладки кастомизируемых дашбордов (Task 10). Ключ —
+    // viewId ('home', ...); значение — { v:1, blocks:{ id:{order,w,h,hidden} } }.
+    // Лениво наполняется _ensureDashboardLayout при первом customize-действии.
+    dashboardLayouts: {},
     showLabels: true,
     // Granular per-field toggles — allow the user to hide price / sqft /
     // tenant name independently of the master "Labels" switch.
@@ -32272,6 +32352,9 @@ const PER_USER_SETTINGS_KEYS = new Set([
   'showGrid', 'showBg', 'showUnits', 'showWalls',
   'unitOpacity', 'editModeOpacity', 'priceTextOpacity', 'unitTextOpacity', 'labelScale',
   'unitNumScale', 'priceScale', 'rateScale', 'tenantScale',
+  // Раскладка кастомизируемых дашбордов (Task 10) — у каждого пользователя
+  // своя; не выгружаем чужим (strip-on-push) и не затираем при приёме remote.
+  'dashboardLayouts',
 ]);
 
 async function fbPushNow() {
@@ -129506,6 +129589,299 @@ function _hvJumpToOverdue() {
   if (typeof setBillingTab === 'function') setBillingTab('aging');
 }
 
+/* ════════════════════════════════════════════════════════════════════════
+   Customizable dashboards (Task 10) — drag-reorder + freeform corner-resize
+   + hide/show, сохраняется per-user. Движок параметризован по view (реестр
+   DASHBOARDS). Раскладка живёт в state.settings.dashboardLayouts[viewId]
+   (per-user — см. PER_USER_SETTINGS_KEYS: strip-on-push + restore-on-pull).
+
+   КЛЮЧЕВОЙ ИНВАРИАНТ: renderHomeView наполняет ВНУТРЕННИЕ карточки ПО id
+   (#hvQueueCard и т.п.) и НЕ пересобирает <section>, поэтому order/ширина/
+   скрытие переживают ре-рендер — applyDashboardLayout просто заново вешает
+   inline-стили на секции в конце каждого рендера.
+
+   ПАРИТЕТ ПО УМОЛЧАНИЮ: пока раскладка дефолтная и customize выключен, держим
+   ОРИГИНАЛЬНЫЙ flex-layout (2fr/1fr masonry, пиксель-в-пиксель). На .dash-grid
+   переключаемся только когда пользователь реально что-то поменял ИЛИ вошёл в
+   customize. Кто никогда не открывал «шестерёнку» — не видит никаких изменений.
+   ════════════════════════════════════════════════════════════════════════ */
+const DASHBOARDS = {
+  home: {
+    viewId: 'home',
+    root: '#homeView .hv-body',
+    gearId: 'hvDashGear',
+    // Порядок по умолчанию — чередуем широкий(8)/узкий(4), чтобы 12-колоночная
+    // сетка тайлилась без зазоров и визуально совпадала с колонками 2fr/1fr.
+    blocks: [
+      { id: 'queue',     label: 'Needs attention', w: 8, order: 0 },
+      { id: 'quick',     label: 'Quick actions',   w: 4, order: 1 },
+      { id: 'revenue',   label: 'Revenue',         w: 8, order: 2 },
+      { id: 'upcoming',  label: 'Upcoming',        w: 4, order: 3 },
+      { id: 'portfolio', label: 'Portfolio',       w: 8, order: 4 },
+      { id: 'activity',  label: 'Activity',        w: 4, order: 5 },
+    ],
+  },
+};
+
+const DASH_MIN_W = 3, DASH_MAX_W = 12, DASH_MIN_H = 140;
+let _dashCustomizing = null;   // viewId, который сейчас в customize-режиме, либо null
+let _dashDragId = null;        // data-dash-block перетаскиваемой секции
+
+// Иконки affordances (inline SVG — без внешних ассетов).
+const _DASH_ICON_GRIP = '<svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor"><circle cx="6" cy="5" r="1.5"/><circle cx="14" cy="5" r="1.5"/><circle cx="6" cy="10" r="1.5"/><circle cx="14" cy="10" r="1.5"/><circle cx="6" cy="15" r="1.5"/><circle cx="14" cy="15" r="1.5"/></svg>';
+const _DASH_ICON_EYE_ON = '<svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 10s3-5 8-5 8 5 8 5-3 5-8 5-8-5-8-5z"/><circle cx="10" cy="10" r="2"/></svg>';
+const _DASH_ICON_EYE_OFF = '<svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 10s3-5 8-5 8 5 8 5-3 5-8 5-8-5-8-5z"/><path d="M3 3l14 14"/></svg>';
+const _DASH_ICON_RESIZE = '<svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M17 8v9H8"/><path d="M17 17l-9-9"/></svg>';
+
+// Дефолтная раскладка вида из реестра.
+function _defaultDashboardLayout(viewId) {
+  const d = DASHBOARDS[viewId];
+  const blocks = {};
+  if (d) d.blocks.forEach(b => { blocks[b.id] = { order: b.order, w: b.w, h: 0, hidden: false }; });
+  return { v: 1, blocks };
+}
+
+// Гарантирует наличие записи раскладки (создаёт из дефолта при отсутствии,
+// бэкфиллит новые блоки реестра). НЕ вызывает saveState.
+function _ensureDashboardLayout(viewId) {
+  if (!state.settings) state.settings = {};
+  if (!state.settings.dashboardLayouts || typeof state.settings.dashboardLayouts !== 'object') {
+    state.settings.dashboardLayouts = {};
+  }
+  const store = state.settings.dashboardLayouts;
+  let lay = store[viewId];
+  if (!lay || lay.v !== 1 || !lay.blocks) { lay = _defaultDashboardLayout(viewId); store[viewId] = lay; }
+  const reg = DASHBOARDS[viewId];
+  if (reg) reg.blocks.forEach(b => {
+    if (!lay.blocks[b.id]) lay.blocks[b.id] = { order: b.order, w: b.w, h: 0, hidden: false };
+  });
+  return lay;
+}
+
+// true, если сохранённая раскладка совпадает с дефолтом (ничего не трогали).
+// Только читает state — ничего не создаёт.
+function _dashIsPristine(viewId) {
+  const reg = DASHBOARDS[viewId]; if (!reg) return true;
+  const lay = state.settings && state.settings.dashboardLayouts && state.settings.dashboardLayouts[viewId];
+  if (!lay || !lay.blocks) return true;
+  return reg.blocks.every(b => {
+    const c = lay.blocks[b.id]; if (!c) return true;
+    return (c.order == null ? b.order : c.order) === b.order
+        && (c.w == null ? b.w : c.w) === b.w
+        && !c.h && !c.hidden;
+  });
+}
+
+// Применяет раскладку к уже отрендеренному (по id) дашборду. Вызывается
+// последней строкой каждого рендера вида + после каждой мутации раскладки.
+function applyDashboardLayout(viewId) {
+  const reg = DASHBOARDS[viewId]; if (!reg) return;
+  const root = document.querySelector(reg.root); if (!root) return;
+  const useGrid = (_dashCustomizing === viewId) || !_dashIsPristine(viewId);
+  if (!useGrid) {
+    // Дефолт и не в customize → оригинальный flex-layout (masonry 2fr/1fr,
+    // пиксель-в-пиксель). Снимаем любые inline-следы сетки.
+    root.classList.remove('dash-grid');
+    root.querySelectorAll('[data-dash-block]').forEach(sec => {
+      sec.style.removeProperty('order'); sec.style.removeProperty('--dw');
+      sec.style.removeProperty('--dh'); sec.removeAttribute('data-dash-h');
+      sec.classList.remove('dash-hidden');
+    });
+    return;
+  }
+  const lay = _ensureDashboardLayout(viewId);
+  root.classList.add('dash-grid');
+  reg.blocks.forEach(b => {
+    const sec = root.querySelector('[data-dash-block="' + b.id + '"]'); if (!sec) return;
+    const cfg = lay.blocks[b.id] || { order: b.order, w: b.w, h: 0, hidden: false };
+    const w = Math.max(DASH_MIN_W, Math.min(DASH_MAX_W, cfg.w || b.w));
+    sec.style.order = (typeof cfg.order === 'number' ? cfg.order : b.order);
+    sec.style.setProperty('--dw', w);
+    if (cfg.h && cfg.h > 0) { sec.setAttribute('data-dash-h', '1'); sec.style.setProperty('--dh', cfg.h + 'px'); }
+    else { sec.setAttribute('data-dash-h', '0'); sec.style.removeProperty('--dh'); }
+    sec.classList.toggle('dash-hidden', !!cfg.hidden);
+  });
+  if (_dashCustomizing === viewId) _dashBuildAffordances(viewId);
+}
+
+// Вход/выход в customize-режим (transient — НЕ персистится).
+function toggleDashboardCustomize(viewId) {
+  if (_dashCustomizing === viewId) {
+    _dashClearAffordances(viewId);
+    _dashCustomizing = null;
+    document.body.classList.remove('dash-customizing');
+  } else {
+    if (_dashCustomizing) _dashClearAffordances(_dashCustomizing);
+    _dashCustomizing = viewId;
+    document.body.classList.add('dash-customizing');
+  }
+  const reg = DASHBOARDS[viewId];
+  const gear = reg && reg.gearId ? document.getElementById(reg.gearId) : null;
+  if (gear) gear.classList.toggle('active', _dashCustomizing === viewId);
+  applyDashboardLayout(viewId);   // переключит flex↔grid и навесит/снимет ручки
+}
+
+// Инжект ручек (grip / eye / resize) в каждую секцию + навеска DnD.
+function _dashBuildAffordances(viewId) {
+  const reg = DASHBOARDS[viewId]; if (!reg) return;
+  const root = document.querySelector(reg.root); if (!root) return;
+  const lay = _ensureDashboardLayout(viewId);
+  reg.blocks.forEach(b => {
+    const sec = root.querySelector('[data-dash-block="' + b.id + '"]'); if (!sec) return;
+    const cfg = lay.blocks[b.id] || {};
+    let aff = sec.querySelector(':scope > .dash-affordances');
+    if (!aff) {
+      aff = document.createElement('div');
+      aff.className = 'dash-affordances';
+      aff.innerHTML =
+        '<span class="dash-aff-btn dash-aff-grip" title="Drag to move">' + _DASH_ICON_GRIP + '</span>' +
+        '<button type="button" class="dash-aff-btn dash-aff-eye" title="Hide / show"></button>';
+      sec.appendChild(aff);
+      aff.querySelector('.dash-aff-eye').addEventListener('click', function (e) {
+        e.stopPropagation(); e.preventDefault(); toggleDashBlock(viewId, b.id);
+      });
+    }
+    const eye = aff.querySelector('.dash-aff-eye');
+    if (eye) eye.innerHTML = cfg.hidden ? _DASH_ICON_EYE_OFF : _DASH_ICON_EYE_ON;
+    let rh = sec.querySelector(':scope > .dash-resize-handle');
+    if (!rh) {
+      rh = document.createElement('div');
+      rh.className = 'dash-resize-handle';
+      rh.innerHTML = _DASH_ICON_RESIZE;
+      sec.appendChild(rh);
+      rh.addEventListener('pointerdown', function (e) { _dashResizeStart(e, viewId, b.id, sec); });
+    }
+    sec.setAttribute('draggable', 'true');
+  });
+  _wireDashBlockDnD(viewId, root);
+}
+
+// Удаляет все ручки и draggable (выход из customize).
+function _dashClearAffordances(viewId) {
+  const reg = DASHBOARDS[viewId]; if (!reg) return;
+  const root = document.querySelector(reg.root); if (!root) return;
+  root.querySelectorAll('[data-dash-block]').forEach(sec => {
+    sec.removeAttribute('draggable');
+    const aff = sec.querySelector(':scope > .dash-affordances'); if (aff) aff.remove();
+    const rh = sec.querySelector(':scope > .dash-resize-handle'); if (rh) rh.remove();
+    sec.classList.remove('dash-dragging');
+  });
+}
+
+// Показать/скрыть блок (eye).
+function toggleDashBlock(viewId, id) {
+  const lay = _ensureDashboardLayout(viewId);
+  if (!lay.blocks[id]) return;
+  lay.blocks[id].hidden = !lay.blocks[id].hidden;
+  saveState();
+  applyDashboardLayout(viewId);
+}
+
+// Задать ширину (1..12 колонок) и высоту (px; ≤DASH_MIN_H → natural).
+function setDashBlockSpan(viewId, id, w, h) {
+  const lay = _ensureDashboardLayout(viewId);
+  if (!lay.blocks[id]) return;
+  if (typeof w === 'number' && !isNaN(w)) lay.blocks[id].w = Math.max(DASH_MIN_W, Math.min(DASH_MAX_W, Math.round(w)));
+  if (typeof h === 'number' && !isNaN(h)) lay.blocks[id].h = h <= DASH_MIN_H ? 0 : Math.round(h);
+  saveState();
+  applyDashboardLayout(viewId);
+}
+
+// Сброс раскладки вида к дефолту.
+function resetDashboardLayout(viewId) {
+  if (!state.settings) state.settings = {};
+  if (!state.settings.dashboardLayouts) state.settings.dashboardLayouts = {};
+  state.settings.dashboardLayouts[viewId] = _defaultDashboardLayout(viewId);
+  saveState();
+  applyDashboardLayout(viewId);
+}
+
+// Угловой freeform-resize: ширина снапается к 12-колоночной сетке, высота —
+// к пикселям. Персистим только на pointerup (во время drag — лишь визуал).
+function _dashResizeStart(e, viewId, id, sec) {
+  e.preventDefault(); e.stopPropagation();
+  const root = sec.closest('.dash-grid'); if (!root) return;
+  const lay = _ensureDashboardLayout(viewId);
+  const cfg = lay.blocks[id] || { w: 6, h: 0 };
+  const gap = 20;
+  const rect = root.getBoundingClientRect();
+  const colStep = ((rect.width - gap * 11) / 12) + gap;   // px на 1 колонку span
+  const startX = e.clientX, startY = e.clientY;
+  const startW = cfg.w || 6;
+  const startH = (cfg.h && cfg.h > 0) ? cfg.h : sec.getBoundingClientRect().height;
+  let curW = startW, curH = (cfg.h && cfg.h > 0) ? cfg.h : 0;
+  try { sec.setPointerCapture && sec.setPointerCapture(e.pointerId); } catch (_) {}
+  function move(ev) {
+    const dx = ev.clientX - startX, dy = ev.clientY - startY;
+    curW = Math.max(DASH_MIN_W, Math.min(DASH_MAX_W, Math.round(startW + dx / colStep)));
+    sec.style.setProperty('--dw', curW);
+    const hPx = startH + dy;
+    if (hPx > DASH_MIN_H + 20) { curH = Math.round(hPx); sec.setAttribute('data-dash-h', '1'); sec.style.setProperty('--dh', curH + 'px'); }
+    else { curH = 0; sec.setAttribute('data-dash-h', '0'); sec.style.removeProperty('--dh'); }
+  }
+  function up() {
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', up);
+    setDashBlockSpan(viewId, id, curW, curH > 0 ? curH : DASH_MIN_H);
+  }
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', up);
+}
+
+// HTML5-draggable переупорядочивание секций. Слушатели вешаем на контейнер
+// один раз (делегирование), порядок храним числами order в раскладке.
+function _wireDashBlockDnD(viewId, root) {
+  if (root._dashDndWired) return;
+  root._dashDndWired = true;
+  root.addEventListener('dragstart', function (e) {
+    const sec = e.target.closest && e.target.closest('[data-dash-block]');
+    if (!sec || !document.body.classList.contains('dash-customizing')) return;
+    _dashDragId = sec.getAttribute('data-dash-block');
+    sec.classList.add('dash-dragging');
+    try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', _dashDragId); } catch (_) {}
+  });
+  root.addEventListener('dragend', function (e) {
+    const sec = e.target.closest && e.target.closest('[data-dash-block]'); if (sec) sec.classList.remove('dash-dragging');
+    _dashDragId = null;
+  });
+  root.addEventListener('dragover', function (e) {
+    if (_dashDragId == null) return;
+    e.preventDefault(); try { e.dataTransfer.dropEffect = 'move'; } catch (_) {}
+  });
+  root.addEventListener('drop', function (e) {
+    if (_dashDragId == null) return;
+    e.preventDefault();
+    const target = e.target.closest && e.target.closest('[data-dash-block]');
+    _dashReorder(viewId, _dashDragId, target ? target.getAttribute('data-dash-block') : null, e);
+    _dashDragId = null;
+  });
+}
+
+// Пересчёт числовых order по новой визуальной последовательности.
+function _dashReorder(viewId, dragId, dropId, e) {
+  if (!dragId || dragId === dropId) return;
+  const reg = DASHBOARDS[viewId]; if (!reg) return;
+  const lay = _ensureDashboardLayout(viewId);
+  const ids = Object.keys(lay.blocks).sort((a, b) =>
+    ((lay.blocks[a].order == null ? 0 : lay.blocks[a].order)) - ((lay.blocks[b].order == null ? 0 : lay.blocks[b].order)));
+  const from = ids.indexOf(dragId); if (from < 0) return;
+  ids.splice(from, 1);
+  let to = ids.length;
+  if (dropId) {
+    const di = ids.indexOf(dropId);
+    if (di >= 0) {
+      const tEl = document.querySelector(reg.root + ' [data-dash-block="' + dropId + '"]');
+      let after = false;
+      if (tEl) { const r = tEl.getBoundingClientRect(); after = (e.clientX > r.left + r.width / 2); }
+      to = di + (after ? 1 : 0);
+    }
+  }
+  ids.splice(to, 0, dragId);
+  ids.forEach((id, i) => { if (lay.blocks[id]) lay.blocks[id].order = i; });
+  saveState();
+  applyDashboardLayout(viewId);
+}
+
 function renderHomeView() {
   // Topbar date — Wednesday, April 26 style.
   const now = new Date();
@@ -129814,6 +130190,10 @@ function renderHomeView() {
   try { _hvRenderPortfolio(); }    catch (e) { console.warn('[hv-portfolio]', e); }
   try { _hvRenderUpcoming(); }     catch (e) { console.warn('[hv-upcoming]', e); }
   try { _hvRenderActivity(); }     catch (e) { console.warn('[hv-activity]', e); }
+  // Кастомная раскладка дашборда (Task 10) — заново навешиваем order/ширину/
+  // скрытие на секции, наполненные по id выше. try/catch — баг раскладки не
+  // должен обнулить дашборд.
+  try { applyDashboardLayout('home'); } catch (e) { console.warn('[dash-layout]', e); }
 }
 
 // 12-month revenue chart from real payment data. Shows actual collected

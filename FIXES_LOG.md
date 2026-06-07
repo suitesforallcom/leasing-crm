@@ -60,6 +60,22 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 64. Customizable dashboards — drag-reorder + freeform corner-resize + hide, per-user (UI/feature, 2026-06-07)
+
+- **Status:** active
+- **Branch / commit:** `main` @ `<this commit>`
+- **Area:** UI / Home dashboard layout customization (Task 10, Phase 1 = Home)
+- **Files:** floor-map-editor.html
+- **Functions / rules:** `DASHBOARDS` registry, `_defaultDashboardLayout`, `_ensureDashboardLayout`, `_dashIsPristine`, `applyDashboardLayout`, `toggleDashboardCustomize`, `_dashBuildAffordances`, `_dashClearAffordances`, `toggleDashBlock`, `setDashBlockSpan`, `resetDashboardLayout`, `_dashResizeStart`, `_wireDashBlockDnD`, `_dashReorder`; CSS `.hv-body.dash-grid` / `body.dash-customizing` / `.dash-affordances` / `.dash-resize-handle`; `renderHomeView` (apply call at end); `PER_USER_SETTINGS_KEYS` (added `'dashboardLayouts'`); `state.settings.dashboardLayouts` default.
+- **Feature it added:** Operator request — a "Customize" gear on dashboards to **drag blocks to reorder, resize freely by dragging a corner, hide/show, and Reset**, saved per-user. Phase 1 = Home (the 6 `hv-section` blocks: queue/revenue/portfolio/quick/upcoming/activity). Phase 2 (other dashboards: `#financeAnalyticsView`, Portfolio) is deferred — the engine is already view-parameterized via the `DASHBOARDS` registry.
+- **Architecture:** Home blocks are static `<section data-dash-block>` filled BY ID (`renderHomeView` sets `#hvQueueCard.innerHTML` etc., never rebuilds the section), so re-applying layout after each render is safe. `applyDashboardLayout('home')` runs as the LAST line of `renderHomeView`. **Default-parity guard:** while the stored layout equals default AND customize is off (`_dashIsPristine`), the ORIGINAL flex `.hv-body` (2fr/1fr masonry) is kept untouched — `.dash-grid` is only added once the user actually customizes or opens Customize. On `.dash-grid`, `.hv-main`/`.hv-side` become `display:contents` so the 6 sections are direct 12-col-grid items; width = `grid-column: span var(--dw)` (1–12), height = optional `min-height var(--dh)` (0 = natural), order = CSS `order`. Customize affordances (grip/eye/resize-handle, `draggable=true`, `body.dash-customizing`) are injected dynamically and NEVER persisted.
+- **Invariant — DO NOT BREAK:** (1) `renderHomeView` MUST keep filling cards BY ID (never `section.innerHTML` / never rebuild `<section>`), and MUST call `applyDashboardLayout('home')` last (wrapped in try/catch). (2) `'dashboardLayouts'` MUST stay in `PER_USER_SETTINGS_KEYS` (per-user: stripped from `fbPushNow` payload, restored in `fbApplyRemote` — never leak one user's layout to another). (3) The pristine-default path MUST leave the original flex layout (no `.dash-grid`, no inline `order/--dw/--dh`) so non-customizers see zero change. (4) Persist only on drop / resize-end / eye-toggle (never mid-drag). (5) Adding `state.settings.dashboardLayouts` is additive/backward-compatible — `_ensureDashboardLayout` lazily backfills; old states without the key default to `{}`.
+- **Verification (live, headless, demo data — layout is data-independent):** default render = original masonry (queue/revenue/portfolio left x=248 w=649, quick/upcoming/activity right x=917 w=325, independent stacking, no `.dash-grid`). Gear → `body.dash-customizing`, `.hv-body` 12 tracks, every section draggable + grip/eye/resize handle, Reset visible. `setDashBlockSpan('home','queue',12,320)` → `--dw:12` (w 994px) + `--dh:320px`. `toggleDashBlock` → hidden. `_dashReorder` → order reassigned. State written to `localStorage['sfa_v5_state'].settings.dashboardLayouts`. Reload → custom layout persists as grid WITHOUT affordances, `_dashCustomizing=null` (transient off). Reset → pristine, back to flex masonry exactly. parse-check 3/0.
+- **Regression test:** none — manual UI / live `preview_eval` measurement.
+- **Related PR / issue:** Task 10; plan `fluffy-painting-cake.md`. Phase 2 pending operator confirmation.
+
+---
+
 ### 63. Map cut off at the bottom — grid row overflow + letterbox top-pin (UI/layout, 2026-06-07)
 
 - **Status:** active
