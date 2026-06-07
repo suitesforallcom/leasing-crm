@@ -124277,7 +124277,8 @@ function readPref(base, fallback) {
   return v == null ? (fallback == null ? null : fallback) : v;
 }
 function writePref(base, value) {
-  localStorage.setItem(prefKey(base), value);
+  // аудит #54: localStorage может бросить QuotaExceededError — не роняем UI.
+  try { localStorage.setItem(prefKey(base), value); } catch (e) { console.warn('[writePref] localStorage write failed', e); }
   // Cross-device sync: if this key is syncable and the user is signed in,
   // debounced-push the whole syncable set to Firestore. Defined in the
   // sync module below; guarded for boot order.
@@ -136850,7 +136851,7 @@ function lateFeePreviewFor(rec) {
   for (let i = 11; i >= 0; i--) {
     const d = new Date(curY, curM - i, 1);
     const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-    if (firstYm && ym < firstYm) continue;     // before tenancy began
+    if (!firstYm || ym < firstYm) continue;    // аудит #51: без известного начала аренды НЕ начисляем late fee (lease-start gate, анти-фантом; ср. H14)
     const p = rec.u.payments?.[ym];
     if (p?.status === 'paid' || p?.status === 'free') continue;
     const mb = _monthBilling(rent, ym, startIso, cfg.graceDays, today, rec.u);
