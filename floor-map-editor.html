@@ -136891,12 +136891,15 @@ function dsoForTenant(rec) {
   const today = new Date();
   let owedSum = 0, weightedDays = 0;
   const curY = today.getFullYear(), curM = today.getMonth();
+  // [20]: дедлайн просрочки = 1-е МЕСЯЦА + grace (как _monthBilling / late-fee),
+  // не 1-е следующего месяца — якорь к lease-clause, консистентно с пеней.
+  const _grace = (typeof getLateFeeConfig === 'function' ? getLateFeeConfig(rec.u)?.graceDays : null) ?? state?.settings?.lateFee?.graceDays ?? 5;
   for (let i = 0; i < 12; i++) {
     const d = new Date(curY, curM - i, 1);
     const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
     const p = rec.u.payments?.[ym];
     if (p?.status === 'paid' || p?.status === 'free') continue;
-    const due = new Date(d.getFullYear(), d.getMonth()+1, 1);
+    const due = new Date(d.getFullYear(), d.getMonth(), 1 + _grace);
     const days = Math.max(0, Math.floor((today - due) / 86400000));
     owedSum += rec.rent;
     weightedDays += rec.rent * days;
@@ -136918,6 +136921,7 @@ function trendForTenant(rec, todayTotal) {
   const cutoff = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 30);
   const curY = today.getFullYear(), curM = today.getMonth();
   let prev = 0;
+  const _grace = (typeof getLateFeeConfig === 'function' ? getLateFeeConfig(rec.u)?.graceDays : null) ?? state?.settings?.lateFee?.graceDays ?? 5; // [20]
   for (let i = 0; i < 12; i++) {
     const d = new Date(curY, curM - i, 1);
     const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
@@ -136928,7 +136932,7 @@ function trendForTenant(rec, todayTotal) {
     const wasPaidByCutoff = (p?.status === 'paid' || p?.status === 'free')
                             && paidDate && paidDate <= cutoff;
     if (wasPaidByCutoff) continue;
-    const due = new Date(d.getFullYear(), d.getMonth()+1, 1);
+    const due = new Date(d.getFullYear(), d.getMonth(), 1 + _grace); // [20]: 1-е месяца + grace
     if (due > cutoff) continue;   // wasn't due yet at cutoff
     prev += rec.rent;
   }
@@ -137334,6 +137338,8 @@ function buildAgingRows() {
         // §«Lease-start gate». `continue` к следующему юниту.
         if (!_startDate || isNaN(_startDate.getTime())) continue;
         const _startYm = `${_startDate.getFullYear()}-${String(_startDate.getMonth()+1).padStart(2,'0')}`;
+        // [20]: дедлайн = 1-е МЕСЯЦА + grace (как _monthBilling / late-fee).
+        const _grace = (typeof getLateFeeConfig === 'function' ? getLateFeeConfig(u)?.graceDays : null) ?? state?.settings?.lateFee?.graceDays ?? 5;
 
         // Look back 12 months max. Each month with no paid entry contributes
         // rent $ to the appropriate bucket.
@@ -137356,8 +137362,8 @@ function buildAgingRows() {
             continue;
           }
           if (ym !== curYm) monthsBehind++;
-          // Due date is 1st of next month; days late = today - dueDate
-          const due = new Date(d.getFullYear(), d.getMonth()+1, 1);
+          // [20]: due = 1-е МЕСЯЦА + grace (как _monthBilling), не 1-е след. месяца.
+          const due = new Date(d.getFullYear(), d.getMonth(), 1 + _grace);
           const days = Math.floor((today - due) / 86400000);
           if (ym === curYm)       buckets.current += rent;
           else if (days <= 30)    buckets.d30     += rent;
