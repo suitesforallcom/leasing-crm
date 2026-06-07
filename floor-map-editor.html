@@ -30673,7 +30673,7 @@ function _computeUnitFillImpl(u, mode) {
   if (mode === 'rent') {
     // Heatmap by $/ft². Normalise 2 → green, 12 → red; empty = neutral.
     const sqft = +u.sqft || 0;
-    const rent = +u.rent || 0;
+    const rent = +(u.contractRent || u.rent) || 0; // аудит low [2]: эффективная (контрактная) рента, не proforma
     if (sqft <= 0 || rent <= 0) return '#F4F2EE';
     const perSqft = rent / sqft;
     const t = Math.max(0, Math.min(1, (perSqft - 2) / 10));
@@ -36899,12 +36899,14 @@ function updateTopbarOutstandingPill() {
         if (!lastOpEmail) {
           try {
             for (const key of Object.keys(u.payments || {})) {
-              const arr = u.payments[key] || [];
-              for (const p of arr) {
-                const ts = new Date(p.ts || p.recordedAt || 0).getTime();
-                const owner = (p.sentBy || p.recordedBy || '').toLowerCase();
-                if (ts > lastOpMs && owner) { lastOpMs = ts; lastOpEmail = owner; }
-              }
+              // аудит low [3]: u.payments[key] — ОБЪЕКТ записи платежа, не массив.
+              // Прежний for..of по объекту бросал TypeError (глотался) →
+              // last-operator никогда не определялся. Читаем запись напрямую.
+              const p = u.payments[key];
+              if (!p || typeof p !== 'object') continue;
+              const ts = new Date(p.ts || p.recordedAt || 0).getTime();
+              const owner = (p.sentBy || p.recordedBy || '').toLowerCase();
+              if (ts > lastOpMs && owner) { lastOpMs = ts; lastOpEmail = owner; }
             }
           } catch (e) {}
         }
@@ -47500,7 +47502,7 @@ function _investSetMCIter(n) {
   state.ui.investMCIterations = n;
   saveState();
   _investMCLastResult = null;  // инвалидируем cache на смену iterations
-  const bId = state.ui.investActiveBuildingId;
+  const bId = state.ui?.currentBuildingId; // аудит low [4]: было investActiveBuildingId (несуществующий ключ)
   if (!bId) return;
   const inv = state.investments?.[bId];
   const bm  = _investBuildingMetrics(bId);
@@ -47511,7 +47513,7 @@ function _investSetMCMag(n) {
   state.ui.investMCMag = n;
   saveState();
   _investMCLastResult = null;
-  const bId = state.ui.investActiveBuildingId;
+  const bId = state.ui?.currentBuildingId; // аудит low [4]: было investActiveBuildingId (несуществующий ключ)
   if (!bId) return;
   const inv = state.investments?.[bId];
   const bm  = _investBuildingMetrics(bId);
@@ -47522,7 +47524,7 @@ function _investSetMCTarget(n) {
   state.ui.investMCTarget = n;
   saveState();
   _investMCLastResult = null;
-  const bId = state.ui.investActiveBuildingId;
+  const bId = state.ui?.currentBuildingId; // аудит low [4]: было investActiveBuildingId (несуществующий ключ)
   if (!bId) return;
   const inv = state.investments?.[bId];
   const bm  = _investBuildingMetrics(bId);
@@ -47535,7 +47537,7 @@ function _investSetTornadoMag(magPct) {
   state.ui.investTornadoMag = magPct;
   saveState();
   // Найти текущий context: inv + bm берём из активного building'а.
-  const bId = state.ui.investActiveBuildingId;
+  const bId = state.ui?.currentBuildingId; // аудит low [4]: было investActiveBuildingId (несуществующий ключ)
   if (!bId) return;
   const inv = state.investments?.[bId];
   const bm  = _investBuildingMetrics(bId);
@@ -85564,12 +85566,12 @@ function _mtmRenderResults(list, query) {
     const sqft = c.unit.sqft ? `<span style="color:var(--muted);">${c.unit.sqft} ft²</span>` : '';
     const market = c.unit.rent ? `<span style="color:var(--muted);">market $${(+c.unit.rent).toLocaleString()}/mo</span>` : '';
     const meta = [c.floor.name || 'Floor', sqft, market].filter(Boolean).join(' · ');
-    return `<button type="button" data-key="${esc(c.key)}" onclick="_mtmSelectTarget('${esc(c.key)}')"
+    return `<button type="button" data-key="${esc(c.key)}" data-sel="${isSel ? '1' : ''}" onclick="_mtmSelectTarget(this.dataset.key)"
        style="display:block; width:100%; text-align:left; padding:10px 14px; background:${isSel ? 'rgba(161,98,7,0.10)' : 'transparent'};
               border:none; border-bottom:1px solid var(--border); cursor:pointer; color:var(--text);
               ${isSel ? 'border-left:3px solid #a16207;' : 'border-left:3px solid transparent;'}"
-       onmouseover="if(this.dataset.key !== '${esc(selected)}') this.style.background='var(--surface-3)';"
-       onmouseout="if(this.dataset.key !== '${esc(selected)}') this.style.background='transparent';">
+       onmouseover="if(!this.dataset.sel) this.style.background='var(--surface-3)';"
+       onmouseout="if(!this.dataset.sel) this.style.background='transparent';">
       <div style="font-weight:600; font-size:13.5px; margin-bottom:2px;">Suite ${esc(c.unit.id)}</div>
       <div style="font-size:12px;">${meta}</div>
     </button>`;
@@ -149318,7 +149320,7 @@ async function submitManualPayment() {
     // generous threshold that catches typos but allows legitimate
     // multi-month back-payments and large arrears.
     if (!isWaived) {
-      const rent = +u.contractRent || +u.rent || 0;
+      const rent = (typeof _effectiveMonthlyRent === 'function') ? _effectiveMonthlyRent(u) : (+u.contractRent || +u.rent || 0); // аудит low [17]: group-aware эфф. рента
       if (rent > 0 && amount > rent * 5) {
         // Tony 2026-05-28: если payment залинкован на multi-month invoice,
         // показываем СПИСОК месяцев вместо абстрактного "6×rent" — оператор
