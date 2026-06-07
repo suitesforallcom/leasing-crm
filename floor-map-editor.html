@@ -59864,7 +59864,7 @@ function _renderStackingChart(b) {
     const leased = rentable.filter(u => stackingUnitStatus(u) !== 'vacant');
     const leasedSqft = leased.reduce((x, u) => x + (+u.sqft || 0), 0);
     const occCount = leased.length;
-    const occPct = rentable.length ? Math.round(occCount / rentable.length * 100) : 0;
+    const occPct = rentableSqft ? Math.round(leasedSqft / rentableSqft * 100) : 0; // [5]: occupancy по ПЛОЩАДИ (sqft), не по числу юнитов
     // totalRent here = SUM of every office's contract rent (i.e. revenue
     // from leased units only — vacant suites have rent=0). This is the
     // floor's Monthly Recurring Revenue.
@@ -60121,7 +60121,7 @@ function _renderStackingChart(b) {
   const sumOutlineSqft  = summaryRows.reduce((x, r) => x + (r.totSqft || 0), 0);
   const sumRent         = summaryRows.reduce((x, r) => x + r.rent, 0);
   const sumLeasedRent   = summaryRows.reduce((x, r) => x + r.lsdRent, 0);
-  const sumOccPct       = sumTotalUnits ? Math.round(sumOccUnits / sumTotalUnits * 100) : 0;
+  const sumOccPct       = sumRentableSqft ? Math.round(sumLeasedSqft / sumRentableSqft * 100) : 0; // [5]: occupancy по ПЛОЩАДИ (sqft)
   const sumHasOutlines  = summaryRows.some(r => r.totSqft != null);
   const _smt = n => n >= 1_000_000 ? `$${(n/1_000_000).toFixed(1)}M`
                   : n >= 10_000 ? `$${(n/1000).toFixed(1)}k`
@@ -60151,7 +60151,7 @@ function _renderStackingChart(b) {
         </thead>
         <tbody>
           ${summaryRows.map(r => {
-            const occ = r.suiteCount ? Math.round(r.occCount / r.suiteCount * 100) : 0;
+            const occ = r.rentSqft ? Math.round(r.lsdSqft / r.rentSqft * 100) : 0; // [5]: occupancy по ПЛОЩАДИ (sqft)
             const occColor = occ >= 85 ? '#3d6b4a' : occ >= 70 ? '#a86b1c' : occ === 0 ? '#a8332a' : '#a86b1c';
             return `
               <tr>
@@ -60456,7 +60456,7 @@ function _renderStackingSidebar(b) {
             </thead>
             <tbody>
               ${perFloor.map(r => {
-                const occ = r.suiteCount ? Math.round(r.occCount / r.suiteCount * 100) : 0;
+                const occ = r.rentSqft ? Math.round(r.lsdSqft / r.rentSqft * 100) : 0; // [5]: occupancy по ПЛОЩАДИ (sqft)
                 const occColor = occ >= 85 ? '#3d6b4a' : occ >= 70 ? '#a86b1c' : occ === 0 ? '#a8332a' : '#a86b1c';
                 return `
                   <tr>
