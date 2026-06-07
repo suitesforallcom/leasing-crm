@@ -81252,9 +81252,12 @@ function renderUnitInvoiceReportBody(u) {
   const outstanding     = visibleRows.reduce((s, r) => s + (['open','past_due','uncollectible'].includes(r.bucket) ? +r.amountRemaining || 0 : 0), 0);
   const numInvoices     = visibleRows.length;
   const numTenants      = groups.length;
-  const paidOnes = visibleRows.filter(r => r.bucket === 'paid' && r.created && r.dueDate);
+  // аудит low [7]: «дней до оплаты» = paidAt − created (сколько РЕАЛЬНО шла
+  // оплата), а не dueDate − created (это просто срок оплаты, напр. Net-30 —
+  // всегда ~30, метрика бессмысленна). paidAt приоритетен, fallback на dueDate.
+  const paidOnes = visibleRows.filter(r => r.bucket === 'paid' && r.created && (r.paidAt || r.dueDate));
   const avgDaysToPay = paidOnes.length
-    ? Math.round(paidOnes.reduce((s, r) => s + Math.max(0, (r.dueDate - r.created) / 86400000), 0) / paidOnes.length)
+    ? Math.round(paidOnes.reduce((s, r) => s + Math.max(0, ((r.paidAt || r.dueDate) - r.created) / 86400000), 0) / paidOnes.length)
     : null;
   const sentNonVoid = visibleRows.filter(r => !['void', 'draft'].includes(r.bucket));
   const onTime = sentNonVoid.filter(r => r.bucket === 'paid').length;
