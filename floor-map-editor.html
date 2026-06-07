@@ -86111,8 +86111,10 @@ function _aeBuildDefaultBody(ctx) {
     // в proportional шрифте (Times New Roman) разъезжаются — пробелы не
     // выравниваются по разной длине [AUTHORIZED_SIGNATORY] vs Hanna Chepyshko.
     // Vertical stack читается одинаково в любом шрифте и стандартен для
-    // legal docs средней длины. Анкоры /signHere/ /dateSigned/ остаются
-    // — _aeBuildEnvelopeHtml оборачивает их в font-size:1px для DocuSign.
+    // legal docs средней длины. Маркеры /signHere/ /dateSigned/ стоят в ОБОИХ
+    // блоках, но _aeBuildEnvelopeHtml делает живым DocuSign-анкором только
+    // ПОСЛЕДНЕЕ вхождение (CLIENT — tenant подписывает онлайн), а PROVIDER-маркер
+    // превращает в пустую подписную линию (provider подписывает оффлайн).
     `PROVIDER:`,
     ``,
     `By:    /signHere/`,
@@ -87079,42 +87081,59 @@ function _aeBuildEnvelopeHtml(bodyText) {
   // Простая стратегия: после первой "TENANT" вставить анкоры в те "By:"/"Date:"
   // которые идут ПОСЛЕ TENANT-якоря.
   const lines = bodyText.split('\n');
-  let inTenantBlock = false;
+  // Шаблон по умолчанию (_aeBuildDefaultBody) вставляет ЛИТЕРАЛЬНЫЕ маркеры
+  // /signHere/ /dateSigned/ в ОБА блока — PROVIDER и CLIENT. Их нужно
+  // сконвертировать в невидимые span-анкоры ДО экранирования. Tenant подписывает
+  // ПОСЛЕДНИМ (CLIENT-блок идёт последним), а DocuSign ловит anchorString по
+  // ПЕРВОМУ вхождению — поэтому живым анкором делаем ТОЛЬКО ПОСЛЕДНЕЕ вхождение
+  // каждого маркера, а более ранние (PROVIDER, подписывает оффлайн как в master
+  // agreement) заменяем на пустую подписную линию, чтобы они не печатались
+  // видимым текстом и не перехватывали tenant-таб.
   let signInjected = false, dateInjected = false;
+  const BLANK_SIG = '_______________________________';
+  // Индексы строк, где встречаются литеральные маркеры
+  const signIdx = [], dateIdx = [];
+  lines.forEach((l, i) => {
+    if (l.indexOf('/signHere/') !== -1) signIdx.push(i);
+    if (l.indexOf('/dateSigned/') !== -1) dateIdx.push(i);
+  });
+  const lastSign = signIdx.length ? signIdx[signIdx.length - 1] : -1;
+  const lastDate = dateIdx.length ? dateIdx[dateIdx.length - 1] : -1;
   const out = [];
-  for (const raw of lines) {
-    let line = raw;
-    if (/\bTENANT\b/.test(line) && !inTenantBlock) {
-      inTenantBlock = true;
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i];
+    // Конвертация литеральных маркеров
+    if (line.indexOf('/signHere/') !== -1) {
+      if (i === lastSign) { line = line.replace(/\/signHere\//g, ANCHOR_SIGN); signInjected = true; }
+      else { line = line.replace(/\/signHere\//g, BLANK_SIG); }
     }
-    if (inTenantBlock && !signInjected && /By:\s*_+\s*$/.test(line.trimEnd())) {
-      // Это TENANT's "By: ___" — нужно поймать второй такой (первый был LANDLORD's
-      // в той же строке слева, но мы строкам разделили). На самом деле в нашем
-      // template "By:" появляется парой в ОДНОЙ строке (LANDLORD + TENANT side
-      // by side). Анкор размещаем в КОНЦЕ строки — там TENANT's "By:".
-      line = line + ANCHOR_SIGN;
-      signInjected = true;
-    } else if (inTenantBlock && !signInjected && /By:\s*_+/.test(line)) {
-      // Если "By:" есть в строке но не в конце (формат с двумя By: на одной
-      // строке) — добавить анкор просто в конец строки.
-      line = line + ANCHOR_SIGN;
-      signInjected = true;
-    }
-    if (inTenantBlock && !dateInjected && /Date:\s*_+/.test(line)) {
-      line = line + ANCHOR_DATE;
-      dateInjected = true;
+    if (line.indexOf('/dateSigned/') !== -1) {
+      if (i === lastDate) { line = line.replace(/\/dateSigned\//g, ANCHOR_DATE); dateInjected = true; }
+      else { line = line.replace(/\/dateSigned\//g, BLANK_SIG); }
     }
     out.push(line);
   }
-  // Если по какой-то причине анкоры не вставились (operator переписал блок) —
-  // добавим их в самый конец, чтобы DocuSign не упал «no anchor found».
-  if (!signInjected) out.push(ANCHOR_SIGN);
-  if (!dateInjected) out.push(ANCHOR_DATE);
+  // Fallback ТОЛЬКО если в теле не было литеральных маркеров (operator переписал
+  // подписной блок под формат "By: ___"): ставим анкор у underscore-строк CLIENT,
+  // ориентируясь на слова TENANT/CLIENT; если не нашли — добавляем в самый конец,
+  // чтобы DocuSign не упал «no anchor found».
+  if (!signInjected || !dateInjected) {
+    let inTenantBlock = false;
+    for (let i = 0; i < out.length; i++) {
+      let line = out[i];
+      if (/\b(?:TENANT|CLIENT)\b/.test(line) && !inTenantBlock) inTenantBlock = true;
+      if (inTenantBlock && !signInjected && /By:\s*_+/.test(line)) { out[i] = line + ANCHOR_SIGN; signInjected = true; line = out[i]; }
+      if (inTenantBlock && !dateInjected && /Date:\s*_+/.test(line)) { out[i] = line + ANCHOR_DATE; dateInjected = true; }
+    }
+    if (!signInjected) { out.push(ANCHOR_SIGN); signInjected = true; }
+    if (!dateInjected) { out.push(ANCHOR_DATE); dateInjected = true; }
+  }
 
   const bodyHtml = out.map(l => escTxt(l)).join('<br>')
-    // Восстанавливаем span'ы анкоров (escapeTxt их сожрал)
-    .replace(/&lt;span style="font-size:1px; color:white;"&gt;\/signHere\/&lt;\/span&gt;/g, ANCHOR_SIGN)
-    .replace(/&lt;span style="font-size:1px; color:white;"&gt;\/dateSigned\/&lt;\/span&gt;/g, ANCHOR_DATE);
+    // Восстанавливаем span'ы анкоров (escTxt их экранировал, включая кавычки →
+    // &quot;, поэтому в regex тоже &quot;, иначе span печатался бы видимым мусором).
+    .replace(/&lt;span style=&quot;font-size:1px; color:white;&quot;&gt;\/signHere\/&lt;\/span&gt;/g, ANCHOR_SIGN)
+    .replace(/&lt;span style=&quot;font-size:1px; color:white;&quot;&gt;\/dateSigned\/&lt;\/span&gt;/g, ANCHOR_DATE);
 
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
     body { font-family: 'Times New Roman', Times, serif; font-size: 12pt; line-height: 1.5;
