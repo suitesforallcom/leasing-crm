@@ -56960,9 +56960,15 @@ function _gmailQuotedPrintable(s) {
   const bytes = new TextEncoder().encode(s);
   const out = [];
   let line = '';
+  // RFC 2045 §6.7 (аудит M1): пробел/таб в КОНЦЕ строки (перед soft/hard
+  // break или в конце сообщения) ДОЛЖЕН кодироваться как =20/=09, иначе
+  // mail-транспорт вправе его срезать. Кодируем единственный хвостовой символ.
+  const encTrail = (ln) =>
+    ln.endsWith(' ')  ? ln.slice(0, -1) + '=20' :
+    ln.endsWith('\t') ? ln.slice(0, -1) + '=09' : ln;
   const flushLine = (final) => {
-    if (final) { out.push(line); line = ''; return; }
-    out.push(line + '=');
+    if (final) { out.push(encTrail(line)); line = ''; return; }
+    out.push(encTrail(line) + '=');
     line = '';
   };
   for (const b of bytes) {
@@ -56983,7 +56989,7 @@ function _gmailQuotedPrintable(s) {
     if (line.length + chunk.length > 75) flushLine(false);
     line += chunk;
   }
-  if (line.length) out.push(line);
+  if (line.length) out.push(encTrail(line));
   return out.join('\r\n');
 }
 
@@ -111531,8 +111537,10 @@ function _loiNormalizeValue(rawVal, normType) {
       if (!Number.isFinite(n)) return m[0];
       if (/year|yr/i.test(s)) return String(Math.round(n * 12));
       if (/month|mo\b/i.test(s)) return String(Math.round(n));
-      // Без unit — heuristic: <=30 = years, иначе months
-      return n <= 30 ? String(Math.round(n * 12)) : String(Math.round(n));
+      // Без unit — heuristic (аудит M9): <=5 = годы (типичные 1–5-летние лизы),
+      // иначе месяцы. Старый порог <=30 умножал частые термы "24"/"30" на 12
+      // (24 мес → 288). Коммерческие термы 6/12/24/36 — это месяцы.
+      return n <= 5 ? String(Math.round(n * 12)) : String(Math.round(n));
     }
     case 'date': {
       // Date.parse + ISO yyyy-mm-dd. Если parse failed — возвращаем как есть.
@@ -123815,16 +123823,10 @@ async function runLocalDetection() {
     detectedBoxes = filtered;
 
     if (detectedBoxes.length === 0) {
-      let tips = [];
-      if (rejectedArea > 0 && totalComponents < 5) {
-        tips.push('• Rooms are connecting through doorways. <b>Increase Wall thickness</b> to 5-8px.');
-      }
-      if (wallCount < total * 0.01) {
-        tips.push('• Very few walls detected. <b>Increase Wall darkness</b> to 180-200.');
-      }
-      if (wallCount > total * 0.5) {
-        tips.push('• Too many walls detected. <b>Decrease Wall darkness</b> to 80-100.');
-      }
+      // аудит M11 (+low #25/#47): удалён мёртвый блок советов — он строил
+      // массив tips из rejectedArea/wallCount/totalComponents, которые НЕ в
+      // scope в auto-tune ветке (→ ReferenceError при 0 найденных комнат),
+      // а сам tips никуда не выводился. status.innerHTML ниже самодостаточен.
       status.innerHTML = `
         <div style="color: var(--warning); font-weight: 600; margin-bottom: 8px;">No rooms found</div>
         <div style="font-size: 12px; color: var(--muted); text-align: left;">
