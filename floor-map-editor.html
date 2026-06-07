@@ -61827,22 +61827,39 @@ function _resetBuildingFiltersToActive() {
     }
   }
 
-  // 3. Multi-select MS surfaces (Rent Roll, Payments, Leases): эти
-  //    persist в localStorage, поэтому удаляем сохранённый user-фильтр
-  //    чтобы при следующем открытии defaultInit подхватил currentBuildingId
-  //    через свою стандартную логику. Активные открытые таблицы
-  //    re-render через renderAll() в switchBuilding.
+  // 3. Multi-select MS surfaces (Rent Roll, Payments, Leases). Persist в
+  //    localStorage. РАНЬШЕ обновляли ТОЛЬКО localStorage и полагались на
+  //    re-init при следующем открытии — но getMSValues читает ЖИВЫЕ галочки в
+  //    DOM, поэтому УЖЕ ОТКРЫТАЯ таблица оставалась на старом здании (баг
+  //    2026-06-06: Rent Roll не следовал за выбранным адресом). Теперь синкаем
+  //    И сам контрол (setMSValues), чтобы открытая таблица пере-скоупилась сразу
+  //    после renderAll() в switchBuilding.
+  const _bScope = def ? [def] : [];
   try {
     for (const k of ['sfa_rr_last_filters_v1','sfa_payments_last_filters_v1','sfa_leases_last_filters_v1']) {
       const raw = localStorage.getItem(k);
       if (!raw) continue;
       const obj = JSON.parse(raw);
       if (obj && Array.isArray(obj.buildings)) {
-        obj.buildings = def ? [def] : [];
+        obj.buildings = _bScope.slice();
+        // Этаж-фильтр относится к СТАРОМУ зданию — чистим, иначе на новом доме
+        // ни один этаж не совпадёт → пустая таблица.
+        if ('floors' in obj) obj.floors = [];
         localStorage.setItem(k, JSON.stringify(obj));
       }
     }
   } catch {}
+  // Синк ЖИВЫХ мультиселектов зданий (для открытых таблиц).
+  if (typeof setMSValues === 'function') {
+    setMSValues('rrBuildingMS', _bScope);
+    setMSValues('payBuildingMS', _bScope);
+    setMSValues('leasesBuildingMS', _bScope);
+  }
+  // Этажный мультиселект Rent Roll зависит от выбранного здания — перестраиваем
+  // под новое здание (сбрасывая выбор этажей), иначе остаются этажи старого.
+  if (typeof buildRentRollFloorsMS === 'function') {
+    try { buildRentRollFloorsMS([]); } catch {}
+  }
 }
 window._resetBuildingFiltersToActive = _resetBuildingFiltersToActive;
 window._currentBuildingDefault = _currentBuildingDefault;
@@ -124103,6 +124120,24 @@ function updateMSLabel(wrap, defaultLabel) {
     trigger.textContent = checked.length + ' selected';
   }
 }
+
+// Программно выставить выбор мультиселекта (галочки) + обновить лейбл. Нужно,
+// чтобы при смене здания УЖЕ ОТКРЫТЫЕ таблицы пере-скоупились: getMSValues
+// читает галочки в DOM, а не localStorage. onChange НЕ дёргаем — вызывающий
+// делает свой re-render (renderAll). defaultLabel берём из data-label wrap'а.
+function setMSValues(wrapId, values) {
+  const wrap = document.getElementById(wrapId);
+  if (!wrap) return false;
+  const want = new Set((values || []).map(String));
+  let changed = false;
+  wrap.querySelectorAll('.ms-menu input').forEach(inp => {
+    const on = want.has(String(inp.value));
+    if (inp.checked !== on) { inp.checked = on; changed = true; }
+  });
+  updateMSLabel(wrap, wrap.dataset.label || 'Select...');
+  return changed;
+}
+window.setMSValues = setMSValues;
 
 function getMSValues(wrapId) {
   const wrap = document.getElementById(wrapId);
