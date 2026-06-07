@@ -20585,12 +20585,13 @@
         <div class="field">
           <label>Address *</label>
           <div class="addr-ac-wrap">
-            <input type="text" id="bmAddr" placeholder="Start typing an address — suggestions appear below" autocomplete="off" oninput="addrAcInput(this)" onkeydown="addrAcKeydown(event)">
+            <input type="text" id="bmAddr" placeholder="Start typing an address — suggestions appear below" autocomplete="off" oninput="addrAcInput(this); _bmAutofillCode()" onkeydown="addrAcKeydown(event)">
             <div class="addr-ac" id="bmAddrAc"></div>
           </div>
           <div class="addr-ac-hint">Suggestions are optional — type any address and click Save. Powered by OpenStreetMap.</div>
         </div>
-        <div class="field"><label>Building Name</label><input type="text" id="bmName" placeholder="SuitesForAll Main Tower"></div>
+        <div class="field"><label>Building Name</label><input type="text" id="bmName" placeholder="SuitesForAll Main Tower" oninput="_bmAutofillCode()"></div>
+        <div class="field"><label>Building Code</label><input type="text" id="bmCode" maxlength="3" placeholder="auto — e.g. TPA" autocomplete="off" style="text-transform:uppercase;"><div class="addr-ac-hint">3-letter prefix for invoice numbers (e.g. <b>TPA</b>-R-243-…). Auto-filled from the city if left blank.</div></div>
       </div>
 
       <!-- Floors with gross + rentable sqft -->
@@ -59430,6 +59431,33 @@ function buildingVisualHtml(b, ctx) {
   return `<span class="${cls}">${buildingIconSvg(getBuildingIcon(b), { size: iconSize, strokeWidth: 2 })}</span>`;
 }
 
+// 3-буквенный код здания для префикса номера счёта (#4). Зеркало
+// functions/index.js (_autoBuildingCode / buildingInvoiceCode) — держать в синхроне.
+// Авто-ген из города адреса ("улица, ГОРОД, штат[, индекс]"), иначе из названия.
+function _autoBuildingCode(b) {
+  if (!b) return '';
+  const segs = String(b.address || '').split(',').map(s => s.trim()).filter(Boolean);
+  let city = '';
+  if (segs.length >= 3) city = segs[1];
+  else if (segs.length === 2) city = segs[0];
+  const src = (city || b.name || '').toUpperCase().replace(/[^A-Z]/g, '');
+  return src.slice(0, 3);
+}
+// Приоритет: явно заданный building.code → иначе авто-ген.
+function _buildingInvoiceCode(b) {
+  if (!b) return '';
+  const explicit = String(b.code || '').replace(/[^A-Za-z]/g, '').toUpperCase().slice(0, 3);
+  return explicit || _autoBuildingCode(b);
+}
+// Авто-заполнение поля Building Code в модалке (если оператор не ввёл вручную).
+function _bmAutofillCode() {
+  const codeEl = document.getElementById('bmCode');
+  if (!codeEl || codeEl.value.trim()) return;
+  const addr = document.getElementById('bmAddr')?.value || '';
+  const name = document.getElementById('bmName')?.value || '';
+  codeEl.value = _autoBuildingCode({ address: addr, name });
+}
+
 // Сигнатура последнего отрисованного списка зданий — чтобы не пересобирать
 // DOM выпадающего меню (и не ломать клик оператора), когда содержимое не
 // изменилось. См. инцидент 2026-06-04 (клики по зданиям терялись).
@@ -62060,6 +62088,7 @@ function openAddBuilding() {
   document.getElementById('bmSubtitle').textContent = 'Fill in the Overview tab to create the building. Other tabs can be filled later.';
   document.getElementById('bmAddr').value = '';
   document.getElementById('bmName').value = '';
+  document.getElementById('bmCode').value = '';
   document.getElementById('bmNotes').value = '';
   document.getElementById('bmMgrName').value = '';
   document.getElementById('bmMgrEmail').value = '';
@@ -62162,6 +62191,7 @@ function openEditBuilding(bid) {
   document.getElementById('bmSubtitle').textContent = `Editing "${buildingLabel(b)}". Changes apply on Save. Cancel reverts everything.`;
   document.getElementById('bmAddr').value = b.address || '';
   document.getElementById('bmName').value = b.name || '';
+  document.getElementById('bmCode').value = b.code || _autoBuildingCode(b) || '';
   document.getElementById('bmNotes').value = b.notes || '';
   document.getElementById('bmMgrName').value  = bmDraftManager.name  || '';
   document.getElementById('bmMgrEmail').value = bmDraftManager.email || '';
@@ -64684,6 +64714,7 @@ function brfeRefreshPreview() {
 function saveBuildingModal() {
   const addr = document.getElementById('bmAddr').value.trim();
   const name = document.getElementById('bmName').value.trim();
+  const code = (document.getElementById('bmCode').value || '').trim().toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3);
   const notes = document.getElementById('bmNotes').value;
   const icon  = BUILDING_ICONS[bmDraftIcon] ? bmDraftIcon : 'tower';
 
@@ -64757,6 +64788,7 @@ function saveBuildingModal() {
     pushHistory();
     b.address = addr;
     b.name = name || addr;
+    b.code = code || _autoBuildingCode({ address: addr, name: name || addr }); // #4: код для префикса номера счёта
     b.notes = notes;
     b.icon = icon;
     b.photo = bmDraftPhoto || null;
@@ -65000,7 +65032,9 @@ function saveBuildingModal() {
   pushHistory();
   const id = 'b' + Date.now();
   const b = {
-    id, address: addr, name: name || addr, notes, icon,
+    id, address: addr, name: name || addr,
+    code: code || _autoBuildingCode({ address: addr, name: name || addr }), // #4: код для префикса номера счёта
+    notes, icon,
     photo: bmDraftPhoto || null,
     manager:     Object.assign({}, bmDraftManager),
     contacts:    bmDraftContacts.slice(),
@@ -142816,7 +142850,8 @@ function _ciPreviewInvoiceNumber({purpose, unitId, ym}) {
   const billingPart = (purpose === 'rent' && ym && /^\d{4}-\d{2}$/.test(ym))
     ? `-${_CI_MONTH_ABBR[+ym.split('-')[1] - 1]}${ym.slice(2,4)}`
     : '';
-  return `${p}-${suite}${billingPart}-${issuedCode}-${timeCode}`;
+  const _bc = (typeof _buildingInvoiceCode === 'function') ? _buildingInvoiceCode(typeof currentBuilding === 'function' ? currentBuilding() : null) : '';
+  return `${_bc ? _bc + '-' : ''}${p}-${suite}${billingPart}-${issuedCode}-${timeCode}`;
 }
 
 function _ciMoney(n) {
@@ -143952,7 +143987,8 @@ function _predictInvoiceNumberPrefix({ purpose, unitId, ym, auto }) {
   const billingPart = (purpose === 'rent' && ym && /^\d{4}-\d{2}$/.test(ym))
     ? `-${MONTH_ABBR[+ym.split('-')[1] - 1]}${ym.slice(2,4)}`
     : '';
-  return `${p}-${suite}${billingPart}-${issuedCode}-${timeCode}`;
+  const _bc = (typeof _buildingInvoiceCode === 'function') ? _buildingInvoiceCode(typeof currentBuilding === 'function' ? currentBuilding() : null) : '';
+  return `${_bc ? _bc + '-' : ''}${p}-${suite}${billingPart}-${issuedCode}-${timeCode}`;
 }
 
 async function ciSubmit() {

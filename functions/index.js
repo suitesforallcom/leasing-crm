@@ -494,7 +494,29 @@ const PURPOSE_CODE = {
 const MONTH_ABBR = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
                     'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 
-function buildCustomInvoiceNumber({purpose, unitId, ym, auto}) {
+// Авто-генерация 3-буквенного кода здания из ЛОКАЦИИ (город из адреса, иначе
+// название). Используется когда оператор не задал building.code вручную.
+// Формат адреса: "улица, ГОРОД, штат[, индекс]" → первые 3 буквы города.
+function _autoBuildingCode(b) {
+  if (!b) return '';
+  const segs = String(b.address || '').split(',').map((s) => s.trim()).filter(Boolean);
+  let city = '';
+  if (segs.length >= 3) city = segs[1];        // street, CITY, state[, zip]
+  else if (segs.length === 2) city = segs[0];  // CITY, state
+  const src = (city || b.name || '').toUpperCase().replace(/[^A-Z]/g, '');
+  return src.slice(0, 3);
+}
+
+// 3-буквенный код здания для префикса номера счёта (запрос оператора 2026-06-07).
+// Приоритет: явно заданный building.code (Building Info) → иначе авто-ген из
+// локации. На сверку/Stripe-matching не влияет: всё по metadata, не по строке.
+function buildingInvoiceCode(b) {
+  if (!b) return '';
+  const explicit = String(b.code || '').replace(/[^A-Za-z]/g, '').toUpperCase().slice(0, 3);
+  return explicit || _autoBuildingCode(b);
+}
+
+function buildCustomInvoiceNumber({purpose, unitId, ym, auto, code}) {
   // Rent + auto-flag → "RA" prefix to distinguish cron-fired invoices
   // from manually-sent ones. All other purposes ignore the auto flag.
   let p = PURPOSE_CODE[purpose] || 'X';
@@ -541,9 +563,14 @@ function buildCustomInvoiceNumber({purpose, unitId, ym, auto}) {
   const billingPart = (purpose === 'rent' && ym && /^\d{4}-\d{2}$/.test(ym))
     ? `-${MONTH_ABBR[+ym.split('-')[1] - 1]}${ym.slice(2,4)}`
     : '';
-  let n = `${p}-${suite}${billingPart}-${issuedCode}-${timeCode}-${rand}`;
-  if (n.length > 26) n = `${p}-${suite}${billingPart}-${issuedCode}-${timeCode}`;
-  if (n.length > 26) n = `${p}-${suite}${billingPart}-${issuedCode}-${rand}`;
+  // Префикс кода здания (если задан) — в САМОМ начале. Stripe limit = 26 симв.;
+  // при переполнении код здания отбрасывается ПОСЛЕДНИМ (после rand и time).
+  const bCode = String(code || '').replace(/[^A-Z]/gi, '').toUpperCase().slice(0, 3);
+  const pre = bCode ? `${bCode}-` : '';
+  let n = `${pre}${p}-${suite}${billingPart}-${issuedCode}-${timeCode}-${rand}`;
+  if (n.length > 26) n = `${pre}${p}-${suite}${billingPart}-${issuedCode}-${timeCode}`; // -rand
+  if (n.length > 26) n = `${pre}${p}-${suite}${billingPart}-${issuedCode}`;             // -time (код здания держим — он важнее времени)
+  if (n.length > 26) n = `${p}-${suite}${billingPart}-${issuedCode}-${timeCode}`;       // крайний случай (очень длинный suite) → жертвуем кодом здания (Stripe лимит)
   return n;
 }
 
@@ -1159,7 +1186,8 @@ exports.createStripeInvoice = onCall(
     // sends get the "RA-" prefix (vs operator-initiated plain "R-").
     // Coerce to bool — clients sometimes send 'true' (string) or 1.
     const isAuto = (auto === true || auto === 'true' || auto === 1);
-    const customNumber = buildCustomInvoiceNumber({purpose: invPurpose, unitId, ym: effectiveYm, auto: isAuto});
+    const _invBldg = (state.buildings || []).find((x) => x && x.id === buildingId);
+    const customNumber = buildCustomInvoiceNumber({purpose: invPurpose, unitId, ym: effectiveYm, auto: isAuto, code: buildingInvoiceCode(_invBldg)});
 
     // Auto-charge routing. Three inputs matter:
     //   1. Workspace-level auto-charge toggle (settings.autoInvoice.autoCharge)
@@ -1431,7 +1459,7 @@ exports.createStripeInvoice = onCall(
       await stripe.invoices.update(invoice.id, {number: customNumber});
     } catch (err) {
       if (err.code === 'resource_already_exists' || /already.*exists/i.test(err.message || '')) {
-        const retry = buildCustomInvoiceNumber({purpose: invPurpose, unitId, ym: effectiveYm, auto: isAuto});
+        const retry = buildCustomInvoiceNumber({purpose: invPurpose, unitId, ym: effectiveYm, auto: isAuto, code: buildingInvoiceCode((state.buildings || []).find((x) => x && x.id === buildingId))});
         logger.warn(`[stripe] invoice number ${customNumber} collided; retrying with ${retry}`);
         await stripe.invoices.update(invoice.id, {number: retry});
       } else {
@@ -3965,7 +3993,7 @@ exports.runAutoInvoices = onSchedule(
             // Custom invoice number with "RA-" prefix marking this as
             // an auto-generated rent invoice (vs manual "R-").
             const autoNumber = buildCustomInvoiceNumber({
-              purpose: 'rent', unitId: u.id, ym: nextYm, auto: true,
+              purpose: 'rent', unitId: u.id, ym: nextYm, auto: true, code: buildingInvoiceCode(b),
             });
 
             // Auto-charge routing — same as createStripeInvoice. If the
@@ -4538,7 +4566,7 @@ async function _runAutoLateFeesHandler(opts) {
 
             // Custom invoice number — "L-" prefix per PURPOSE_CODE.late_fee
             const lfNumber = buildCustomInvoiceNumber({
-              purpose: 'late_fee', unitId: u.id, ym: o.ym, auto: false,
+              purpose: 'late_fee', unitId: u.id, ym: o.ym, auto: false, code: buildingInvoiceCode(b),
             });
             try {
               await stripe.invoices.update(inv.id, { number: lfNumber });
