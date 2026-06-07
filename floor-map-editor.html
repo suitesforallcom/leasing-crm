@@ -115598,20 +115598,34 @@ function _ldSubstituteMergeTokens(html, fields, recipientName, recipientEmail, o
     const lastGT = haystack.lastIndexOf('>', idx);
     return lastLT > lastGT;
   }
-  function isInsideBlock(haystack, idx, openRe, closeRe) {
-    // Найти ближайший открывающий слева; если есть и нет закрывающего
-    // между ним и idx — мы внутри.
-    let lastOpen = -1;
-    let m;
+  // [13] perf: один раз находим диапазоны [start,end) контента style- и
+  // script-блоков. Раньше isInsideBlock пересканировал
+  // весь html с позиции 0 И делал html.toLowerCase() НА КАЖДЫЙ токен (дважды:
+  // style+script) → O(tokens*n) + тонна мусора. Теперь один проход на блок-тип,
+  // дальше дешёвая проверка офсета по отсортированным диапазонам.
+  function _collectBlockRanges(haystack, openRe, closeStr) {
+    const ranges = [];
     const re = new RegExp(openRe.source, 'gi');
+    const lower = haystack.toLowerCase();           // один toLowerCase на тип, не на токен
+    let m;
     while ((m = re.exec(haystack)) !== null) {
-      if (m.index >= idx) break;
-      lastOpen = m.index + m[0].length;
+      const contentStart = m.index + m[0].length;   // конец открывающего тега
+      let closeIdx = lower.indexOf(closeStr, contentStart);
+      if (closeIdx === -1) closeIdx = haystack.length; // незакрытый блок → до конца (как старое closeIdx===-1)
+      ranges.push([contentStart, closeIdx]);
+      re.lastIndex = closeIdx;                       // не плодим вложенные открытия внутри уже найденного блока
     }
-    if (lastOpen === -1) return false;
-    const closeIdx = haystack.toLowerCase().indexOf(closeRe, lastOpen);
-    return closeIdx === -1 || closeIdx > idx;
+    return ranges;
   }
+  function _offsetInRanges(ranges, idx) {
+    for (let i = 0; i < ranges.length; i++) {
+      if (idx >= ranges[i][0] && idx < ranges[i][1]) return true; // strict '<' = как старое closeIdx>idx
+      if (ranges[i][0] > idx) break;                // ranges по возрастанию — дальше искать нечего
+    }
+    return false;
+  }
+  const _styleRanges  = _collectBlockRanges(html, /<style\b[^>]*>/i,  '</' + 'style>');
+  const _scriptRanges = _collectBlockRanges(html, /<script\b[^>]*>/i, '</' + 'script>');
   // Значение «выглядит как HTML»? Тогда оно содержит блочные элементы
   // (<table>, <div>, <p> и т.п.), и оборачивать в <span> НЕЛЬЗЯ —
   // браузер сам распарсит и вынесет блоки наружу span'а, оставив
@@ -115631,8 +115645,8 @@ function _ldSubstituteMergeTokens(html, fields, recipientName, recipientEmail, o
     // браузер закроет наш <script> ровно тут (HTML parser не видит границ
     // строкового литерала, только tag-pattern).
     const inTag    = isInsideTag(html, offset);
-    const inStyle  = isInsideBlock(html, offset, /<style\b[^>]*>/i, '</' + 'style>');
-    const inScript = isInsideBlock(html, offset, /<script\b[^>]*>/i, '</' + 'script>');
+    const inStyle  = _offsetInRanges(_styleRanges, offset);
+    const inScript = _offsetInRanges(_scriptRanges, offset);
 
     // Пустое значение — рендерим маленький soft-плейсхолдер «+ key»
     // (вне тегов и блоков; иначе — просто пусто). Кликабельный: ведёт
@@ -122123,6 +122137,7 @@ const DS_POLL_MIN_MS = 30_000;       // 30s for fresh envelopes
 const DS_POLL_MAX_MS = 30 * 60_000;  // 30min cap
 let _dsPollTimer = null;
 let _dsPollInflight = false;
+let _dsPollRunning = false;   // [15] sentinel: истинный признак «цикл опроса активен» (см. _dsScheduleNextPoll)
 let _dsPollLastChangeAt = Date.now();
 
 function _dsCurrentPollMs() {
@@ -122140,18 +122155,24 @@ function _dsScheduleNextPoll() {
   _dsPollTimer = setTimeout(async () => {
     _dsPollTimer = null;
     await _dsPollOnce();
-    if (_dsPollTimer == null) _dsScheduleNextPoll();
+    // [15]: _dsPollOnce() вызывает _dsStopLeasePolling() (→ _dsPollRunning=false),
+    // когда не осталось pending-конвертов. _dsPollTimer мы обнулили ДО await,
+    // поэтому по нему нельзя отличить «остановлено» от «работает» — используем
+    // отдельный sentinel. Перепланируем только пока цикл реально живёт.
+    if (_dsPollRunning) _dsScheduleNextPoll();
   }, _dsCurrentPollMs());
 }
 
 function _dsStartLeasePolling() {
-  if (_dsPollTimer) return;              // already running
+  if (_dsPollRunning) return;            // already running
   if (!_dsHasValidToken()) return;       // no point; resume after connect
+  _dsPollRunning = true;
   _dsScheduleNextPoll();
   // Also fire immediately so the drawer doesn't sit on stale state.
   _dsPollOnce();
 }
 function _dsStopLeasePolling() {
+  _dsPollRunning = false;
   if (_dsPollTimer) { clearTimeout(_dsPollTimer); _dsPollTimer = null; }
 }
 // Hook called by _dsPollOnce when it observes any status change. Resets
@@ -133376,8 +133397,8 @@ function _bvTenantsToggleRow(uid, checked) {
   // дёргано (теряет input focus в search-bar и т.д.).
   _bvTenantsUpdateBulkBar();
   _bvTenantsSyncSelectAllCheckbox();
-  // Подсвечиваем строку — toggle класс
-  const tr = document.querySelector(`#bvTenantsBody tr[onclick*="${uid.replace(/"/g, '\\"')}"]`);
+  // Подсвечиваем строку — toggle класс (ищем по data-атрибуту, не по onclick) [16]
+  const tr = document.querySelector(`#bvTenantsBody tr[data-tenant-uid="${(window.CSS && CSS.escape) ? CSS.escape(uid) : uid}"]`);
   if (tr) tr.classList.toggle('bv-tenants-row-selected', checked);
 }
 window._bvTenantsToggleRow = _bvTenantsToggleRow;
@@ -133385,10 +133406,8 @@ window._bvTenantsToggleRow = _bvTenantsToggleRow;
 function _bvTenantsToggleSelectAll(cb) {
   const rows = document.querySelectorAll('#bvTenantsBody tr');
   rows.forEach(tr => {
-    const onclick = tr.getAttribute('onclick') || '';
-    const m = onclick.match(/'([^']+)'/);
-    if (!m) return;
-    const uid = m[1];
+    const uid = tr.dataset.tenantUid; // [16]: читаем uid из data-атрибута, не regex по onclick
+    if (!uid) return;
     const inp = tr.querySelector('input[type="checkbox"]');
     if (cb.checked) {
       _bvTenantsSelected.add(uid);
@@ -133618,7 +133637,7 @@ function renderTenantsPanelZip() {
     const balColor = r.balance > 0 ? 'color: var(--zip-overdue); font-weight: 500;' : 'color: var(--zip-ink-5);';
     const isSelected = _bvTenantsSelected.has(r.uid);
     return `
-      <tr class="${isSelected ? 'bv-tenants-row-selected' : ''}" onclick="_bvTenantRowClick('${esc(r.uid)}')">
+      <tr class="${isSelected ? 'bv-tenants-row-selected' : ''}" data-tenant-uid="${esc(r.uid)}" onclick="_bvTenantRowClick('${esc(r.uid)}')">
         <td style="text-align:center; padding: 12px 4px;" onclick="event.stopPropagation();">
           <input type="checkbox" ${isSelected ? 'checked' : ''} onchange="_bvTenantsToggleRow('${esc(r.uid)}', this.checked)" title="Select for bulk action">
         </td>
