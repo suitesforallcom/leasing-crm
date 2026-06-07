@@ -59363,7 +59363,7 @@ function toast(msg, kind = 'success') {
   const icon = kind === 'loading' ? '<span class="loader"></span>' :
                kind === 'success' ? '✓ ' :
                kind === 'error' ? '⚠ ' : '';
-  t.innerHTML = icon + msg;
+  t.innerHTML = icon + esc(msg); // аудит M2: msg часто содержит err.message / данные — экранируем
   clearTimeout(t._timeout);
   if (kind !== 'loading') t._timeout = setTimeout(() => t.classList.remove('show'), 2800);
 }
@@ -105808,8 +105808,10 @@ function _empFillContractHTML(emp) {
     currentDate:        new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
     empId:              emp.id || '',
   };
+  // Аудит H10: экранируем подставляемые значения — ФИО/адрес/email сотрудника
+  // иначе попадали в document.write сырыми (XSS в same-origin popup).
   return EMPLOYMENT_AGREEMENT_TEMPLATE_HTML.replace(/\{\{(\w+)\}\}/g, (_, k) =>
-    Object.prototype.hasOwnProperty.call(vals, k) ? String(vals[k]) : `{{${k}}}`);
+    Object.prototype.hasOwnProperty.call(vals, k) ? esc(String(vals[k])) : `{{${k}}}`);
 }
 
 function sendEmploymentEnvelope() {
@@ -107736,8 +107738,10 @@ function _pmViewLoi(bId, fId, uId, pId) {
   if (win) {
     const mime = dataUrl.split(';')[0].replace('data:', '') || 'application/pdf';
     const name = ctx.p.loiDoc.name || 'LOI document';
-    win.document.write(`<html><head><title>${name}</title></head>
-      <body style="margin:0"><embed src="${dataUrl}" width="100%" height="100%" type="${mime}" /></body></html>`);
+    // Аудит H5/H9: имя файла LOI (и mime/dataUrl) идут в document.write —
+    // экранируем, иначе имя вида </title><script>… исполняется в same-origin окне.
+    win.document.write(`<html><head><title>${esc(name)}</title></head>
+      <body style="margin:0"><embed src="${esc(dataUrl)}" width="100%" height="100%" type="${esc(mime)}" /></body></html>`);
     win.document.close();
   }
 }
@@ -115598,7 +115602,7 @@ function _ldSubstituteMergeTokens(html, fields, recipientName, recipientEmail, o
       return `<div class="ld-token-block" data-token-block="${safeAttr}" data-token="${safeAttr}" onclick="_ldOnTokenClick('${safeAttr}')" title="From form: ${safeAttr}">${value}</div>`;
     }
 
-    return `<span class="ld-token" data-token="${safeAttr}" onclick="_ldOnTokenClick('${safeAttr}')" title="From form: ${safeAttr}">${value}</span>`;
+    return `<span class="ld-token" data-token="${safeAttr}" onclick="_ldOnTokenClick('${safeAttr}')" title="From form: ${safeAttr}">${esc(value)}</span>`; // аудит H6: экранируем user-значение (block-HTML ветка выше остаётся сырой намеренно)
   });
 }
 
@@ -120416,7 +120420,12 @@ function showDocPreview(opts) {
     // HTML mode — render directly into the styled .doc-modal-page card.
     // Strip <script> tags as defense-in-depth even though the source
     // is operator-authored.
-    const safeHtml = (opts.html || '').replace(/<script[\s\S]*?<\/script>/gi, '');
+    // Аудит M10: вместо хрупкого regex-стрипа <script> используем полноценный
+    // DOMParser-санитайзер (убирает script/iframe/object/embed, on*-атрибуты
+    // и javascript:-ссылки) — он уже есть в файле (_uploadTplSanitizeHtml).
+    const safeHtml = (typeof _uploadTplSanitizeHtml === 'function')
+      ? _uploadTplSanitizeHtml(opts.html || '')
+      : (opts.html || '').replace(/<script[\s\S]*?<\/script>/gi, '');
     bodyEl.innerHTML = safeHtml;
   }
   document.getElementById('docPreviewModal').classList.add('active');
@@ -135594,7 +135603,7 @@ function renderRecoveryPanel() {
           ${bLabel ? `<div style="color: var(--muted); font-size: 10.5px;">${esc(bLabel)}</div>` : ''}
         </td>
         <td>
-          <span style="display: inline-block; padding: 2px 8px; background: ${statusInfo.bg}; color: ${statusInfo.color}; font-weight: 600; font-size: 11px; border-radius: 999px;">${statusInfo.lbl}</span>
+          <span style="display: inline-block; padding: 2px 8px; background: ${statusInfo.bg}; color: ${statusInfo.color}; font-weight: 600; font-size: 11px; border-radius: 999px;">${esc(statusInfo.lbl)}</span>
         </td>
         <td style="font-size: 11.5px;">${movedOutLbl}</td>
         <td style="text-align:right; font-size: 11.5px; font-variant-numeric: tabular-nums;">${daysOut}d</td>
