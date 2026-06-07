@@ -6002,6 +6002,12 @@
   .workspace {
     display: grid;
     grid-template-columns: 56px 1fr 380px;
+    /* FIXES_LOG Entry 63: ОБЯЗАТЕЛЬНО задаём строку = высоте контейнера. Без
+       grid-template-rows единственная неявная строка была AUTO и растягивалась
+       до самого высокого столбца (правая панель .sidebar ~775px), из-за чего
+       .canvas-area вылезала НИЖЕ вьюпорта (его и полосу легенды «срезало» —
+       операторский «бордюр»). minmax(0,1fr) пиннит строку к (100vh−56px). */
+    grid-template-rows: minmax(0, 1fr);
     height: 100%;
     overflow: hidden;
   }
@@ -6134,6 +6140,7 @@
     position: relative;
     overflow: hidden;
     background: #FAF9F7;
+    min-height: 0;   /* Entry 63: grid-item не должен раздуваться по min-content */
   }
   :root[data-theme="light"] .canvas-area { background: #FAF9F7; }
   :root:not([data-theme="light"]) .canvas-area { background: #16161a; }
@@ -6152,7 +6159,11 @@
     position: absolute;
     top: 0; bottom: 0;
     left: 0; right: 0;
-    width: auto; height: auto;
+    /* Entry 63: 100% (а не auto) — иначе SVG с viewBox брал ИНТРИНСИК-высоту
+       (= аспект viewBox) и не заполнял холст: при широком этаже выходил
+       низкий SVG, прижатый к верху, с пустым полем снизу. 100%+100% заставляет
+       SVG занять весь .canvas-area, а контент центрируется через xMidYMid. */
+    width: 100%; height: 100%;
     /* Warm dotted-grid to match the /redesign/ mock. The base is the warm
        neutral (#FAF9F7 light / #1a1a1a dark) with soft dots that fade into
        the background — not the aggressive crosshatch the old palette used. */
@@ -9047,6 +9058,7 @@
     border-left: 1px solid var(--border);
     display: flex; flex-direction: column;
     overflow: hidden;
+    min-height: 0;   /* Entry 63: чтобы grid-строка не раздувалась под контент панели (была причина «бордюра»); внутренний скролл — .sidebar-content */
     /* Flatten the right panel to one solid white surface. By default a
        lot of inner elements (Needs-Attention header, toggle rows, empty
        cards, etc.) use --surface-2 which is the warm cream tone — that's
@@ -9116,7 +9128,7 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .sidebar-content { padding: 16px; flex: 1; overflow-y: auto; }
+  .sidebar-content { padding: 16px; flex: 1; overflow-y: auto; min-height: 0; }   /* Entry 63: min-height:0 — чтобы flex-скролл реально включался при ограниченной высоте панели */
 
   .stats-scope {
     display: flex; align-items: baseline; gap: 8px;
@@ -19527,7 +19539,7 @@
         </button>
       </div>
 
-      <svg id="planSvg" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMin meet">
+      <svg id="planSvg" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
         <defs></defs>
         <g id="bgG"></g>
         <g id="wallsG"></g>
@@ -71483,8 +71495,15 @@ svg.addEventListener('pointerdown', e => {
 
 function onPanMove(e) {
   if (!pan) return;
-  const dx = (e.clientX - pan.sx) * (viewBox.w / svg.clientWidth);
-  const dy = (e.clientY - pan.sy) * (viewBox.h / svg.clientHeight);
+  // FIXES_LOG Entry 63: единый rendered-масштаб (preserveAspectRatio meet →
+  // масштаб ОДИНАКОВ по обеим осям). Раньше dx/dy считались по width/height
+  // РАЗДЕЛЬНО — корректно только когда аспект SVG == аспект viewBox (нет
+  // letterbox). После того как SVG стал заполнять холст (width/height:100% +
+  // xMidYMid), по короткой оси появился letterbox, и раздельный масштаб давал
+  // рассинхрон вертикального пана. min(...) = фактический px/unit.
+  const scale = Math.min(svg.clientWidth / viewBox.w, svg.clientHeight / viewBox.h) || 1;
+  const dx = (e.clientX - pan.sx) / scale;
+  const dy = (e.clientY - pan.sy) / scale;
   viewBox.x = pan.vx - dx;
   viewBox.y = pan.vy - dy;
   applyViewBox();

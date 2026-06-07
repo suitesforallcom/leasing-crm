@@ -60,6 +60,22 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 63. Map cut off at the bottom — grid row overflow + letterbox top-pin (UI/layout, 2026-06-07)
+
+- **Status:** active
+- **Branch / commit:** `main` @ `<this commit>`
+- **Area:** UI / floor-map canvas layout + viewBox fit alignment + pan math
+- **Files:** floor-map-editor.html
+- **Functions / rules:** `.workspace`, `.canvas-area`, `.sidebar`, `.sidebar-content`, `#planSvg` CSS; `<svg id=planSvg preserveAspectRatio>`; `onPanMove`
+- **Bug it fixed:** Long-standing "the map is cut off at the bottom by a border; can't view the full height." LIVE MEASUREMENT (not code-reading) found TWO causes: **(1) Grid-row overflow** — `.workspace` had `grid-template-columns` but **no `grid-template-rows`**, so its single implicit row was `auto` and grew to the tallest column's content (the right `.sidebar` Dashboard ≈775px). At a 720px window the row resolved to 775px → `.canvas-area` (and the docked legend bar) extended to y=831, **111px below the 720px viewport** → the legend + map bottom were clipped (the operator's "бордюр"). **(2) Letterbox top-pin** — `#planSvg` was `width:auto;height:auto`, so a viewBox'd SVG took its INTRINSIC height (= viewBox aspect) and sat top-pinned; with `preserveAspectRatio="xMidYMin meet"` (Y-top) all the vertical slack pooled at the BOTTOM (the big empty area below wide floors).
+- **Fix:** (1) `.workspace { grid-template-rows: minmax(0, 1fr) }` pins the row to (100vh−56px); `min-height:0` on `.canvas-area`/`.sidebar`/`.sidebar-content` so grid/flex items don't inflate by min-content and the sidebar's existing `.sidebar-content` scroller engages. (2) `#planSvg { width:100%; height:100% }` makes the SVG fill the whole canvas; `preserveAspectRatio="xMidYMid meet"` centers the content vertically (verified: equal top/bottom gaps). (3) Because filling the SVG introduces a letterbox on the short axis, `onPanMove` was changed from separate `viewBox.w/clientWidth` & `viewBox.h/clientHeight` scales to a single uniform `min(...)` scale (the real px/unit) so vertical panning tracks the cursor 1:1. Click mapping already uses `svgPoint()`→`getScreenCTM()` (letterbox-safe); the wheel handler uses `svgPoint` + width-scale (safe) — both untouched.
+- **Invariant — DO NOT BREAK:** (1) `.workspace` MUST define `grid-template-rows` (a column-only grid with `height:100%` lets content stretch the row past the viewport — the root cause). (2) Any pan/zoom that maps screen↔SVG must account for `preserveAspectRatio` letterbox — use `getScreenCTM()` (svgPoint) or the uniform `min()` scale, never per-axis `clientWidth/clientHeight`. (3) `#planSvg` fills the canvas (`width/height:100%`), not intrinsic. (4) Topbar-always-visible (UX §15) + auto-fit Entry 61 (`sfaFitToContent` bbox math) untouched.
+- **Verification (live, headless, demo data — layout is data-independent):** before — `gridTemplateRows:775px`, `.canvas-area` bottom 831 (>720), legend 767–831 off-screen. After — `gridTemplateRows:664px`, `.canvas-area` 56→720, legend 656–720 on-screen, `#planSvg` fills 664, content centered (topGap 87 = bottomGap 87). Pan tracks 1:1 in both axes.
+- **Regression test:** none — manual UI / live measurement.
+- **Related PR / issue:** workflow `wq4p5zrq9` (identified the letterbox/xMidYMin half); the grid-row-overflow half was found by live `getBoundingClientRect` measurement (the code-only analysis had wrongly concluded the height chain was sound — a reminder to MEASURE layout bugs, not just read CSS).
+
+---
+
 ### 62. Degenerate (zero-length) walls render as a clickable black dot — skip them (UI, 2026-06-07)
 
 - **Status:** active
