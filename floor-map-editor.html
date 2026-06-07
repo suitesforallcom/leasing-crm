@@ -78864,6 +78864,8 @@ async function _sendInvoiceWithLateFees(unitId, totalFee, opts) {
     const grace = cfg?.graceDays ?? 5;
     const startIso = u.leaseStart || u.signed || '';
     const startDate = startIso ? new Date(startIso + 'T00:00:00') : null;
+    // [6]: эффективная рента для _monthBilling (грейс-якорь к lease-start).
+    const rent = (typeof _effectiveMonthlyRent === 'function') ? _effectiveMonthlyRent(u) : (+u.contractRent || +u.rent || 0);
     for (let i = 0; i < 12; i++) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
       const lastDay = new Date(now.getFullYear(), now.getMonth() - i + 1, 0);
@@ -78873,7 +78875,11 @@ async function _sendInvoiceWithLateFees(unitId, totalFee, opts) {
       if (p?.status === 'paid' || p?.status === 'free') continue;
       const dismissed = u.lateFeeDismissed?.[ym];
       if (dismissed) continue;
-      const isLate = (i > 0) || (i === 0 && now.getDate() > grace);
+      // [6]: каноничный late-критерий — зеркало _renderUnitLateFeeOwed.
+      // Прошлые месяцы всегда late; текущий — по _monthBilling.isOverdueByDate
+      // (грейс якорится к lease-start, а не к 1-му числу календарного месяца).
+      const mb = (typeof _monthBilling === 'function') ? _monthBilling(rent, ym, startIso, grace, now, u) : null;
+      const isLate = (i > 0) ? true : (mb ? mb.isOverdueByDate : (now.getDate() > grace));
       if (isLate) {
         ymList.unshift(ym);
         months.unshift(_fmtMonthName(ym));
@@ -136862,8 +136868,11 @@ function lateFeePreviewFor(rec) {
     monthsOwed++;
     if (cfg.frequency === 'once' && monthsOwed > 1) continue;
     const base = chargeFor(ym, mb.monthRent);
+    // [19]: каноничное per-fee округление до центов — как _computeUnitMoney /
+    // _renderUnitLateFeeOwed (Math.round(base*amount)/100), а не сырое
+    // base*(amount/100) с округлением только итога (расходилось на копейки).
     const fee = cfg.type === 'percent'
-      ? base * (+cfg.amount / 100)
+      ? Math.round(base * (+cfg.amount)) / 100
       : +cfg.amount;
     totalFee += fee;
   }
