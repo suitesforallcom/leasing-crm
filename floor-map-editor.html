@@ -60529,7 +60529,8 @@ function stackingExport() {
   const rows = [['Floor','Suite','Tenant','Company','Sqft','Rent/mo','$/ft²/yr','Status','Lease end']];
   for (const f of (b.floors || []).slice().sort((a, c) => (a.number || 0) - (c.number || 0))) {
     for (const u of f.units || []) {
-      if (isArchived(u) || u.rentable === false || u.type !== 'office') continue;
+      if (isArchived(u) || u.rentable === false || u.type !== 'office'
+          || (typeof _isInactiveSubRoom === 'function' && _isInactiveSubRoom(u))) continue; // аудит M4: исключаем неактивные суб-комнаты родителя
       const rent = +u.contractRent || +u.rent || 0;
       const rate = u.sqft ? (rent * 12 / u.sqft) : 0;
       rows.push([
@@ -64074,7 +64075,7 @@ function brOpenDryRun() {
       // Auto-invoice — узнаём, должен ли инвойс быть выпущен в эти "today".
       const aiCfg = (typeof getEffectiveAutoInvoiceConfig === 'function')
         ? getEffectiveAutoInvoiceConfig(u) : null;
-      if (aiCfg && aiCfg.enabled && u.status === 'occupied' && u.tenantEmail) {
+      if (aiCfg && aiCfg.enabled && u.status === 'occupied' && (u.tenantEmail || u.email)) {
         // Если сегодня = первое число следующего месяца минус sendBeforeDays — отправка
         const next1st = new Date(today.getFullYear(), today.getMonth()+1, 1);
         const sendDate = new Date(next1st); sendDate.setDate(sendDate.getDate() - (aiCfg.sendBeforeDays || 10));
@@ -64088,7 +64089,7 @@ function brOpenDryRun() {
             floorName: f.name || ordinalFloorName(f.number),
             unitId: u.suite || u.id,
             tenant: u.tenant || u.tenantName || '—',
-            email: u.tenantEmail || '',
+            email: (u.tenantEmail || u.email) || '',
             amount: amt,
             note: `Send today (${aiCfg.sendBeforeDays}d before 1st)`,
           });
@@ -64127,7 +64128,7 @@ function brOpenDryRun() {
               floorName: f.name || ordinalFloorName(f.number),
               unitId: u.suite || u.id,
               tenant: u.tenant || u.tenantName || '—',
-              email: u.tenantEmail || '',
+              email: (u.tenantEmail || u.email) || '',
               amount: lfPrev.totalFee,
               note: `${lfPrev.monthsOwed} month${lfPrev.monthsOwed === 1 ? '' : 's'} overdue · ${srcLabel}`,
             });
@@ -64342,7 +64343,7 @@ function brComputeAffected(scope) {
       // floor → unit. _source также на cfg (non-enumerable) для UI hint'а.
       const aiCfg = (typeof getEffectiveAutoInvoiceConfig === 'function')
         ? getEffectiveAutoInvoiceConfig(u) : null;
-      const aiEligible = !!(aiCfg && aiCfg.enabled && u.tenantEmail);
+      const aiEligible = !!(aiCfg && aiCfg.enabled && (u.tenantEmail || u.email));
       if (aiEligible) out.scope.ai++;
 
       // Today = sendDate? Та же формула, что в brOpenDryRun → значит
@@ -64356,7 +64357,7 @@ function brComputeAffected(scope) {
           const amt = +u.contractRent || +u.proformaRent || 0;
           out.ai.push({
             suite, floorName: fname, tenant,
-            hint: u.tenantEmail,
+            hint: (u.tenantEmail || u.email),
             amount: amt,
             uid: u.id, bId: b.id, fId: f.id,
           });
@@ -84271,7 +84272,7 @@ function _maybePrefetchInvoicesCache(u) {
 // Shares logic with _computeUnitMoney so the alert in the panel and
 // the floor-plan icon always agree.
 function _isUnitOverdue(u) {
-  if (!u || u.status !== 'occupied' || !u.tenant) return false;
+  if (!u || u.status !== 'occupied' || (!u.tenant && !u.company)) return false; // аудит M7: LLC-only (company без tenant) тоже бывает overdue
   const m = (typeof _computeUnitMoney === 'function') ? _computeUnitMoney(u) : null;
   return !!(m && m.unpaidMonths > 0);
 }
@@ -121696,7 +121697,7 @@ function _leaseCollectAll() {
               sentAt: iso,
               createdAt: iso,
               recipientName: (u.tenant || u.company || '').trim(),
-              recipientEmail: u.tenantEmail || '',
+              recipientEmail: (u.tenantEmail || u.email) || '',
               _manual: true,
               _manualKind: ev.kind,  // 'signed' | 'deposit' | 'signed+deposit'
             },
@@ -125800,7 +125801,7 @@ function buildAutoBillingRows() {
         // Auto-invoice fires today если: enabled + occupied + email + сегодня = sendDate.
         // Та же формула, что в brOpenDryRun → preview синхронен с настоящим cron'ом.
         let aiToday = false, aiTodayAmount = 0;
-        if (aiEnabled && u.status === 'occupied' && u.tenantEmail) {
+        if (aiEnabled && u.status === 'occupied' && (u.tenantEmail || u.email)) {
           const next1st = new Date(today.getFullYear(), today.getMonth()+1, 1);
           const sendDate = new Date(next1st);
           sendDate.setDate(sendDate.getDate() - (aiCfg.sendBeforeDays || 10));
@@ -125863,7 +125864,7 @@ function buildAutoBillingRows() {
           floorName: f.name || (typeof ordinalFloorName === 'function' ? ordinalFloorName(f.number) : ('Floor ' + (f.number||'?'))),
           floorOrder: +f.number || 0,
           tenant: u.tenant || u.tenantName || (u.status === 'occupied' ? '—' : ''),
-          email: u.tenantEmail || '',
+          email: (u.tenantEmail || u.email) || '',
           status: u.status || 'vacant',
           aiEnabled, aiSource, aiParams, aiCfg,
           lfEnabled, lfSend, lfSource, lfParams, lfCfg,
@@ -138286,7 +138287,7 @@ function _renderTenantDrawerPaymentTimeline(u, rent) {
           <span class="td-pay-${badge}">${days}d overdue</span>
         `;
         // Accumulate late fees from config.
-        const cfg = getLateFeeConfig?.();
+        const cfg = getLateFeeConfig?.(u); // аудит M13: передаём unit → учитываются per-unit/floor/building override
         if (cfg?.enabled && days > cfg.graceDays) {
           const fee = cfg.type === 'percent' ? (rent || 0) * (+cfg.amount / 100) : +cfg.amount;
           lateFeesSum += fee;
@@ -149869,7 +149870,7 @@ const PAY_CHIPS = [
   { id: 'stripe',   label: 'Paid via Stripe',   icon: '⚡',
     test: (u, ctx) => {
       const p = u.payments?.[ctx.currentYm];
-      return p && p.status === 'paid' && p.stripe;
+      return p && p.status === 'paid' && (p.stripe || p.paidVia === 'stripe' || p.paidMethod === 'stripe'); // аудит M16: ловим и MPM-stripe платежи (paidVia), не только legacy p.stripe
     } },
   { id: 'vacant',   label: 'Vacant',            icon: '🏚',
     test: (u) => u.status !== 'occupied' },
