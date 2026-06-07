@@ -95512,70 +95512,10 @@ function _moBuildBalanceBreakdown(u) {
     if (bucket === 'paid' && inv.ym) paidFeeYms.add(inv.ym);
   }
 
-  // Walk last 24 months — covers any meaningfully delinquent tenant.
-  // Newest unpaid first so the list reads naturally top-to-bottom.
-  for (let i = 0; i < 24; i++) {
-    const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
-    // ── Анти-фантом: без lease-start (startMs=null) НЕ начисляем rent
-    //    + late-fee items за 24 месяца назад. Иначе Move-Out модал для
-    //    свежедобавленного тенанта показывает $16,848 «outstanding»
-    //    из ничего. См. PAYMENTS_AND_FINANCE_RULES.md §«Lease-start gate».
-    if (!startMs || d.getTime() < startMs) break;
-    const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-    const p = u.payments?.[ym];
-    if (p?.status === 'paid' || p?.status === 'free') continue;
-
-    // Rent line for this month.
-    if (rent > 0) {
-      items.push({
-        kind: 'rent',
-        ym,
-        label: `${monthFmt(d)} — Rent`,
-        amount: rent,
-        date: ym + '-01',
-        checked: true,
-      });
-    }
-
-    // Late fee line — only if late-fee policy is enabled, this month is
-    // past grace, and the fee wasn't dismissed/paid via separate invoice.
-    if (lfCfg && lfCfg.enabled && rent > 0 && !dismissed[ym] && !paidFeeYms.has(ym)) {
-      const isLate = i > 0 || (i === 0 && today.getDate() > grace);
-      if (isLate) {
-        const taxes = +u.extraCharges?.[ym]?.taxes || 0;
-        const services = +u.extraCharges?.[ym]?.services || 0;
-        const base = (lfCfg.applyTo === 'total') ? rent + taxes + services : rent;
-        const fee = lfCfg.type === 'percent'
-          ? Math.round(base * lfCfg.amount) / 100
-          : +lfCfg.amount;
-        if (fee > 0) {
-          items.push({
-            kind: 'late_fee',
-            ym,
-            label: `${monthFmt(d)} — Late fee`,
-            amount: fee,
-            date: ym + '-01',
-            checked: true,
-          });
-        }
-        if (lfCfg.frequency === 'once') {
-          // One-time late-fee policy — only the most-recent unpaid month
-          // accrues a fee. Mark policy as exhausted by skipping subsequent
-          // months. We're walking newest-first so this is "after the first".
-          // Using a flag on the function-local closure.
-          break;     // safe because this means no older months get late fees;
-                     // their rent is still itemized in the next iterations of
-                     // the OUTER loop — but we already pushed rent for this month
-                     // above. To preserve rent items for older months, restructure.
-        }
-      }
-    }
-  }
-
-  // Above we used `break` for one-time fees which would skip remaining
-  // RENT lines too. Redo more carefully: separate rent walk from late-fee
-  // walk so they don't share control flow.
-  items.length = 0;
+  // аудит low [10]: удалён мёртвый первый проход — он строил items
+  // (rent+late_fee) за 24 мес, после чего items.length=0 всё затирал
+  // (старый комментарий «Redo more carefully»). Корректный раздельный
+  // проход (rent-walk + late-fee-walk) идёт ниже.
   const unpaidMonths = [];
   for (let i = 0; i < 24; i++) {
     const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
