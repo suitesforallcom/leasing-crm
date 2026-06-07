@@ -2949,9 +2949,10 @@
     .floor-group .stacking-tab span { display: none; }
     .floor-group .stacking-tab { padding: 6px 8px; }
   }
-  @media (max-width: 1180px) {
-    .building-pill .bp-addr { display: none; }
-  }
+  /* Night 2026-06-07 (#3): адрес у переключателя зданий ВСЕГДА виден (запрос
+     оператора). Раньше @media (max-width:1180px) прятал .bp-addr на узком окне
+     → «адрес то есть, то нет». .bp-addr усекается ellipsis (max-width:240px),
+     поэтому показ на узком окне layout не ломает. */
   @media (max-width: 1060px) {
     .top-nav-tab { padding: 6px 8px; }
     #topNavMap span, #topNavRent span { display: none; }
@@ -4344,7 +4345,10 @@
      Shows: tenant info, Stripe state, last invoice, quick actions. */
   .billing-view {
     display: none; flex-direction: column;
-    height: 100%; overflow-y: auto;
+    /* #5 (night 2026-06-07): scrollbar-gutter резервирует желоб полосы прокрутки,
+       чтобы её появление/исчезновение (смена высоты контента) НЕ сдвигало страницу
+       по горизонтали — оператор видел «то появляется, то исчезает колонка справа». */
+    height: 100%; overflow-y: auto; scrollbar-gutter: stable;
     background: var(--bg); padding: 14px;
   }
   .billing-view.active { display: flex; }
@@ -5092,7 +5096,7 @@
   /* ════ ZIP / billing.html design — ported into Billing view ════
      Scoped to .billing-view so the rest of the app keeps its
      existing chrome. Colors come from --zip-* tokens. */
-  .billing-view.bv-zip { background: var(--zip-paper); padding: 0; overflow: auto; }
+  .billing-view.bv-zip { background: var(--zip-paper); padding: 0; overflow: auto; scrollbar-gutter: stable; } /* #5: см. .billing-view выше */
   .billing-view.bv-zip .bv-pad { padding: 0 24px; }
   .bv-page-header {
     padding: 24px 24px 20px;
@@ -59430,6 +59434,7 @@ function buildingVisualHtml(b, ctx) {
 // DOM выпадающего меню (и не ломать клик оператора), когда содержимое не
 // изменилось. См. инцидент 2026-06-04 (клики по зданиям терялись).
 let _buildingSelectorSig = '';
+let _bpVisualSig = ''; // #2: сигнатура последней миниатюры пилюли — чтобы не пересоздавать .bp-visual узел зря (теряется клик оператора)
 function renderBuildingSelector() {
   // Stage 4 read-switch (DORMANT): пока не пришёл первый снимок из коллекции
   // buildings, state.buildings ещё пуст — показываем «loading…» вместо мигающего
@@ -59449,12 +59454,22 @@ function renderBuildingSelector() {
   // "has photo" and "icon only" states.
   const pill = document.querySelector('.building-pill');
   if (pill) {
-    const existing = pill.querySelector('.bp-visual');
-    if (existing) existing.remove();
-    if (b) {
-      const wrapper = document.createElement('span');
-      wrapper.innerHTML = buildingVisualHtml(b, 'topbar');
-      pill.insertBefore(wrapper.firstChild, pill.firstChild);
+    // #2 (node-replacement race, ср. Entry 42): пересоздаём .bp-visual ТОЛЬКО
+    // когда миниатюра реально изменилась. Иначе фоновый re-render (read-switch
+    // тики) заменяет узел под курсором во время клика оператора по пилюле →
+    // mousedown на старом узле, mouseup на новом → браузер не шлёт click → первый
+    // клик «теряется». Сравниваем исходную HTML-строку (не outerHTML — он
+    // нормализуется браузером и всегда «отличался» бы → защита не работала бы).
+    const desiredVisual = b ? buildingVisualHtml(b, 'topbar') : '';
+    if (_bpVisualSig !== desiredVisual || !pill.querySelector('.bp-visual')) {
+      _bpVisualSig = desiredVisual;
+      const existing = pill.querySelector('.bp-visual');
+      if (existing) existing.remove();
+      if (desiredVisual) {
+        const wrapper = document.createElement('span');
+        wrapper.innerHTML = desiredVisual;
+        if (wrapper.firstChild) pill.insertBefore(wrapper.firstChild, pill.firstChild);
+      }
     }
   }
   // Operator-preference 2026-05-10: NAME — primary line (что operator
@@ -65340,6 +65355,13 @@ function switchFloor(fid) {
   // этаж всегда показывается целиком. Сбрасываем ручной зум, чтобы renderBg.onload
   // пере-фитнул точно после асинхронной загрузки картинки (он уважает _userHasPanned).
   _userHasPanned = false;
+  // #1 (night 2026-06-07): сбрасываем трекер последнего bg-src, чтобы
+  // корректирующий пере-фит в renderBg.onload (gated на isNewSrc) ГАРАНТИРОВАННО
+  // сработал после асинхронной загрузки картинки нового этажа. Без этого, если
+  // _sfaLastBgSrc «залип» на src этого этажа, onload-рефит не запускался и
+  // первичный 0ms-фит (читавший подложку ПРОШЛОГО этажа) оставался кривым —
+  // 6-й этаж «открывался огромным». bgG не трогаем: его атомарно меняет onload.
+  try { window._sfaLastBgSrc = null; } catch {}
   setTimeout(() => {
     try {
       if (typeof sfaFitToContent === 'function') sfaFitToContent();
