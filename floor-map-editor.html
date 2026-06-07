@@ -34725,7 +34725,7 @@ function fbApplyRemote(doc) {
   // (callActivity, aircallUserNumbers). Tony заметил: «callActivity emails
   // в Firestore полные, а в localStorage пустые». Object-type ключи
   // bypass'ят coerce, как и settings.
-  const _OBJECT_TYPE_KEYS = new Set(['settings', 'dailyHistory', 'calendarEvents', 'callActivity', 'aircallUserNumbers']);
+  const _OBJECT_TYPE_KEYS = new Set(['settings', 'dailyHistory', 'calendarEvents', 'callActivity', 'aircallUserNumbers', 'investments']);
   // ПЕРСОНАЛЬНЫЕ настройки (per-user) — НЕ синкаются между пользователями.
   // settings приходят из remote ЦЕЛИКОМ (state.settings = remote.settings ниже),
   // что затёрло бы локальные визуальные/видовые предпочтения чужими (один
@@ -34737,7 +34737,7 @@ function fbApplyRemote(doc) {
       if (typeof state.settings[_k] !== 'undefined') _localPerUserSettings[_k] = state.settings[_k];
     }
   }
-  for (const k of ['buildings', 'tenants', 'leases', 'contracts', 'settings', 'bankConnections', 'gmailActivity', 'dailyHistory', 'calendarEvents', 'callActivity', 'aircallUserNumbers']) {
+  for (const k of ['buildings', 'tenants', 'leases', 'contracts', 'settings', 'bankConnections', 'gmailActivity', 'dailyHistory', 'calendarEvents', 'callActivity', 'aircallUserNumbers', 'investments']) {
     // КРИТИЧНО (strip): под buildings read-switch монолит НЕ источник истины
     // для зданий — они приходят из коллекции (listener + getDocs fallback).
     // Урезанный strip-монолит несёт buildings:[]; применение его затёрло бы
@@ -152149,6 +152149,11 @@ function fixFloorAssignments(silent = false) {
   const b = currentBuilding();
   if (!b) return 0;
 
+  // Анти-потеря (аудит H11/H12): снимок ДО любой мутации (включая dedupe
+  // в Step 0), чтобы операция была откатываемой — как все деструктивные
+  // функции в файле. Закрывает класс инцидента 2026-06-04 (Entry 44).
+  try { if (typeof _localBackupCreate === 'function') _localBackupCreate('pre-mutation', 'Before fixFloorAssignments'); } catch {}
+
   // Step 0: merge any duplicate floors with the same number first,
   // then collapse any duplicate suite IDs within each remaining floor
   const dupes = dedupeFloorsIn(b);
@@ -152191,7 +152196,9 @@ function fixFloorAssignments(silent = false) {
   if (misplaced.length) issues.push(`${misplaced.length} units on the wrong floor`);
   if (dupes) issues.push(`${dupes} duplicate floor${dupes===1?'':'s'}`);
   if (dupeUnits) issues.push(`${dupeUnits} duplicate unit${dupeUnits===1?'':'s'}`);
-  if (!silent && misplaced.length > 0 &&
+  // Аудит H11: подтверждение теперь спрашивается и для dedupe-only прогона
+  // (раньше при misplaced===0 confirm пропускался, хотя dupes уже меняли state).
+  if (!silent && (misplaced.length > 0 || dupes > 0 || dupeUnits > 0) &&
       !confirm(`Found ${issues.join(' and ')}. Fix them automatically (move units to floors matching their suite numbers, keep the record with real tenant data)?`)) return 0;
 
   pushHistory();
