@@ -54702,6 +54702,48 @@ function renderManagerBonus() {
   }
 }
 
+// [H3] Общий триггер-таймстамп «новой лизы» — единый критерий для топбар-pill
+// (_compute30DayActivity) и разбивки по менеджерам (_apComputeManagerBreakdown).
+// Возвращает момент, сделавший юнит «новой сделкой» (max signed / deposit-paid),
+// либо null если юнит НЕ новая лиза (back-fill легаси). ВАЖНО: окно НЕ
+// применяется — caller сам сравнивает результат со своим cutoff (pill = MTD;
+// breakdown = month/30d/YTD, окна шире). Relocation-guard — на стороне caller.
+function _leaseTriggerMs(u) {
+  if (!u) return null;
+  let signedMs = null;
+  if (u.signed) {
+    const t = new Date(u.signed + 'T00:00:00').getTime();
+    if (Number.isFinite(t)) signedMs = t;
+  }
+  const _depDateIso   = u.payments?.deposit?.date || '';
+  const _depPaidAtIso = u.stripe?.depositInvoice?.paidAt || '';
+  const _depMs1 = _depDateIso
+    ? new Date(_depDateIso + (_depDateIso.length === 10 ? 'T00:00:00' : '')).getTime() : 0;
+  const _depMs2 = _depPaidAtIso ? new Date(_depPaidAtIso).getTime() : 0;
+  const depositPaidAt = Number.isFinite(_depMs1) && _depMs1 > 0
+    ? _depMs1
+    : (Number.isFinite(_depMs2) && _depMs2 > 0 ? _depMs2 : null);
+  if (signedMs == null && depositPaidAt == null) return null;
+  const triggerMs = Math.max(signedMs || 0, depositPaidAt || 0);
+  const earliestTriggerMs = Math.min(
+    signedMs != null ? signedMs : Infinity,
+    depositPaidAt != null ? depositPaidAt : Infinity
+  );
+  // Back-fill sanity-gate (Suite 101 NUHS): оплаченные/free/waived месяцы ДО
+  // самой ранней триггер-даты → тенант давно живёт, свежие signed/deposit это
+  // исторический ввод, а не новый контракт.
+  const _td = new Date(earliestTriggerMs);
+  const triggerYm = `${_td.getFullYear()}-${String(_td.getMonth()+1).padStart(2,'0')}`;
+  const hasPaidMonthsBefore = Object.entries(u.payments || {}).some(([ym, p]) => {
+    if (ym === 'deposit') return false;
+    if (!p || !['paid', 'free', 'waived'].includes(p.status)) return false;
+    return ym < triggerYm;
+  });
+  if (hasPaidMonthsBefore) return null;
+  return triggerMs;
+}
+window._leaseTriggerMs = _leaseTriggerMs;
+
 function _compute30DayActivity() {
   // Window: с 1-го числа текущего календарного месяца до сейчас.
   // Запрос оператора 2026-05-11: «сделать чтобы новые договора только
@@ -55265,16 +55307,19 @@ function _apComputeManagerBreakdown() {
         // полный паритет атрибуции (signed/deposit вместо leaseStart) — отдельная
         // правка (нужен общий _leaseTriggerMs-хелпер), см. AUDIT-отчёт.
         if (typeof _isFinanceShadow === 'function' && _isFinanceShadow(u)) continue;
-        let startMs = null;
-        if (u.leaseStart) {
-          const t = new Date(u.leaseStart + 'T00:00:00').getTime();
-          if (Number.isFinite(t)) startMs = t;
-        }
-        if (startMs == null && u._tenantAddedAt) {
-          const t = new Date(u._tenantAddedAt).getTime();
-          if (Number.isFinite(t)) startMs = t;
-        }
+        // аудит H3 (full): анкор атрибуции = тот же триггер «новой лизы», что и у
+        // топбар-pill (signed/deposit + back-fill gate), через общий _leaseTriggerMs
+        // — вместо leaseStart||_tenantAddedAt. Убирает рассинхрон «N сверху /
+        // N-1 в разбивке» (relocation / back-fill кейсы вроде Suite 335 / 101).
+        const startMs = (typeof _leaseTriggerMs === 'function') ? _leaseTriggerMs(u) : null;
         if (startMs == null) continue;
+        // Relocation-target guard против самого широкого окна breakdown (YTD):
+        // тенант пришёл внутренним переводом, а не свежей подписью → не кредитуем.
+        const _rfEff = u.relocatedFrom?.effective;
+        if (_rfEff) {
+          const _rfMs = new Date(_rfEff + 'T00:00:00').getTime();
+          if (Number.isFinite(_rfMs) && _rfMs >= yearStart && _rfMs <= Date.now()) continue;
+        }
         // Skip future-dated leases (e.g. reservations with leaseStart
         // in May while today is still April). They aren't actually
         // generating rent yet — including them inflates the "this
