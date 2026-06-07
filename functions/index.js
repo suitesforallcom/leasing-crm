@@ -8861,3 +8861,60 @@ exports.getScalingReconcileHistory = onCall(
   }
 );
 
+// ═══════════════════════════════════════════════════════════════════════════
+// PropertyPulse read-only export (Option A — docs/integration-recon.md).
+// Сервис-к-сервису HTTPS endpoint: PropertyPulse тянет коворкинг-данные SFA
+// (buildings → floors → units: tenant/company, lease, payments, stripe-указатели)
+// для read-only зеркала у себя. SFA остаётся источником истины; назад ничего.
+//
+// ГАРАНТИИ:
+//  • ЧИСТОЕ ЧТЕНИЕ — переиспользует write-free readWorkspaceState() (strip-aware:
+//    дотягивает здания/платежи из коллекций через .get(), без единой записи).
+//    НИКОГДА не вызывает mutateWorkspaceState и ничего не пишет в Firestore.
+//  • Auth — общий секрет PP_EXPORT_API_KEY (constant-time сравнение), не аноним.
+//  • Версионируется schemaVersion (ppExport.js).
+//  • firestore.rules НЕ меняются: Admin SDK обходит правила, PropertyPulse сам
+//    в Firestore не ходит — только зовёт этот endpoint.
+//  • Существующие функции / stripeWebhook / платёжные пути не тронуты.
+// ═══════════════════════════════════════════════════════════════════════════
+const PP_EXPORT_API_KEY = defineSecret('PP_EXPORT_API_KEY');
+const _ppExport = require('./ppExport');
+
+exports.ppOfficeExport = onRequest(
+  { secrets: [PP_EXPORT_API_KEY], cors: false },
+  async (req, res) => {
+    try {
+      // Только чтение: GET/HEAD. Тело запроса не парсим.
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        res.set('Allow', 'GET, HEAD');
+        res.status(405).json({ error: 'method_not_allowed' });
+        return;
+      }
+      // Сервис-к-сервису auth: общий секрет, constant-time сравнение.
+      // Несконфигурированный секрет → expected '' → checkApiKey всегда deny.
+      let expected = '';
+      try { expected = PP_EXPORT_API_KEY.value() || ''; } catch (_) { expected = ''; }
+      const provided = _ppExport.extractApiKey(req);
+      if (!_ppExport.checkApiKey(provided, expected)) {
+        res.set('WWW-Authenticate', 'Bearer');
+        res.status(401).json({ error: 'unauthorized' });
+        return;
+      }
+      // ЧИСТОЕ ЧТЕНИЕ — strip-aware reader, без единой записи в Firestore.
+      const state = await readWorkspaceState();
+      const dto = _ppExport.ppBuildExportDTO(state, {
+        buildingId: (req.query && req.query.buildingId) ? String(req.query.buildingId) : null,
+        externalId: (req.query && req.query.externalId) ? String(req.query.externalId) : null,
+        generatedAt: new Date().toISOString(),
+        workspaceId: WORKSPACE_ID,
+      });
+      if (req.method === 'HEAD') { res.status(200).end(); return; }
+      res.set('Cache-Control', 'no-store');
+      res.status(200).json(dto);
+    } catch (e) {
+      logger.error('[ppOfficeExport]', (e && e.message) || e);
+      res.status(500).json({ error: 'internal_error' });
+    }
+  }
+);
+
