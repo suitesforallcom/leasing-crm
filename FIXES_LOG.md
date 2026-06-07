@@ -60,6 +60,19 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 54. Move-addendum DocuSign anchors must land on the CLIENT line, not PROVIDER (legal, 2026-06-07)
+
+- **Status:** active
+- **Bug it fixed:** The relocation **addendum** (`_aeBuildDefaultBody` + `_aeBuildEnvelopeHtml`) shipped a broken DocuSign signing layout (the master lease path `_docusignBuildEnvelopeBody` was already correct — only the addendum was affected). Two compounding latent bugs: (1) `_aeBuildDefaultBody` emits LITERAL `/signHere/` `/dateSigned/` in BOTH the PROVIDER and CLIENT blocks, but `_aeBuildEnvelopeHtml`'s injection loop only matched `By: ___` (underscores) inside a `\bTENANT\b` block — the default body uses PROVIDER/CLIENT (never TENANT) and markers (not underscores), so the loop was DEAD and the fallback bolted ONE orphan anchor onto the doc END. DocuSign matches `anchorString` on the FIRST occurrence → the tenant's Sign-Here tab landed on the **PROVIDER** line. (2) **Extra bug caught only by post-fix verification, not in the audit plan:** the re-substitute regex that restores the invisible anchor span after HTML-escaping used literal `"` quotes, but `escTxt` escapes `"` → `&quot;`, so it NEVER matched and the span rendered as **visible escaped text** in the signed PDF.
+- **Fix:** order-based, label-independent — convert literal markers to invisible span-anchors BEFORE escaping; only the LAST occurrence of each marker becomes a live anchor (tenant signs last = CLIENT block), earlier (PROVIDER) markers become a blank signature underline (provider signs offline, matching the master-agreement convention). Underscore-based injection kept ONLY as a zero-marker fallback. Re-substitute regex fixed to `&quot;`. Commit `d03c034`.
+- **Risk if regressed:** a tenant's Sign-Here / Date tab lands on the landlord's line, or `/signHere/` prints as visible garbage in a legal document. Signature placement is INVISIBLE (`font-size:1px; color:white`) so it cannot be eyeballed in the PDF — only a DocuSign sandbox test reveals where the tab lands.
+- **Gate:** `scripts/check-invariants.sh` — `Audit [9]` greps `_aeBuildEnvelopeHtml`'s re-substitute for the escaped `&quot;font-size:1px` form (guards against a "tidy-up" reverting it to literal `"`, which silently re-breaks the anchor).
+- **Verification:** standalone Node harness on the signature region asserted exactly ONE live `/signHere/` + ONE `/dateSigned/` span, both in the CLIENT block, zero visible markers, zero escaped-span garbage, PROVIDER lines blank — all 7/7 pass. **Operator MUST still send one DocuSign sandbox envelope before relying on it for a real tenant** (anchor placement unverifiable from code alone).
+- **PR / commits:** `d03c034` (shipped to main + prod 2026-06-07, deploy `d03c03494a5f`).
+- **Porting concern:** none — on main + prod.
+
+---
+
 ### 53. Multi-agent audit 2026-06-06 — 3 reintroduced regressions re-gated (2026-06-07)
 
 - **Status:** active

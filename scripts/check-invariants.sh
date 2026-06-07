@@ -222,6 +222,15 @@ else
 fi
 
 echo
+echo "Audit [9] — addendum DocuSign anchor re-substitute (escaped quotes):"
+if grep -A 70 "^function _aeBuildEnvelopeHtml(" "$HTML" | grep -qE '&quot;font-size:1px'; then
+  echo "  ✓ _aeBuildEnvelopeHtml (re-substitute matches the escaped &quot; span — anchor restored, not printed)"
+else
+  echo "  ✗ _aeBuildEnvelopeHtml — re-substitute regex must use &quot; (escTxt escapes the span's quotes); literal \" silently re-breaks: /signHere/ renders visible + tenant tab lands on wrong line — audit [9] (Entry 54)"
+  FAIL=1
+fi
+
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."
