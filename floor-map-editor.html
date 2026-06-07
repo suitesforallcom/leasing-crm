@@ -103688,11 +103688,9 @@ async function undoBankDismissal(txnId) {
   // Re-run matcher on this single txn by clearing dismissed state.
   // Cheapest path: call the runMatcher endpoint which re-evaluates
   // all dismissed too (it filters in/out based on matchState).
-  try {
-    const fn = stripeCallable('confirmBankMatch');
-    // Hack: not ideal — for now operator should pick a tenant via "Change".
-    alert('Use "Change" to manually re-match this transaction.');
-  } catch (err) {}
+  // TODO: настоящий «undo» требует серверного вызова (Stripe/CF) — пока
+  // оператор повторно сопоставляет транзакцию вручную через "Change".
+  alert('Use "Change" to manually re-match this transaction.');
 }
 
 function changeBankMatch(txnId) {
@@ -109142,7 +109140,26 @@ function _ldRecordHistoryEvent(type, payload = {}) {
   draft.history.push(evt);
   // Cap на 200 событий — на случай переговоров с десятками итераций.
   // Достаточно глубокая история, безопасно для localStorage.
-  if (draft.history.length > 200) draft.history = draft.history.slice(-200);
+  if (draft.history.length > 200) {
+    // ВАЖНО: перед обрезкой сохраняем «якоря» bodyRef-цепочек. Дедуп держит
+    // реальный bodyHtmlOverride только на ПЕРВОМ событии серии, а более новые
+    // хранят лишь bodyRef на него. slice(-200) режет с начала — якорь может
+    // быть удалён, а ссылающиеся на него (оставшиеся) события — нет: тогда
+    // _ldResolveSnapshotBody вернёт null и тело потеряется. Резолвим тела ПОКА
+    // все якоря на месте, затем переносим реальное тело внутрь окна.
+    const keep = draft.history.slice(-200);
+    const keepIds = new Set(keep.map(e => e && e.id));
+    for (const _k of keep) {
+      if (!_k || !_k.snapshot) continue;
+      // bodyRef указывает за пределы сохраняемого окна → якорь будет удалён.
+      if (_k.snapshot.bodyRef !== undefined && !keepIds.has(_k.snapshot.bodyRef)) {
+        const _resolved = _ldResolveSnapshotBody(draft, _k);  // ещё резолвится по полной истории
+        delete _k.snapshot.bodyRef;
+        _k.snapshot.bodyHtmlOverride = (_resolved === null || _resolved === undefined) ? null : _resolved;
+      }
+    }
+    draft.history = keep;
+  }
   draft.updatedAt = new Date().toISOString();
   try { saveState(); } catch {}
   return id;
@@ -116138,7 +116155,6 @@ function _liveLeaseFields(u, overrides) {
     // просто не встречаются в его HTML.
     execution_date:        todayLong,
     tenant_entity_type:    u?.tenantEntityType || 'Limited Liability Company',
-    suite:                 u?.id || '',
     suite_description:     u?.suiteDescription || '',
     rba_sqft:              (u?.sqft != null ? Number(u.sqft).toLocaleString('en-US') : ''),
     rba_sqft_raw:          +u?.sqft || 0,
@@ -122548,7 +122564,11 @@ async function leaseVoidEnvelope(envelopeId) {
 }
 async function leaseRefreshStatus(envelopeId) {
   try {
-    const r = await docusignFetch(`/envelopes/${envelopeId}`);
+    // FIXES_LOG Entry 20 — JWT mode → CF (dsGetEnvelope); OAuth fallback otherwise.
+    // CF возвращает тот же сырой объект конверта, что и docusignFetch (.status / .completedDateTime).
+    const r = _dsIsJwtMode()
+      ? await _dsCallCF('dsGetEnvelope', { envelopeId })
+      : await docusignFetch(`/envelopes/${envelopeId}`);
     const hit = _leaseFindEnvelope(envelopeId);
     if (!hit) return;
     const prev = hit.env.status;
@@ -140183,11 +140203,11 @@ function renderAgingPanel() {
       <td style="text-align:right; font-variant-numeric:tabular-nums; color:${r.buckets.d90plus > 0 ? 'var(--danger)' : 'inherit'};">${amt(r.buckets.d90plus)}</td>
       <td style="text-align:right; font-weight:700; font-variant-numeric:tabular-nums; color:var(--danger);">${amt(r.total)}</td>
       <td onclick="event.stopPropagation();" style="text-align:center; white-space: nowrap;">
-        <button class="ar-quick-btn" onclick="openManualPaymentForCurrentMonth('${esc(r.b.id)}','${esc(r.f.id)}','${esc(r.u.id)}')" data-tt="Mark paid (cash / check / bank transfer)" aria-label="Mark paid manually" style="color: var(--success); border-color: var(--success);">💰</button>
-        <button class="ar-quick-btn" onclick="agingQuickRemind('${esc(r.b.id)}','${esc(r.f.id)}','${esc(r.u.id)}', this)" data-tt="Send Stripe email reminder" aria-label="Send Stripe reminder">🔔</button>
-        <button class="ar-quick-btn" onclick="agingQuickPromise('${esc(r.b.id)}','${esc(r.f.id)}','${esc(r.u.id)}')" data-tt="Set promise-to-pay date" aria-label="Mark as promised">🤝</button>
-        <button class="ar-quick-btn" onclick="agingQuickEmail('${esc(r.b.id)}','${esc(r.f.id)}','${esc(r.u.id)}')" data-tt="Open email client with pre-filled message" aria-label="Email tenant">✉</button>
-        <button class="ar-quick-btn" onclick="agingQuickCall('${esc(r.b.id)}','${esc(r.f.id)}','${esc(r.u.id)}')" data-tt="Call tenant (tel: link)" aria-label="Call tenant">📞</button>
+        <button class="ar-quick-btn" onclick="openManualPaymentForCurrentMonth('${esc(r.b.id)}','${esc(r.f.id)}','${esc(r.u.id)}')" data-tt-portal="Mark paid (cash / check / bank transfer)" aria-label="Mark paid manually" style="color: var(--success); border-color: var(--success);">💰</button>
+        <button class="ar-quick-btn" onclick="agingQuickRemind('${esc(r.b.id)}','${esc(r.f.id)}','${esc(r.u.id)}', this)" data-tt-portal="Send Stripe email reminder" aria-label="Send Stripe reminder">🔔</button>
+        <button class="ar-quick-btn" onclick="agingQuickPromise('${esc(r.b.id)}','${esc(r.f.id)}','${esc(r.u.id)}')" data-tt-portal="Set promise-to-pay date" aria-label="Mark as promised">🤝</button>
+        <button class="ar-quick-btn" onclick="agingQuickEmail('${esc(r.b.id)}','${esc(r.f.id)}','${esc(r.u.id)}')" data-tt-portal="Open email client with pre-filled message" aria-label="Email tenant">✉</button>
+        <button class="ar-quick-btn" onclick="agingQuickCall('${esc(r.b.id)}','${esc(r.f.id)}','${esc(r.u.id)}')" data-tt-portal="Call tenant (tel: link)" aria-label="Call tenant">📞</button>
       </td>
     </tr>`;
   }).join('');
