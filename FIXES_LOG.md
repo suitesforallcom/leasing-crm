@@ -60,6 +60,21 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 53. Multi-agent audit 2026-06-06 — 3 reintroduced regressions re-gated (2026-06-07)
+
+- **Status:** active
+- **Bug it fixed:** A read-only multi-agent audit (workflow `woboipj8u`, 191 agents, 55 verified findings — full list in `AUDIT_REPORT_2026-06-06.md`) caught THREE previously-fixed invariants that had silently regressed:
+  1. **Entry-2 class** — `openBouncedCheckModal` used `if (startMs && … < startMs) break`, which short-circuits to a no-op when `startMs == null` → the bounced-check picker surfaced the **previous tenant's** paid months. Fixed to `!startMs ||` (commit `b3bec0f`, audit H14).
+  2. **LLC-only occupancy** — `_isUnitOverdue` gated on `!u.tenant` only, so company-only leases (`u.company`, no `u.tenant`) never lit up overdue on the floor map. Fixed to `(!u.tenant && !u.company)` (commit `d613109`, audit M7).
+  3. **Entry-44 class (data-safety)** — `fixFloorAssignments` deduped floors/units with no pre-mutation snapshot. Added `_localBackupCreate('pre-mutation')` at the top, before any mutation (commit `4e216f2`, audit H11/H12).
+- **Risk if regressed:** (1) corrupts a prior tenant's payment history + creates a phantom recovery case; (2) company-only tenants' overdue debt invisible on the map; (3) unrecoverable floor/unit data loss (the 2026-06-04 incident class).
+- **Gate:** `scripts/check-invariants.sh` — three new checks (`Audit H14 / M7 / H11/H12`) grep the three functions for the protective pattern; `firebase deploy --only hosting` aborts if any regresses.
+- **PR / commits:** audit fixes shipped across `afabc36..1237d91` (merged to main); regression gates added 2026-06-07.
+- **Test:** `bash scripts/check-invariants.sh` → all three print ✓.
+- **Porting concern:** none — on main + prod.
+
+---
+
 ### 52. NEVER delete blueprint Storage files + self-heal bg from cache (DATA LOSS, 2026-06-05)
 
 - **Status:** active
