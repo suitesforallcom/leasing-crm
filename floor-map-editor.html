@@ -3759,10 +3759,43 @@
     display: none; z-index: 6; cursor: nwse-resize; color: var(--zip-ink-4, #8a8275);
   }
   body.dash-customizing .dash-resize-handle { display: block; }
-  /* Кнопка Reset в топбаре видна только в customize-режиме. */
-  .hv-dash-reset { display: none !important; }
-  body.dash-customizing .hv-dash-reset { display: inline-flex !important; }
-  .hv-dash-gear.active { background: var(--zip-ink-1, #1a1a1a); color: #fff; }
+
+  /* Топбар-кнопка «Customize» (иконка-шестерёнка + подпись). В режиме
+     редактирования заливается тёмным (.active) и подпись меняется на «Done». */
+  .hv-dash-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    height: 34px; padding: 0 11px;
+    border: 1px solid var(--zip-line); border-radius: 5px;
+    background: var(--zip-surface); color: var(--zip-ink-3);
+    font-size: 12.5px; font-weight: 500; font-family: var(--zip-sans);
+    cursor: pointer; transition: background 120ms, color 120ms;
+  }
+  .hv-dash-btn:hover { background: var(--zip-paper-2); }
+  .hv-dash-btn.active { background: var(--zip-ink); color: var(--zip-paper); border-color: var(--zip-ink); }
+  .hv-dash-btn.active:hover { background: var(--zip-ink-2); }
+
+  /* Бар-подсказка режима редактирования — виден только в customize. Несёт
+     инструкцию + кнопки Reset / Done рядом с редактируемыми блоками. */
+  .hv-dash-hint { display: none; }
+  body.dash-customizing .hv-dash-hint {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    margin: 0 28px 4px; padding: 10px 16px;
+    background: var(--zip-paper-2, #efeae2);
+    border: 1px solid var(--zip-line, #d8d2c8); border-radius: 10px;
+  }
+  .hv-dash-hint-text { font-size: 12.5px; color: var(--zip-ink-3, #5a5446); flex: 1; min-width: 220px; line-height: 1.5; }
+  .hv-dash-hint-text b { color: var(--zip-ink-1, #1a1a1a); font-weight: 600; }
+  .hv-dash-hint-actions { display: inline-flex; gap: 8px; }
+  .hv-dash-hint-reset, .hv-dash-hint-done {
+    display: inline-flex; align-items: center; gap: 6px;
+    height: 32px; padding: 0 13px; border-radius: 6px;
+    font-size: 12.5px; font-weight: 500; font-family: var(--zip-sans); cursor: pointer;
+    transition: background 120ms, color 120ms;
+  }
+  .hv-dash-hint-reset { background: var(--zip-surface, #fff); border: 1px solid var(--zip-line, #d8d2c8); color: var(--zip-ink-3, #5a5446); }
+  .hv-dash-hint-reset:hover { color: var(--zip-overdue, #a8332a); border-color: var(--zip-overdue, #a8332a); }
+  .hv-dash-hint-done { background: var(--zip-ink, #1a1a1a); border: 1px solid var(--zip-ink, #1a1a1a); color: var(--zip-paper, #fff); }
+  .hv-dash-hint-done:hover { background: var(--zip-ink-2, #333); }
 
   .hv-section-head {
     display: flex; align-items: flex-end; gap: 16px;
@@ -17783,16 +17816,12 @@
         <div class="hv-topbar">
           <div class="hv-date" id="hvDate">—</div>
           <div class="hv-topbar-actions">
-            <button class="hv-bell-btn hv-dash-reset" onclick="resetDashboardLayout('home')" title="Reset layout to default">
-              <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M3 10a7 7 0 1 1 2 5"/><path d="M3 15v-4h4"/>
+            <button class="hv-dash-btn" id="hvDashGear" onclick="toggleDashboardCustomize('home')" title="Customize dashboard — drag, resize, hide blocks">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
               </svg>
-            </button>
-            <button class="hv-bell-btn hv-dash-gear" id="hvDashGear" onclick="toggleDashboardCustomize('home')" title="Customize dashboard — drag, resize, hide blocks">
-              <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="10" cy="10" r="2.6"/>
-                <path d="M10 2.5v2M10 15.5v2M17.5 10h-2M4.5 10h-2M15.3 4.7l-1.4 1.4M6.1 13.9l-1.4 1.4M15.3 15.3l-1.4-1.4M6.1 6.1L4.7 4.7"/>
-              </svg>
+              <span data-dash-label>Customize</span>
             </button>
             <button class="hv-bell-btn" onclick="_hvJumpToOverdue()" title="Overdue invoices">
               <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -17914,6 +17943,25 @@
             </div>
           </div>
         </section>
+
+        <!-- Customize-mode hint bar (Task 10) — виден только в режиме
+             редактирования (body.dash-customizing). Объясняет жесты +
+             даёт Reset / Done рядом с редактируемыми блоками. -->
+        <div class="hv-dash-hint" id="hvDashHint">
+          <div class="hv-dash-hint-text">
+            <b>Customize mode.</b> Drag a card to reorder it, drag its bottom-right corner to resize, or use the eye to hide it. Changes save automatically.
+          </div>
+          <div class="hv-dash-hint-actions">
+            <button class="hv-dash-hint-reset" onclick="resetDashboardLayout('home')">
+              <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10a7 7 0 1 1 2 5"/><path d="M3 15v-4h4"/></svg>
+              Reset layout
+            </button>
+            <button class="hv-dash-hint-done" onclick="toggleDashboardCustomize('home')">
+              <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10l4 4 8-8"/></svg>
+              Done
+            </button>
+          </div>
+        </div>
 
         <!-- Body — two columns: main on left, sidebar on right -->
         <div class="hv-body">
@@ -129717,7 +129765,12 @@ function toggleDashboardCustomize(viewId) {
   }
   const reg = DASHBOARDS[viewId];
   const gear = reg && reg.gearId ? document.getElementById(reg.gearId) : null;
-  if (gear) gear.classList.toggle('active', _dashCustomizing === viewId);
+  if (gear) {
+    const on = _dashCustomizing === viewId;
+    gear.classList.toggle('active', on);
+    const lbl = gear.querySelector('[data-dash-label]');
+    if (lbl) lbl.textContent = on ? 'Done' : 'Customize';
+  }
   applyDashboardLayout(viewId);   // переключит flex↔grid и навесит/снимет ручки
 }
 
