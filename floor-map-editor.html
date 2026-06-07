@@ -26429,6 +26429,56 @@ function loadPaymentsData() {
   return count;
 }
 
+// === ДИАГНОСТИКА ПРОИЗВОДИТЕЛЬНОСТИ (2026-06-06) ===
+// Ручной замерщик горячих путей. Вызывать в консоли: sfaPerfProbe()
+// Полностью read-only по ДАННЫМ: дёргает только идемпотентные функции
+// (loadPaymentsData — fill-only сид, FIXES_LOG Entry 35; renderAll — обычная
+// перерисовка). Денежные формулы и схему НЕ трогает. Печатает медианы (мс),
+// чтобы увидеть, где именно тратится время: проход по платежам vs сид vs рендер.
+function sfaPerfProbe(runs) {
+  runs = Math.max(1, runs || 3);
+  const now = () => performance.now();
+  const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+  const r1 = (v) => +Number(v).toFixed(1);
+
+  // 1) Инвентарь: сколько всего юнитов и платёжных записей в памяти.
+  let units = 0, unitsWithPay = 0, payRecords = 0;
+  for (const b of (state.buildings || [])) for (const f of (b.floors || [])) for (const u of (f.units || [])) {
+    units++;
+    const n = u.payments ? Object.keys(u.payments).length : 0;
+    if (n) { unitsWithPay++; payRecords += n; }
+  }
+
+  // 2) Полный проход по ВСЕМ платежам (имитация веса агрегаций overdue/aging/collections).
+  const scan = [];
+  for (let i = 0; i < runs; i++) {
+    const t = now(); let acc = 0;
+    for (const b of (state.buildings || [])) for (const f of (b.floors || [])) for (const u of (f.units || [])) {
+      const p = u.payments || {};
+      for (const ym in p) { const rec = p[ym]; if (rec && rec.status) acc++; }
+    }
+    scan.push(now() - t);
+  }
+
+  // 3) loadPaymentsData — fill-only сид (идемпотентен, FIXES_LOG Entry 35).
+  const lpd = [];
+  for (let i = 0; i < runs; i++) { const t = now(); loadPaymentsData(); lpd.push(now() - t); }
+
+  // 4) renderAll — полная перерисовка карты + панелей.
+  const ra = [];
+  for (let i = 0; i < runs; i++) { const t = now(); try { renderAll(); } catch (e) {} ra.push(now() - t); }
+
+  const out = {
+    buildings: (state.buildings || []).length, units, unitsWithPay, payRecords,
+    'scanAllPayments_ms': r1(med(scan)),
+    'loadPaymentsData_ms': r1(med(lpd)),
+    'renderAll_ms': r1(med(ra)),
+    runs,
+  };
+  try { console.table(out); } catch (e) { console.log(out); }
+  return out;
+}
+
 function loadFloor3SampleData() {
   const b = currentBuilding();
   if (!b) return;
