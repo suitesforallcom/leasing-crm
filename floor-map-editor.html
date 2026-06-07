@@ -27423,8 +27423,16 @@ function loadState() {
               if (!u || !u.payments) continue;
               const startStr = u.leaseStart || u.signed || '';
               const endStr   = u.until || u.leaseEnd || '';
-              const startYm = startStr ? String(startStr).slice(0, 7) : '';
-              const endYm   = endStr   ? String(endStr).slice(0, 7)   : '';
+              // Анти-потеря (аудит H1, 2026-06-07): даты могли быть сохранены
+              // в формате 'Mon DD, YYYY' (seed FLOORS_DATA). Тогда slice(0,7)
+              // даёт 'Apr 13,' — не YYYY-MM, и из-за ASCII-сравнения ('2'<'A')
+              // ВСЕ YM-платежи попадали в dropped → стиралась вся история.
+              // Считаем границу валидной ТОЛЬКО если она ISO (YYYY-MM...).
+              const isIsoYm = (s) => /^\d{4}-\d{2}/.test(String(s));
+              const startYm = (startStr && isIsoYm(startStr)) ? String(startStr).slice(0, 7) : '';
+              const endYm   = (endStr   && isIsoYm(endStr))   ? String(endStr).slice(0, 7)   : '';
+              // Дата есть, но не ISO → окно неизвестно, на этом юните не чистим.
+              if ((startStr && !startYm) || (endStr && !endYm)) continue;
               if (!startYm && !endYm) continue;
               scannedUnits++;
               const dropped = [];
