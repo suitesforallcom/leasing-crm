@@ -61939,6 +61939,8 @@ function switchBuilding(bid) {
     try { if (typeof renderHomeForecast === 'function') renderHomeForecast(); } catch {}
     try { if (typeof renderHomeInvest   === 'function') renderHomeInvest();   } catch {}
   }
+  // Entry 57: подтянуть слайдеры подложки под этаж нового здания.
+  try { _syncBgPanel(); } catch {}
   document.getElementById('buildingDropdown').classList.remove('open');
 }
 
@@ -65476,6 +65478,8 @@ function switchFloor(fid) {
       else zoomReset();
     } catch {}
   }, 0);
+  // Entry 57: подтянуть слайдеры подложки под новый этаж (иначе панель залипает).
+  try { _syncBgPanel(); } catch {}
 }
 
 function ordinalFloorName(n) {
@@ -65553,7 +65557,8 @@ function dedupeFloorsIn(b) {
       survivor.units.push(u);
       keepIds.add(u.id);
     }
-    if (!survivor.bg?.src && doomed.bg?.src) survivor.bg = doomed.bg;
+    // Entry 57: deep-clone (а не алиас) — чтобы survivor и doomed никогда не делили один bg-объект.
+    if (!survivor.bg?.src && doomed.bg?.src) survivor.bg = { ...doomed.bg };
     b.floors = b.floors.filter(x => x !== doomed);
     byNumber.set(n, survivor);
     merged++;
@@ -99446,6 +99451,8 @@ async function handleFile(file) {
     const priorPath = f.bg && f.bg.storagePath;
     f.bg = { ...f.bg, src: dataUrl, opacity: 0.7, scale: 1, x: 0, y: 0, storagePath: null };
     state.settings.showBg = true;
+    // Entry 57: новый blueprint сбросил bg к дефолтам — синхронизируем слайдеры.
+    try { _syncBgPanel(); } catch {}
 
     // === DXF auto-calibration apply ===
     // Если только что отрендеренный фон пришёл из DXF — renderDxfToDataUrl()
@@ -101026,6 +101033,31 @@ function applyTextBrightness() {
   });
 });
 
+// FIXES_LOG Entry 57: ресинк слайдеров подложки из АКТИВНОГО этажа.
+// Панель Background Settings была write-only — слайдеры/лейблы (#bgOpacity,
+// #bgScale, #bgX, #bgY) писались только в обработчике выше и НИКОГДА не
+// подгружались обратно при switchFloor/switchBuilding. Оператор видел
+// «настройки перетекают между зданиями» (на самом деле данные per-floor
+// изолированы — мигало только UI), а первый сдвиг слайдера на новом этаже
+// писал устаревшее показанное значение в его bg = реальная порча. НЕ трогаем
+// bg.src/Storage (инварианты Entry 51/52).
+function _syncBgPanel() {
+  const f = (typeof currentFloor === 'function') ? currentFloor() : null;
+  const bg = (f && f.bg) ? f.bg : { opacity: 0.7, scale: 1, x: 0, y: 0 };
+  const op = Math.round((typeof bg.opacity === 'number' ? bg.opacity : 0.7) * 100);
+  const sc = Math.round((typeof bg.scale === 'number' ? bg.scale : 1) * 100);
+  const x  = (typeof bg.x === 'number') ? bg.x : 0;
+  const y  = (typeof bg.y === 'number') ? bg.y : 0;
+  const set = (id, val, spanId, txt) => {
+    const inp = document.getElementById(id); if (inp) inp.value = val;
+    if (spanId) { const s = document.getElementById(spanId); if (s) s.textContent = txt; }
+  };
+  set('bgOpacity', op, 'bgOpacityVal', op + '%');
+  set('bgScale',   sc, 'bgScaleVal',   sc + '%');
+  set('bgX',        x, 'bgXVal',       String(x));
+  set('bgY',        y, 'bgYVal',       String(y));
+}
+
 // Контролы яркости/размера юнита в Layers-панели: связка «range + number».
 // number допускает ввод вне диапазона слайдера (точные/расширенные значения —
 // по просьбе оператора); слайдер лишь отображает кламп своего диапазона.
@@ -101510,6 +101542,8 @@ document.querySelectorAll('.sidebar-tab').forEach(t => {
     document.getElementById('sbDashboard').style.display = tab === 'dashboard' ? 'block' : 'none';
     document.getElementById('sbUnit').style.display = tab === 'unit' ? 'block' : 'none';
     document.getElementById('sbLayers').style.display = tab === 'layers' ? 'block' : 'none';
+    // Entry 57: при открытии Layers-таба подтянуть слайдеры подложки под активный этаж.
+    if (tab === 'layers' && typeof _syncBgPanel === 'function') { try { _syncBgPanel(); } catch {} }
     const sbAi = document.getElementById('sbAi');
     if (sbAi) {
       sbAi.style.display = tab === 'ai' ? 'block' : 'none';

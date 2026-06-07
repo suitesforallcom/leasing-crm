@@ -60,6 +60,22 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 57. Background-settings sliders must re-sync from the active floor (UI/data-integrity, 2026-06-07)
+
+- **Status:** active
+- **Branch / commit:** `main` @ `<this commit>`
+- **Area:** UI / floor-plan background panel / per-floor data integrity
+- **Files:** floor-map-editor.html
+- **Functions:** `_syncBgPanel` (new), `switchFloor`, `switchBuilding`, sidebar-tab handler, blueprint `handleFile`, `dedupeFloorsIn`
+- **Bug it fixed:** Operator perceived background settings (Opacity / Scale / Offset X / Offset Y) "crossing between buildings." **Storage is genuinely per-floor and isolated** (every floor owns a fresh `bg` literal; no shared refs; no workspace-global opacity/offset — only `state.settings.showBg` boolean). The real bug: the Background-Settings panel was **WRITE-ONLY** — sliders `#bgOpacity/#bgScale/#bgX/#bgY` + spans `#bgOpacityVal/#bgScaleVal/#bgXVal/#bgYVal` were written only in the input handler (~101016) and **never repopulated from the active floor** on `switchFloor`/`switchBuilding`. After a switch the knobs stayed frozen on the previous floor's values → looked cross-building. **And it caused REAL corruption on interaction:** dragging a slider on a freshly-switched floor wrote the *stale displayed value* into that floor's `bg` and `saveState()`-persisted it to Firestore — overwriting the new floor's real setting with a neighbor's value.
+- **Fix:** added `_syncBgPanel()` (reads `currentFloor().bg` → sets the four sliders + value spans) and call it on `switchFloor`, `switchBuilding`, blueprint upload reset (`handleFile`), and when the Layers sidebar tab opens. Also hardened the only `bg`-reference reassignment — `dedupeFloorsIn` `survivor.bg = doomed.bg` → `survivor.bg = { ...doomed.bg }` (deep-clone, no live alias). No data-model change, no migration, **`bg.src`/Storage/`renderBg` untouched** (Entry 51/52 invariants preserved).
+- **Invariant — DO NOT BREAK:** (1) every read/write of a slider's `.value` must reflect the CURRENT floor — any new floor/building/panel entry point must call `_syncBgPanel()`. (2) The input handler writes to `currentFloor().bg` only — never make a bg setting workspace-global (it must stay per-floor). (3) No two live floors may share a `bg` object (clone on any copy path). (4) Never touch `bg.src`/`storagePath`/`finalizeBlueprintUpload`/`renderBg`'s atomic-swap (Entry 51/52).
+- **Verification:** set Opacity=30% on Building A floor 1, switch to Building B floor 1 → slider now reads B's own value (not 30%); switch back → A still 30%. Live isolation probe (workflow `wavijvmkz`) dumps every floor's `{bld,floor,opacity,x,y}` + shared-ref detection — expect "ISOLATION OK".
+- **Regression test:** none — manual UI / live console.
+- **Related PR / issue:** workflow `wavijvmkz` (2026-06-07). Pre-existing already-corrupted floors (from past switch-then-drag) cannot be auto-recovered — the probe surfaces anomalies for manual review.
+
+---
+
 ### 56. Building-address pill must not flex-collapse on crowded views (UI, 2026-06-07)
 
 - **Status:** active
