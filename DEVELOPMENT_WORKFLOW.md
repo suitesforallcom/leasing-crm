@@ -239,3 +239,26 @@ Per CLAUDE.md "Tony Approval Required":
 - Large refactors
 
 If unsure, ASK. Better one extra Q than one accidental finance bug.
+
+## Alternative Mode (local-only maintenance — currently INACTIVE)
+
+> Moved here from CLAUDE.md 2026-06-06. Active mode is **auto-deploy + auto-push**
+> (see CLAUDE.md § "Project Mode"). The block below applies ONLY if Tony switches back
+> to local-only maintenance mode (was briefly active 2026-05-11 between docs-creation
+> and re-enable).
+
+If Tony switches back to local-only maintenance mode, use these rules instead of the
+auto-deploy ones above:
+
+- No `firebase deploy` (suspended).
+- No `git push` (suspended).
+- All commits stay local; report to Tony but don't ship.
+- No external service calls beyond passive read-only inspection.
+- Tony manually deploys / pushes when he wants something live.
+
+**Switch back to local-only via:** Tony says «switch to local-only mode» → Claude updates
+CLAUDE.md's «Project Mode (active)» section accordingly + logs the switch in
+DECISION_LOG.md + SESSION_LOG.md.
+
+**Switch to auto-deploy via:** Tony says «switch to auto-deploy» (or equivalent) → reverse
+the above.
