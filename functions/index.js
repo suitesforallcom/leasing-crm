@@ -8905,6 +8905,7 @@ exports.ppOfficeExport = onRequest(
       const dto = _ppExport.ppBuildExportDTO(state, {
         buildingId: (req.query && req.query.buildingId) ? String(req.query.buildingId) : null,
         externalId: (req.query && req.query.externalId) ? String(req.query.externalId) : null,
+        excelId: (req.query && req.query.excelId) ? String(req.query.excelId) : null,
         generatedAt: new Date().toISOString(),
         workspaceId: WORKSPACE_ID,
       });

@@ -20766,6 +20766,7 @@
         </div>
         <div class="field"><label>Building Name</label><input type="text" id="bmName" placeholder="SuitesForAll Main Tower" oninput="_bmAutofillCode()"></div>
         <div class="field"><label>Building Code</label><input type="text" id="bmCode" maxlength="3" placeholder="auto — e.g. TPA" autocomplete="off" style="text-transform:uppercase;"><div class="addr-ac-hint">3-letter prefix for invoice numbers (e.g. <b>TPA</b>-R-243-…). Auto-filled from the city if left blank.</div></div>
+        <div class="field"><label>Excel ID</label><input type="text" id="bmExcelId" placeholder="e.g. 44 or 102.1" autocomplete="off"><div class="addr-ac-hint">Matches the Excel ID in PropertyPulse for cross-system linking. Leave blank if unknown.</div></div>
       </div>
 
       <!-- Floors with gross + rentable sqft -->
@@ -62333,6 +62334,7 @@ function openAddBuilding() {
   document.getElementById('bmAddr').value = '';
   document.getElementById('bmName').value = '';
   document.getElementById('bmCode').value = '';
+  document.getElementById('bmExcelId').value = '';
   document.getElementById('bmNotes').value = '';
   document.getElementById('bmMgrName').value = '';
   document.getElementById('bmMgrEmail').value = '';
@@ -62436,6 +62438,7 @@ function openEditBuilding(bid) {
   document.getElementById('bmAddr').value = b.address || '';
   document.getElementById('bmName').value = b.name || '';
   document.getElementById('bmCode').value = b.code || _autoBuildingCode(b) || '';
+  document.getElementById('bmExcelId').value = b.excelId || '';
   document.getElementById('bmNotes').value = b.notes || '';
   document.getElementById('bmMgrName').value  = bmDraftManager.name  || '';
   document.getElementById('bmMgrEmail').value = bmDraftManager.email || '';
@@ -64959,6 +64962,9 @@ function saveBuildingModal() {
   const addr = document.getElementById('bmAddr').value.trim();
   const name = document.getElementById('bmName').value.trim();
   const code = (document.getElementById('bmCode').value || '').trim().toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3);
+  // Excel ID — исторический id объекта из PropertyPulse (примеры: 44, 72.1, 102.1).
+  // Свободная строка (НЕ как code: без upper/3-char среза); пустая = не задан. Аддитивно.
+  const excelId = (document.getElementById('bmExcelId')?.value || '').trim();
   const notes = document.getElementById('bmNotes').value;
   const icon  = BUILDING_ICONS[bmDraftIcon] ? bmDraftIcon : 'tower';
 
@@ -65033,6 +65039,7 @@ function saveBuildingModal() {
     b.address = addr;
     b.name = name || addr;
     b.code = code || _autoBuildingCode({ address: addr, name: name || addr }); // #4: код для префикса номера счёта
+    b.excelId = excelId; // PropertyPulse crosswalk id (аддитивно; пустая строка = очищено)
     b.notes = notes;
     b.icon = icon;
     b.photo = bmDraftPhoto || null;
@@ -65278,6 +65285,7 @@ function saveBuildingModal() {
   const b = {
     id, address: addr, name: name || addr,
     code: code || _autoBuildingCode({ address: addr, name: name || addr }), // #4: код для префикса номера счёта
+    excelId, // PropertyPulse crosswalk id (по умолчанию пустая строка)
     notes, icon,
     photo: bmDraftPhoto || null,
     manager:     Object.assign({}, bmDraftManager),

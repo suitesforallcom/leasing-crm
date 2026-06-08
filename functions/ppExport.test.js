@@ -13,7 +13,7 @@ const seed = {
   buildings: [
     {
       id: 'b1717862400000',
-      externalId: 'PP-PARK-01',         // crosswalk key
+      excelId: '102.1',                 // PropertyPulse Excel ID (drives externalId)
       code: 'PPK',
       name: 'Pinellas Park Main',
       address: '6698 68th Ave N, Pinellas Park, FL 33781',
@@ -58,7 +58,7 @@ const seed = {
       ],
     },
     {
-      id: 'b2', externalId: null, code: 'TAM', name: 'New Tampa', address: '18205 Crane Nest Dr, Tampa, FL 33645',
+      id: 'b2', externalId: 'LEGACY-NT-1', code: 'TAM', name: 'New Tampa', address: '18205 Crane Nest Dr, Tampa, FL 33645',
       floors: [{ id: 'b2-f1', number: 1, name: '1st', units: [] }],
     },
   ],
@@ -90,7 +90,8 @@ ok('buildingCount = 2', dto.buildingCount === 2);
 ok('input NOT mutated', JSON.stringify(seed) === snapshot);
 
 const b = dto.buildings[0];
-ok('building externalId exported', b.externalId === 'PP-PARK-01');
+ok('building excelId exported', b.excelId === '102.1');
+ok('externalId mirrors excelId', b.externalId === '102.1');
 ok('building code exported', b.code === 'PPK');
 ok('building unitCount computed', b.unitCount === 2);
 ok('building floorCount computed', b.floorCount === 1);
@@ -129,8 +130,16 @@ const byId = pp.ppBuildExportDTO(seed, { buildingId: 'b2' });
 ok('filter by buildingId → 1', byId.buildingCount === 1 && byId.buildings[0].id === 'b2');
 ok('filter echoes back', byId.filter && byId.filter.buildingId === 'b2');
 
-const byExt = pp.ppBuildExportDTO(seed, { externalId: 'PP-PARK-01' });
-ok('filter by externalId → 1', byExt.buildingCount === 1 && byExt.buildings[0].id === 'b1717862400000');
+const byExt = pp.ppBuildExportDTO(seed, { externalId: '102.1' });   // externalId filter matches excelId
+ok('filter by externalId(=excelId) → 1', byExt.buildingCount === 1 && byExt.buildings[0].id === 'b1717862400000');
+
+const byExcel = pp.ppBuildExportDTO(seed, { excelId: '102.1' });    // dedicated excelId filter
+ok('filter by excelId → 1', byExcel.buildingCount === 1 && byExcel.buildings[0].id === 'b1717862400000');
+ok('byExcel filter echoes', byExcel.filter && byExcel.filter.excelId === '102.1');
+
+const byLegacy = pp.ppBuildExportDTO(seed, { externalId: 'LEGACY-NT-1' });  // legacy externalId still matches
+ok('filter by legacy externalId → b2', byLegacy.buildingCount === 1 && byLegacy.buildings[0].id === 'b2');
+ok('b2 excelId null, externalId legacy', byLegacy.buildings[0].excelId === null && byLegacy.buildings[0].externalId === 'LEGACY-NT-1');
 
 const byExtMiss = pp.ppBuildExportDTO(seed, { externalId: 'does-not-exist' });
 ok('filter externalId miss → 0', byExtMiss.buildingCount === 0);

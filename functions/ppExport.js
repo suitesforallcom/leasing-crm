@@ -154,9 +154,15 @@ function curateBuilding(b) {
   const mgr = (b.manager && typeof b.manager === 'object')
     ? { name: str(b.manager.name), email: str(b.manager.email), phone: str(b.manager.phone) }
     : null;
+  // Excel ID — кросс-системный id из PropertyPulse (поле building.excelId).
+  // externalId сохраняем как обобщённый crosswalk-ключ = excelId (с фолбэком на
+  // устаревшее поле b.externalId, если кто-то его проставлял). Пустое → null.
+  const excelId = (b.excelId == null || b.excelId === '') ? null : str(b.excelId);
+  const legacyExt = (b.externalId == null || b.externalId === '') ? null : str(b.externalId);
   return {
     id: str(b.id),
-    externalId: (b.externalId == null ? null : str(b.externalId)),  // crosswalk-ключ с PropertyPulse
+    excelId: excelId,                                   // явное поле Excel ID
+    externalId: (excelId != null ? excelId : legacyExt), // crosswalk-ключ (= excelId)
     code: str(b.code),
     name: str(b.name),
     address: str(b.address),
@@ -178,12 +184,20 @@ function ppBuildExportDTO(state, opts) {
   const all = (state && Array.isArray(state.buildings)) ? state.buildings : [];
   let picked = all;
   let filter = null;
+  const matchXid = (b, want) =>
+    (b.excelId != null && b.excelId !== '' && String(b.excelId) === want) ||
+    (b.externalId != null && b.externalId !== '' && String(b.externalId) === want);
   if (opts.buildingId) {
     picked = all.filter((b) => b && str(b.id) === String(opts.buildingId));
     filter = { buildingId: String(opts.buildingId) };
   } else if (opts.externalId) {
-    picked = all.filter((b) => b && b.externalId != null && String(b.externalId) === String(opts.externalId));
-    filter = { externalId: String(opts.externalId) };
+    const want = String(opts.externalId);
+    picked = all.filter((b) => b && matchXid(b, want));   // matches building.excelId (or legacy externalId)
+    filter = { externalId: want };
+  } else if (opts.excelId) {
+    const want = String(opts.excelId);
+    picked = all.filter((b) => b && b.excelId != null && b.excelId !== '' && String(b.excelId) === want);
+    filter = { excelId: want };
   }
   const buildings = picked.map(curateBuilding).filter(Boolean);
   return {
