@@ -9392,7 +9392,7 @@
   .dash-hero .revenue-bar > #revBarLoss   { background: transparent !important; }
 
   .dash-mini-stats {
-    display: grid; grid-template-columns: 1fr 1fr 1fr;
+    display: grid; grid-template-columns: repeat(2, 1fr);
     gap: 10px;
     padding-top: 10px;
     border-top: 1px solid #E8E5DF;
@@ -20240,6 +20240,11 @@
               <div class="dash-mini-label">Rentable</div>
               <div class="dash-mini-val"><span id="occSqft">0</span> / <span id="totSqft">0</span></div>
               <div class="dash-mini-sub">ft² · <span id="occPctText">0% occupied</span></div>
+            </div>
+            <div class="dash-mini">
+              <div class="dash-mini-label">Total floor area</div>
+              <div class="dash-mini-val"><span id="floorGrossSqft">0</span></div>
+              <div class="dash-mini-sub">ft² · gross</div>
             </div>
           </div>
         </div>
@@ -60078,6 +60083,21 @@ function _stOutlineAreaSqft(f) {
   return px > 0 ? Math.round(px / (sc.pxPerFt * sc.pxPerFt)) : null;
 }
 
+// Полная (gross) площадь этажа — ТОЛЬКО для отображения (карточка/баннер этажа).
+// Приоритет: вручную введённый f.grossSqft → площадь контура этажа
+// (_stOutlineAreaSqft) → сумма sqft всех юнитов этажа. В денежные расчёты
+// (RENTABLE / $/ft² / оценку) НЕ входит — это чистый read-only показатель.
+function _floorGrossSqft(f) {
+  if (!f) return 0;
+  const g = +f.grossSqft;
+  if (isFinite(g) && g > 0) return g;
+  const o = _stOutlineAreaSqft(f);
+  if (isFinite(o) && o > 0) return o;
+  let s = 0;
+  for (const u of (f.units || [])) { const v = +u.sqft; if (isFinite(v)) s += v; }
+  return s;
+}
+
 function _renderStackingChart(b) {
   const host = document.getElementById('svChart'); if (!host) return;
   const s = _stState();
@@ -99031,6 +99051,10 @@ function updateStats() {
   setText('occSqft', s.occSqft.toLocaleString());
   setText('totSqft', denom.toLocaleString());
   setText('occPctText', occPct + '% occupied');
+  // Полная (gross) площадь этажа — read-only показатель рядом с Rentable.
+  // Нет выбранного этажа → «—». В денежные расчёты не входит.
+  const floorGross = f ? _floorGrossSqft(f) : 0;
+  setText('floorGrossSqft', (f && floorGross > 0) ? Math.round(floorGross).toLocaleString() : '—');
 
   // Hero mini-stats — Occupied / Vacant percentages computed against
   // total office units on this floor, so the trio always sums to 100%.
