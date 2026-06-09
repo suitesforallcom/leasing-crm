@@ -33618,6 +33618,18 @@ window._mirrorBuildingsResetCache = _mirrorBuildingsResetCache;
 // реально изменившиеся здания (через shape-hash compare).
 function _mirrorBuildingsToV2() {
   if (!_mirrorBuildingsReady()) return { written: 0, skipped: 0, error: 'not-ready' };
+  // FIXES_LOG — follower-вкладки НЕ зеркалят здания (симметрично fbPushNow,
+  // Entry 16, проверка _sfaTabSync.isLeader). Без этого устаревшая follower-
+  // вкладка перезаписывает здание из своей старой памяти и затирает правки/
+  // планы/подложки лидера — это вызвало data-loss инцидент 2026-06-08
+  // (New Tampa этажи 4-6, потеря ~93 юнитов + подложек). Зеркалим ТОЛЬКО из
+  // leader-вкладки. typeof-guard: если tab-sync ещё не готов — считаем лидером.
+  try {
+    if (typeof _sfaTabSync !== 'undefined' && _sfaTabSync
+        && typeof _sfaTabSync.isLeader === 'function' && !_sfaTabSync.isLeader()) {
+      return { written: 0, skipped: 0, follower: true };
+    }
+  } catch (e) {}
   const { sdk, db } = fbSync;
   let written = 0, skipped = 0;
   for (const b of (state.buildings || [])) {
