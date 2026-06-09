@@ -334,7 +334,23 @@ service cloud.firestore {
       // правил, поэтому CF-driven мутации продолжают работать.
       match /buildings/{bid} {
         allow read:  if isMember(wid);
-        allow write: if isEditor(wid);
+        // MONOTONIC WRITE GUARD (Layer 2, FIXES_LOG 65) — permanent fix for the
+        // 2026-06-08 multi-tab clobber. A building's _savedRev may only move
+        // FORWARD. A stale tab (whose version is behind, or old code with no
+        // _savedRev) is REJECTED by the database — regardless of tab count or
+        // code version. New doc → allow. Doc not yet versioned → allow (bootstrap;
+        // first versioned write locks it into monotonic mode). Versioned doc →
+        // incoming must carry _savedRev >= the existing one. CF writes use the
+        // Admin SDK (bypass rules) and are unaffected.
+        // create/update guarded by monotonic _savedRev; delete is an explicit
+        // user action (deleteBuilding → _mirrorBuildingDeleteV2), not the
+        // every-save mirror clobber vector, so it only needs isEditor (a delete
+        // has no incoming doc / _savedRev to compare).
+        allow create, update: if isEditor(wid) && (
+                       resource == null
+                       || request.resource.data.get('_savedRev', 0) >= resource.data.get('_savedRev', 0)
+                     );
+        allow delete: if isEditor(wid);
       }
 
       // Reconcile monitoring snapshots (SCALING Phase 1+2 monitoring).
