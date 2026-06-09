@@ -33608,6 +33608,13 @@ function _stableStringifyBld(v) {
 // Last-written shape cache — keyed by buildingId. На каждый mirror call
 // сравниваем текущий шейп с кешем; пишем только если изменилось.
 const _lastWrittenBuildingShape = {};
+// Per-building монотонная версия (Layer 2, FIXES_LOG 65). Хранит ПОСЛЕДНЮЮ
+// увиденную в коллекции _savedRev для каждого здания (обновляется листенером).
+// При зеркалировании пишем lastSeen+1; firestore.rules запрещают запись с
+// _savedRev меньше текущей → устаревшая вкладка (её lastSeen позади) физически
+// НЕ может перезаписать свежее. Хранится ОТДЕЛЬНО от building-объекта, чтобы
+// не попадать в doc/shape-hash.
+const _buildingSavedRev = {};
 
 function _mirrorBuildingsResetCache() {
   for (const k of Object.keys(_lastWrittenBuildingShape)) delete _lastWrittenBuildingShape[k];
@@ -33640,13 +33647,19 @@ function _mirrorBuildingsToV2() {
     _lastWrittenBuildingShape[b.id] = shape;
     try {
       const ref = sdk.doc(db, 'workspaces', WORKSPACE_ID, 'buildings', b.id);
+      // Монотонная версия: пишем (последняя увиденная)+1. Правило отклонит,
+      // если в коллекции версия уже выше (значит наша копия устарела) →
+      // обновляем _buildingSavedRev только на УСПЕХЕ записи.
+      const rv = ((_buildingSavedRev[b.id] | 0)) + 1;
       sdk.setDoc(ref, {
         _schema: 'v2',
         buildingId: b.id,
         doc,
         _mirroredAt: sdk.serverTimestamp(),
         _mirroredBy: 'client',
-      }).catch(e => console.warn('[mirror-building]', b.id, e?.message || e));
+        _savedRev: rv,
+      }).then(() => { _buildingSavedRev[b.id] = rv; })
+        .catch(e => console.warn('[mirror-building]', b.id, e?.message || e));
       written++;
     } catch (e) {
       console.warn('[mirror-building] setDoc throw:', b.id, e?.message || e);
@@ -33997,6 +34010,8 @@ function _v2BuildingsAttachListener() {
           const incoming = data.doc;
           const bid = data.buildingId || incoming.id || ch.doc.id;
           if (!bid) return;
+          // Запоминаем последнюю увиденную версию здания (для монотонной записи).
+          _buildingSavedRev[bid] = (data._savedRev | 0);
           state.buildings = state.buildings || [];
           const idx = state.buildings.findIndex(b => b && b.id === bid);
           if (ch.type === 'removed') {
@@ -34162,6 +34177,7 @@ async function _v2BuildingsFallbackFetch(reason) {
     snap.forEach(d => {
       const data = d.data(); if (!data || data._schema !== 'v2' || !data.doc) return;
       const incoming = data.doc; const bid = data.buildingId || incoming.id || d.id; if (!bid) return;
+      _buildingSavedRev[bid] = (data._savedRev | 0);   // последняя увиденная версия (монотонная запись)
       _buildingFromV2Restore(incoming);
       for (const f of (incoming.floors || [])) for (const u of (f.units || [])) {
         const cp = _v2PaymentsCache[bid + '|' + u.id];
