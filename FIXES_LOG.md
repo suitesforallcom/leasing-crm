@@ -60,6 +60,22 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 65. Follower-tab building clobber → DATA LOSS (New Tampa floors 4-6); leader-gate _mirrorBuildingsToV2 (sync/data-safety, 2026-06-08)
+
+- **Status:** active
+- **Branch / commit:** `main` @ `3c81bde` (fix) + stamp `a2d763a`; data restore via Admin/REST write (not a code commit)
+- **Area:** Sync / buildings-strip mirror (`syncBuildingsV2`) — client→collection write path
+- **Files:** floor-map-editor.html
+- **Functions:** `_mirrorBuildingsToV2` (~33619), `_mirrorBuildingsReady` (33531); compare `fbPushNow` leader-gate (`_sfaTabSync.isLeader()`, 32427)
+- **Bug it caused:** Under strip-ON, buildings live in `workspaces/{ws}/buildings/{id}` and EVERY tab mirrored them on each `saveState` — `_mirrorBuildingsToV2` was NOT leader-gated, unlike `fbPushNow` (Entry 16). With 2+ tabs open, a stale FOLLOWER tab re-mirrored each building from its OWN outdated `state.buildings`, overwriting the leader's edits in the collection; the read-listener (`_v2BuildingsAttachListener`) then reverted the leader's in-memory value. Symptoms: building-field edits revert (excelId/code never stick), and — when a follower held a pre-import building — whole floors + blueprints were OVERWRITTEN with the stale version. 2026-06-08 incident: New Tampa floors 4/5/6 lost ALL units (25/32/36 → 0) + blueprints reverted; floor 3 reverted to an old 13-unit layout. Other 4 buildings + floors 1-2 intact. Diagnosed via direct Firestore REST reads (architect morning export `_rev 20073` vs current `_rev 20321`).
+- **Fix:** (1) CODE — follower tabs skip the building mirror (added `_sfaTabSync.isLeader()` guard at the top of `_mirrorBuildingsToV2`, symmetric with `fbPushNow`; typeof-guard → not-ready tab-sync counts as leader so single-tab is unaffected). (2) DATA — surgically restored New Tampa floors 4/5/6 from the architect morning export into the collection doc (flattened points→pointsFlat, payments stripped, format = `_buildingForV2`), KEEPING current floors 1/2/3 (incl. 3 post-morning tenants on F3: units 305/308/310) and excelId 217.1; other buildings untouched. Written with `_mirroredBy:'incident-restore-2026-06-08'`; verified stable (no re-clobber).
+- **Invariant — DO NOT BREAK:** any client→Firestore write that can run from multiple tabs MUST be leader-gated (`_sfaTabSync.isLeader()`) — monolith push (`fbPushNow`), buildings mirror (`_mirrorBuildingsToV2`), payments/leaseDocs mirrors. A non-leader-gated collection mirror lets a stale tab clobber live data. Multi-tab editing of buildings was the loss vector.
+- **Verification:** open in ONE tab only (or all tabs on the fixed build); edit a building field / floor → save → reopen → persists; the collection doc's `_mirroredBy` should never flip to a stale follower's overwrite. Incident copies preserved in `~/sfa-incident-2026-06-08/`.
+- **Regression test:** none — manual / live REST verification.
+- **Related:** extends Entry 16 (follower-tab push skip) to the buildings mirror; same root mechanism as the excelId-revert finding (2026-06-08).
+
+---
+
 ### 64. Customizable dashboards — drag-reorder + freeform corner-resize + hide, per-user (UI/feature, 2026-06-07)
 
 - **Status:** active
