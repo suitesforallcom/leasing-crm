@@ -9337,7 +9337,59 @@
        inkSubtle = #94908A (uppercase labels)
        border    = #E8E5DF
      Font stack mirrors the redesign — Inter Tight for everything. The
-     legacy editor inherits its own font from <body>, but inside this
+     legacy editor inherits its own font from <body>
+  <!-- Редизайн 2026-06: единый SVG-спрайт из дизайн-хэндоффа (49 иконок, дословно из макетов). Эмодзи в перерисованных экранах заменяются на <use href="#i-..."> через _svgIcon(). -->
+  <svg id="rdIconSprite" aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
+    <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z"/></symbol>
+    <symbol id="i-chev-d" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 8-3 8h18s-3-1-3-8"/><path d="M10.3 21a2 2 0 0 0 3.4 0"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><polyline points="4 12.5 9.5 18 20 6.5"/></symbol>
+    <symbol id="i-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/></symbol>
+    <symbol id="i-window" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><line x1="12" y1="4" x2="12" y2="20"/><line x1="4" y1="12" x2="20" y2="12"/></symbol>
+    <symbol id="i-interior" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/></symbol>
+    <symbol id="i-dollar" viewBox="0 0 24 24"><line x1="12" y1="2" x2="12" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></symbol>
+    <symbol id="i-drop" viewBox="0 0 24 24"><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z"/></symbol>
+    <symbol id="i-sign" viewBox="0 0 24 24"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M5 17V5a2 2 0 0 1 2-2h7l5 5v3"/><path d="M3 21s2-1 4-1 3 1 5 1 3-1 5-1 4 1 4 1"/></symbol>
+    <symbol id="i-invoice" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="2"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="12" y2="16"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 3 2.7 5.6 6.1.8-4.5 4.3 1.1 6-5.4-2.9-5.4 2.9 1.1-6L3.2 9.4l6.1-.8L12 3Z"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></symbol>
+    <symbol id="i-hourglass" viewBox="0 0 24 24"><path d="M6 3h12M6 21h12M7 3v3a5 5 0 0 0 10 0V3M7 21v-3a5 5 0 0 1 10 0v3"/></symbol>
+    <symbol id="i-bank" viewBox="0 0 24 24"><line x1="3" y1="22" x2="21" y2="22"/><line x1="6" y1="18" x2="6" y2="11"/><line x1="10" y1="18" x2="10" y2="11"/><line x1="14" y1="18" x2="14" y2="11"/><line x1="18" y1="18" x2="18" y2="11"/><polygon points="12 2 20 7 4 7 12 2"/></symbol>
+    <symbol id="i-archive" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><line x1="10" y1="13" x2="14" y2="13"/></symbol>
+    <symbol id="i-note" viewBox="0 0 24 24"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></symbol>
+    <symbol id="i-mail" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m2 7 10 6 10-6"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v5h-5"/></symbol>
+    <symbol id="i-chev-r" viewBox="0 0 24 24"><polyline points="9 6 15 12 9 18"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.7" y2="16.7"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 11 5 5 5-5"/><path d="M5 21h14"/></symbol>
+    <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 7 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0-1.1-2.7H1a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 2.6 7a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H7a1.6 1.6 0 0 0 1-1.5V1a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V7a1.6 1.6 0 0 0 1.5 1H23a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="m10.5 12.5 8-8"/><path d="m15 5 3 3"/><path d="m18.5 8.5 2-2"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+    <symbol id="i-clipboard" viewBox="0 0 24 24"><rect x="8" y="3" width="8" height="4" rx="1"/><path d="M16 5h2a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l3 8 4-16 3 8h4"/></symbol>
+    <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0 5 5l-9 9a2.8 2.8 0 0 1-4-4l9-9Z"/><path d="M14.7 6.3 18 3l3 3-3.3 3.3"/></symbol>
+    <symbol id="i-dots" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></symbol>
+    <symbol id="i-cube" viewBox="0 0 24 24"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5Z"/><path d="m3 7 9 5 9-5"/><path d="M12 12v10"/></symbol>
+    <symbol id="i-building" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="1.5"/><path d="M9 21v-4h6v4"/><line x1="9" y1="7.5" x2="10.5" y2="7.5"/><line x1="13.5" y1="7.5" x2="15" y2="7.5"/><line x1="9" y1="11.5" x2="10.5" y2="11.5"/><line x1="13.5" y1="11.5" x2="15" y2="11.5"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></symbol>
+    <symbol id="i-clip" viewBox="0 0 24 24"><path d="m21 12-8.5 8.5a5.5 5.5 0 0 1-7.8-7.8L13 4.4a3.7 3.7 0 0 1 5.2 5.2L10 17.8a1.85 1.85 0 0 1-2.6-2.6L15 7.6"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24"><line x1="4" y1="20" x2="20" y2="20"/><line x1="7" y1="20" x2="7" y2="12"/><line x1="12" y1="20" x2="12" y2="6"/><line x1="17" y1="20" x2="17" y2="15"/></symbol>
+    <symbol id="i-ext" viewBox="0 0 24 24"><path d="M14 4h6v6"/><path d="M20 4 11 13"/><path d="M19 14v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5"/></symbol>
+    <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z"/></symbol>
+    <symbol id="i-gavel" viewBox="0 0 24 24"><path d="m13 6 5 5"/><path d="m9 10 5 5"/><path d="m7.5 11.5 5-5 1.5-1.5a1.4 1.4 0 0 1 2 0l1 1a1.4 1.4 0 0 1 0 2L15.5 9.5l-5 5L9 16a1.4 1.4 0 0 1-2 0l-1-1a1.4 1.4 0 0 1 0-2l1.5-1.5Z"/><path d="M3 21h9"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></symbol>
+    <symbol id="i-usercheck" viewBox="0 0 24 24"><circle cx="10" cy="8" r="4"/><path d="M3 21a7 7 0 0 1 11-5.7"/><polyline points="15 18 17.5 20.5 22 15.5"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 5 6v6c0 4.4 3 7.7 7 9 4-1.3 7-4.6 7-9V6l-7-3Z"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V3"/><path d="m7 8 5-5 5 5"/><path d="M5 21h14"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 13a2 2 0 0 0 2 1.8h6A2 2 0 0 0 17 20l1-13"/></symbol>
+    <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M17 3a2.8 2.8 0 1 1 4 4L8 20l-5 1 1-5L17 3Z"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><polyline points="12 7 12 12 15.5 14"/></symbol>
+  </svg>, but inside this
      dashboard scope we override so the right panel reads exactly like
      /redesign/. */
   #sbDashboard {
@@ -17329,7 +17381,66 @@
     outline: 2px solid #d97706;
     outline-offset: 2px;
   }
-</style>
+
+  /* ═══════════ РЕДИЗАЙН 2026-06 (design_handoff_unit_tabs_redesign) ═══════════
+     Токены --rd-* — точные значения из design-tokens.json. Неймспейс отдельный,
+     чтобы не перекрасить остальное приложение (глобальные --accent/--surface
+     потребляются другими экранами с другими значениями). Примитивы .rd-* спят,
+     пока на них не переведена разметка соответствующего экрана. */
+  :root{
+    --rd-bg:#ffffff; --rd-backdrop:#e9e9ec; --rd-surface:#f4f3f0;
+    --rd-border:#e9e9e6; --rd-border-strong:#dededb;
+    --rd-text:#1a1a1c; --rd-text2:#6b7180; --rd-text3:#9aa0ab;
+    --rd-accent:#4f46e5; --rd-accent-ink:#4338ca; --rd-accent-soft:#eef0fe; --rd-accent-border:#dfe2fc;
+    --rd-green:#15803d; --rd-green-ink:#166534; --rd-green-bar:#10b981;
+    --rd-green-soft:#e8f5ee; --rd-green-border:#cde7d6;
+    --rd-lime:#84cc16; --rd-red:#e11d48; --rd-red-soft:#fdecef;
+    --rd-blue:#0ea5e9; --rd-blue-link:#0284c7; --rd-blue-soft:#e8f4fd;
+    --rd-amber:#d97706; --rd-amber-soft:#fdf3e1;
+    --rd-note-bg:#fdf6dd; --rd-note-border:#ecd47f;
+    --rd-money-bg:#edf7f0; --rd-money-fg:#1f7a4d;
+    --rd-ai-grad:linear-gradient(90deg,#5b50ee,#8b5cf6);
+    --rd-rev-grad:linear-gradient(180deg,#e8f5ee,#fbfdfc 70%);
+    --rd-font:-apple-system,BlinkMacSystemFont,'Segoe UI','Helvetica Neue',Helvetica,Arial,sans-serif;
+    --rd-mono:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace;
+  }
+  /* базовая иконка спрайта (стиль зашит в path'ах симводов: stroke 1.9 outline) */
+  .rd-ic{width:1em;height:1em;flex:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;fill:none;display:block;}
+  /* кнопки */
+  .rd-btn{appearance:none;cursor:pointer;font:inherit;font-size:13px;font-weight:600;color:#fff;background:var(--rd-accent);border:0;border-radius:9px;padding:7px 13px;display:inline-flex;align-items:center;gap:7px;}
+  .rd-btn:hover{background:var(--rd-accent-ink);}
+  .rd-btn2{appearance:none;cursor:pointer;font:inherit;font-size:12.5px;font-weight:600;color:var(--rd-text);background:#fff;border:1px solid var(--rd-border-strong);border-radius:8px;padding:6px 12px;display:inline-flex;align-items:center;gap:6px;}
+  .rd-btn2:hover{background:#f6f6f8;}
+  .rd-btn-danger{color:var(--rd-red);}
+  .rd-btn-danger:hover{background:var(--rd-red-soft);border-color:#f5c6d0;}
+  /* свитч 34×20, knob 16, 150ms; on-цвет через --rd-sw-on (default индиго) */
+  .rd-sw{position:relative;display:inline-block;width:34px;height:20px;flex:none;}
+  .rd-sw input{opacity:0;width:0;height:0;position:absolute;}
+  .rd-sw .rd-sw-knob{position:absolute;inset:0;background:#dcdcdf;border-radius:999px;transition:background 150ms;cursor:pointer;}
+  .rd-sw .rd-sw-knob::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.18);transition:transform 150ms;}
+  .rd-sw input:checked + .rd-sw-knob{background:var(--rd-sw-on,var(--rd-accent));}
+  .rd-sw input:checked + .rd-sw-knob::after{transform:translateX(14px);}
+  .rd-sw input:focus-visible + .rd-sw-knob{box-shadow:0 0 0 3px var(--rd-accent-soft);}
+  /* единый заголовок сворачиваемой секции: чип-иконка + тайтл слева + статус справа + chevron */
+  .rd-sec-head{display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;}
+  .rd-sec-chip{width:30px;height:30px;border-radius:8px;background:var(--rd-surface);color:var(--rd-text2);display:flex;align-items:center;justify-content:center;flex:none;}
+  .rd-sec-chip .rd-ic{width:16px;height:16px;}
+  .rd-sec-title{font-size:14.5px;font-weight:700;color:var(--rd-text);text-align:left;}
+  .rd-sec-status{margin-left:auto;font-size:12.5px;color:var(--rd-text3);white-space:nowrap;}
+  .rd-sec-chev{color:var(--rd-text3);transition:transform 150ms;flex:none;}
+  .rd-sec-chev .rd-ic{width:15px;height:15px;}
+  details.rd-collapsible:not([open]) .rd-sec-chev,.rd-collapsible.closed .rd-sec-chev{transform:rotate(-90deg);}
+  /* пилюли статусов */
+  .rd-pill{display:inline-flex;align-items:center;gap:6px;font-size:10.5px;font-weight:700;letter-spacing:.05em;border-radius:999px;padding:3px 10px 3px 8px;}
+  .rd-pill .rd-dot{width:7px;height:7px;border-radius:50%;}
+  .rd-pill-paid{color:var(--rd-green);background:var(--rd-green-soft);border:1px solid var(--rd-green-border);}
+  .rd-pill-paid .rd-dot{background:var(--rd-green-bar);}
+  .rd-pill-gray{color:var(--rd-text2);background:#f2f2f3;border:1px solid #e6e6e8;}
+  .rd-pill-gray .rd-dot{background:#b9bcc4;}
+  /* mono-тег action-кодов */
+  .rd-monotag{font-family:var(--rd-mono);font-size:11.5px;font-weight:600;color:var(--rd-accent-ink);background:var(--rd-accent-soft);padding:2px 8px;border-radius:6px;}
+
+  </style>
 </head>
 <body>
 
@@ -153915,6 +154026,16 @@ document.addEventListener('keydown', (e) => {
     try { showLoginScreen('Sign-in service unavailable: ' + (err.message || err)); } catch {}
   }
 })();
+
+// ── Редизайн 2026-06: иконки спрайта ────────────────────────────────────
+// _svgIcon('check') → '<svg class="rd-ic"><use href="#i-check"/></svg>'.
+// size — px (опционально, иначе 1em от контекста), cls — доп. класс.
+function _svgIcon(name, size, cls) {
+  const s = size ? ` style="width:${size}px;height:${size}px"` : '';
+  const c = cls ? ` ${cls}` : '';
+  return `<svg class="rd-ic${c}"${s} aria-hidden="true"><use href="#i-${name}"></use></svg>`;
+}
+window._svgIcon = _svgIcon;
 </script>
 
 <!-- PDF export target — на screen скрыт через .hv-print-container CSS rule; -->
