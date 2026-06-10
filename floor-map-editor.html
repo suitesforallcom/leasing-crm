@@ -7017,10 +7017,12 @@
     border: 1px solid var(--border);
     border-radius: 8px;
   }
+  /* Шаг 7 редизайна: generic-заголовки .unit-section в Finance/Services —
+     .sec-head h2 макета: 13/700/.06em uppercase text-2 (как .upv2-section-title). */
   .unit-section-head {
     display: flex; align-items: center; justify-content: space-between;
-    font: 600 11px inherit; color: var(--muted);
-    text-transform: uppercase; letter-spacing: 0.4px;
+    font: 700 13px var(--rd-font); color: var(--rd-text2);
+    text-transform: uppercase; letter-spacing: 0.06em;
     margin-bottom: 8px;
   }
   .unit-section-count { font-size: 10.5px; font-weight: 500; opacity: 0.75; }
@@ -10648,6 +10650,7 @@
     cursor: pointer; text-align: center;
     text-decoration: none;
     display: inline-flex; align-items: center; justify-content: center;
+    gap: 6px; /* Шаг 7: зазор для спрайт-иконки (i-mail на Remind-кнопках) */
   }
   .upv2-cp-btn:hover { border-color: var(--accent); color: var(--accent); }
   .upv2-cp-btn.primary {
@@ -10835,12 +10838,15 @@
     background: var(--rd-bg);
   }
   .upv2-inv-group summary::-webkit-details-marker { display: none; }
-  .upv2-inv-group summary::before {
-    content: '▸'; color: var(--rd-text3); font-size: 10px;
+  /* Шаг 7 редизайна: ▸-псевдочеврон убит — вращающийся i-chev-d спрайт
+     в разметке summary (как .rd-sec-chev / .lease-doc-history, Шаг 6). */
+  .upv2-inv-group summary .upv2-inv-chev {
+    display: flex; align-items: center;
+    color: var(--rd-text3);
     transition: transform .12s;
     flex: 0 0 auto;
   }
-  .upv2-inv-group[open] summary::before { transform: rotate(90deg); }
+  .upv2-inv-group:not([open]) summary .upv2-inv-chev { transform: rotate(-90deg); }
   .upv2-inv-group summary:hover { background: #fafaf9; }
   .upv2-inv-group-head {
     display: flex; align-items: center; gap: 8px;
@@ -12776,67 +12782,75 @@
     font-family: var(--rd-font);
   }
 
-  /* Services tab — integration cards (UniFi placeholders) */
+  /* Services tab — integration cards (UniFi placeholders).
+     Шаг 7 редизайна: общий shell-паттерн карточек (белая, border-strong,
+     радиус 14, паддинг 15/16), тайтл 14.5/700, бейдж-пилюля, кнопки по
+     .rd-btn / .rd-btn2 паттерну. Макет-экрана для Services нет — только
+     токены и shared-паттерны, поведение/тексты не менялись. */
   .upv2-svc-card {
-    border: 1px solid var(--border); border-radius: 10px;
-    padding: 12px 14px; margin-bottom: 10px;
-    background: var(--surface);
+    border: 1px solid var(--rd-border-strong); border-radius: 14px;
+    padding: 15px 16px; margin-bottom: 10px;
+    background: var(--rd-bg);
+    font-family: var(--rd-font);
     transition: border-color .12s;
   }
-  .upv2-svc-card:hover { border-color: var(--accent); }
+  .upv2-svc-card:hover { border-color: var(--rd-accent); }
   .upv2-svc-head {
     display: flex; align-items: center; gap: 10px;
     margin-bottom: 6px;
   }
   .upv2-svc-icon {
-    width: 36px; height: 36px; border-radius: 8px;
+    width: 36px; height: 36px; border-radius: 10px;
     display: flex; align-items: center; justify-content: center;
     font-size: 17px; flex-shrink: 0;
   }
+  .upv2-svc-icon .rd-ic { width: 17px; height: 17px; }
   .upv2-svc-name {
-    font-size: 13.5px; font-weight: 600; color: var(--text);
+    font-size: 14.5px; font-weight: 700; color: var(--rd-text);
     flex: 1; min-width: 0;
   }
   .upv2-svc-badge {
-    font: 600 10px system-ui; padding: 2px 8px; border-radius: 4px;
-    text-transform: uppercase; letter-spacing: 0.4px;
+    font: 700 10.5px var(--rd-font); padding: 3px 10px; border-radius: 999px;
+    text-transform: uppercase; letter-spacing: 0.05em;
     flex-shrink: 0;
   }
-  .upv2-svc-badge.coming   { background: var(--surface-3); color: var(--muted); }
-  .upv2-svc-badge.live     { background: rgba(22,163,74,0.16); color: #16a34a; }
+  .upv2-svc-badge.coming   { background: #f2f2f3; color: var(--rd-text2); border: 1px solid #e6e6e8; }
+  .upv2-svc-badge.live     { background: var(--rd-green-soft); color: var(--rd-green); border: 1px solid var(--rd-green-border); }
   .upv2-svc-desc {
-    font-size: 12px; color: var(--muted); line-height: 1.5;
+    font-size: 12.5px; color: var(--rd-text2); line-height: 1.5;
   }
   .upv2-svc-preview {
-    margin-top: 10px; padding: 10px;
-    background: var(--surface-2); border-radius: 8px;
-    border: 1px dashed var(--border);
-    font-size: 11.5px; color: var(--muted);
+    margin-top: 10px; padding: 11px 12px;
+    background: #fafaf9; border-radius: 10px;
+    border: 1px dashed var(--rd-border-strong);
+    font-size: 11.5px; color: var(--rd-text2);
     display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
   }
   .upv2-svc-preview-item {
     display: flex; flex-direction: column;
   }
   .upv2-svc-preview-item .ppl-label {
-    font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.4px;
-    color: var(--muted); margin-bottom: 2px;
+    font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--rd-text3); margin-bottom: 2px;
   }
   .upv2-svc-preview-item .ppl-value {
-    font-size: 12.5px; color: var(--text); font-weight: 500;
+    font-size: 13px; color: var(--rd-text); font-weight: 600;
   }
   .upv2-svc-cta {
     margin-top: 10px; display: flex; gap: 6px;
   }
   .upv2-svc-cta button {
-    padding: 6px 10px; border-radius: 6px;
-    border: 1px solid var(--border); background: var(--surface);
-    font: 600 11.5px inherit; color: var(--text); cursor: pointer;
+    padding: 6px 12px; border-radius: 8px;
+    border: 1px solid var(--rd-border-strong); background: #fff;
+    font: 600 12.5px var(--rd-font); color: var(--rd-text); cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px;
   }
-  .upv2-svc-cta button:hover { border-color: var(--accent); color: var(--accent); }
+  .upv2-svc-cta button:hover { background: #f6f6f8; }
   .upv2-svc-cta button.primary {
-    background: var(--accent); border-color: var(--accent); color: white;
+    background: var(--rd-accent); border-color: var(--rd-accent); color: #fff;
+    border-radius: 9px; font-size: 13px; padding: 7px 13px;
   }
-  .upv2-svc-cta button.primary:hover { background: var(--accent-hover); }
+  .upv2-svc-cta button.primary:hover { background: var(--rd-accent-ink); }
 
   /* Files tab — empty state */
   .upv2-files-empty {
@@ -13198,12 +13212,9 @@
     user-select: none;
   }
   details.unit-detail-group > summary::-webkit-details-marker { display: none; }
-  details.unit-detail-group > summary::before {
-    content: '▸'; margin-right: 6px;
-    color: var(--muted); transition: transform 0.15s;
-    display: inline-block;
-  }
-  details.unit-detail-group[open] > summary::before { transform: rotate(90deg); }
+  /* Шаг 7 редизайна: ▸-псевдочеврон убит. Живые потребители (Unit
+     specifications, Late fee policy) переведены на details.rd-collapsible
+     + .rd-sec-chev; класс остаётся только в мёртвой legacy-ветке renderDetail. */
   details.unit-detail-group .udg-summary {
     font-weight: 400; font-size: 11px;
     text-align: right; max-width: 55%;
@@ -13407,6 +13418,13 @@
     display: flex; justify-content: space-between; align-items: center;
     font-size: 12px; font-weight: 600; color: #0284c7;
     margin-bottom: 8px;
+  }
+  /* Шаг 7 редизайна: 💰 в шапке Move-in карточки → чип со спрайтом i-dollar. */
+  .mi-head-left { display: inline-flex; align-items: center; gap: 7px; }
+  .mi-head-chip {
+    width: 24px; height: 24px; border-radius: 7px;
+    background: rgba(2,132,199,0.12); color: #0284c7;
+    display: inline-flex; align-items: center; justify-content: center; flex: none;
   }
   .mi-head .mi-count {
     background: #0284c71a; color: #0284c7;
@@ -17645,6 +17663,109 @@
   .rd-pill-gray .rd-dot{background:#b9bcc4;}
   /* mono-тег action-кодов */
   .rd-monotag{font-family:var(--rd-mono);font-size:11.5px;font-weight:600;color:var(--rd-accent-ink);background:var(--rd-accent-soft);padding:2px 8px;border-radius:6px;}
+
+  /* ── Шаг 7 редизайна: Finance + Services panes ───────────────────────
+     Auto-invoicing — ОДНА карточка (дублирующий заголовок убран по README):
+     чип i-zap + настоящий .rd-sw свитч, on-цвет GREEN. */
+  .rd-autoinv {
+    margin-top: 10px; padding: 13px 16px 14px;
+    background: var(--rd-bg);
+    border: 1px solid var(--rd-border-strong); border-radius: 14px;
+    font-family: var(--rd-font);
+  }
+  .rd-autoinv > .rd-sec-head { cursor: default; }
+  .rd-autoinv .rd-sec-chip { background: var(--rd-green-soft); color: var(--rd-green); }
+  /* Monthly recurring — карточка вместо inline-стилей: ряды начислений с
+     суб-строкой «auto-invoiced · 10d before 1st», тотал на #fafaf9. */
+  .unit-section.rd-recur {
+    background: var(--rd-bg);
+    border: 1px solid var(--rd-border-strong); border-radius: 14px;
+    padding: 15px 16px;
+    font-family: var(--rd-font);
+  }
+  .rd-recur-list {
+    margin-top: 10px;
+    background: #fff;
+    border: 1px solid var(--rd-border-strong); border-radius: 12px;
+    overflow: hidden;
+  }
+  .rd-recur-row {
+    display: grid; grid-template-columns: 1fr auto; gap: 8px;
+    align-items: center; padding: 9px 12px;
+    border-bottom: 1px solid var(--rd-border);
+    font-size: 13px; color: var(--rd-text);
+  }
+  .rd-recur-name {
+    display: flex; align-items: center; gap: 6px; min-width: 0;
+    font-weight: 600;
+  }
+  .rd-recur-name > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rd-recur-sub {
+    font-size: 11.5px; font-weight: 400; color: var(--rd-text3); margin-top: 1px;
+  }
+  .rd-recur-sub.clickable { cursor: pointer; }
+  .rd-recur-sub.clickable:hover { color: var(--rd-accent-ink); }
+  .rd-recur-amt {
+    text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap;
+    color: var(--rd-text); font-weight: 600;
+  }
+  .rd-recur-amt .rd-recur-freq { font-size: 10.5px; font-weight: 500; color: var(--rd-text3); margin-left: 3px; }
+  .rd-recur-total {
+    display: grid; grid-template-columns: 1fr auto; gap: 8px;
+    align-items: center; padding: 10px 12px;
+    background: #fafaf9;
+    font-size: 13px; font-weight: 700; color: var(--rd-text);
+  }
+  .rd-recur-empty {
+    margin-top: 10px; padding: 12px 14px;
+    color: var(--rd-text2); font-size: 12.5px; line-height: 1.5;
+    background: #fafaf9; border: 1.5px dashed var(--rd-border-strong); border-radius: 12px;
+  }
+  /* Previous tenants — card chrome (белая, border-strong, радиус 14)
+     + счётчик-пилюля как .lease-docs-count. */
+  .unit-section.rd-prevten {
+    background: var(--rd-bg);
+    border: 1px solid var(--rd-border-strong); border-radius: 14px;
+    padding: 15px 16px;
+    font-family: var(--rd-font);
+  }
+  .rd-prevten .unit-section-count {
+    font-size: 11.5px; font-weight: 700; opacity: 1;
+    padding: 1px 8px; background: #ececee; color: var(--rd-text2);
+    border-radius: 999px; text-transform: none; letter-spacing: 0;
+  }
+  .rd-prevten .tenant-history-item {
+    background: #fff; border: 1px solid var(--rd-border); border-radius: 10px;
+  }
+  /* Late fee policy / Unit specifications переехали в .lease-subcard —
+     udg-check/udg-hint и toggle-rows нужны и в этом скоупе. */
+  .lease-subcard .udg-check {
+    display: block; font-size: 13px; font-weight: 600;
+    padding: 8px 0; color: var(--rd-text);
+  }
+  .lease-subcard .udg-check input[type="checkbox"] {
+    margin-right: 8px; vertical-align: middle;
+  }
+  .lease-subcard .udg-hint {
+    display: block; font-size: 11.5px; font-weight: 400;
+    color: var(--rd-text2); margin-left: 25px; margin-top: 2px; line-height: 1.45;
+  }
+  /* Rentable / Window / Sink — индиго .rd-sw свитчи (те же handlers). */
+  .lease-subcard .toggle-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; padding: 7px 0; margin: 0;
+  }
+  .lease-subcard .toggle-row > label {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 13px; font-weight: 600; color: var(--rd-text);
+    text-transform: none; letter-spacing: 0; margin: 0;
+  }
+  .lease-subcard .toggle-row > label .rd-ic { width: 14px; height: 14px; color: var(--rd-text2); }
+  /* Статус в шапке specs-карточки может быть длинным — даём ellipsis. */
+  .rd-sec-status.rd-sec-status-clip { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .rd-sec-status .rd-ic { display: inline-block; vertical-align: -2px; }
+  /* Disabled-свитч (view-режим) — состояние видно, клик не работает. */
+  .rd-sw input:disabled + .rd-sw-knob { cursor: default; opacity: 0.85; }
 
   </style>
 </head>
@@ -74891,7 +75012,7 @@ function renderDetail() {
       'fId','fTenant','fCompany','fTel','fEmail','fEmailCc','fTenantAddr','fLeaseStart','fSigned','fTerm',
       'fUntil','fDeposit','fNote','fRent','fContractRent','fContractRentSpec','fType',
       'fSqft','fCap','fLfUseOverride','fLfEnabled','fLfAutoSend','fLfGrace','fLfType','fLfAmount',
-      'fAutoInvoice','fAutoInvoiceBeforeDays','fAutoCharge',
+      'fAutoInvoice','fAutoInvoiceBeforeDays','fAutoCharge','fAutoInvoiceSw',
       // Lease v2 — business terms, renewal, guarantor, insurance
       'fPermittedUse','fParkingSpots','fSignageRights','fTiAllowance','fRentEscalationPct',
       'fRenewalOption','fRenewalNoticeMonths',
@@ -75367,12 +75488,14 @@ function renderDetail() {
     </div>
   ` : '';
   // Unit-specs (size/type/proforma) — collapsible, lives below tabs
+  // Шаг 7 редизайна: 🌞/🚰 в summary → спрайт i-window / i-drop. Текстовые
+  // части эскейпим по месту (строка теперь HTML, не esc()-ится целиком).
   const summaryBitsV2 = [
-    `${u.sqft || 0} ft²`,
-    TYPE_LABELS[u.type] || u.type,
+    `${+u.sqft || 0} ft²`,
+    esc(TYPE_LABELS[u.type] || u.type),
     `$${(+u.rent || 0).toLocaleString()}/mo proforma`,
-    u.window ? '🌞' : null,
-    u.sink ? '🚰' : null,
+    u.window ? _rdIc('window', 12) : null,
+    u.sink ? _rdIc('drop', 12) : null,
   ].filter(Boolean).join(' · ');
   // Auto-open specs for newly-created units. _newUnitEditFocus is set
   // by onRectDrawEnd / _polyCommit / _unitAddSubRoom and consumed here
@@ -75384,13 +75507,18 @@ function renderDetail() {
   // _prevOpen — для уже открытой оператором панели.
   const _prevSpecsOpen = !!document.getElementById('unitSpecsGroup')?.open;
   const _autoOpenSpecs = !!window._newUnitEditFocus || _prevSpecsOpen;
+  // Шаг 7 редизайна: details переведён на .lease-subcard rd-collapsible
+  // (единый паттерн карточек Шага 6) — ▸-псевдочеврон убит, id и
+  // open-логика (_autoOpenSpecs / Enter-save / toggleField) не менялись.
   const specsBlock = `
-    <details class="unit-detail-group" id="unitSpecsGroup" style="margin: 12px 16px 14px;" ${_autoOpenSpecs ? 'open' : ''}>
-      <summary>
-        <span>Unit specifications</span>
-        <span class="udg-summary">${esc(summaryBitsV2)}</span>
+    <details class="lease-subcard rd-collapsible" id="unitSpecsGroup" style="margin: 12px 16px 14px;" ${_autoOpenSpecs ? 'open' : ''}>
+      <summary class="rd-sec-head">
+        <span class="rd-sec-chip">${_rdIc('cube', 16)}</span>
+        <span class="rd-sec-title">Unit specifications</span>
+        <span class="rd-sec-status rd-sec-status-clip">${summaryBitsV2}</span>
+        <span class="rd-sec-chev">${_rdIc('chev-d', 15)}</span>
       </summary>
-      <div class="udg-body">
+      <div>
         <div class="field"><label>Suite number</label><input type="text" id="fId" value="${esc(u.id)}" ${ro}></div>
         <div class="field">
           <label>Label position${selectedIds.length > 1 ? ` <span style="color:var(--accent); font-weight:600;">(applies to ${selectedIds.length} selected units)</span>` : ''}</label>
@@ -75425,9 +75553,12 @@ function renderDetail() {
           <div class="field"><label>Proforma Rent $ <span style="color:var(--muted); font-weight:400;" title="Market / asking rent — unit-scoped, doesn't change with tenants">ⓘ market rate</span></label><input type="number" id="fRent" value="${u.rent||0}" ${ro}></div>
           <div class="field"><label>$/ft²/year <span style="color:var(--muted); font-weight:400;">(derived)</span></label><input type="number" step="0.01" id="fRate" value="${u.rate||0}" ${ro}></div>
         </div>
-        <div class="toggle-row"><label>Rentable</label><div class="toggle ${u.rentable !== false ? 'on' : ''}" style="${editOn ? '' : 'pointer-events:none; opacity:0.85;'}" ${editOn ? `onclick="toggleField('rentable')"` : ''}></div></div>
-        <div class="toggle-row"><label>🌞 Window</label><div class="toggle ${u.window ? 'on' : ''}" style="${editOn ? '' : 'pointer-events:none; opacity:0.85;'}" ${editOn ? `onclick="toggleField('window')"` : ''}></div></div>
-        <div class="toggle-row"><label>🚰 Sink / plumbing</label><div class="toggle ${u.sink ? 'on' : ''}" style="${editOn ? '' : 'pointer-events:none; opacity:0.85;'}" ${editOn ? `onclick="toggleField('sink')"` : ''}></div></div>
+        <!-- Шаг 7 редизайна: div.toggle → настоящий .rd-sw свитч (индиго,
+             default --rd-accent); handler toggleField тот же, вне edit-режима
+             input disabled. Эмодзи 🌞/🚰 → спрайт i-window / i-drop. -->
+        <div class="toggle-row"><label>Rentable</label><label class="rd-sw"><input type="checkbox" ${u.rentable !== false ? 'checked' : ''} ${editOn ? `onchange="toggleField('rentable')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>
+        <div class="toggle-row"><label>${_rdIc('window', 14)}Window</label><label class="rd-sw"><input type="checkbox" ${u.window ? 'checked' : ''} ${editOn ? `onchange="toggleField('window')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>
+        <div class="toggle-row"><label>${_rdIc('drop', 14)}Sink / plumbing</label><label class="rd-sw"><input type="checkbox" ${u.sink ? 'checked' : ''} ${editOn ? `onchange="toggleField('sink')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>
         ${(() => {
           // Floor lease-type селектор. Меняет f.leaseType (общее для всего этажа,
           // не только этого юнита). Показываем только для rentable office юнитов
@@ -79585,7 +79716,7 @@ function _renderUnitLateFeeOwed(u) {
       ? ` · $${awaitingTotal.toFixed(2)} also awaiting payment`
       : '';
     const remindBtn = unpaidSent.length > 0
-      ? `<button class="upv2-cp-btn" onclick="_remindLateFeeInvoice('${esc(unpaidSent[0].invoiceId)}', this)">✉ Remind</button>`
+      ? `<button class="upv2-cp-btn" onclick="_remindLateFeeInvoice('${esc(unpaidSent[0].invoiceId)}', this)">${_rdIc('mail', 12)}Remind</button>`
       : '';
     statusCardHtml = `
       <div class="upv2-latefee-status owed">
@@ -79621,7 +79752,7 @@ function _renderUnitLateFeeOwed(u) {
           <div class="upv2-latefee-status-meta">${esc(meta)}</div>
         </div>
         <div class="upv2-latefee-status-action">
-          <button class="upv2-cp-btn primary" onclick="_remindLateFeeInvoice('${esc(newest.invoiceId)}', this)">✉ Send reminder</button>
+          <button class="upv2-cp-btn primary" onclick="_remindLateFeeInvoice('${esc(newest.invoiceId)}', this)">${_rdIc('mail', 12)}Send reminder</button>
         </div>
       </div>
     `;
@@ -79691,17 +79822,20 @@ function _renderUnitLateFeeOwed(u) {
 async function _remindLateFeeInvoice(invoiceId, btn) {
   if (!fbSync?.enabled) { toast('Sign in required', 'error'); return; }
   if (!invoiceId) return;
-  const orig = btn?.textContent;
+  // Шаг 7 редизайна: кнопка теперь содержит спрайт i-mail — снимаем/
+  // восстанавливаем innerHTML (textContent стёр бы <svg>). Транзиентные
+  // состояния «⏳ Sending… / ✓ Sent» — плоский текст, как и раньше.
+  const orig = btn?.innerHTML;
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Sending…'; }
   try {
     const fn = stripeCallable('stripeResendInvoice');
     await fn({ invoiceId });
     toast('✓ Late-fee reminder sent', 'success');
-    if (btn) { btn.textContent = '✓ Sent'; setTimeout(() => { btn.disabled = false; btn.textContent = orig || '✉ Send reminder'; }, 1500); }
+    if (btn) { btn.textContent = '✓ Sent'; setTimeout(() => { btn.disabled = false; btn.innerHTML = orig || `${_rdIc('mail', 12)}Send reminder`; }, 1500); }
   } catch (err) {
     console.error('[late-fee remind]', err);
     toast('Reminder failed: ' + (err.message || err), 'error');
-    if (btn) { btn.disabled = false; btn.textContent = orig || '✉ Send reminder'; }
+    if (btn) { btn.disabled = false; btn.innerHTML = orig || `${_rdIc('mail', 12)}Send reminder`; }
   }
 }
 
@@ -80299,9 +80433,12 @@ function _renderUnitFinancePane(u, editOn, ro) {
   // to surface (lease starts on the 1st, or no rent set), _renderProrateBox
   // returns empty — so showing the wrapper unconditionally is fine; it
   // just collapses to nothing in the common case.
+  // Шаг 7 редизайна: обёртка .unit-section убрана — Overview рендерит
+  // ту же синюю .move-in-card без рамки-вокруг-рамки; id=prorateBox
+  // сохранён (его читает _updateProrateBox).
   const prorateInner = (typeof _renderProrateBox === 'function') ? _renderProrateBox(u) : '';
   const sectionFinance = prorateInner
-    ? `<div class="unit-section"><div id="prorateBox">${prorateInner}</div></div>`
+    ? `<div id="prorateBox">${prorateInner}</div>`
     : '';
 
   // Additional services already returns its own card-like output via
@@ -80321,21 +80458,14 @@ function _renderUnitFinancePane(u, editOn, ro) {
   const sectionInvoices    = _renderUnitInvoiceHistory(u);
   const sectionLateFeeOwed = _renderUnitLateFeeOwed(u);
 
-  // Auto-invoicing card.
-  const sectionAutoInv = `
-    <div class="unit-section">
-      <div class="unit-section-head"><span>Auto-invoicing</span></div>
-      ${_renderAutoInvoiceRow(u, editOn)}
-    </div>
-  `;
+  // Auto-invoicing — ОДНА карточка (Шаг 7): дублирующий заголовок
+  // .unit-section-head убран (одобрено README), карточку целиком рисует
+  // _renderAutoInvoiceRow (чип i-zap + зелёный .rd-sw свитч).
+  const sectionAutoInv = _renderAutoInvoiceRow(u, editOn);
 
-  // Late-fee policy card.
-  const sectionLateFee = `
-    <div class="unit-section">
-      <div class="unit-section-head"><span>Late fee policy</span></div>
-      ${_renderUnitLateFeeBlock(u, editOn, ro)}
-    </div>
-  `;
+  // Late fee policy — rd-collapsible карточка (Шаг 7): внешний
+  // .unit-section-head убран, заголовок теперь в самом details-summary.
+  const sectionLateFee = _renderUnitLateFeeBlock(u, editOn, ro);
 
   return [
     sectionFinance,
@@ -80353,6 +80483,9 @@ function _renderUnitFinancePane(u, editOn, ro) {
 // _maybePrefetchInvoicesCache) and re-renders the Finance tab.
 async function _invoiceHistoryRefresh(buildingId, floorId, unitId) {
   const btn = event?.currentTarget;
+  // Шаг 7: restore через innerHTML — кнопка содержит спрайт i-refresh,
+  // textContent-restore стирал бы иконку (тот же фикс что в _remindLateFeeInvoice).
+  const _origBtnHtml = btn ? btn.innerHTML : '';
   if (btn) { btn.disabled = true; btn.textContent = '⏳…'; }
   // Resolve the unit so we can also do a customer-scoped pull. The
   // workspace-wide list (limit 100) is necessary for portfolio-level
@@ -80403,7 +80536,7 @@ async function _invoiceHistoryRefresh(buildingId, floorId, unitId) {
     console.error('[invoice-history refresh]', err);
     toast?.(`Refresh failed: ${err.message || err}`, 'error');
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '↻ Refresh'; }
+    if (btn) { btn.disabled = false; btn.innerHTML = _origBtnHtml || `${_rdIc('refresh', 13)}Refresh`; }
     try { renderDetail(); } catch {}
   }
 }
@@ -80476,22 +80609,20 @@ function _renderUnitActiveServices(u) {
   // the same time. _toggleMonthlyAutoSync prompts the operator with a
   // confirm dialog before the flip, then writes both u.autoInvoice and
   // each s.autoInvoice in lockstep.
-  // AUTO/MANUAL state surfaced as compact "(auto · 10d)" or "(manual)" hint
-  // in muted text — clickable, no background pill so the row name reads
-  // first and the automation state recedes. Same toggle target as before.
-  const rentBadgeClick = canEdit() ? `onclick="event.stopPropagation(); _toggleMonthlyAutoSync('${esc(u.id)}', 'rent')" style="cursor: pointer;"` : '';
-  const rentBadge = rentAutoOn
-    ? `<span ${rentBadgeClick} title="Click to switch ALL monthly items (rent + subscriptions) to MANUAL. They share one invoice." style="font-size: 10.5px; color: var(--muted); flex-shrink: 0;">(auto · ${rentDaysBefore}d)</span>`
-    : `<span ${rentBadgeClick} title="Click to switch ALL monthly items (rent + subscriptions) to AUTO. They share one invoice." style="font-size: 10.5px; color: var(--muted); flex-shrink: 0;">(manual)</span>`;
+  // Шаг 7 редизайна: AUTO/MANUAL hint переехал в суб-строку ряда —
+  // «auto-invoiced · 10d before 1st» / «manual» (макет Suite 363 Finance).
+  // Клик по суб-строке — тот же toggle всего цикла, title не менялся.
+  const rentSubClick = canEdit() ? `onclick="event.stopPropagation(); _toggleMonthlyAutoSync('${esc(u.id)}', 'rent')"` : '';
+  const rentSub = rentAutoOn
+    ? `<div class="rd-recur-sub${canEdit() ? ' clickable' : ''}" ${rentSubClick} title="Click to switch ALL monthly items (rent + subscriptions) to MANUAL. They share one invoice.">auto-invoiced · ${rentDaysBefore}d before 1st</div>`
+    : `<div class="rd-recur-sub${canEdit() ? ' clickable' : ''}" ${rentSubClick} title="Click to switch ALL monthly items (rent + subscriptions) to AUTO. They share one invoice.">manual</div>`;
   const rentRow = showRent ? `
-    <div style="display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--border); font-size: 12.5px;">
-      <div style="display: flex; align-items: center; gap: 6px; min-width: 0;">
-        <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Office Rent</span>
-        ${rentBadge}
+    <div class="rd-recur-row">
+      <div style="min-width: 0;">
+        <div class="rd-recur-name"><span>Office Rent</span></div>
+        ${rentSub}
       </div>
-      <div style="text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--text);">
-        ${fmt$(rentAmt)}<span style="font-size: 10.5px; color: var(--muted); margin-left: 3px;">/mo</span>
-      </div>
+      <div class="rd-recur-amt">${fmt$(rentAmt)}<span class="rd-recur-freq">/mo</span></div>
     </div>` : '';
 
   // Monthly contribution from active services with frequency=monthly.
@@ -80514,11 +80645,11 @@ function _renderUnitActiveServices(u) {
   // panel has no monthly recurring contribution to summarise.
   if (!showRent && services.length === 0) {
     return `
-      <div class="unit-section">
-        <div class="unit-section-head" style="justify-content: space-between; gap: 8px; font-size: 10px; letter-spacing: 0.3px;">
+      <div class="unit-section rd-recur">
+        <div class="unit-section-head" style="gap: 8px;">
           <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Monthly recurring</span>${addBtn}
         </div>
-        <div style="padding: 10px 12px; color: var(--muted); font-size: 12px; background: var(--surface); border: 1px dashed var(--border); border-radius: 6px; margin-top: 8px;">
+        <div class="rd-recur-empty">
           No rent or recurring monthly subscriptions on this lease yet. Set rent in the Lease section above, or click <b>＋ Add</b> to attach a service (parking, signage, storage, etc.).
         </div>
       </div>
@@ -80538,41 +80669,40 @@ function _renderUnitActiveServices(u) {
     // see the current state at a glance and click to flip the whole
     // cycle. Service id is stable + workspace-unique so we use it as
     // the toggle "source" key.
-    const svcBadgeClick = canEdit() ? `onclick="event.stopPropagation(); _toggleMonthlyAutoSync('${esc(u.id)}', 'svc:${esc(s.id || '')}')" style="cursor: pointer;"` : '';
-    const svcBadge = s.autoInvoice
-      ? `<span ${svcBadgeClick} title="Click to switch ALL monthly items (rent + subscriptions) to MANUAL. They share one invoice." style="font-size: 10.5px; color: var(--muted); flex-shrink: 0;">(auto · ${+s.daysBefore || 0}d)</span>`
-      : `<span ${svcBadgeClick} title="Click to switch ALL monthly items (rent + subscriptions) to AUTO. They share one invoice." style="font-size: 10.5px; color: var(--muted); flex-shrink: 0;">(manual)</span>`;
+    const svcSubClick = canEdit() ? `onclick="event.stopPropagation(); _toggleMonthlyAutoSync('${esc(u.id)}', 'svc:${esc(s.id || '')}')"` : '';
+    const svcSub = s.autoInvoice
+      ? `<div class="rd-recur-sub${canEdit() ? ' clickable' : ''}" ${svcSubClick} title="Click to switch ALL monthly items (rent + subscriptions) to MANUAL. They share one invoice.">auto-invoiced · ${+s.daysBefore || 0}d before 1st</div>`
+      : `<div class="rd-recur-sub${canEdit() ? ' clickable' : ''}" ${svcSubClick} title="Click to switch ALL monthly items (rent + subscriptions) to AUTO. They share one invoice.">manual</div>`;
     return `
-      <div style="display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--border); font-size: 12.5px;">
-        <div style="display: flex; align-items: center; gap: 6px; min-width: 0;">
-          <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(s.name || '(unnamed)')}</span>
-          ${s.category ? `<span class="lease-tpl-badge" style="font-size: 9.5px; padding: 1px 6px; background: ${cat.bg}; color: ${cat.color}; flex-shrink: 0;">${esc(cat.label)}</span>` : ''}
-          ${svcBadge}
+      <div class="rd-recur-row">
+        <div style="min-width: 0;">
+          <div class="rd-recur-name">
+            <span>${esc(s.name || '(unnamed)')}</span>
+            ${s.category ? `<span class="lease-tpl-badge" style="font-size: 9.5px; padding: 1px 6px; background: ${cat.bg}; color: ${cat.color}; flex-shrink: 0;">${esc(cat.label)}</span>` : ''}
+          </div>
+          ${svcSub}
         </div>
-        <div style="text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--text);">
-          ${fmt$(s.amount)}<span style="font-size: 10.5px; color: var(--muted); margin-left: 3px;">${esc(freq)}</span>
-        </div>
+        <div class="rd-recur-amt">${fmt$(s.amount)}<span class="rd-recur-freq">${esc(freq)}</span></div>
       </div>
     `;
   }).join('');
   // Footer "Monthly total" row — combined rent + every active subscription.
   // This is what the operator should expect to see on each month's invoice
   // (modulo manual one-off line items added at send time).
+  // Шаг 7 редизайна: тотал-ряд на #fafaf9 (макет Suite 363 Finance).
   const totalFooter = `
-    <div style="display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 8px 10px; background: rgba(79,70,229,0.04); font-size: 12.5px; font-weight: 700;">
-      <div style="color: var(--text);">Monthly total</div>
-      <div style="text-align: right; font-variant-numeric: tabular-nums; color: var(--text);">
-        ${fmt$(combinedTotal)}<span style="font-size: 10.5px; color: var(--muted); margin-left: 3px; font-weight: 500;">/mo</span>
-      </div>
+    <div class="rd-recur-total">
+      <div>Monthly total</div>
+      <div class="rd-recur-amt">${fmt$(combinedTotal)}<span class="rd-recur-freq">/mo</span></div>
     </div>`;
   return `
-    <div class="unit-section">
-      <div class="unit-section-head" style="justify-content: space-between; gap: 8px; font-size: 10px; letter-spacing: 0.3px;">
+    <div class="unit-section rd-recur">
+      <div class="unit-section-head" style="gap: 8px;">
         <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;"
               title="Everything billed on the monthly auto-invoice — rent + recurring subscriptions. One-time and hourly charges live in ⋯ → Additional services.">Monthly recurring</span>
         ${addBtn}
       </div>
-      <div style="margin-top: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; overflow: hidden;">${rentRow}${rows}${totalFooter}</div>
+      <div class="rd-recur-list">${rentRow}${rows}${totalFooter}</div>
     </div>
   `;
 }
@@ -81136,6 +81266,7 @@ function _renderUnitInvoiceHistory(u) {
     return `
       <details class="upv2-inv-group" ${idx === 0 ? 'open' : ''}>
         <summary>
+          <span class="upv2-inv-chev">${_rdIc('chev-d', 14)}</span>
           <div class="upv2-inv-group-head">
             <span class="upv2-inv-group-name">${esc(g.name)}</span>
             ${g.isCurrent
@@ -83089,15 +83220,15 @@ const MONTH_NAMES_FULL  = ['January','February','March','April','May','June','Ju
 // Services pane — UniFi placeholders + future integrations
 function _renderUnitServicesPane(u, editOn, ro) {
   return `
-    <p style="margin: 0 0 14px; color: var(--muted); font-size: 12.5px; line-height: 1.5;">
+    <p style="margin: 0 0 14px; color: var(--rd-text2); font-size: 13px; line-height: 1.5; font-family: var(--rd-font);">
       Building services and integrations for this suite. Configure connections in
-      <a href="#" onclick="event.preventDefault(); openSettings('integrations'); return false;" style="color: var(--accent);">Settings → Integrations</a>.
+      <a href="#" onclick="event.preventDefault(); openSettings('integrations'); return false;" style="color: var(--rd-accent-ink); font-weight: 600;">Settings → Integrations</a>.
     </p>
 
     <!-- UniFi Protect (cameras) -->
     <div class="upv2-svc-card">
       <div class="upv2-svc-head">
-        <div class="upv2-svc-icon" style="background: rgba(220,38,38,0.14); color: #dc2626;">🎥</div>
+        <div class="upv2-svc-icon" style="background: var(--rd-red-soft); color: var(--rd-red);">${_rdIc('shield', 17)}</div>
         <div class="upv2-svc-name">UniFi Protect — Cameras</div>
         <span class="upv2-svc-badge coming">Coming soon</span>
       </div>
@@ -83123,7 +83254,7 @@ function _renderUnitServicesPane(u, editOn, ro) {
     <!-- UniFi Access (cards) -->
     <div class="upv2-svc-card">
       <div class="upv2-svc-head">
-        <div class="upv2-svc-icon" style="background: rgba(124,58,237,0.14); color: #6d28d9;">🔑</div>
+        <div class="upv2-svc-icon" style="background: var(--rd-accent-soft); color: var(--rd-accent-ink);">${_rdIc('key', 17)}</div>
         <div class="upv2-svc-name">UniFi Access — Door cards</div>
         <span class="upv2-svc-badge coming">Coming soon</span>
       </div>
@@ -83158,7 +83289,7 @@ function _renderUnitServicesPane(u, editOn, ro) {
     <!-- UniFi Network (internet) -->
     <div class="upv2-svc-card">
       <div class="upv2-svc-head">
-        <div class="upv2-svc-icon" style="background: rgba(14,165,233,0.16); color: #0369a1;">📡</div>
+        <div class="upv2-svc-icon" style="background: var(--rd-blue-soft); color: var(--rd-blue-link);">${_rdIc('activity', 17)}</div>
         <div class="upv2-svc-name">UniFi Network — Internet</div>
         <span class="upv2-svc-badge coming">Coming soon</span>
       </div>
@@ -83192,7 +83323,7 @@ function _renderUnitServicesPane(u, editOn, ro) {
     <!-- Maintenance / Work orders -->
     <div class="upv2-svc-card">
       <div class="upv2-svc-head">
-        <div class="upv2-svc-icon" style="background: rgba(245,158,11,0.16); color: #b45309;">🔧</div>
+        <div class="upv2-svc-icon" style="background: var(--rd-amber-soft); color: var(--rd-amber);">${_rdIc('wrench', 17)}</div>
         <div class="upv2-svc-name">Maintenance &amp; work orders</div>
         <span class="upv2-svc-badge coming">Coming soon</span>
       </div>
@@ -83214,7 +83345,7 @@ function _renderUnitServicesPane(u, editOn, ro) {
     <!-- Communications (email/SMS log) -->
     <div class="upv2-svc-card">
       <div class="upv2-svc-head">
-        <div class="upv2-svc-icon" style="background: rgba(16,185,129,0.14); color: #047857;">💬</div>
+        <div class="upv2-svc-icon" style="background: var(--rd-green-soft); color: var(--rd-green);">${_rdIc('mail', 17)}</div>
         <div class="upv2-svc-name">Communications</div>
         <span class="upv2-svc-badge coming">Coming soon</span>
       </div>
@@ -84226,7 +84357,7 @@ function _renderUnitTenantHistoryBlock(u) {
   const history = Array.isArray(u.tenantHistory) ? u.tenantHistory : [];
   if (history.length === 0) return '';
   return `
-    <div class="unit-section">
+    <div class="unit-section rd-prevten">
       <div class="unit-section-head">
         <span>Previous tenants</span>
         <span class="unit-section-count">${history.length}</span>
@@ -85721,7 +85852,7 @@ function _renderProrateBox(u) {
   return `
     <div class="move-in-card">
       <div class="mi-head">
-        <span>💰 Move-in invoices</span>
+        <span class="mi-head-left"><span class="mi-head-chip">${_rdIc('dollar', 13)}</span>Move-in invoices</span>
         <span class="mi-count">${hasDeposit ? 2 : 1}</span>
       </div>
       ${chargeFailedBanner}
@@ -93241,20 +93372,29 @@ function _renderAutoInvoiceRow(u, editOn) {
     ? nextDate.toLocaleDateString('en-US', {year: 'numeric', month: 'short', day: 'numeric'})
     : null;
 
-  const badge = effective
-    ? `<span style="background: rgba(22,163,74,0.12); color: #16a34a; padding: 2px 8px; border-radius: 5px; font-size: 11px; font-weight: 600;">⚡ Auto-invoicing on</span>`
-    : `<span style="background: var(--surface-3); color: var(--muted); padding: 2px 8px; border-radius: 5px; font-size: 11px; font-weight: 500;">Manual only</span>`;
+  // Шаг 7 редизайна: бейдж «⚡ Auto-invoicing on / Manual only» заменён
+  // настоящим .rd-sw свитчем (GREEN, --rd-sw-on) в шапке единой карточки.
+  // Underlying-механика сохранена: в edit-режиме свитч пишет в тот же
+  // <select id="fAutoInvoice"> (его читает saveUnitDetail), вне edit —
+  // disabled-индикатор. Tri-state Inherit остаётся доступен через select.
+  const swSync = `var s=document.getElementById('fAutoInvoice'); if(s) s.value = this.checked ? 'on' : 'off';`;
+  const swTitle = effective ? 'Auto-invoicing on' : 'Manual only';
+  const autoSwitch = `
+    <label class="rd-sw" style="margin-left: auto; --rd-sw-on: var(--rd-green-bar);" title="${esc(swTitle)}${editOn ? '' : ' — click Edit to change'}">
+      <input type="checkbox" id="fAutoInvoiceSw" ${effective ? 'checked' : ''} ${editOn ? `onchange="${swSync}"` : 'disabled'}>
+      <span class="rd-sw-knob"></span>
+    </label>`;
 
   const nextLine = effective && nextStr
-    ? `<div style="font-size: 12px; color: var(--text); margin-top: 6px;">
+    ? `<div style="font-size: 12.5px; color: var(--rd-text); margin-top: 8px;">
          Next invoice: <b>${esc(nextStr)}</b>
-         <span style="color: var(--muted); font-size: 11px;">· ${effectiveBefore}d before 1st · due ${cfg.daysUntilDue}d after send${unitBefore ? ' · <b>per-unit override</b>' : ''}</span>
+         <span style="color: var(--rd-text3); font-size: 11.5px;">· ${effectiveBefore}d before 1st · due ${cfg.daysUntilDue}d after send${unitBefore ? ' · <b>per-unit override</b>' : ''}</span>
        </div>`
     : effective
-      ? `<div style="font-size: 11.5px; color: var(--muted); margin-top: 6px;">Set monthly rent to see the next invoice date.</div>`
-      : `<div style="font-size: 11.5px; color: var(--muted); margin-top: 6px;">
+      ? `<div style="font-size: 12px; color: var(--rd-text2); margin-top: 8px;">Set monthly rent to see the next invoice date.</div>`
+      : `<div style="font-size: 12px; color: var(--rd-text2); margin-top: 8px;">
            Global default: ${cfg.enabled ? `send <b>${cfg.sendBeforeDays} days</b> before 1st of each month` : 'auto-invoicing disabled workspace-wide'}.
-           Change in <a href="#" onclick="event.preventDefault(); openSettings('billing'); return false;" style="color: var(--accent); font-weight: 600; text-decoration: none;">Settings → Billing</a>.
+           Change in <a href="#" onclick="event.preventDefault(); openSettings('billing'); return false;" style="color: var(--rd-accent-ink); font-weight: 600; text-decoration: none;">Settings → Billing</a>.
          </div>`;
 
   const wsAutoCharge = !!(state?.settings?.autoInvoice?.autoCharge);
@@ -93263,41 +93403,45 @@ function _renderAutoInvoiceRow(u, editOn) {
                    : 'inherit';
   const acEffective = u.autoCharge === 'on'
                   || (u.autoCharge !== 'off' && wsAutoCharge);
+  // Обратная синхронизация select → свитч: 'on' / 'inherit'(при включённом
+  // workspace-дефолте) поднимают свитч, 'off' опускает.
+  const selSync = `var w=document.getElementById('fAutoInvoiceSw'); if(w) w.checked = (this.value==='on') || (this.value==='inherit' && ${cfg.enabled ? 'true' : 'false'});`;
   const controls = editOn ? `
     <div style="margin-top: 10px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
-      <label style="font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.3px;">Auto-invoice</label>
-      <select id="fAutoInvoice" style="padding: 4px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); color: var(--text); font-size: 12px;">
+      <label style="font-size: 10.5px; font-weight: 700; color: var(--rd-text3); text-transform: uppercase; letter-spacing: 0.06em;">Auto-invoice</label>
+      <select id="fAutoInvoice" onchange="${selSync}" style="padding: 5px 8px; border: 1px solid var(--rd-border-strong); border-radius: 8px; background: #fff; color: var(--rd-text); font-size: 12.5px;">
         <option value="inherit" ${explicit === 'inherit' ? 'selected' : ''}>Inherit workspace default</option>
         <option value="on"      ${explicit === 'on'      ? 'selected' : ''}>Always auto-invoice</option>
         <option value="off"     ${explicit === 'off'     ? 'selected' : ''}>Never (manual only)</option>
       </select>
     </div>
     <div style="margin-top: 8px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
-      <label style="font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.3px;">Send (days before 1st)</label>
+      <label style="font-size: 10.5px; font-weight: 700; color: var(--rd-text3); text-transform: uppercase; letter-spacing: 0.06em;">Send (days before 1st)</label>
       <input type="number" id="fAutoInvoiceBeforeDays" min="1" max="28"
              value="${unitBefore != null ? unitBefore : ''}"
              placeholder="${cfg.sendBeforeDays} (workspace)"
-             style="width: 80px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); color: var(--text); font-size: 12px;">
-      <span style="font-size: 10.5px; color: var(--muted);">Empty = use workspace default</span>
+             style="width: 80px; padding: 5px 8px; border: 1px solid var(--rd-border-strong); border-radius: 8px; background: #fff; color: var(--rd-text); font-size: 12.5px;">
+      <span style="font-size: 11px; color: var(--rd-text3);">Empty = use workspace default</span>
     </div>
     <div style="margin-top: 8px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
-      <label style="font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.3px;">Auto-charge card</label>
-      <select id="fAutoCharge" style="padding: 4px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); color: var(--text); font-size: 12px;">
+      <label style="font-size: 10.5px; font-weight: 700; color: var(--rd-text3); text-transform: uppercase; letter-spacing: 0.06em;">Auto-charge card</label>
+      <select id="fAutoCharge" style="padding: 5px 8px; border: 1px solid var(--rd-border-strong); border-radius: 8px; background: #fff; color: var(--rd-text); font-size: 12.5px;">
         <option value="inherit" ${acExplicit === 'inherit' ? 'selected' : ''}>Inherit workspace (${wsAutoCharge ? 'on' : 'off'})</option>
         <option value="on"      ${acExplicit === 'on'      ? 'selected' : ''}>Always auto-charge</option>
         <option value="off"     ${acExplicit === 'off'     ? 'selected' : ''}>Never (hosted invoice only)</option>
       </select>
     </div>
     ${acEffective ? `
-      <div style="margin-top: 6px; padding: 8px 10px; background: rgba(99,91,255,0.08); border: 1px solid rgba(99,91,255,0.3); border-radius: 6px; font-size: 11.5px; color: var(--text);">
-        <b style="color: #635bff;">⚡ Auto-charge active.</b> If tenant has a saved card on Stripe, it will be debited automatically. First invoice (or any invoice for a customer without a saved card) still goes as a hosted email so the tenant can pay + save their card.
+      <div style="margin-top: 8px; padding: 8px 10px; background: var(--rd-accent-soft); border: 1px solid var(--rd-accent-border); border-radius: 8px; font-size: 11.5px; color: var(--rd-text);">
+        <b style="color: var(--rd-accent-ink); display: inline-flex; align-items: center; gap: 4px;">${_rdIc('zap', 11)}Auto-charge active.</b> If tenant has a saved card on Stripe, it will be debited automatically. First invoice (or any invoice for a customer without a saved card) still goes as a hosted email so the tenant can pay + save their card.
       </div>` : ''}` : '';
 
   return `
-    <div class="sfa-finance-only" style="margin-top: 10px; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;">
-      <div style="display: flex; justify-content: space-between; align-items: center;">
-        <div style="font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px;">Auto-invoicing</div>
-        ${badge}
+    <div class="rd-autoinv sfa-finance-only">
+      <div class="rd-sec-head">
+        <span class="rd-sec-chip">${_rdIc('zap', 16)}</span>
+        <span class="rd-sec-title">Auto-invoicing</span>
+        ${autoSwitch}
       </div>
       ${nextLine}
       ${controls}
@@ -95036,30 +95180,28 @@ function _renderUnitLateFeeBlock(u, editOn, ro) {
   const hasOverride = !!(u.lateFeeOverride && typeof u.lateFeeOverride === 'object' && Object.keys(u.lateFeeOverride).length > 0);
   const cfg = getLateFeeConfig(u);
   const globalCfg = getLateFeeConfig(null);
-  const sourceLabel = hasOverride ? 'Per-unit override' : (globalCfg.enabled ? 'Inherited from global' : 'Disabled globally');
-  const sourceColor = hasOverride ? 'var(--accent)' : 'var(--muted)';
-  // Summary показывает оба независимых флага: calc (отслеживать просрочку
-  // и считать сумму) + send (реально начислять tenant'у). Раздельные
-  // словесно — оператор видит сразу, в каком из двух режимов unit.
+  // Шаг 7 редизайна: details.rd-collapsible карточка (паттерн .lease-subcard
+  // из Шага 6) — чип i-gavel + статус «8% · 5d grace» справа (макет Suite 363
+  // Finance). Источник политики — строка-ссылка в теле карточки.
   const summary = cfg.enabled
-    ? `calc on · send ${cfg.autoSend ? 'on' : 'off'} · ${cfg.graceDays}d grace · ${cfg.type === 'percent' ? cfg.amount + '% of rent' : '$' + cfg.amount + ' flat'}`
+    ? `${cfg.type === 'percent' ? cfg.amount + '%' : '$' + cfg.amount} · ${cfg.graceDays}d grace`
     : 'calc off · send off';
-
-  // Make the "Inherited / Disabled globally" pill clickable so the
-  // operator can jump straight into the workspace policy that drives
-  // this unit's setting. Per-unit overrides skip the link (they
-  // don't depend on global settings).
-  const sourceLabelHtml = hasOverride
-    ? esc(sourceLabel)
-    : `<a href="#" onclick="event.preventDefault(); event.stopPropagation(); openSettings('billing'); return false;" style="color:${sourceColor}; text-decoration:underline;" title="Open workspace late-fee policy">${esc(sourceLabel)}</a>`;
+  const sourceLabel = hasOverride ? 'Per-unit override' : (globalCfg.enabled ? 'Inherited from global policy' : 'Disabled globally');
+  // Не-override источники кликабельны — прыжок в workspace-политику.
+  const sourceLine = hasOverride
+    ? `<div style="font-size: 12px; color: var(--rd-accent-ink); font-weight: 600; margin-top: 10px;">${esc(sourceLabel)}</div>`
+    : `<div style="font-size: 12px; margin-top: 10px;"><a href="#" onclick="event.preventDefault(); event.stopPropagation(); openSettings('billing'); return false;" style="color: var(--rd-accent-ink); font-weight: 600; text-decoration: underline;" title="Open workspace late-fee policy">${esc(sourceLabel)}</a></div>`;
 
   return `
-    <details class="unit-detail-group" ${hasOverride ? 'open' : ''}>
-      <summary>
-        <span>Late fee policy</span>
-        <span class="udg-summary" style="color:${sourceColor}">${sourceLabelHtml} · ${esc(summary)}</span>
+    <details class="lease-subcard rd-collapsible" ${hasOverride ? 'open' : ''}>
+      <summary class="rd-sec-head">
+        <span class="rd-sec-chip">${_rdIc('gavel', 16)}</span>
+        <span class="rd-sec-title">Late fee policy</span>
+        <span class="rd-sec-status">${esc(summary)}</span>
+        <span class="rd-sec-chev">${_rdIc('chev-d', 15)}</span>
       </summary>
-      <div class="udg-body">
+      <div>
+        ${sourceLine}
         <label class="udg-check">
           <input type="checkbox" id="fLfUseOverride" ${hasOverride ? 'checked' : ''} ${ro} ${editOn ? `onchange="_toggleLateFeeOverride(this.checked)"` : ''}>
           Use a custom late fee for this unit
