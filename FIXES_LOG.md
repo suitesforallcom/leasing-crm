@@ -60,6 +60,23 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 68. Backup snapshots were empty shells under strip-ON — rehydrate + chunked verify + cascade prune (backup/data-safety, 2026-06-10)
+
+- **Status:** needs-porting
+- **Branch / commit:** `fix/backup-collections` @ (this commit) — NOT deployed; functions deploy is §2-gated, awaiting Tony GO
+- **Area:** Backups (`_writeBackupSnapshot` / frequent+daily crons / prune / monthlyBackupVerify)
+- **Files:** functions/index.js
+- **Functions:** `_writeBackupSnapshot` (~4812), `_pruneOldBackups`, `_pruneOldFrequentBackups`, `monthlyBackupVerify`; test hooks under `SFA_TEST_EXPORTS`
+- **Bug it fixed:** under buildings-strip (LIVE since ~2026-06-01) every snapshot read the raw monolith → stored `buildings: []` and no payments — ALL backups since ~June 4 were useless shells (CLAUDE.md §0.1 violation). Confirmed empirically in the 2026-06-09 Suite 344 incident: PITR was the only recovery source. Three latent companions: prune never deleted the `chunks` subcollection (orphan leak the moment chunking activates), `monthlyBackupVerify` read only the main doc (false «buildings empty» alarm on every chunked backup), and a failed rehydrate would have produced silent empty backups again.
+- **Fix:** (1) `_writeBackupSnapshot` rehydrates via the existing strip-aware `_rehydrateStateForStripCF` (buildings from collection + payments merged into `u.payments`) before serializing — size goes >800KB → existing chunked path handles it; (2) explicit FAIL-LOUD: strip-ON + empty buildings after rehydrate → throw (cron error, not a phantom-success backup); (3) chunked path got the same read-back verify as inline (reassemble, compare building count); (4) both prune fns cascade-delete `chunks/*` before the parent (one batch per backup, ≤ ~20 ops); (5) `monthlyBackupVerify` reads via `_readBackupSnapshotBody` (reassembles chunks).
+- **Invariant — DO NOT BREAK:** every backup snapshot MUST contain the rehydrated buildings (non-empty under strip-ON) and pass read-back verify; pruning MUST cascade into `chunks`; verify paths MUST read through `_readBackupSnapshotBody`, never the main doc alone.
+- **Verification:** `firebase emulators:exec --only firestore "SFA_TEST_EXPORTS=1 node functions/test-harness/test-backup-collections.js"` — 13 asserts incl. the incident regression case (tenant+deposit stamp+merged payments present in a chunked, read-back-verified snapshot; empty rehydrate throws; prune cascades). All passed 2026-06-10.
+- **Regression test:** functions/test-harness/test-backup-collections.js (emulator; local-only)
+- **Related PR / issue:** docs/incident-2026-06-09-suite344.md (lesson #3). Cost: rehydrate ≈ +1.3k reads / 15-min snapshot ≈ $2-3/mo; chunked storage ≈ 350MB resident at 48h frequent retention.
+- **Porting note:** deploy = full `firebase deploy --only functions` (or at least frequentBackupSnapshot, dailyBackupSnapshot, monthlyBackupVerify + any callable using `_writeBackupSnapshot`). Until deployed, prod snapshots remain building-empty; PITR (7-day) is the only net.
+
+---
+
 ### 67. CF building mirror wiped _savedRev — Entry 65 guard floor reset by every server mirror (sync/data-safety, 2026-06-09)
 
 - **Status:** active (deployed 2026-06-10 03:34Z, full `firebase deploy --only functions`)

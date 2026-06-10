@@ -4817,6 +4817,19 @@ async function _writeBackupSnapshot({ workspaceId, docId, capturedBy, reason }) 
   }
   const stateDoc = stateSnap.data() || {};
   const stateBody = stateDoc.state || {};
+  // КРИТИЧНО (инцидент 2026-06-09, CLAUDE.md §0.1 «Backups must cover
+  // collections»): под strip-ON монолит несёт buildings:[] — без регидрации
+  // КАЖДЫЙ снапшот хранит ноль данных зданий (и payments живут в коллекции).
+  // Регидрируем тем же strip-aware путём, что и readWorkspaceState: здания
+  // из коллекции + payments вмержены в u.payments. Размер вырастает >800KB →
+  // уходит в существующий chunked-путь (restore его уже умеет).
+  await _rehydrateStateForStripCF(stateBody);
+  // Регидрация глотает свои ошибки (logger.warn) — для БЭКАПА пустые
+  // здания под strip-ON недопустимы: лучше громко упавший крон, чем
+  // месяцы «успешных» бэкапов-пустышек (ровно это и случилось до фикса).
+  if (_stripOnCF(stateBody) && (!Array.isArray(stateBody.buildings) || stateBody.buildings.length === 0)) {
+    throw new Error('Backup rehydrate failed — refusing to write an empty-buildings snapshot under strip-ON');
+  }
   const json = JSON.stringify(stateBody);
   const sizeBytes = Buffer.byteLength(json, 'utf8');
 
@@ -4893,7 +4906,17 @@ async function _writeBackupSnapshot({ workspaceId, docId, capturedBy, reason }) 
     state: stateMinusBuildings,
   });
   await batch.commit();
-  logger.info(`[backup] chunked ${docId} into ${chunks.length} chunks (${sizeBytes}B total)`);
+  // Verify read-back и для chunked-пути (зеркалит inline-верификацию):
+  // пересобираем чанки и сверяем число зданий — тихий partial-write не
+  // должен месяцами выглядеть успешным бэкапом.
+  const reread = await _readBackupSnapshotBody(workspaceId, docId);
+  const gotBuildings = (reread && reread.state && Array.isArray(reread.state.buildings))
+    ? reread.state.buildings.length : -1;
+  if (gotBuildings !== buildings.length) {
+    logger.error(`[backup] CHUNKED VERIFY FAILED for ${docId} — expected ${buildings.length} buildings, got ${gotBuildings}`);
+    throw new Error('Chunked backup verify failed — read-back mismatch');
+  }
+  logger.info(`[backup] chunked ${docId} into ${chunks.length} chunks (${sizeBytes}B total, ${buildings.length} buildings verified)`);
   return { docId, sizeBytes, _rev: stateDoc._rev || 0, chunked: true, chunkCount: chunks.length };
 }
 
@@ -4960,10 +4983,20 @@ async function _pruneOldBackups({ workspaceId, retainDays = 90 }) {
     .limit(450)                        // batch limit headroom (Firestore: 500)
     .get();
   if (snap.empty) return { deleted: 0 };
-  const batch = db.batch();
-  snap.docs.forEach(d => batch.delete(d.ref));
-  await batch.commit();
-  return { deleted: snap.size, hasMore: snap.size === 450 };
+  // КАСКАД: chunked-бэкапы несут сабколлекцию /chunks — Firestore не удаляет
+  // сабколлекции вместе с родителем. Без явной зачистки прюнинг плодит вечных
+  // сирот (после регидрации КАЖДЫЙ снапшот chunked, ~10 чанков на бэкап).
+  // Один батч на бэкап: chunks (≤ десятков) + родитель — всегда < 500 опов.
+  let deleted = 0;
+  for (const d of snap.docs) {
+    const chunkSnap = await db.collection(d.ref.path + '/chunks').select().get();
+    const batch = db.batch();
+    chunkSnap.docs.forEach((c) => batch.delete(c.ref));
+    batch.delete(d.ref);
+    await batch.commit();
+    deleted++;
+  }
+  return { deleted, hasMore: snap.size === 450 };
 }
 
 // Monthly backup-restorability check. Picks a random recent backup
@@ -4996,7 +5029,10 @@ exports.monthlyBackupVerify = onSchedule(
     // ages/sizes over the year.
     const pick = snap.docs[Math.floor(Math.random() * snap.docs.length)];
     const id = pick.id;
-    const body = pick.data() || {};
+    // ЧЕРЕЗ _readBackupSnapshotBody, не pick.data(): chunked-бэкапы (после
+    // регидрации — все частые) держат buildings в сабколлекции; чтение
+    // только главного дока давало бы ложный аларм «buildings empty».
+    const body = (await _readBackupSnapshotBody(WORKSPACE_ID, id)) || {};
     const errors = [];
     if (!body.state) errors.push('no .state field');
     else {
@@ -5066,13 +5102,18 @@ async function _pruneOldFrequentBackups({ workspaceId, retentionHours = FREQUENT
     .get();
   if (snap.empty) return { deleted: 0 };
   const FREQ_ID = /^\d{4}-\d{2}-\d{2}-\d{4}$/;
-  const batch = db.batch();
+  // КАСКАД chunks — см. _pruneOldBackups: сабколлекция не удаляется с
+  // родителем; в типичном прогоне истекает 1 снапшот → 1 батч (~11 опов).
   let n = 0;
-  snap.docs.forEach(d => {
-    if (FREQ_ID.test(d.id)) { batch.delete(d.ref); n++; }
-  });
-  if (n === 0) return { deleted: 0 };
-  await batch.commit();
+  for (const d of snap.docs) {
+    if (!FREQ_ID.test(d.id)) continue;
+    const chunkSnap = await db.collection(d.ref.path + '/chunks').select().get();
+    const batch = db.batch();
+    chunkSnap.docs.forEach((c) => batch.delete(c.ref));
+    batch.delete(d.ref);
+    await batch.commit();
+    n++;
+  }
   return { deleted: n, hasMore: snap.size === 450 };
 }
 
@@ -8950,5 +8991,9 @@ exports.ppWebhookFlushScheduled = _ppWebhook.ppWebhookFlushScheduled;
 // внутренние функции напрямую (functions/test-harness/test-mirror-savedrev.js).
 if (process.env.SFA_TEST_EXPORTS === '1') {
   exports._test_mirrorBuildingV2CF = _mirrorBuildingV2CF;
+  exports._test_writeBackupSnapshot = _writeBackupSnapshot;
+  exports._test_readBackupSnapshotBody = _readBackupSnapshotBody;
+  exports._test_pruneOldFrequentBackups = _pruneOldFrequentBackups;
+  exports._test_pruneOldBackups = _pruneOldBackups;
 }
 
