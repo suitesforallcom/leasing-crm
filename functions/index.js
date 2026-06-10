@@ -245,15 +245,30 @@ function _buildingForV2CF(b) {
 }
 
 // Зеркалит одно здание в коллекцию (формат 1-в-1 с клиентским _mirrorBuildingsToV2).
+// ВАЖНО (FIXES_LOG 65 Layer 2): _savedRev обязан СОХРАНЯТЬСЯ И РАСТИ при
+// каждой серверной записи. Старая версия делала полный set() БЕЗ _savedRev →
+// поле исчезало из дока → rules-гард монотонности читал resource._savedRev
+// как 0, и следующая запись stale-таба проходила гард — заново открывая
+// вектор затирания 2026-06-08. Транзакция (а не get+set) закрывает заодно
+// гонку с конкурентной клиентской записью: при конфликте tx ретраится и
+// перечитывает свежий _savedRev. Док с отсутствующим _savedRev (наследие
+// старых CF-записей) лечится: 0 → 1.
 async function _mirrorBuildingV2CF(b) {
   if (!b || !b.id) return;
   try {
-    await db.doc(`workspaces/${WORKSPACE_ID}/buildings/${b.id}`).set({
-      _schema: 'v2',
-      buildingId: b.id,
-      doc: _buildingForV2CF(b),
-      _mirroredAt: admin.firestore.FieldValue.serverTimestamp(),
-      _mirroredBy: 'cloud-function',
+    const ref = db.doc(`workspaces/${WORKSPACE_ID}/buildings/${b.id}`);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const curRev = (snap.exists && typeof snap.data()._savedRev === 'number')
+        ? snap.data()._savedRev : 0;
+      tx.set(ref, {
+        _schema: 'v2',
+        buildingId: b.id,
+        doc: _buildingForV2CF(b),   // полная замена doc — merge тут запрещён (удалённые юниты не должны липнуть)
+        _mirroredAt: admin.firestore.FieldValue.serverTimestamp(),
+        _mirroredBy: 'cloud-function',
+        _savedRev: curRev + 1,      // монотонно: сохранить и продвинуть гард-пол
+      });
     });
   } catch (e) {
     logger.warn(`[strip-cf:mirror] ${b.id}: ${(e && e.message) || e}`);
@@ -8928,4 +8943,12 @@ const _ppWebhook = require('./pp-webhook');
 exports.ppNotifyBuildingChanged = _ppWebhook.ppNotifyBuildingChanged;
 exports.ppNotifyPaymentChanged = _ppWebhook.ppNotifyPaymentChanged;
 exports.ppWebhookFlushScheduled = _ppWebhook.ppWebhookFlushScheduled;
+
+// ─── Тест-хуки (ТОЛЬКО под env-флагом) ──────────────────────────────────────
+// Деплой-дискавери firebase никогда не выставляет SFA_TEST_EXPORTS — в проде
+// этих экспортов не существует. Нужны эмуляторным тестам, которые проверяют
+// внутренние функции напрямую (functions/test-harness/test-mirror-savedrev.js).
+if (process.env.SFA_TEST_EXPORTS === '1') {
+  exports._test_mirrorBuildingV2CF = _mirrorBuildingV2CF;
+}
 
