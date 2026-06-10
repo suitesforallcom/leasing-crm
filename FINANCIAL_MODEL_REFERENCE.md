@@ -126,6 +126,7 @@ floorRentableSqft = f.leaseEntireFloor ? _floorGrossSqft(f)            // gross
 - Money flows through the EXISTING multi-suite lease head (EQ-2): enable creates one group over all office units of the floor, head = largest-sqft office, head holds combined rent, secondaries 0. No `floor.rent` / `floor.tenant` fields exist.
 - **$/ft² drops** when the denominator flips to gross — this is correct, not a rent cut (rate reads "per gross floor area").
 - Occupancy honest: a floor counts as 100% occupied ONLY while `_floorFullLeaseActive(f)` — head `status==='occupied'` AND `(head.tenant || head.company)`. The flag alone never inflates occupancy.
+- **UI entry points:** Building modal → Floors tab checkbox (dormant toggle), AND floor «···» kebab → «Lease entire floor…» (operator enters tenant + whole-floor monthly rent; live $/ft²/yr on gross shown; price → group-lease head via _groupCreate, secondaries 0). Both set f.leaseEntireFloor; same EQ-8 math.
 **Equivalent of Kiwi**: no direct rule. See FIXES_LOG Entry 66.
 
 ---

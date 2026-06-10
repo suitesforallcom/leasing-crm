@@ -10636,6 +10636,13 @@
     height: 1px; background: var(--rd-border);
     margin: 4px 8px;
   }
+  /* Подзаголовок-разделитель внутри кебаб-меню (этажный «Floor lease type
+     (forecast)») — крошечный uppercase-лейбл над сгруппированными пунктами. */
+  .upv2-menu-sep-label {
+    padding: 6px 10px 2px; font: 600 10px var(--rd-font);
+    letter-spacing: .04em; text-transform: uppercase; color: var(--rd-text2);
+    cursor: default; user-select: none;
+  }
 
   /* Late-fee owed block — neutral chrome (was bright orange).
      Late fees aren't an EMERGENCY (the red overdue alert above is) —
@@ -20722,6 +20729,14 @@
           <div class="fhead-row">
             <h1 id="fhFloorName" title="Switch to the next floor" onclick="_fheadCycleFloor()">—<svg class="rd-ic" style="width:17px;height:17px" aria-hidden="true"><use href="#i-chev-d"></use></svg></h1>
             <span class="unitchip" id="fhUnitChip"></span>
+            <!-- Floor-level kebab «···» — действия над ВСЕМ этажом (аренда всего
+                 этажа, переименование, billing-правила, forecast-тип). Зеркалит
+                 юнит-кебаб (toggleUnitMenu/.upv2-menu-item). margin-left:auto —
+                 прижимаем кебаб к правому краю шапки. -->
+            <div class="upv2-menu-wrap" id="floorKebabWrap" style="margin-left:auto; display:none;">
+              <button class="upv2-menu-btn" id="floorKebabBtn" onclick="toggleFloorMenu(event)" title="Floor actions" aria-label="Floor actions"></button>
+              <div class="upv2-menu" id="floorKebabMenu" style="display:none;"></div>
+            </div>
           </div>
         </header>
 
@@ -75180,7 +75195,13 @@ window._consolidateLeaseHead = _consolidateLeaseHead;
 // the user can deselect on the canvas without losing the modal context.
 let _groupAssignDraft = null;
 
-function openGroupAssignModal() {
+// openGroupAssignModal(prebuiltDraft?, prefill?) — обычный путь (без аргументов)
+// требует 2+ выделенных офисов. Whole-floor путь (openFloorLeaseModal) передаёт
+// готовый draft с .wholeFloor и prefill, минуя precondition «2+ selectedIds»:
+// набор юнитов уже определён (все офисы этажа). Существующие вызовы без
+// аргументов работают как раньше.
+function openGroupAssignModal(prebuiltDraft, prefill) {
+  const wholeFloorMode = !!(prebuiltDraft && prebuiltDraft.wholeFloor);
   // Permission gate (role-based) — vacates can't mutate. Edit Mode is
   // ALSO required because grouping touches geometry-adjacent state, but
   // we auto-flip it on for the user instead of bailing — clicking
@@ -75190,37 +75211,67 @@ function openGroupAssignModal() {
     if (typeof toast === 'function') toast('Your role cannot group suites', 'error');
     return;
   }
-  if (!Array.isArray(selectedIds) || selectedIds.length < 2) {
-    if (typeof toast === 'function') toast('Select 2+ suites first (Shift+click or marquee)', 'error');
-    return;
-  }
-  if (!state.settings.editMode) {
-    state.settings.editMode = true;
-    document.body.classList.add('edit-mode-on');
-    try { saveLocalOnly && saveLocalOnly(); } catch {}
-    if (typeof toast === 'function') toast('Edit Mode auto-enabled — needed to group suites', 'info');
-    if (typeof renderAll === 'function') {
-      try { renderAll(); } catch {}
+  let units;
+  if (prebuiltDraft && Array.isArray(prebuiltDraft.units)) {
+    // Whole-floor режим: набор юнитов уже сформирован вызывающим
+    // (openFloorLeaseModal прогнал гарды и Edit-Mode auto-enable).
+    units = prebuiltDraft.units.filter(u => u && u.type === 'office' && u.rentable !== false);
+    if (units.length < 1) {
+      if (typeof toast === 'function') toast('No rentable office suites on this floor', 'error');
+      return;
     }
+    _groupAssignDraft = {
+      ids: units.map(u => u.id),
+      units,
+      wholeFloor: prebuiltDraft.wholeFloor || null,
+    };
+  } else {
+    if (!Array.isArray(selectedIds) || selectedIds.length < 2) {
+      if (typeof toast === 'function') toast('Select 2+ suites first (Shift+click or marquee)', 'error');
+      return;
+    }
+    if (!state.settings.editMode) {
+      state.settings.editMode = true;
+      document.body.classList.add('edit-mode-on');
+      try { saveLocalOnly && saveLocalOnly(); } catch {}
+      if (typeof toast === 'function') toast('Edit Mode auto-enabled — needed to group suites', 'info');
+      if (typeof renderAll === 'function') {
+        try { renderAll(); } catch {}
+      }
+    }
+    units = selectedIds
+      .map(id => currentUnits().find(u => u.id === id))
+      .filter(Boolean)
+      .filter(u => u.type === 'office' && u.rentable !== false);
+    if (units.length < 2) {
+      if (typeof toast === 'function') toast('Need 2+ rentable office suites in selection', 'error');
+      return;
+    }
+    _groupAssignDraft = { ids: units.map(u => u.id), units };
   }
-  const units = selectedIds
-    .map(id => currentUnits().find(u => u.id === id))
-    .filter(Boolean)
-    .filter(u => u.type === 'office' && u.rentable !== false);
-  if (units.length < 2) {
-    if (typeof toast === 'function') toast('Need 2+ rentable office suites in selection', 'error');
-    return;
-  }
-  _groupAssignDraft = { ids: units.map(u => u.id), units };
   // Pre-fill from the largest unit if it already has tenant data — common
   // case: operator already typed tenant info on one suite, now wants to
-  // extend the lease to neighbours.
+  // extend the lease to neighbours. В whole-floor режиме prefill приходит
+  // готовым из openFloorLeaseModal (любой занятый офис этажа).
   const largest = units.slice().sort((a, c) => (+c.sqft || 0) - (+a.sqft || 0))[0];
   const totalSqft = units.reduce((x, u) => x + (+u.sqft || 0), 0);
   const totalRent = units.reduce((x, u) => x + (+u.contractRent || +u.rent || 0), 0);
 
-  document.getElementById('groupAssignSummary').innerHTML =
-    `<b>${units.length} suites</b> · <b>${totalSqft.toLocaleString()} ft²</b> combined`;
+  // Заголовок + summary. В whole-floor режиме показываем имя этажа и gross-
+  // площадь (знаменатель $/ft² по EQ-8), плюс live-строку $/ft²/yr · gross.
+  const titleEl = document.querySelector('#groupAssignModal h2 span');
+  if (titleEl) titleEl.textContent = wholeFloorMode ? 'Lease entire floor' : 'Group suites & assign tenant';
+  if (wholeFloorMode) {
+    const f = _groupAssignWholeFloorRef();
+    const gross = (f && typeof _floorGrossSqft === 'function') ? (+_floorGrossSqft(f) || 0) : 0;
+    document.getElementById('groupAssignSummary').innerHTML =
+      `<b>${esc(f ? f.name : 'Floor')}</b> · <b>${units.length} office suite${units.length === 1 ? '' : 's'}</b> · `
+      + `gross <b>${gross.toLocaleString()} ft²</b> (load factor 1.0)`
+      + `<div id="groupAssignRateLine" style="margin-top:4px; font-size:12px; color:var(--muted);"></div>`;
+  } else {
+    document.getElementById('groupAssignSummary').innerHTML =
+      `<b>${units.length} suites</b> · <b>${totalSqft.toLocaleString()} ft²</b> combined`;
+  }
   document.getElementById('groupAssignMembers').innerHTML = units
     .sort((a, c) => String(a.id).localeCompare(String(c.id)))
     .map(u => `<span style="display:inline-block; padding:3px 8px; margin:2px 4px 2px 0;
@@ -75230,21 +75281,51 @@ function openGroupAssignModal() {
                    <span style="color:var(--muted);">${(+u.sqft||0).toLocaleString()} ft²</span>
                  </span>`).join('');
 
-  document.getElementById('groupAssignTenant').value  = largest.tenant  || '';
-  document.getElementById('groupAssignCompany').value = largest.company || '';
-  document.getElementById('groupAssignEmail').value   = largest.email   || '';
-  document.getElementById('groupAssignPhone').value   = largest.tel     || '';
-  document.getElementById('groupAssignStart').value   = largest.leaseStart || '';
-  document.getElementById('groupAssignEnd').value     = largest.until   || '';
-  document.getElementById('groupAssignDeposit').value = largest.deposit || '';
-  document.getElementById('groupAssignRent').value    = totalRent       || '';
+  const pf = prefill || {};
+  document.getElementById('groupAssignTenant').value  = wholeFloorMode ? (pf.tenant  || '') : (largest.tenant  || '');
+  document.getElementById('groupAssignCompany').value = wholeFloorMode ? (pf.company || '') : (largest.company || '');
+  document.getElementById('groupAssignEmail').value   = wholeFloorMode ? (pf.email   || '') : (largest.email   || '');
+  document.getElementById('groupAssignPhone').value   = wholeFloorMode ? (pf.tel     || '') : (largest.tel     || '');
+  document.getElementById('groupAssignStart').value   = wholeFloorMode ? (pf.leaseStart || '') : (largest.leaseStart || '');
+  document.getElementById('groupAssignEnd').value     = wholeFloorMode ? (pf.until   || '') : (largest.until   || '');
+  document.getElementById('groupAssignDeposit').value = wholeFloorMode ? (pf.deposit || '') : (largest.deposit || '');
+  document.getElementById('groupAssignRent').value    = wholeFloorMode ? (pf.rent || '') : (totalRent || '');
 
   _renderGroupAssignSplit();
+  if (wholeFloorMode) _renderGroupAssignFloorRate();
   const rentInp = document.getElementById('groupAssignRent');
-  rentInp.oninput = _renderGroupAssignSplit;
+  rentInp.oninput = () => {
+    _renderGroupAssignSplit();
+    if (_groupAssignDraft && _groupAssignDraft.wholeFloor) _renderGroupAssignFloorRate();
+  };
 
   document.getElementById('groupAssignModal').classList.add('active');
   setTimeout(() => document.getElementById('groupAssignTenant').focus(), 50);
+}
+
+// Резолвер floor-объекта для активного whole-floor draft'а.
+function _groupAssignWholeFloorRef() {
+  const d = _groupAssignDraft;
+  if (!d || !d.wholeFloor) return null;
+  const b = (state.buildings || []).find(x => x.id === d.wholeFloor.buildingId);
+  if (!b || !Array.isArray(b.floors)) return null;
+  return b.floors.find(x => x.id === d.wholeFloor.floorId) || null;
+}
+
+// Live $/ft²/yr на GROSS-площади этажа (EQ-8: знаменатель = _floorGrossSqft,
+// load factor 1.0). Обновляется по мере ввода месячной аренды.
+function _renderGroupAssignFloorRate() {
+  const line = document.getElementById('groupAssignRateLine');
+  if (!line) return;
+  const f = _groupAssignWholeFloorRef();
+  const gross = (f && typeof _floorGrossSqft === 'function') ? (+_floorGrossSqft(f) || 0) : 0;
+  const rent = +document.getElementById('groupAssignRent').value || 0;
+  if (rent <= 0 || gross <= 0) {
+    line.textContent = 'Enter the whole-floor monthly rent to see $/ft²/yr on gross.';
+    return;
+  }
+  const perFtYr = (rent * 12) / gross;
+  line.innerHTML = `<b>$${perFtYr.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / ft²/yr · gross</b>`;
 }
 
 // Live-preview of the rent split — updates as the operator types.
@@ -75280,11 +75361,16 @@ function _renderGroupAssignSplit() {
 function closeGroupAssignModal() {
   document.getElementById('groupAssignModal').classList.remove('active');
   _groupAssignDraft = null;
+  // Возвращаем заголовок к дефолту, чтобы следующий обычный вызов модалки
+  // не остался с надписью «Lease entire floor».
+  const titleEl = document.querySelector('#groupAssignModal h2 span');
+  if (titleEl) titleEl.textContent = 'Group suites & assign tenant';
 }
 
 function saveGroupAssign() {
   const draft = _groupAssignDraft;
   if (!draft) return;
+  const wholeFloor = draft.wholeFloor || null;
   const tenantData = {
     tenant:    document.getElementById('groupAssignTenant').value.trim(),
     company:   document.getElementById('groupAssignCompany').value.trim(),
@@ -75310,13 +75396,52 @@ function saveGroupAssign() {
     }
   } catch {}
   pushHistory();
-  const groupId = _groupCreate(draft.ids, tenantData);
-  if (!groupId) return;
+
+  let groupId = null;
+  if (wholeFloor && draft.ids.length === 1) {
+    // Этаж с единственным офисом — группу из одного юнита создать нельзя
+    // (_groupCreate требует 2+). Пишем арендатора прямо на этот офис; голова
+    // лиза = он сам (см. _floorFullLeaseActive single-office ветку). Поля и
+    // status зеркалят _groupCreate (occupied + копия tenant-полей).
+    const only = (draft.units && draft.units[0]) || null;
+    if (!only) { if (typeof toast === 'function') toast('Floor unit not found', 'error'); return; }
+    const fields = ['tenant', 'company', 'email', 'tel', 'leaseStart', 'until', 'deposit'];
+    for (const k of fields) {
+      const v = (k === 'tel') ? tenantData.tel : tenantData[k];
+      if (v !== undefined && v !== null && v !== '') only[k] = v;
+    }
+    only.contractRent = tenantData.totalRent;
+    only.rent = tenantData.totalRent;
+    only.status = 'occupied';
+    delete only.groupId;     // одиночный офис — без группы
+    delete only.groupRole;
+  } else {
+    groupId = _groupCreate(draft.ids, tenantData);
+    if (!groupId) return;
+  }
+
+  // Whole-floor hook (EQ-8) — ставим флаг и указатель на голову группы ПОСЛЕ
+  // успешного создания лиза, до saveState. Деньги уже на голове (_groupCreate)
+  // либо на единственном офисе — floor.rent/floor.tenant не вводим.
+  if (wholeFloor) {
+    const b = (state.buildings || []).find(x => x.id === wholeFloor.buildingId);
+    const f = b && Array.isArray(b.floors) ? b.floors.find(x => x.id === wholeFloor.floorId) : null;
+    if (f) {
+      f.leaseEntireFloor = true;
+      if (groupId) f.fullFloorGroupId = groupId;
+      else delete f.fullFloorGroupId;  // single-office: группы нет, указатель не нужен
+    }
+  }
+
   saveState();
   if (typeof renderAll === 'function') renderAll();
   closeGroupAssignModal();
   if (typeof toast === 'function') {
-    toast(`✓ Grouped ${draft.ids.length} suites under ${tenantData.tenant} · $${tenantData.totalRent.toLocaleString()}/mo`, 'success');
+    if (wholeFloor) {
+      toast(`✓ Whole floor leased to ${tenantData.tenant} · $${tenantData.totalRent.toLocaleString()}/mo`, 'success');
+    } else {
+      toast(`✓ Grouped ${draft.ids.length} suites under ${tenantData.tenant} · $${tenantData.totalRent.toLocaleString()}/mo`, 'success');
+    }
   }
 }
 
@@ -78584,6 +78709,223 @@ function _unitMenuClickOut(e) {
   }
   if (menu) menu.style.display = 'none';
 }
+
+// =========================================================================
+// FLOOR-LEVEL KEBAB «···» — действия над всем этажом
+// =========================================================================
+// Зеркалит юнит-кебаб (toggleUnitMenu/.upv2-menu-item). Кнопка и контейнер
+// меню живут в шапке этажа (.fhead-row); renderFloorKebabMenu заполняет
+// иконку кнопки + пункты меню по текущему этажу. Вызывается из updateStats,
+// поэтому пункты всегда отражают актуальное состояние полнопольной аренды.
+function renderFloorKebabMenu() {
+  const wrap = document.getElementById('floorKebabWrap');
+  const btn  = document.getElementById('floorKebabBtn');
+  const menu = document.getElementById('floorKebabMenu');
+  if (!wrap || !btn || !menu) return;
+  const f = (typeof currentFloor === 'function') ? currentFloor() : null;
+  // Нет этажа → прячем кебаб целиком.
+  if (!f) { wrap.style.display = 'none'; menu.style.display = 'none'; return; }
+  wrap.style.display = '';
+  if (typeof _rdIc === 'function') btn.innerHTML = _rdIc('dots', 17);
+
+  const fid = esc(String(f.id));
+  const ff  = (typeof _floorFullLeaseActive === 'function') ? _floorFullLeaseActive(f) : false;
+  const flagged = !!f.leaseEntireFloor;  // флаг стоит (даже если голова ещё вакантна)
+  const lt  = f.leaseType || 'multi-suite';
+  const ic  = (n, s) => (typeof _rdIc === 'function') ? _rdIc(n, s || 16) : '';
+  const editable = (typeof canEdit !== 'function') || canEdit();
+
+  const items = [];
+  // 1. Аренда всего этажа — три состояния: нет лиза / редактировать / растворить.
+  if (flagged || ff) {
+    items.push(`<button class="upv2-menu-item" onclick="closeFloorMenu(); openFloorLeaseModal('${fid}')">${ic('pencil')} Edit whole-floor lease…</button>`);
+    items.push(`<button class="upv2-menu-item danger" onclick="closeFloorMenu(); _floorDissolveFromMenu('${fid}')">${ic('trash')} Dissolve whole-floor lease</button>`);
+  } else {
+    items.push(`<button class="upv2-menu-item" onclick="closeFloorMenu(); openFloorLeaseModal('${fid}')">${ic('building')} Lease entire floor…</button>`);
+  }
+  items.push(`<div class="upv2-menu-sep"></div>`);
+  // 2. Переименование этажа.
+  items.push(`<button class="upv2-menu-item" onclick="closeFloorMenu(); renameFloorPrompt('${fid}')">${ic('pencil')} Rename floor…</button>`);
+  // 3. Per-floor billing-правила — открываем модалку здания на табе Billing Rules
+  //    (sub-modal brOpenFloorEdit требует draft'ов building-модалки, в одиночку
+  //    не работает). Оператор жмёт «Edit override…» у нужного этажа.
+  items.push(`<button class="upv2-menu-item" onclick="closeFloorMenu(); _floorBillingRulesFromMenu()">${ic('dollar')} Floor billing rules…</button>`);
+  items.push(`<div class="upv2-menu-sep"></div>`);
+  // 4. Floor lease type (forecast) — подменю на два пункта с галочкой текущего.
+  //    Это UNDERWRITING-допущение для Revenue Forecast, отдельное от
+  //    операционной аренды всего этажа выше (см. tooltip).
+  const chk = (typeof _rdIc === 'function') ? _rdIc('check', 14) : '✓';
+  const spacer = '<span style="display:inline-block;width:14px"></span>';  // выравнивание без галочки
+  const ms  = lt === 'multi-suite';
+  items.push(`<div class="upv2-menu-sep-label" title="Underwriting / forecast assumption for this floor — separate from the operational whole-floor lease above. Drives Revenue Forecast escalation vs. downtime.">Floor lease type (forecast)</div>`);
+  items.push(`<button class="upv2-menu-item" onclick="closeFloorMenu(); _floorLeaseTypeFromMenu('${fid}','multi-suite')">${ms ? chk : spacer} Multi-tenant (offices)</button>`);
+  items.push(`<button class="upv2-menu-item" onclick="closeFloorMenu(); _floorLeaseTypeFromMenu('${fid}','full-floor')">${!ms ? chk : spacer} Single tenant (whole floor)</button>`);
+
+  // Не-editor роли видят меню только для навигации (rename/billing/lease type
+  // и сама модалка уже гейтят через canEdit), но скрывать пункты целиком не
+  // нужно — действия сами вернут toast при отказе, как в юнит-кебабе.
+  menu.innerHTML = items.join('');
+}
+
+function toggleFloorMenu(e) {
+  if (e) { e.stopPropagation(); e.preventDefault(); }
+  const menu = document.getElementById('floorKebabMenu');
+  if (!menu) return;
+  const willOpen = menu.style.display === 'none' || menu.style.display === '';
+  // Перед открытием пересобираем пункты — состояние лиза могло измениться.
+  if (willOpen && typeof renderFloorKebabMenu === 'function') renderFloorKebabMenu();
+  menu.style.display = willOpen ? 'block' : 'none';
+  if (willOpen) {
+    setTimeout(() => {
+      document.addEventListener('click', _floorMenuClickOut, { once: true });
+      document.addEventListener('keydown', _floorMenuEsc);
+    }, 0);
+  } else {
+    document.removeEventListener('keydown', _floorMenuEsc);
+  }
+}
+function closeFloorMenu() {
+  const menu = document.getElementById('floorKebabMenu');
+  if (menu) menu.style.display = 'none';
+  document.removeEventListener('keydown', _floorMenuEsc);
+}
+function _floorMenuClickOut(e) {
+  const menu = document.getElementById('floorKebabMenu');
+  const wrap = e.target.closest('#floorKebabWrap');
+  if (wrap) {
+    document.addEventListener('click', _floorMenuClickOut, { once: true });
+    return;
+  }
+  closeFloorMenu();
+}
+function _floorMenuEsc(e) {
+  if (e.key === 'Escape') closeFloorMenu();
+}
+window.toggleFloorMenu = toggleFloorMenu;
+window.closeFloorMenu  = closeFloorMenu;
+window.renderFloorKebabMenu = renderFloorKebabMenu;
+
+// «Floor billing rules» — открываем модалку текущего здания на табе Billing
+// Rules (sub-modal brOpenFloorEdit требует draft-массивы building-модалки и
+// в одиночку не работает — это наименее рискованный рабочий путь).
+function _floorBillingRulesFromMenu() {
+  const b = (typeof currentBuilding === 'function') ? currentBuilding() : null;
+  if (!b) { if (typeof toast === 'function') toast('No building selected', 'error'); return; }
+  if (typeof openBuildingInfo === 'function') openBuildingInfo(b.id);
+  if (typeof bmSelectTab === 'function') bmSelectTab('billing');
+}
+window._floorBillingRulesFromMenu = _floorBillingRulesFromMenu;
+
+// «Floor lease type (forecast)» — переключаем underwriting-допущение через
+// СУЩЕСТВУЮЩИЙ аксессор _saveFloorLeaseType (pushHistory + saveState внутри).
+function _floorLeaseTypeFromMenu(floorId, value) {
+  if (typeof canEdit === 'function' && !canEdit()) {
+    if (typeof toast === 'function') toast('Your role cannot change the floor lease type', 'error');
+    return;
+  }
+  if (typeof _saveFloorLeaseType === 'function') _saveFloorLeaseType(floorId, value);
+  if (typeof toast === 'function') {
+    toast(`Forecast lease type → ${value === 'full-floor' ? 'Single tenant (whole floor)' : 'Multi-tenant (offices)'}`, 'info');
+  }
+}
+window._floorLeaseTypeFromMenu = _floorLeaseTypeFromMenu;
+
+// «Dissolve whole-floor lease» — растворяем групп-лиз + снимаем флаги через
+// существующий _floorFullLeaseDisable; pushHistory + saveState + renderAll.
+function _floorDissolveFromMenu(floorId) {
+  if (typeof canEdit === 'function' && !canEdit()) {
+    if (typeof toast === 'function') toast('Your role cannot change leases', 'error');
+    return;
+  }
+  const b = (typeof currentBuilding === 'function') ? currentBuilding() : null;
+  const f = b && Array.isArray(b.floors) ? b.floors.find(x => x.id === floorId) : null;
+  if (!f) { if (typeof toast === 'function') toast('Floor not found', 'error'); return; }
+  if (!f.leaseEntireFloor) { if (typeof toast === 'function') toast('No whole-floor lease on this floor', 'info'); return; }
+  // Pre-mutation snapshot — растворение трогает несколько записей.
+  try {
+    if (typeof _localBackupCreate === 'function') {
+      _localBackupCreate('pre-mutation', `Before dissolving whole-floor lease on "${f.name}"`);
+    }
+  } catch {}
+  if (typeof pushHistory === 'function') pushHistory();
+  if (typeof _floorFullLeaseDisable === 'function') _floorFullLeaseDisable(f);
+  if (typeof saveState === 'function') saveState();
+  if (typeof renderAll === 'function') renderAll();
+  if (typeof toast === 'function') toast(`Whole-floor lease dissolved · ${esc(f.name)}`, 'success');
+}
+window._floorDissolveFromMenu = _floorDissolveFromMenu;
+
+// «Lease entire floor…» — прогоняем ТЕ ЖЕ гарды, что и _floorFullLeaseEnable
+// (нет офисов → toast; уже есть группа → «dissolve first»; >1 арендатор →
+// toast), затем формируем draft.wholeFloor и открываем group-assign модалку
+// в whole-floor режиме. Деньги по-прежнему текут через _groupCreate (EQ-8:
+// аренда консолидируется на голове группы; floor.rent/floor.tenant не вводим).
+function openFloorLeaseModal(floorId) {
+  // Permission gate — как в openGroupAssignModal.
+  if (typeof canEdit === 'function' && !canEdit()) {
+    if (typeof toast === 'function') toast('Your role cannot lease the floor', 'error');
+    return;
+  }
+  const b = (typeof currentBuilding === 'function') ? currentBuilding() : null;
+  const f = b && Array.isArray(b.floors) ? b.floors.find(x => x.id === floorId) : null;
+  if (!f) { if (typeof toast === 'function') toast('Floor not found', 'error'); return; }
+
+  const offices = (typeof _stRentableUnits === 'function') ? _stRentableUnits(f) : [];
+  if (!offices.length) {
+    if (typeof toast === 'function') toast(`${f.name}: no leasable suites on this floor yet — draw units first`, 'error');
+    return;
+  }
+  // Гард от комминглинга: если на этаже уже есть ЧУЖАЯ группа (не наш
+  // fullFloorGroupId) — оператор должен сначала растворить её.
+  const foreignGroup = offices.find(u => u.groupId && u.groupId !== f.fullFloorGroupId);
+  if (foreignGroup) {
+    if (typeof toast === 'function') toast(`${f.name}: floor already has a suite group — dissolve it first, then lease the entire floor`, 'error');
+    return;
+  }
+  // >1 разных арендаторов слить в один лиз нельзя (тот же гард, что в enable).
+  const tenantKeys = new Set();
+  let src = null;
+  for (const u of offices) {
+    if (u.status === 'occupied' && (u.tenant || u.company)) {
+      tenantKeys.add(`${u.tenant || ''}|${u.company || ''}`);
+      if (!src) src = u;
+    }
+  }
+  if (tenantKeys.size > 1) {
+    if (typeof toast === 'function') toast(`${f.name}: floor has ${tenantKeys.size} different tenants — an entire-floor lease needs a single tenant`, 'error');
+    return;
+  }
+
+  // Edit-Mode auto-enable — как в openGroupAssignModal.
+  if (state && state.settings && !state.settings.editMode) {
+    state.settings.editMode = true;
+    document.body.classList.add('edit-mode-on');
+    try { saveLocalOnly && saveLocalOnly(); } catch {}
+    if (typeof toast === 'function') toast('Edit Mode auto-enabled — needed to lease the floor', 'info');
+    if (typeof renderAll === 'function') { try { renderAll(); } catch {} }
+  }
+
+  // Σ текущей офисной аренды — предзаполняем поле Rent (оператор перепишет на
+  // whole-floor цену). Σ берём с contractRent||rent, как в _floorFullLeaseEnable.
+  const sumRent = offices.reduce((s, u) => s + (+u.contractRent || +u.rent || 0), 0);
+  const prefill = {
+    tenant: src ? (src.tenant || '') : '',
+    company: src ? (src.company || '') : '',
+    email: src ? (src.email || '') : '',
+    tel: src ? (src.tel || '') : '',
+    leaseStart: src ? (src.leaseStart || '') : '',
+    until: src ? (src.until || '') : '',
+    deposit: src ? (src.deposit || '') : '',
+    rent: sumRent || '',
+  };
+  const draft = {
+    ids: offices.map(u => u.id),
+    units: offices,
+    wholeFloor: { floorId: f.id, buildingId: b.id },
+  };
+  if (typeof openGroupAssignModal === 'function') openGroupAssignModal(draft, prefill);
+}
+window.openFloorLeaseModal = openFloorLeaseModal;
 
 // Tab bar — 6 tabs. Services tab gets a red dot if there's a future
 // alert (e.g. expired access card). For now no alerts wired.
@@ -100518,6 +100860,10 @@ function updateStats() {
     chipEl.style.display = f ? '' : 'none';
     if (f) chipEl.innerHTML = `<b>${totalUnits.toLocaleString()}</b>&nbsp;unit${totalUnits === 1 ? '' : 's'} · ${Math.round(floorGross).toLocaleString()} ft²`;
   }
+  // Floor-кебаб «···» в шапке — пересобираем пункты под текущий этаж (видимость
+  // + состояние whole-floor lease/leaseType). При закрытом меню только готовим
+  // разметку; открытие/закрытие управляется toggleFloorMenu.
+  if (typeof renderFloorKebabMenu === 'function') renderFloorKebabMenu();
 
   renderFloorBreakdown();
   renderNeedsAttention();
