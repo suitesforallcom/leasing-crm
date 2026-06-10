@@ -9891,40 +9891,38 @@
      the DOM at all times so save/snapshot/restore continues to work
      regardless of which tab is visible.
      ===================================================================*/
+  /* Редизайн 2026-06 (Шаг 4, design_handoff_unit_tabs_redesign): визуальный
+     слой шапки переведён на токены --rd-* по макетам «Suite 363 Overview.html»
+     (occupied) / «Suite 344 Activity.html» (vacant). Бывший ZIP-слой
+     (Inter Tight + хардкод-hex) свёрнут сюда же — третьего слоя поверх нет.
+     Логика state-machine статусов, обработчики, id и data-атрибуты не тронуты.
+     Мёртвый блок .upv2-status-chip / .upv2-status-* удалён (grep: разметка
+     его не эмитила, JS-ссылок нет). */
   .unit-panel-v2 { display: flex; flex-direction: column; gap: 0; }
+  .detail-card.unit-v2 { font-family: var(--rd-font); color: var(--rd-text); }
   .upv2-header {
     position: sticky; top: 0; z-index: 5;
-    background: var(--surface);
+    background: var(--rd-bg);
     border-radius: 10px 10px 0 0;
-    padding: 14px 16px 12px;
-    border-bottom: 1px solid var(--border);
+    padding: 18px 16px 14px;
+    /* hairline снизу остаётся: шапка sticky, контент панелей подъезжает
+       под неё при скролле — в макете такого контекста нет */
+    border-bottom: 1px solid var(--rd-border);
+    font-family: var(--rd-font);
+    color: var(--rd-text);
   }
-  /* Title row — title gets full width, actions sit to the right.
-     min-width:0 on title prevents flex from squeezing it into wrap. */
+  /* Title row — .uhead-top макета: тайтл 25/700/-0.02em + бейдж + кебаб справа */
   .upv2-h-titlebar {
-    display: flex; align-items: center; gap: 8px;
-    margin-bottom: 6px;
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 0;
   }
   .upv2-h-title {
-    margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -0.2px;
-    flex: 1 1 auto; min-width: 0;
+    margin: 0; font-size: 25px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1;
+    flex: 0 1 auto; min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--rd-text);
   }
-  .upv2-h-actions { display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
-
-  /* Status chip stays in meta line — no longer next to title */
-  .upv2-status-chip {
-    padding: 3px 10px; border-radius: 999px;
-    font: 600 11px system-ui;
-    display: inline-flex; align-items: center; gap: 5px;
-  }
-  .upv2-status-chip::before {
-    content: ''; width: 6px; height: 6px; border-radius: 50%;
-    background: currentColor;
-  }
-  .upv2-status-occupied { background: rgba(22,163,74,0.15);  color: #16a34a; }
-  .upv2-status-vacant   { background: rgba(34,197,94,0.16);  color: #16a34a; }
-  .upv2-status-reserved { background: rgba(245,158,11,0.16); color: #b45309; }
+  .upv2-h-actions { margin-left: auto; display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
   .upv2-h-meta {
     display: flex; align-items: center; flex-wrap: wrap;
     gap: 6px;
@@ -9951,117 +9949,101 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
 
-  /* === Unit panel header — ZIP redesign rebuild ===========================
-     Inter Tight font + warm-neutral palette match the right-panel mock.
-     Suite name on the left + status pill (paid/due/overdue/...) on the
-     right, then a single-line subtitle, a Monthly-rent card, and a
-     Tenant card. CSS is scoped to .upv2-header so it doesn't affect
-     other unit-panel surfaces. */
-  .upv2-header {
-    font-family: "Inter Tight", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    color: #14120F;
-  }
-  .upv2-header .upv2-h-titlebar {
-    display: flex; align-items: center; gap: 10px;
-    margin-bottom: 4px;
-  }
-  .upv2-header .upv2-h-title {
-    margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.4px;
-    flex: 0 1 auto; min-width: 0;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    color: #14120F;
-  }
-  .upv2-header .upv2-h-actions { margin-left: auto; }
-
-  /* Status pill — emerald paid, amber due, rose overdue, sky pending,
-     lavender reserved, white vacant. Bullet dot on the left. */
+  /* Статусная пилюля — паттерн .badge макета: 13/600, точка 7px (.rd-dot),
+     радиус 999, рамка в тон фону. 8 CSS-состояний обслуживают 10 label'ов
+     state-machine из _renderUnitV2Header (Paid / Deposit paid / Waived делят
+     -paid). Цвета через --rd-* где в палитре есть аналог, точный hex где нет:
+       paid/occupied → green-токены (макет «Paid · Jun»);
+       vacant        → серый бейдж макета (#f2f2f3 / text-2 / dot text-3);
+       due           → amber-семья (текст amber-800 #92400e — токен --rd-amber
+                       слишком светлый для текста на amber-soft);
+       overdue       → red-soft + rose-800 #9f1239, dot --rd-red;
+       pending       → blue-soft + sky-800 #075985, dot --rd-blue;
+       deposit       → фиолет purple-100/700 (пара к violet «lease signed»
+                       заливке плана) — в --rd-* аналога нет, hex;
+       reserved      → accent-семья (indigo). */
   .upv2-header .upv2-pill {
     display: inline-flex; align-items: center; gap: 6px;
-    padding: 3px 10px;
-    border-radius: 999px;
-    font-size: 11px; font-weight: 600;
-    line-height: 1.5;
+    font-size: 13px; font-weight: 600; line-height: 1.5;
+    padding: 3px 10px 3px 8px; border-radius: 999px;
+    border: 1px solid transparent;
+    flex: none; white-space: nowrap;
   }
-  .upv2-header .upv2-pill::before {
-    content: ''; width: 6px; height: 6px; border-radius: 50%;
-    background: currentColor;
-  }
-  .upv2-pill-paid     { background: #E3F6EE; color: #065F46; }
-  .upv2-pill-due      { background: #FDF3E0; color: #92400E; }
-  .upv2-pill-overdue  { background: #FDE7EC; color: #9F1239; }
-  .upv2-pill-pending  { background: #E0F2FE; color: #075985; }
-  .upv2-pill-reserved { background: #EFEBFD; color: #4C3DB8; }
-  .upv2-pill-occupied { background: #E3F6EE; color: #065F46; }
-  /* Awaiting Deposit — true violet (purple-100 / purple-700). Visually
-     paired with the violet "lease signed" fill on the floor plan, so
-     the operator sees one consistent purple cue from map to header. */
-  .upv2-pill-deposit  { background: #F3E8FF; color: #6B21A8; }
-  /* Clickable status pill — used for "Awaiting Deposit" so the operator
-     can stamp the deposit paid (cash/check/wire received outside Stripe)
-     directly from the badge instead of hunting through the menu. */
+  .upv2-pill .rd-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
+  .upv2-pill-paid     { color: var(--rd-green);      background: var(--rd-green-soft);  border-color: var(--rd-green-border); }
+  .upv2-pill-paid .rd-dot     { background: var(--rd-green-bar); }
+  .upv2-pill-occupied { color: var(--rd-green);      background: var(--rd-green-soft);  border-color: var(--rd-green-border); }
+  .upv2-pill-occupied .rd-dot { background: var(--rd-green-bar); }
+  .upv2-pill-due      { color: #92400e;              background: var(--rd-amber-soft);  border-color: #f3e0bd; }
+  .upv2-pill-due .rd-dot      { background: var(--rd-amber); }
+  .upv2-pill-overdue  { color: #9f1239;              background: var(--rd-red-soft);    border-color: #f5c6d0; }
+  .upv2-pill-overdue .rd-dot  { background: var(--rd-red); }
+  .upv2-pill-pending  { color: #075985;              background: var(--rd-blue-soft);   border-color: #a8d8f5; }
+  .upv2-pill-pending .rd-dot  { background: var(--rd-blue); }
+  .upv2-pill-deposit  { color: #6b21a8;              background: #f3e8ff;               border-color: #e9d8fc; }
+  .upv2-pill-deposit .rd-dot  { background: #a855f7; }
+  .upv2-pill-reserved { color: var(--rd-accent-ink); background: var(--rd-accent-soft); border-color: var(--rd-accent-border); }
+  .upv2-pill-reserved .rd-dot { background: var(--rd-accent); }
+  .upv2-pill-vacant   { color: var(--rd-text2);      background: #f2f2f3;               border-color: var(--rd-border-strong); }
+  .upv2-pill-vacant .rd-dot   { background: var(--rd-text3); }
+  /* Кликабельная пилюля — «Awaiting Deposit»: штамп оплаты депозита прямо
+     из бейджа (cash/check/wire вне Stripe), не копаясь в меню. */
   .upv2-pill.upv2-pill-clickable {
-    cursor: pointer; border: 1px solid transparent;
+    cursor: pointer;
     transition: filter .12s, box-shadow .12s;
   }
   .upv2-pill.upv2-pill-clickable:hover {
-    filter: brightness(0.95);
-    box-shadow: 0 0 0 2px rgba(107,33,168,0.20);
+    filter: brightness(0.97);
+    box-shadow: 0 0 0 2px rgba(107,33,168,0.18);
   }
-  /* Vacant — soft warm-grey (not a dashed border) so it visually sits
-     in the same family as the other pills, just muted. */
-  .upv2-pill-vacant   { background: #F4F2EE; color: #6B665C; }
 
+  /* Meta-строка — .submeta макета */
   .upv2-header .upv2-h-sub {
-    font-size: 12.5px;
-    color: #6B665C;
-    margin-bottom: 14px;
+    font-size: 14px;
+    color: var(--rd-text2);
+    margin: 8px 0 0;
   }
 
-  /* Compact Tenant + Rent card — same two-row footprint as the
-     original rent-only card. Tenant identity (avatar + name) sits on
-     the LEFT of the top row in place of the "Monthly rent" label; the
-     big $ value stays on the right. Effective rate stays on row 2.
-     Card height is unchanged from the rent-only version. */
+  /* Карточка тенант + рента — .rentcard макета: surface #f4f3f0, радиус 14,
+     слева аватар 28px (accent-soft/accent-ink, 11.5/700) + имя 15/700 с
+     ellipsis + подпись ставки 13/text-3; справа сумма 26/700/-0.02em +
+     строка ставки 13/text-3. Тот же двухколоночный grid, что и в макете —
+     ряды (.upv2-rent-row) дают визуально идентичную раскладку. */
   .upv2-rent-card {
-    background: #F4F2EE;
-    border-radius: 8px;
-    padding: 12px 14px;
-    margin-bottom: 16px;
+    background: var(--rd-surface);
+    border-radius: 14px;
+    padding: 14px 18px;
+    margin-top: 14px;
   }
-  /* Inline tenant pill — small avatar + name on a single baseline so
-     it pairs visually with the dollar value on the right of the same
-     row. Avatar is sized down to 22px (vs the 32px standalone TenantCard)
-     so it doesn't push the row taller than the original "Monthly rent"
-     label height. */
   .upv2-rent-tenant-inline {
-    display: flex; align-items: center; gap: 8px;
+    display: flex; align-items: center; gap: 9px;
     min-width: 0; flex: 1 1 auto;
   }
   .upv2-rent-tenant-inline .upv2-tenant-avatar {
-    width: 22px; height: 22px;
-    border-radius: 6px;
-    background: #EEEDFC;
-    color: #1F1D9E;
-    display: grid; place-items: center;
-    font-size: 10px; font-weight: 600;
-    flex-shrink: 0;
+    width: 28px; height: 28px;
+    border-radius: 8px;
+    background: var(--rd-accent-soft);
+    color: var(--rd-accent-ink);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11.5px; font-weight: 700;
+    flex: none;
   }
   .upv2-rent-tenant-inline .upv2-tenant-name {
-    font-size: 12.5px; font-weight: 600;
-    color: #14120F;
+    font-size: 15px; font-weight: 700;
+    color: var(--rd-text);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     min-width: 0;
   }
   .upv2-rent-row {
-    display: flex; align-items: baseline; justify-content: space-between;
-    gap: 8px;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px;
   }
-  .upv2-rent-row.sub { margin-top: 4px; }
-  .upv2-rent-label   { font-size: 11px; color: #6B665C; }
+  .upv2-rent-row.sub { margin-top: 3px; }
+  .upv2-rent-label   { font-size: 14px; font-weight: 600; color: var(--rd-text); }
   .upv2-rent-value   {
-    font-size: 22px; font-weight: 700; color: #14120F;
+    font-size: 26px; font-weight: 700; color: var(--rd-text);
     font-variant-numeric: tabular-nums;
-    letter-spacing: -0.3px;
+    letter-spacing: -0.02em; line-height: 1;
   }
   /* Wrapper that pairs the big $ with an inline pencil edit-icon, so
      the icon sits to the right of the value without affecting the
@@ -10069,44 +10051,42 @@
   .upv2-rent-value-wrap {
     display: inline-flex; align-items: baseline; gap: 6px;
   }
-  /* Pencil edit icon — appears next to the proforma figures. Muted
-     by default, accent on hover so it's discoverable without being
-     noisy. Sized to match the surrounding sub-line text. */
+  /* Карандаш-редактор (спрайт i-pencil) — muted по умолчанию, accent на
+     hover; виден только в edit-режиме (гейт в JS не менялся). */
   .upv2-rent-edit {
     display: inline-flex; align-items: center; justify-content: center;
     width: 20px; height: 20px;
     padding: 0;
     border: none;
     background: transparent;
-    color: #94908A;
+    color: var(--rd-text3);
     cursor: pointer;
-    font-size: 12px; line-height: 1;
+    line-height: 1;
     border-radius: 4px;
     transition: background .12s, color .12s;
     vertical-align: baseline;
   }
   .upv2-rent-edit:hover {
-    background: #EEEDFC;
-    color: #1F1D9E;
+    background: var(--rd-accent-soft);
+    color: var(--rd-accent-ink);
   }
-  .upv2-rent-sublabel { font-size: 11px; color: #94908A; }
+  .upv2-rent-edit .rd-ic { width: 12px; height: 12px; }
+  .upv2-rent-sublabel { font-size: 13px; color: var(--rd-text3); }
   .upv2-rent-subvalue {
-    font-size: 11px; color: #94908A;
+    font-size: 13px; color: var(--rd-text3);
     font-variant-numeric: tabular-nums;
   }
-  /* Proforma reference line — sits visually below the effective rate
-     with a subtle hairline divider so the operator parses it as
-     "secondary info" not a primary figure. */
+  /* Proforma reference line — пунктирный sub-row под effective rate;
+     поведение (когда показывается) не менялось. */
   .upv2-proforma-line {
-    margin-top: 6px;
+    margin-top: 7px;
     padding-top: 6px;
-    border-top: 1px dashed #E8E5DF;
+    border-top: 1px dashed var(--rd-border-strong);
   }
   .upv2-proforma-line .upv2-rent-sublabel,
   .upv2-proforma-line .upv2-rent-subvalue {
-    font-size: 10.5px;
-    color: #94908A;
-    opacity: 0.85;
+    font-size: 12px;
+    color: var(--rd-text3);
   }
 
   /* Tenant section header (small uppercase). */
@@ -10118,130 +10098,122 @@
     margin-bottom: 8px;
   }
   .upv2-tenant-section { margin-bottom: 4px; }
+  /* Мёртвый блок .upv2-tenant-card / -info / -role / -msg удалён (Шаг 4):
+     standalone-карточка тенанта свёрнута в rent-card ещё раньше, разметка
+     и JS на эти классы не ссылались. Аватар стилизуется scoped-правилом
+     .upv2-rent-tenant-inline .upv2-tenant-avatar выше. */
 
-  /* Tenant card — avatar (2-letter initials in indigo) + name + role
-     + message icon button on the right. Mirrors the redesign mock. */
-  .upv2-tenant-card {
-    display: flex; align-items: center; gap: 10px;
-    padding: 10px 12px;
-    border: 1px solid #E8E5DF;
-    border-radius: 8px;
-    background: #FFFFFF;
-  }
-  .upv2-tenant-avatar {
-    width: 32px; height: 32px;
-    border-radius: 8px;
-    background: #EEEDFC;
-    color: #1F1D9E;
-    display: grid; place-items: center;
-    font-size: 11px; font-weight: 600;
-    flex-shrink: 0;
-  }
-  .upv2-tenant-info { flex: 1; min-width: 0; }
-  .upv2-tenant-name {
-    font-size: 13px; font-weight: 600;
-    color: #14120F;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  .upv2-tenant-role {
-    font-size: 11px; color: #94908A;
-    margin-top: 1px;
-  }
-  .upv2-tenant-msg {
-    width: 28px; height: 28px;
-    display: grid; place-items: center;
-    border: 1px solid #E8E5DF;
-    border-radius: 6px;
-    background: #FFFFFF;
-    color: #6B665C;
-    cursor: pointer;
-    font-size: 13px;
-    flex-shrink: 0;
-    transition: border-color .12s, color .12s;
-  }
-  .upv2-tenant-msg:hover {
-    border-color: #3D3BE8;
-    color: #3D3BE8;
-  }
-
-  /* Kebab menu (⋯) */
+  /* Кебаб-меню — .menu-btn макета: 34px, радиус 9, спрайт i-dots 18px */
   .upv2-menu-wrap { position: relative; }
   .upv2-menu-btn {
-    width: 32px; height: 32px; border-radius: 7px;
-    border: 1px solid var(--border); background: var(--surface);
-    color: var(--text); cursor: pointer;
-    font-size: 14px; line-height: 1;
+    width: 34px; height: 34px; border-radius: 9px;
+    border: 1px solid var(--rd-border-strong); background: var(--rd-bg);
+    color: var(--rd-text2); cursor: pointer;
     display: inline-flex; align-items: center; justify-content: center;
   }
-  .upv2-menu-btn:hover { background: var(--surface-2); border-color: var(--accent); }
+  .upv2-menu-btn:hover { background: #f6f6f8; color: var(--rd-text); }
+  .upv2-menu-btn .rd-ic { width: 18px; height: 18px; }
   .upv2-menu {
     position: absolute; top: calc(100% + 4px); right: 0; z-index: 20;
-    min-width: 200px;
-    background: var(--surface);
-    border: 1px solid var(--border); border-radius: 8px;
-    box-shadow: 0 6px 24px rgba(0,0,0,0.3);
-    padding: 4px;
+    min-width: 230px;
+    background: var(--rd-bg);
+    border: 1px solid var(--rd-border-strong); border-radius: 12px;
+    box-shadow: 0 1px 2px rgba(20,20,40,.04), 0 14px 40px -12px rgba(20,20,50,.25);
+    padding: 5px;
   }
   .upv2-menu-item {
     width: 100%; text-align: left;
     display: flex; align-items: center; gap: 10px;
-    padding: 8px 10px; border: none; border-radius: 5px;
+    padding: 8px 10px; border: none; border-radius: 8px;
     background: transparent;
-    color: var(--text); font: 500 12.5px inherit;
+    color: var(--rd-text); font: 500 13px var(--rd-font);
     cursor: pointer;
   }
-  .upv2-menu-item:hover { background: var(--surface-2); }
-  .upv2-menu-item.danger { color: var(--danger); }
-  .upv2-menu-item.danger:hover { background: rgba(239,68,68,0.08); }
-  .upv2-menu-item span:first-child { width: 16px; text-align: center; }
+  .upv2-menu-item:hover { background: #f6f6f8; }
+  .upv2-menu-item.danger { color: var(--rd-red); }
+  .upv2-menu-item.danger:hover { background: var(--rd-red-soft); }
+  .upv2-menu-item .rd-ic { width: 16px; height: 16px; flex: none; color: var(--rd-text2); }
+  .upv2-menu-item.danger .rd-ic { color: var(--rd-red); }
 
-  /* Tab bar — wraps to 2 rows when 6 tabs don't fit on one row.
-     No horizontal scroll — every tab is always visible. */
+  /* Секционные табы — .sectiontabs макета: CSS-grid 4 колонки × 2 ряда,
+     иконка 17px НАД label'ом 12.5px, радиус 10, активный = accent-soft
+     пилюля с accent-border рамкой. Все 8 табов всегда видимы, без
+     горизонтального скролла; при role-gated Finance/Services сетка
+     остаётся 4-колоночной (скрытые табы просто отсутствуют). */
   .upv2-tabs {
-    display: flex; gap: 2px;
-    flex-wrap: wrap;
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
-    padding: 4px 6px 0;
-    row-gap: 0;
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px;
+    background: var(--rd-bg);
+    border-bottom: 1px solid var(--rd-border);
+    padding: 2px 16px 14px;
+    font-family: var(--rd-font);
   }
   .upv2-tab {
-    padding: 8px 10px; background: transparent; border: none;
-    border-bottom: 2px solid transparent;
-    color: var(--muted); font: 600 12px inherit;
-    cursor: pointer; white-space: nowrap;
-    display: inline-flex; align-items: center; gap: 5px;
-    transition: color .12s, border-color .12s;
-    margin-bottom: -1px;
+    position: relative;
+    appearance: none; cursor: pointer; font: inherit;
+    font-size: 12.5px; font-weight: 500; color: var(--rd-text2);
+    white-space: nowrap;
+    padding: 9px 4px 8px;
+    display: flex; flex-direction: column; align-items: center; gap: 5px;
+    border: 1px solid transparent; border-radius: 10px;
+    background: none;
   }
-  .upv2-tab:hover { color: var(--text); }
-  .upv2-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .upv2-tab .rd-ic { width: 17px; height: 17px; color: var(--rd-text3); }
+  .upv2-tab:hover { color: var(--rd-text); background: #f6f6f8; }
+  .upv2-tab:hover .rd-ic { color: var(--rd-text2); }
+  .upv2-tab.active { color: var(--rd-accent-ink); font-weight: 600; background: var(--rd-accent-soft); border-color: var(--rd-accent-border); }
+  .upv2-tab.active .rd-ic { color: var(--rd-accent); }
+  /* Красная точка-алерт — механика .has-alert сохранена (пока не подключена) */
   .upv2-tab .upv2-tab-dot {
+    position: absolute; top: 6px; left: 14%;
     width: 6px; height: 6px; border-radius: 50%;
     background: transparent;
   }
-  .upv2-tab.has-alert .upv2-tab-dot { background: #dc2626; }
-  /* Шаг 4 редизайна 2026-05-06: счётчик в табе (пока только Files).
-     Маленький badge справа от label'а, нейтральный в idle, акцентный
-     когда таб активен — без visual noise но видно при беглом осмотре. */
+  .upv2-tab.has-alert .upv2-tab-dot { background: var(--rd-red); }
+  /* Счётчик Files — .mini макета: absolute мини-пилюля top-right */
   .upv2-tab .upv2-tab-count {
-    display: inline-block;
-    margin-left: 6px;
-    padding: 1px 6px;
+    position: absolute; top: 5px; right: 14%;
     font-size: 10px;
-    font-weight: 600;
+    font-weight: 700;
     line-height: 14px;
-    background: var(--surface-2, #F4F2EE);
-    color: var(--muted, #6B665C);
-    border-radius: 9px;
-    vertical-align: 1px;
+    background: #ececee;
+    color: var(--rd-text2);
+    border-radius: 999px;
+    padding: 0 5px;
     min-width: 14px;
     text-align: center;
   }
   .upv2-tab.active .upv2-tab-count {
-    background: rgba(61,59,232,0.12);
-    color: var(--accent, #3D3BE8);
+    background: #fff;
+    color: var(--rd-accent-ink);
   }
+
+  /* Renewal-алерт между шапкой и табами (Tony 2026-05-30) — янтарная
+     soft-карточка по токенам; ≤30 дней до конца лизы — красная (.urgent).
+     Логика показа в _renderRenewalAlert не менялась. */
+  .upv2-renewal {
+    margin: 10px 16px 0;
+    padding: 11px 13px;
+    border: 1px solid #f3dfb8;
+    background: var(--rd-amber-soft);
+    border-radius: 12px;
+    font-family: var(--rd-font);
+  }
+  .upv2-renewal.urgent { border-color: #f5c6d0; background: var(--rd-red-soft); }
+  .upv2-renewal-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+  .upv2-renewal-title {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12.5px; font-weight: 600; color: var(--rd-amber); line-height: 1.35;
+  }
+  .upv2-renewal-title .rd-ic { flex: none; }
+  .upv2-renewal.urgent .upv2-renewal-title { color: var(--rd-red); }
+  .upv2-renewal-sub { font-size: 11.5px; color: var(--rd-text3); margin-top: 2px; }
+  .upv2-renewal-note {
+    display: flex; align-items: flex-start; gap: 6px;
+    font-size: 11.5px; color: var(--rd-green-ink);
+    margin-top: 6px; background: var(--rd-green-soft);
+    border-radius: 7px; padding: 5px 8px; white-space: pre-wrap;
+  }
+  .upv2-renewal-note .rd-ic { flex: none; margin-top: 1px; }
 
   /* Tab content area */
   .upv2-content { padding: 14px 16px 6px; }
@@ -10643,7 +10615,7 @@
 
   /* Menu separator inside the kebab dropdown */
   .upv2-menu-sep {
-    height: 1px; background: var(--border);
+    height: 1px; background: var(--rd-border);
     margin: 4px 8px;
   }
 
@@ -75223,9 +75195,9 @@ function renderDetail() {
   };
   const footer = editOn ? `
     <div style="padding: 10px 16px 14px;">
-      <button class="save-btn" onclick="saveUnitDetail()">💾 Save Changes</button>
-      <button class="save-btn danger" onclick="openArchiveModal('${esc(currentBuilding()?.id || '')}','${esc(currentFloor()?.id || '')}','${esc(u.id)}')" style="margin-top:6px">🗃 Archive Unit</button>
-      <div style="margin-top:6px; font-size:11px; color:var(--muted); text-align:center;">Archiving is reversible — history preserved.</div>
+      <button class="rd-btn" style="width:100%; justify-content:center;" onclick="saveUnitDetail()">${(typeof _rdIc === 'function') ? _rdIc('check', 14) : ''}Save Changes</button>
+      <button class="rd-btn2 rd-btn-danger" style="width:100%; justify-content:center; margin-top:6px;" onclick="openArchiveModal('${esc(currentBuilding()?.id || '')}','${esc(currentFloor()?.id || '')}','${esc(u.id)}')">${(typeof _rdIc === 'function') ? _rdIc('archive', 14) : ''}Archive Unit</button>
+      <div style="margin-top:6px; font-size:11px; color:var(--rd-text3); text-align:center;">Archiving is reversible — history preserved.</div>
     </div>
   ` : '';
   // Unit-specs (size/type/proforma) — collapsible, lives below tabs
@@ -76007,9 +75979,18 @@ function _jumpToPaymentHistory() {
 //   Layout: title (single line) + status chip → meta line → tenant card → actions
 //   Actions: Edit (primary) + ⋯ kebab menu containing Ledger / Archive / Move out
 //   Ledger no longer at top — secondary action, lives in the menu.
+// Редизайн 2026-06 (Шаг 4): безопасный доступ к спрайту. _svgIcon объявлен
+// в нижнем <script>-блоке; если какой-то ранний код дёрнет рендер шапки до
+// его парсинга — возвращаем пустую строку вместо ReferenceError.
+function _rdIc(name, size, cls) {
+  return (typeof window._svgIcon === 'function') ? window._svgIcon(name, size, cls) : '';
+}
+
 // Алерт «аренда скоро заканчивается» в карточке юнита (Tony 2026-05-30) —
 // если до конца аренды ≤60 дней, показываем плашку + renewal-заметку, чтобы
 // оператор начал звонить про продление. Та же u.renewalNote, что в pill'е.
+// Шаг 4 редизайна: инлайн-rgba заменены классами .upv2-renewal* (токены),
+// эмодзи → спрайт; логика показа и onclick не менялись.
 function _renderRenewalAlert(u) {
   if (!u || !(u.tenant || u.company)) return '';
   const endRaw = u.until || u.leaseEnd || '';
@@ -76023,16 +76004,13 @@ function _renderRenewalAlert(u) {
   const fId = (typeof currentFloor === 'function' && currentFloor()?.id) || '';
   const urgent = daysLeft <= 30;
   const note = u.renewalNote || '';
-  const bd = urgent ? 'rgba(220,38,38,.35)' : 'rgba(217,119,6,.35)';
-  const bg = urgent ? 'rgba(220,38,38,.08)' : 'rgba(217,119,6,.08)';
-  const fg = urgent ? '#b91c1c' : '#b45309';
-  return `<div style="margin:10px 16px 0;padding:10px 12px;border:1px solid ${bd};background:${bg};border-radius:10px;">
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
-      <div style="font-size:12.5px;font-weight:600;color:${fg};line-height:1.3;">⏰ Lease expires in ${daysLeft} day${daysLeft === 1 ? '' : 's'} — start renewal outreach</div>
-      <button onclick="editRenewalNote('${esc(bId)}','${esc(fId)}','${esc(u.id)}')" title="Add / edit renewal note" style="flex-shrink:0;border:1px solid ${bd};background:var(--surface,#fff);border-radius:7px;padding:3px 9px;cursor:pointer;font-size:11.5px;color:${fg};white-space:nowrap;">✎ Note</button>
+  return `<div class="upv2-renewal${urgent ? ' urgent' : ''}">
+    <div class="upv2-renewal-top">
+      <div class="upv2-renewal-title">${_rdIc('clock', 14)}Lease expires in ${daysLeft} day${daysLeft === 1 ? '' : 's'} — start renewal outreach</div>
+      <button class="rd-btn2" onclick="editRenewalNote('${esc(bId)}','${esc(fId)}','${esc(u.id)}')" title="Add / edit renewal note" style="flex-shrink:0;white-space:nowrap;">${_rdIc('pencil', 12)}Note</button>
     </div>
-    <div style="font-size:11px;color:var(--muted,#8f887c);margin-top:2px;">Ends ${esc((typeof formatDisplayDate === 'function') ? formatDisplayDate(endIso) : endIso)}.</div>
-    ${note ? `<div style="font-size:11.5px;color:#3d6b4a;margin-top:6px;background:rgba(61,107,74,.08);border-radius:7px;padding:5px 8px;white-space:pre-wrap;">📝 ${esc(note)}</div>` : ''}
+    <div class="upv2-renewal-sub">Ends ${esc((typeof formatDisplayDate === 'function') ? formatDisplayDate(endIso) : endIso)}.</div>
+    ${note ? `<div class="upv2-renewal-note">${_rdIc('note', 13)}<span>${esc(note)}</span></div>` : ''}
   </div>`;
 }
 
@@ -76275,7 +76253,7 @@ function _renderUnitV2Header(u, editOn) {
       proformaRent = grpProforma;
       effectiveRate = (grpRent > 0     && grpSqft > 0) ? (grpRent     * 12 / grpSqft) : 0;
       proformaRate  = (grpProforma > 0 && grpSqft > 0) ? (grpProforma * 12 / grpSqft) : 0;
-      groupAggHint = ` <span style="font-size:10px; color:var(--muted); font-weight:500; margin-left:4px;" title="Combined across ${members.length} suites in this lease">· ${members.length} suites combined</span>`;
+      groupAggHint = ` <span style="font-size:10px; color:var(--rd-text3); font-weight:500; margin-left:4px;" title="Combined across ${members.length} suites in this lease">· ${members.length} suites combined</span>`;
     }
   }
   if (monthlyRent === undefined) {
@@ -76356,13 +76334,13 @@ function _renderUnitV2Header(u, editOn) {
     ? `<button class="upv2-rent-edit" type="button"
                title="${_primaryTitle}"
                onclick="event.stopPropagation(); _editUnitRent('${esc(u.id)}', '${_primaryKind}')"
-               aria-label="${_primaryTitle}">✎</button>`
+               aria-label="${_primaryTitle}">${_rdIc('pencil', 12)}</button>`
     : '';
   const editProformaPencil = _showPencils
     ? `<button class="upv2-rent-edit" type="button"
                title="Edit proforma (asking) rent"
                onclick="event.stopPropagation(); _editUnitRent('${esc(u.id)}', 'proforma')"
-               aria-label="Edit proforma rent">✎</button>`
+               aria-label="Edit proforma rent">${_rdIc('pencil', 12)}</button>`
     : '';
   // Layout (reverted to the always-visible-rows model the operator
   // preferred): top row shows the BIG number for the primary rent
@@ -76392,7 +76370,7 @@ function _renderUnitV2Header(u, editOn) {
                   title="Click to record a payment / attach an invoice for this lease"
                   onclick="event.stopPropagation(); openManualPaymentForCurrentMonth('${bId}','${fId}','${esc(u.id)}')"
                   onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault(); openManualPaymentForCurrentMonth('${bId}','${fId}','${esc(u.id)}');}"
-                  style="cursor:pointer; border-bottom:1px dashed rgba(16,185,129,0.45);">$${monthlyRent.toLocaleString()}</span>
+                  style="cursor:pointer; border-bottom:2px dashed #9ed3b4; padding-bottom:3px;">$${monthlyRent.toLocaleString()}</span>
           ` : `
             <span class="upv2-rent-value">${monthlyRent > 0 ? '$' + monthlyRent.toLocaleString() : '—'}</span>
           `}${groupAggHint}
@@ -76416,7 +76394,7 @@ function _renderUnitV2Header(u, editOn) {
           ${_showPencils ? `<button class="upv2-rent-edit" type="button"
                                     title="Edit $/ft²/year — monthly rent will recalculate"
                                     onclick="event.stopPropagation(); _editUnitRent('${esc(u.id)}', '${_primaryKind}')"
-                                    aria-label="Edit rate per square foot">✎</button>` : ''}
+                                    aria-label="Edit rate per square foot">${_rdIc('pencil', 12)}</button>` : ''}
         </span>
       </div>` : ''}
       ${proformaRefOn ? `
@@ -76464,26 +76442,26 @@ function _renderUnitV2Header(u, editOn) {
   const isOcc = status === 'occupied' && (u.tenant || u.company);
   const menuItems = editOn ? `` : [
     // Primary
-    canEdit() ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); window._unitEditOn=true; renderDetail()"><span>✏</span> Edit unit</button>` : '',
+    canEdit() ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); window._unitEditOn=true; renderDetail()">${_rdIc('pencil', 16)} Edit unit</button>` : '',
     (canEdit() && (showLedgerBtn || isOcc)) ? `<div class="upv2-menu-sep"></div>` : '',
     // View / ledger
-    showLedgerBtn ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); openTenantDrawer('${bId}','${fId}','${uId}')"><span>📒</span> Open ledger</button>` : '',
-    isOcc ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); openTenantDrawer('${bId}','${fId}','${uId}')"><span>📊</span> Payment history</button>` : '',
-    isOcc ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); openUnitServicesModal('${bId}','${fId}','${uId}')"><span>📋</span> Additional services</button>` : '',
+    showLedgerBtn ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); openTenantDrawer('${bId}','${fId}','${uId}')">${_rdIc('bank', 16)} Open ledger</button>` : '',
+    isOcc ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); openTenantDrawer('${bId}','${fId}','${uId}')">${_rdIc('chart', 16)} Payment history</button>` : '',
+    isOcc ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); openUnitServicesModal('${bId}','${fId}','${uId}')">${_rdIc('wrench', 16)} Additional services</button>` : '',
     // Invoice actions
-    isOcc && canEdit() ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); openCreateInvoiceModal(); setTimeout(()=>ciSelectSuggestion('${bId}','${fId}','${uId}'), 50);"><span>💸</span> Send invoice…</button>` : '',
-    isOcc && canEdit() ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); openManualPaymentForCurrentMonth('${bId}','${fId}','${uId}')"><span>✍</span> Record payment…</button>` : '',
+    isOcc && canEdit() ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); openCreateInvoiceModal(); setTimeout(()=>ciSelectSuggestion('${bId}','${fId}','${uId}'), 50);">${_rdIc('invoice', 16)} Send invoice…</button>` : '',
+    isOcc && canEdit() ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); openManualPaymentForCurrentMonth('${bId}','${fId}','${uId}')">${_rdIc('dollar', 16)} Record payment…</button>` : '',
     // Separator
     (showLedgerBtn || isOcc) ? `<div class="upv2-menu-sep"></div>` : '',
     // ----- Collections / default lifecycle -----
-    isOcc && canEdit() ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); openCollectionStatusModal('${bId}','${fId}','${uId}')"><span>⚠</span> Set payment status…</button>` : '',
-    isOcc && canEdit() ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); openMoveOutWithDefault('${bId}','${fId}','${uId}','collections')"><span>📤</span> Move out → Send to Collections…</button>` : '',
-    isOcc && canEdit() ? `<button class="upv2-menu-item danger" onclick="closeUnitMenu(); openMoveOutWithDefault('${bId}','${fId}','${uId}','writeoff')"><span>❌</span> Move out → Write Off…</button>` : '',
+    isOcc && canEdit() ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); openCollectionStatusModal('${bId}','${fId}','${uId}')">${_rdIc('alert', 16)} Set payment status…</button>` : '',
+    isOcc && canEdit() ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); openMoveOutWithDefault('${bId}','${fId}','${uId}','collections')">${_rdIc('gavel', 16)} Move out → Send to Collections…</button>` : '',
+    isOcc && canEdit() ? `<button class="upv2-menu-item danger" onclick="closeUnitMenu(); openMoveOutWithDefault('${bId}','${fId}','${uId}','writeoff')">${_rdIc('trash', 16)} Move out → Write Off…</button>` : '',
     // Bounced check — only visible on occupied units. After move-out
     // the case lives in the Recovery Tracker; further bounces against
     // a former tenant are added via Recovery → ⚠ Bounce there, keeping
     // the unit menu focused on the live tenancy.
-    isOcc && canEdit() ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); openBouncedCheckModal('${bId}','${fId}','${uId}')"><span>⚠</span> Bounced check / NSF…</button>` : '',
+    isOcc && canEdit() ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); openBouncedCheckModal('${bId}','${fId}','${uId}')">${_rdIc('alert', 16)} Bounced check / NSF…</button>` : '',
     // Снять штамп «Deposit PAID» — оператору нужен путь через UI, не только
     // из консоли (Tony 2026-05-28). Пункт виден ТОЛЬКО когда депозит сейчас
     // помечен paid (иначе бессмыслен) и роль может править. Сам вызов
@@ -76491,14 +76469,14 @@ function _renderUnitV2Header(u, editOn) {
     // случайный клик безопасен — оператор увидит подтверждающий диалог
     // с явным текстом про bounced / never received.
     isOcc && canEdit() && (typeof _isDepositPaid === 'function' && _isDepositPaid(u))
-      ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); markUnitDepositUnpaid('${esc(u.id)}')"><span>↩</span> Remove deposit PAID stamp…</button>`
+      ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); markUnitDepositUnpaid('${esc(u.id)}')">${_rdIc('refresh', 16)} Remove deposit PAID stamp…</button>`
       : '',
     // ----- Lease / tenant management -----
-    isOcc && canEdit() ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); openMoveOutModal(currentUnits().find(x=>x.id===selectedIds[0]))"><span>🏷</span> Mark as vacant…</button>` : '',
+    isOcc && canEdit() ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); openMoveOutModal(currentUnits().find(x=>x.id===selectedIds[0]))">${_rdIc('building', 16)} Mark as vacant…</button>` : '',
     // Move tenant в другой юнит того же building (без mark-vacant — это
     // continuation of tenancy, не lifecycle end). Group-lease members
     // блокируются внутри _performTenantMove с понятным error toast.
-    isOcc && canEdit() && !u.groupId ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); openMoveTenantModal('${bId}','${fId}','${uId}')"><span>🚪</span> Move to another suite…</button>` : '',
+    isOcc && canEdit() && !u.groupId ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); openMoveTenantModal('${bId}','${fId}','${uId}')">${_rdIc('cube', 16)} Move to another suite…</button>` : '',
     // "↩ Move back" — всегда доступна для occupied non-group units.
     // Если источник определён автоматически (relocatedFrom или tenantHistory.relocatedTo)
     // — показываем Suite X + статус. Иначе — просто "Move back…" и модал
@@ -76541,17 +76519,17 @@ function _renderUnitV2Header(u, editOn) {
           return `<button class="upv2-menu-item${cls}"
             onclick="closeUnitMenu(); openMoveTenantBack('${esc(bId)}','${esc(fId)}','${esc(uId)}','${esc(String(rf.suiteId))}')"
             ${!backVacant ? `title="Suite ${esc(String(rf.suiteId))} is currently occupied — vacate it first"` : ''}>
-            <span>↩</span> Move back to Suite ${esc(String(rf.suiteId))} (${stateIcon})</button>`;
+            ${_rdIc('refresh', 16)} Move back to Suite ${esc(String(rf.suiteId))} (${stateIcon})</button>`;
         }
       }
       // Источник не определён — показываем "Move back…" без suite, модал даст выбрать вручную
       return `<button class="upv2-menu-item"
         onclick="closeUnitMenu(); openMoveTenantBack('${esc(bId)}','${esc(fId)}','${esc(uId)}','')">
-        <span>↩</span> Move back…</button>`;
+        ${_rdIc('refresh', 16)} Move back…</button>`;
     })(),
     // ----- History -----
     (Array.isArray(u.tenantHistory) && u.tenantHistory.length > 0)
-      ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); openRentalHistoryModal('${bId}','${fId}','${uId}')"><span>📜</span> Rental history (${u.tenantHistory.length})</button>`
+      ? `<button class="upv2-menu-item" onclick="closeUnitMenu(); openRentalHistoryModal('${bId}','${fId}','${uId}')">${_rdIc('hourglass', 16)} Rental history (${u.tenantHistory.length})</button>`
       : '',
     // Activity log — переадресуем на новый Unit-tab «📜 Activity» который
     // показывает merged audit + synthetic timeline (Tony 2026-05-23).
@@ -76559,10 +76537,10 @@ function _renderUnitV2Header(u, editOn) {
     // «No activity recorded yet» для большинства юнитов; новый таб
     // богаче и содержит реальные audit-записи. Old modal оставлен в
     // коде для back-compat, но больше не доступен через kebab.
-    `<button class="upv2-menu-item" onclick="closeUnitMenu(); setUnitTab('activity');"><span>🕒</span> Activity log</button>`,
+    `<button class="upv2-menu-item" onclick="closeUnitMenu(); setUnitTab('activity');">${_rdIc('clock', 16)} Activity log</button>`,
     // Destructive
-    canArchive() ? `<button class="upv2-menu-item danger" onclick="closeUnitMenu(); openArchiveModal('${bId}','${fId}','${uId}')"><span>🗃</span> Archive unit</button>` : '',
-    canEdit() ? `<button class="upv2-menu-item danger" onclick="deleteUnitFromMenu('${bId}','${fId}','${uId}')"><span>🗑</span> Delete unit</button>` : '',
+    canArchive() ? `<button class="upv2-menu-item danger" onclick="closeUnitMenu(); openArchiveModal('${bId}','${fId}','${uId}')">${_rdIc('archive', 16)} Archive unit</button>` : '',
+    canEdit() ? `<button class="upv2-menu-item danger" onclick="deleteUnitFromMenu('${bId}','${fId}','${uId}')">${_rdIc('trash', 16)} Delete unit</button>` : '',
   ].filter(Boolean).join('');
 
   return `
@@ -76572,21 +76550,21 @@ function _renderUnitV2Header(u, editOn) {
       <div class="upv2-h-titlebar">
         <h2 class="upv2-h-title">Suite ${esc(u.id)}</h2>
         ${(pillLabel === 'Awaiting Deposit' && typeof canEdit === 'function' && canEdit())
-          ? `<button type="button" class="upv2-pill ${pillCls} upv2-pill-clickable" onclick="event.stopPropagation(); openMarkDepositPaidModal('${esc(u.id)}')" title="Click to mark deposit as paid — opens a form to record method (cash / check / wire / ACH / card / other) + description">${esc(pillLabel)} →</button>`
-          : `<span class="upv2-pill ${pillCls}">${esc(pillLabel)}</span>`}
+          ? `<button type="button" class="upv2-pill ${pillCls} upv2-pill-clickable" onclick="event.stopPropagation(); openMarkDepositPaidModal('${esc(u.id)}')" title="Click to mark deposit as paid — opens a form to record method (cash / check / wire / ACH / card / other) + description"><span class="rd-dot"></span>${esc(pillLabel)} →</button>`
+          : `<span class="upv2-pill ${pillCls}"><span class="rd-dot"></span>${esc(pillLabel)}</span>`}
         ${secondaryPill
           ? (secondaryPill.clickable && typeof canEdit === 'function' && canEdit()
-              ? `<button type="button" class="upv2-pill ${secondaryPill.cls} upv2-pill-clickable" onclick="event.stopPropagation(); openMarkDepositPaidModal('${esc(u.id)}')" title="Click to mark deposit as paid — opens a form to record method (cash / check / wire / ACH / card / other) + description">${esc(secondaryPill.label)} →</button>`
-              : `<span class="upv2-pill ${secondaryPill.cls}">${esc(secondaryPill.label)}</span>`)
+              ? `<button type="button" class="upv2-pill ${secondaryPill.cls} upv2-pill-clickable" onclick="event.stopPropagation(); openMarkDepositPaidModal('${esc(u.id)}')" title="Click to mark deposit as paid — opens a form to record method (cash / check / wire / ACH / card / other) + description"><span class="rd-dot"></span>${esc(secondaryPill.label)} →</button>`
+              : `<span class="upv2-pill ${secondaryPill.cls}"><span class="rd-dot"></span>${esc(secondaryPill.label)}</span>`)
           : ''}
         <div class="upv2-h-actions">
           ${editOn ? `
-            <button class="unit-btn unit-btn-primary" onclick="saveUnitDetail()">💾 Save</button>
-            <button class="unit-btn unit-btn-cancel" onclick="cancelUnitEdit()">Cancel</button>
+            <button class="rd-btn" onclick="saveUnitDetail()">${_rdIc('check', 14)}Save</button>
+            <button class="rd-btn2" onclick="cancelUnitEdit()">Cancel</button>
           ` : `
             ${menuItems ? `
               <div class="upv2-menu-wrap">
-                <button class="upv2-menu-btn" onclick="toggleUnitMenu(event)" title="Actions">⋯</button>
+                <button class="upv2-menu-btn" onclick="toggleUnitMenu(event)" title="Actions" aria-label="More">${_rdIc('dots', 18)}</button>
                 <div class="upv2-menu" id="unitActionMenu" style="display:none;">${menuItems}</div>
               </div>
             ` : ''}
@@ -77761,22 +77739,25 @@ function _renderUnitV2Tabs(u, activeTab) {
   // и эту цифру не нужно держать актуальной на каждый ре-рендер pane'а
   // (изменения внутри юнита триггерят полный refresh шапки тоже).
   const filesCount = (typeof _unitFilesCount === 'function') ? _unitFilesCount(u) : 0;
+  // Шаг 4 редизайна 2026-06: эмодзи → имена символов спрайта (.sectiontabs
+  // макета: иконка 17px над label'ом). id/label/гейты/счётчик не менялись.
   const tabs = [
-    { id: 'overview', label: 'Overview',  icon: '📋' },
-    { id: 'tenant',   label: 'Tenant',    icon: '👤' },
-    { id: 'lease',    label: 'Lease',     icon: '📝' },
-    { id: 'access',   label: 'Access',    icon: '🔑' },
-    seesFinance ? { id: 'finance',  label: 'Finance',   icon: '💰' } : null,
-    seesFinance ? { id: 'services', label: 'Services',  icon: '🎛' } : null,
-    { id: 'files',    label: 'Files',     icon: '📂', count: filesCount },
-    { id: 'activity', label: 'Activity',  icon: '📜' },
+    { id: 'overview', label: 'Overview',  icon: 'clipboard' },
+    { id: 'tenant',   label: 'Tenant',    icon: 'user' },
+    { id: 'lease',    label: 'Lease',     icon: 'sign' },
+    { id: 'access',   label: 'Access',    icon: 'key' },
+    seesFinance ? { id: 'finance',  label: 'Finance',   icon: 'dollar' } : null,
+    seesFinance ? { id: 'services', label: 'Services',  icon: 'wrench' } : null,
+    { id: 'files',    label: 'Files',     icon: 'folder', count: filesCount },
+    { id: 'activity', label: 'Activity',  icon: 'activity' },
   ].filter(Boolean);
   return `
     <nav class="upv2-tabs">
       ${tabs.map(t => `
         <button class="upv2-tab ${t.id === activeTab ? 'active' : ''}" data-up-tab="${t.id}" onclick="setUnitTab('${t.id}')">
           <span class="upv2-tab-dot"></span>
-          ${t.icon} ${t.label}${(t.count != null && t.count > 0) ? `<span class="upv2-tab-count">${t.count}</span>` : ''}
+          ${(t.count != null && t.count > 0) ? `<span class="upv2-tab-count">${t.count}</span>` : ''}
+          ${_rdIc(t.icon, 17)}${t.label}
         </button>
       `).join('')}
     </nav>`;
