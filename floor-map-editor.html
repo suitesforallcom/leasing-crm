@@ -17719,46 +17719,66 @@
   }
   .rd-autoinv > .rd-sec-head { cursor: default; }
   .rd-autoinv .rd-sec-chip { background: var(--rd-green-soft); color: var(--rd-green); }
+  /* Фиделити Шага 7: ai-body макета — 13.5/text-2, line-height 1.5, отступ 11. */
+  .rd-autoinv-body { font-size: 13.5px; color: var(--rd-text2); margin: 11px 0 0; line-height: 1.5; }
+  .rd-autoinv-body b { color: var(--rd-text); font-weight: 700; }
+  /* Фиделити Шага 7: key/value строки Late fee policy (.pol-row макета)
+     + строка-источник политики (.pol-src). View-mode only — edit-форма
+     с теми же ID остаётся как была. */
+  .rd-pol-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 10px 2px; border-top: 1px solid var(--rd-border);
+    font-size: 13.5px; font-family: var(--rd-font);
+  }
+  .rd-pol-rows .rd-pol-row:first-child { border-top: 0; }
+  .rd-pol-row .k { color: var(--rd-text2); }
+  .rd-pol-row .v { font-weight: 700; color: var(--rd-text); }
+  .rd-pol-row .v.muted { font-weight: 600; color: var(--rd-text3); }
+  .rd-pol-src { font-size: 12px; color: var(--rd-text3); margin: 10px 0 0; }
+  .rd-pol-src a { color: var(--rd-accent-ink); font-weight: 600; text-decoration: none; }
+  .rd-pol-src a:hover { text-decoration: underline; }
   /* Monthly recurring — карточка вместо inline-стилей: ряды начислений с
-     суб-строкой «auto-invoiced · 10d before 1st», тотал на #fafaf9. */
+     суб-строкой «auto-invoiced · 10d before 1st», тотал на #fafaf9.
+     Фиделити Шага 7 vs «Suite 363 Finance»: ряды border-top / padding 11px 2px
+     (без внутренней под-карточки), имя 14/600, суб 12/500, сумма 14.5/700
+     tabular c em-частотой 12/500; тотал full-bleed внизу карточки
+     (margin 6px -16px -15px, радиус 0 0 13 13), имя 750. */
   .unit-section.rd-recur {
     background: var(--rd-bg);
     border: 1px solid var(--rd-border-strong); border-radius: 14px;
     padding: 15px 16px;
     font-family: var(--rd-font);
   }
-  .rd-recur-list {
-    margin-top: 10px;
-    background: #fff;
-    border: 1px solid var(--rd-border-strong); border-radius: 12px;
-    overflow: hidden;
-  }
+  .unit-section.rd-recur .unit-section-head { font-size: 12.5px; margin-bottom: 12px; }
+  .rd-recur-list { margin-top: 2px; }
   .rd-recur-row {
-    display: grid; grid-template-columns: 1fr auto; gap: 8px;
-    align-items: center; padding: 9px 12px;
-    border-bottom: 1px solid var(--rd-border);
-    font-size: 13px; color: var(--rd-text);
+    display: grid; grid-template-columns: 1fr auto; gap: 10px;
+    align-items: center; padding: 11px 2px;
+    border-top: 1px solid var(--rd-border);
+    font-size: 14px; color: var(--rd-text);
   }
   .rd-recur-name {
     display: flex; align-items: center; gap: 6px; min-width: 0;
-    font-weight: 600;
+    font-size: 14px; font-weight: 600;
   }
   .rd-recur-name > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rd-recur-sub {
-    font-size: 11.5px; font-weight: 400; color: var(--rd-text3); margin-top: 1px;
+    font-size: 12px; font-weight: 500; color: var(--rd-text3); margin-top: 1px;
   }
   .rd-recur-sub.clickable { cursor: pointer; }
   .rd-recur-sub.clickable:hover { color: var(--rd-accent-ink); }
   .rd-recur-amt {
     text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap;
-    color: var(--rd-text); font-weight: 600;
+    color: var(--rd-text); font-size: 14.5px; font-weight: 700;
   }
-  .rd-recur-amt .rd-recur-freq { font-size: 10.5px; font-weight: 500; color: var(--rd-text3); margin-left: 3px; }
+  .rd-recur-amt .rd-recur-freq { font-size: 12px; font-weight: 500; color: var(--rd-text3); margin-left: 3px; }
   .rd-recur-total {
-    display: grid; grid-template-columns: 1fr auto; gap: 8px;
-    align-items: center; padding: 10px 12px;
-    background: #fafaf9;
-    font-size: 13px; font-weight: 700; color: var(--rd-text);
+    display: grid; grid-template-columns: 1fr auto; gap: 10px;
+    align-items: center;
+    margin: 6px -16px -15px; padding: 12px 16px 13px;
+    background: #fafaf9; border-top: 1px solid var(--rd-border);
+    border-radius: 0 0 13px 13px;
+    font-size: 14px; font-weight: 750; color: var(--rd-text);
   }
   .rd-recur-empty {
     margin-top: 10px; padding: 12px 14px;
@@ -80686,9 +80706,11 @@ function _renderUnitActiveServices(u) {
   // workspace catalog — without one, an operator looking at a fresh
   // tenant has no entry point at all. Once any service is active,
   // editing happens through the unit's ⋯ menu → Additional services.
+  // Фиделити Шага 7: «＋» глиф → спрайт i-plus (btn-sm макета — тот же
+  // .upv2-inv-report-btn: accent-ink, border-strong, hover accent-soft).
   const addBtn = canEdit() ? `
     <button type="button" class="upv2-inv-report-btn" onclick="openUnitServicesModal(${ctxArgs})" title="Add a monthly subscription (parking, signage, storage, etc.) for this tenant">
-      ＋ Add
+      ${_rdIc('plus', 13)}Add
     </button>` : '';
   // Empty state — rent unset AND no subscriptions. Without rent the
   // panel has no monthly recurring contribution to summarise.
@@ -80699,7 +80721,7 @@ function _renderUnitActiveServices(u) {
           <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Monthly recurring</span>${addBtn}
         </div>
         <div class="rd-recur-empty">
-          No rent or recurring monthly subscriptions on this lease yet. Set rent in the Lease section above, or click <b>＋ Add</b> to attach a service (parking, signage, storage, etc.).
+          No rent or recurring monthly subscriptions on this lease yet. Set rent in the Lease section above, or click <b>Add</b> to attach a service (parking, signage, storage, etc.).
         </div>
       </div>
     `;
@@ -93499,14 +93521,14 @@ function _renderAutoInvoiceRow(u, editOn) {
       <span class="rd-sw-knob"></span>
     </label>`;
 
+  // Фиделити Шага 7 vs «Suite 363 Finance»: ai-body макета — одна строка
+  // 13.5/text-2/1.5 «Next invoice: <b>…</b> · sent 10d before the 1st ·
+  // due 10d after send»; per-unit override-суффикс — расширение приложения.
   const nextLine = effective && nextStr
-    ? `<div style="font-size: 12.5px; color: var(--rd-text); margin-top: 8px;">
-         Next invoice: <b>${esc(nextStr)}</b>
-         <span style="color: var(--rd-text3); font-size: 11.5px;">· ${effectiveBefore}d before 1st · due ${cfg.daysUntilDue}d after send${unitBefore ? ' · <b>per-unit override</b>' : ''}</span>
-       </div>`
+    ? `<div class="rd-autoinv-body">Next invoice: <b>${esc(nextStr)}</b> · sent ${effectiveBefore}d before the 1st · due ${cfg.daysUntilDue}d after send${unitBefore ? ' · <b>per-unit override</b>' : ''}</div>`
     : effective
-      ? `<div style="font-size: 12px; color: var(--rd-text2); margin-top: 8px;">Set monthly rent to see the next invoice date.</div>`
-      : `<div style="font-size: 12px; color: var(--rd-text2); margin-top: 8px;">
+      ? `<div class="rd-autoinv-body">Set monthly rent to see the next invoice date.</div>`
+      : `<div class="rd-autoinv-body">
            Global default: ${cfg.enabled ? `send <b>${cfg.sendBeforeDays} days</b> before 1st of each month` : 'auto-invoicing disabled workspace-wide'}.
            Change in <a href="#" onclick="event.preventDefault(); openSettings('billing'); return false;" style="color: var(--rd-accent-ink); font-weight: 600; text-decoration: none;">Settings → Billing</a>.
          </div>`;
@@ -95305,6 +95327,38 @@ function _renderUnitLateFeeBlock(u, editOn, ro) {
   const sourceLine = hasOverride
     ? `<div style="font-size: 12px; color: var(--rd-accent-ink); font-weight: 600; margin-top: 10px;">${esc(sourceLabel)}</div>`
     : `<div style="font-size: 12px; margin-top: 10px;"><a href="#" onclick="event.preventDefault(); event.stopPropagation(); openSettings('billing'); return false;" style="color: var(--rd-accent-ink); font-weight: 600; text-decoration: underline;" title="Open workspace late-fee policy">${esc(sourceLabel)}</a></div>`;
+
+  // Фиделити Шага 7 vs «Suite 363 Finance»: в view-режиме тело карточки —
+  // key/value строки макета (Fee / Grace period / Calculation / Auto-send)
+  // + .pol-src «Inherited from global policy — override per unit if needed.»
+  // Edit-режим оставляет прежнюю форму (те же ID fLf* — их читает
+  // saveUnitDetail; save доступен только из edit, так что ID всегда
+  // существуют когда нужны).
+  if (!editOn) {
+    const polVal = (on) => on ? '<span class="v">On</span>' : '<span class="v muted">Off</span>';
+    const feeText = cfg.type === 'percent' ? `${cfg.amount}% of rent` : `$${cfg.amount}`;
+    const srcHtml = hasOverride
+      ? 'Per-unit override — this lease’s own terms.'
+      : (globalCfg.enabled
+          ? `Inherited from <a href="#" onclick="event.preventDefault(); event.stopPropagation(); openSettings('billing'); return false;" title="Open workspace late-fee policy">global policy</a> — override per unit if needed.`
+          : `Disabled in <a href="#" onclick="event.preventDefault(); event.stopPropagation(); openSettings('billing'); return false;" title="Open workspace late-fee policy">global policy</a> — override per unit if needed.`);
+    return `
+      <details class="lease-subcard rd-collapsible" ${hasOverride ? 'open' : ''}>
+        <summary class="rd-sec-head">
+          <span class="rd-sec-chip">${_rdIc('gavel', 16)}</span>
+          <span class="rd-sec-title">Late fee policy</span>
+          <span class="rd-sec-status">${esc(summary)}</span>
+          <span class="rd-sec-chev">${_rdIc('chev-d', 15)}</span>
+        </summary>
+        <div class="rd-pol-rows">
+          <div class="rd-pol-row"><span class="k">Fee</span><span class="v">${esc(feeText)}</span></div>
+          <div class="rd-pol-row"><span class="k">Grace period</span><span class="v">${+cfg.graceDays} day${+cfg.graceDays === 1 ? '' : 's'}</span></div>
+          <div class="rd-pol-row"><span class="k">Calculation</span>${polVal(cfg.enabled)}</div>
+          <div class="rd-pol-row"><span class="k">Auto-send</span>${polVal(cfg.autoSend)}</div>
+          <p class="rd-pol-src">${srcHtml}</p>
+        </div>
+      </details>`;
+  }
 
   return `
     <details class="lease-subcard rd-collapsible" ${hasOverride ? 'open' : ''}>
