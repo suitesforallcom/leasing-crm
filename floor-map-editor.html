@@ -34217,6 +34217,84 @@ let _v2BuildingsListenerDocsApplied = 0;
 let _v2BuildingsFirstSnapshotDone = false;
 let _v2BuildingsRerenderTimer = null;
 
+// ── Ф2 S4 — само-лечение листенера зданий (stale-tab, design: project_stale_tab_protection_design) ──
+// onSnapshot error = стрим МЁРТВ: Firestore после error-callback больше
+// ничего не пришлёт, подписка не восстанавливается сама. До Ф2 это был
+// warn-only (атака wf_01e87b15, факт S4): вкладка продолжала зеркалить со
+// стареющей памятью. Теперь: (1) зеркала замораживаются fail-closed (чистим
+// _buildingAppliedThisSession → Ф0-гейт снова закрыт), (2) один toast на
+// эпизод, (3) re-attach с backoff 5s → 30s → 60s → далее каждые 5 минут.
+// Эпизод закрывает ПЕРВЫЙ успешный снапшот нового стрима: он сбрасывает
+// таймер/счётчик/toast-флаг, а его apply сам возвращает applied-флаги
+// (set-point 1/4 Ф1) — зеркала размораживаются без отдельного кода.
+const _V2_BUILDINGS_HEAL_DELAYS_MS = [5000, 30000, 60000];
+const _V2_BUILDINGS_HEAL_STEADY_MS = 5 * 60 * 1000;
+let _v2BuildingsHealTimer = null;
+let _v2BuildingsHealAttempt = 0;
+let _v2BuildingsHealToasted = false;   // toast «Cloud sync interrupted…» — раз на эпизод
+
+function _v2BuildingsHealReset() {
+  if (_v2BuildingsHealTimer) {
+    try { clearTimeout(_v2BuildingsHealTimer); } catch (e) {}
+    _v2BuildingsHealTimer = null;
+  }
+  _v2BuildingsHealAttempt = 0;
+  _v2BuildingsHealToasted = false;
+}
+
+function _v2BuildingsScheduleHeal() {
+  if (_v2BuildingsHealTimer) return;   // попытка уже запланирована
+  const delay = _v2BuildingsHealAttempt < _V2_BUILDINGS_HEAL_DELAYS_MS.length
+    ? _V2_BUILDINGS_HEAL_DELAYS_MS[_v2BuildingsHealAttempt]
+    : _V2_BUILDINGS_HEAL_STEADY_MS;
+  console.info('[v2-buildings-read] heal: re-attach in ' + Math.round(delay / 1000)
+    + 's (attempt ' + (_v2BuildingsHealAttempt + 1) + ')');
+  _v2BuildingsHealTimer = setTimeout(function () {
+    _v2BuildingsHealTimer = null;
+    _v2BuildingsHealAttempt++;
+    try {
+      // Read-switch выключили, пока ждали — лечить нечего, эпизод закрыт.
+      if (!syncBuildingsReadEnabled()) { _v2BuildingsHealReset(); return; }
+      // Подписку уже поднял кто-то другой (re-enable через настройки) —
+      // ждём её снапшота, он и сбросит эпизод.
+      if (_v2BuildingsListenerUnsub) return;
+      const ok = _v2BuildingsAttachListener();
+      // attach удался → ждём первый снапшот (он вызовет _v2BuildingsHealReset);
+      // если стрим снова умрёт ДО снапшота — error-callback зашедулит
+      // следующий шаг backoff'а сам. attach НЕ удался → следующий шаг тут.
+      if (!ok) _v2BuildingsScheduleHeal();
+    } catch (e) {
+      console.warn('[v2-buildings-read] heal attempt failed:', e?.message || e);
+      _v2BuildingsScheduleHeal();
+    }
+  }, delay);
+}
+
+function _v2BuildingsOnListenerError(err) {
+  console.warn('[v2-buildings-read] listener error:', err?.message || err);
+  // Мёртвую подписку отписываем (no-op, но освобождает ресурсы) и зануляем,
+  // иначе _v2BuildingsAttachListener() ранним return'ом откажется лечить.
+  try { if (_v2BuildingsListenerUnsub) _v2BuildingsListenerUnsub(); } catch (e) {}
+  _v2BuildingsListenerUnsub = null;
+  // Fail-closed: со смертью стрима память вкладки начинает стареть → чистим
+  // applied-флаги, Ф0-гейт замораживает зеркала ВСЕХ зданий до re-apply из
+  // remote (новый снапшот / fallback-fetch / точечный re-pull). Здания,
+  // созданные в этой сессии (Add Building), проходят по isNewLocal-пути.
+  try {
+    if (typeof _buildingAppliedThisSession !== 'undefined') {
+      for (const k of Object.keys(_buildingAppliedThisSession)) delete _buildingAppliedThisSession[k];
+    }
+    if (typeof _buildingMirrorGateLogged !== 'undefined') {
+      for (const k of Object.keys(_buildingMirrorGateLogged)) delete _buildingMirrorGateLogged[k];
+    }
+  } catch (e) {}
+  if (!_v2BuildingsHealToasted) {
+    _v2BuildingsHealToasted = true;
+    try { if (typeof toast === 'function') toast('Cloud sync interrupted — reconnecting…', 'error'); } catch (e) {}
+  }
+  _v2BuildingsScheduleHeal();
+}
+
 function _v2BuildingsAttachListener() {
   if (_v2BuildingsListenerUnsub) return true;
   if (typeof fbSync === 'undefined' || !fbSync || !fbSync.enabled || !fbSync.sdk || !fbSync.db) {
@@ -34228,6 +34306,10 @@ function _v2BuildingsAttachListener() {
     _v2BuildingsListenerUnsub = sdk.onSnapshot(
       sdk.collection(db, 'workspaces', WORKSPACE_ID, 'buildings'),
       (snap) => {
+        // Ф2 S4 — живой снапшот = стрим жив: закрываем heal-эпизод (таймер,
+        // счётчик backoff'а, toast-флаг). Размораживание зеркал делает сам
+        // apply ниже (applied-флаги ставятся по каждому применённому доку).
+        try { _v2BuildingsHealReset(); } catch (eHeal) {}
         if (!syncBuildingsReadEnabled()) return;
         let changed = 0;
         snap.docChanges().forEach((ch) => {
@@ -34347,7 +34429,14 @@ function _v2BuildingsAttachListener() {
         }
       },
       (err) => {
-        console.warn('[v2-buildings-read] listener error:', err?.message || err);
+        // Ф2 S4 — was warn-only (стрим умирал молча, зеркала продолжали
+        // писать со stale-памятью). Теперь freeze + toast + re-attach с
+        // backoff; throw внутри heal-пути деградирует до прежнего warn.
+        try { _v2BuildingsOnListenerError(err); }
+        catch (eHeal) {
+          console.warn('[v2-buildings-read] listener error:', err?.message || err,
+            '(heal path failed:', (eHeal && eHeal.message) || eHeal, ')');
+        }
       }
     );
     console.log('[v2-buildings-read] listener attached on workspaces/' + WORKSPACE_ID + '/buildings');
@@ -34360,6 +34449,9 @@ function _v2BuildingsAttachListener() {
 }
 
 function _v2BuildingsDetachListener() {
+  // Ф2 S4 — явное выключение листенера отменяет и pending re-attach
+  // (ДО раннего return: после смерти стрима unsub уже null, а таймер жив).
+  try { _v2BuildingsHealReset(); } catch (e) {}
   if (!_v2BuildingsListenerUnsub) return;
   try { _v2BuildingsListenerUnsub(); } catch {}
   _v2BuildingsListenerUnsub = null;
@@ -34422,16 +34514,20 @@ window.sfaBuildingsReadSwitchSmoke = async function () {
 // Идемпотентно (no-op если стрим уже наполнил). После наполнения дёргает payments-fallback,
 // чтобы платежи легли в свежесозданные юниты.
 let _v2BuildingsFallbackInflight = false;
-async function _v2BuildingsFallbackFetch(reason) {
+// Ф2 wake-resync: force=true обходит оба гейта «стрим уже наполнил» — после
+// долгого сна вкладки нужен именно ПОВТОРНЫЙ полный re-apply облака поверх
+// памяти (getDocs читает сервер; живой листенер, если он есть, всё равно
+// доставит более новые версии следом). Inflight-гейт остаётся всегда.
+async function _v2BuildingsFallbackFetch(reason, force) {
   if (!syncBuildingsReadEnabled()) return;
-  if (_v2BuildingsFirstSnapshotDone && (state.buildings || []).length > 0) return;  // стрим уже наполнил
+  if (!force && _v2BuildingsFirstSnapshotDone && (state.buildings || []).length > 0) return;  // стрим уже наполнил
   if (_v2BuildingsFallbackInflight) return;
   if (typeof fbSync === 'undefined' || !fbSync || !fbSync.sdk || !fbSync.db) return;
   _v2BuildingsFallbackInflight = true;
   try {
     const { sdk, db } = fbSync;
     const snap = await sdk.getDocs(sdk.collection(db, 'workspaces', WORKSPACE_ID, 'buildings'));
-    if (_v2BuildingsFirstSnapshotDone && (state.buildings || []).length > 0) return;  // стрим выиграл гонку
+    if (!force && _v2BuildingsFirstSnapshotDone && (state.buildings || []).length > 0) return;  // стрим выиграл гонку
     state.buildings = state.buildings || [];
     let applied = 0;
     snap.forEach(d => {
@@ -34553,6 +34649,48 @@ async function _v2RepullBuilding(bid, reason) {
   }
 }
 window._v2RepullBuilding = _v2RepullBuilding;
+
+// ── Ф2 wake-resync (stale-tab, design: project_stale_tab_protection_design) ──
+// Вкладка, простоявшая в фоне >10 минут, могла пропустить remote-правки
+// (троттлинг фоновых вкладок, тихо умерший стрим, eviction) — это ровно
+// сценарий инцидента Suite 344: проснувшаяся stale-вкладка зеркалит старую
+// память поверх облака. До завершения re-apply её память НЕдоверенная:
+// (1) СИНХРОННО чистим _buildingAppliedThisSession → Ф0-гейт закрывает
+//     зеркала fail-closed (любой saveState между wake и fetch'ем здания
+//     пропустит);
+// (2) форсируем полный fallback-fetch (force=true) — его успешный apply сам
+//     ставит applied/appliedRev по каждому зданию (set-point 2/4 Ф1) и
+//     зеркала размораживаются.
+// Если fetch упал (offline при wake) — здания остаются под гейтом до живого
+// снапшота листенера / точечного re-pull: писать со stale-памятью нельзя.
+// Здания, созданные в этой сессии (Add Building), под гейт не попадают
+// (isNewLocal-путь через _buildingsCreatedThisSession).
+const _SFA_WAKE_RESYNC_MIN_HIDDEN_MS = 10 * 60 * 1000;   // порог «долгого сна»
+let _sfaTabHiddenAtMs = 0;
+try {
+  document.addEventListener('visibilitychange', function () {
+    try {
+      if (document.hidden) { _sfaTabHiddenAtMs = Date.now(); return; }
+      const hiddenFor = _sfaTabHiddenAtMs ? (Date.now() - _sfaTabHiddenAtMs) : 0;
+      _sfaTabHiddenAtMs = 0;
+      if (hiddenFor < _SFA_WAKE_RESYNC_MIN_HIDDEN_MS) return;
+      // Без read-switch'а per-building applied-трекинга нет (источник правды —
+      // монолит со своим onSnapshot+CAS) — гейтить/фетчить нечего.
+      if (typeof syncBuildingsReadEnabled !== 'function' || !syncBuildingsReadEnabled()) return;
+      console.info('[v2-buildings-read] wake-resync: hidden '
+        + Math.round(hiddenFor / 60000) + ' min — freeze mirrors + re-pull cloud (Ф2)');
+      if (typeof _buildingAppliedThisSession !== 'undefined') {
+        for (const k of Object.keys(_buildingAppliedThisSession)) delete _buildingAppliedThisSession[k];
+      }
+      if (typeof _buildingMirrorGateLogged !== 'undefined') {
+        for (const k of Object.keys(_buildingMirrorGateLogged)) delete _buildingMirrorGateLogged[k];
+      }
+      try { _v2BuildingsFallbackFetch('wake-resync', true); } catch (eF) {}
+    } catch (eWake) {
+      console.warn('[v2-buildings-read] wake-resync failed:', eWake?.message || eWake);
+    }
+  });
+} catch (eVis) {}
 
 function _v2BuildingsAttachIfFlagged() {
   if (syncBuildingsReadEnabled() && !_v2BuildingsListenerUnsub) {
@@ -124412,6 +124550,41 @@ function importLayout(e) {
       if (!Array.isArray(parsed.buildings)) {
         throw new Error('Missing buildings array — this does not look like a SuitesForAll export');
       }
+      // ── Ф2 S3 — карантин импорта (stale-tab, design: project_stale_tab_protection_design) ──
+      // Импорт = wholesale-замена state[k] (включая buildings + settings) →
+      // saveState() → mirror-sweep ВСЕХ зданий + monolith push. Это
+      // единственный легальный путь «затереть облако файлом» (вектор S3,
+      // атака wf_01e87b15), поэтому второй, ПЕЧАТНЫЙ гейт после parse:
+      // оператор должен набрать OVERWRITE. Отмена/опечатка/недоступный
+      // prompt → полный abort ДО первой мутации state (fail-closed).
+      const bCount = parsed.buildings.length;
+      const cCount = Array.isArray(parsed.contracts) ? parsed.contracts.length : 0;
+      let typedConfirm = null;
+      try {
+        typedConfirm = prompt(
+          'Overwrite CLOUD with this file? Cloud data is newer than this file may be.\n'
+          + 'Buildings: ' + bCount + ', contracts: ' + cCount + ' will replace current cloud state.\n'
+          + 'Type OVERWRITE to confirm');
+      } catch (ePrompt) { typedConfirm = null; }   // prompt заблокирован → abort
+      if (String(typedConfirm == null ? '' : typedConfirm).trim() !== 'OVERWRITE') {
+        toast('Import cancelled — cloud state unchanged', 'info');
+        return;
+      }
+      // Ф2 S3 (a) — слепок sync-флагов ТЕКУЩЕЙ сессии ДО замены settings.
+      // Старый экспорт несёт settings без syncV2/syncBuildings* — пропустить
+      // его как есть значило бы fleet-wide снять флаги (strip-ON workspace
+      // без флагов = «пустые» здания/платежи у всех вкладок). Текущие
+      // значения важнее файла — восстановим их ПОВЕРХ после apply-цикла.
+      const _SFA_SYNC_FLAG_KEYS = ['syncV2', 'syncBuildingsV2', 'syncBuildingsRead',
+        'syncBuildingsStrip', 'syncV2Read', 'syncV2StripPayments'];
+      let preservedSyncFlags = null;
+      try {
+        preservedSyncFlags = {};
+        for (const fk of _SFA_SYNC_FLAG_KEYS) {
+          preservedSyncFlags[fk] = (state.settings && typeof state.settings === 'object')
+            ? state.settings[fk] : undefined;
+        }
+      } catch (eFlagSnap) { preservedSyncFlags = null; }
       pushHistory();
       // Apply only whitelisted keys; explicitly skip anything that
       // isn't in the allow-list (prototype pollution, _rev tampering,
@@ -124428,6 +124601,56 @@ function importLayout(e) {
           skipped.push(k);
         }
       }
+      // Ф2 S3 (a) — восстанавливаем sync-флаги текущей сессии ПОВЕРХ файла.
+      // undefined в слепке = флага не было и сейчас → удаляем и из импорта
+      // (точное «current OVER imported»). throw → деградация до пре-Ф2
+      // (файл как есть) с warn — rules и Ф0/Ф1-гейты остаются линией защиты.
+      try {
+        if (preservedSyncFlags) {
+          if (!state.settings || typeof state.settings !== 'object' || Array.isArray(state.settings)) state.settings = {};
+          for (const fk of _SFA_SYNC_FLAG_KEYS) {
+            if (preservedSyncFlags[fk] === undefined) delete state.settings[fk];
+            else state.settings[fk] = preservedSyncFlags[fk];
+          }
+        }
+      } catch (eFlagRestore) {
+        console.warn('[import] sync-flag preserve failed:', eFlagRestore?.message || eFlagRestore);
+      }
+      // Ф2 S3 (b) — deliberate-override зеркал зданий: оператор напечатал
+      // OVERWRITE, т.е. ОСОЗНАННО кладёт файл поверх облака. Поднимаем
+      // appliedRev каждого здания до последнего УВИДЕННОГО cloud-rev
+      // (_buildingSavedRev) — следующий mirror-sweep запишет cur+1 ПОВЕРХ,
+      // rules-гард пропустит. Открываем и Ф0-гейт (applied-mark), и снимаем
+      // undo-карантин: печатное подтверждение легализует именно эту запись.
+      // Здания, чей cloud-rev вкладка НЕ видела (_buildingSavedRev пуст),
+      // не трогаем: Ф0-гейт оставит их незазеркаленными (а действительно
+      // новые bid из файла пройдут по isNewLocal-пути и создадутся с rev 1);
+      // если зеркало всё же дойдёт — rules отклонят низкий rev.
+      try {
+        if (typeof _buildingAppliedRev !== 'undefined' && typeof _buildingSavedRev !== 'undefined') {
+          for (const b of (state.buildings || [])) {
+            if (!b || !b.id) continue;
+            if (_buildingSavedRev[b.id] === undefined) continue;
+            _buildingAppliedRev[b.id] = (_buildingSavedRev[b.id] | 0);
+            if (typeof _buildingAppliedThisSession !== 'undefined') _buildingAppliedThisSession[b.id] = true;
+            if (typeof _buildingUndoQuarantine !== 'undefined') delete _buildingUndoQuarantine[b.id];
+            if (typeof _buildingUndoQuarantineLogged !== 'undefined') delete _buildingUndoQuarantineLogged[b.id];
+          }
+        }
+      } catch (eOverride) {
+        console.warn('[import] deliberate-override rev stamp failed:', eOverride?.message || eOverride);
+      }
+      // Ф2 S3 — аудит именно ФАКТА печатного подтверждения затирания облака
+      // (отдельно от 'state.import' ниже: тот фиксирует состав секций).
+      try {
+        if (typeof recordAuditClient === 'function') {
+          recordAuditClient('state.import-overwrite', {
+            source: 'import-modal',
+            note: 'Operator typed OVERWRITE: file "' + f.name + '" replaces cloud state ('
+              + bCount + ' buildings, ' + cCount + ' contracts); sync flags preserved from session',
+          });
+        }
+      } catch (eAud) {}
       saveState();
       renderAll();
       const skippedNote = skipped.length ? ` (skipped: ${skipped.slice(0, 5).join(', ')}${skipped.length > 5 ? '…' : ''})` : '';
