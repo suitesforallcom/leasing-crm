@@ -9240,38 +9240,40 @@
   /* Редизайн 2026-06: topnav-паттерн макета — 54px, активная вкладка =
      индиго-underline (::after, отступ 10px по краям), hover #f6f6f8,
      номер юнита — пилюля .count, AI прижат вправо со sparkle-иконкой. */
+  /* Компактнее по запросу оператора: ниже строка, меньше зазоры между
+     вкладками и горизонтальные паддинги (исходно было 54px/gap6/16px). */
   .sidebar-tabs {
     display: flex; align-items: center;
-    gap: 6px;
-    padding: 0 16px;
-    height: 54px; flex: none;
+    gap: 1px;
+    padding: 0 8px;
+    height: 44px; flex: none;
     border-bottom: 1px solid var(--rd-border);
     background: var(--rd-bg);
     font-family: var(--rd-font);
   }
   .sidebar-tab {
     appearance: none; border: 0; background: none; cursor: pointer;
-    font: inherit; font-size: 15px; font-weight: 500;
+    font: inherit; font-size: 13.5px; font-weight: 500;
     color: var(--rd-text2);
-    padding: 8px 10px; border-radius: 8px;
-    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 8px; border-radius: 7px;
+    display: inline-flex; align-items: center; gap: 6px;
     position: relative; white-space: nowrap;
   }
   .sidebar-tab:hover:not(.active) { color: var(--rd-text); background: #f6f6f8; }
   .sidebar-tab.active { color: var(--rd-accent-ink); font-weight: 600; }
   .sidebar-tab.active::after {
-    content: ""; position: absolute; left: 10px; right: 10px; bottom: -1px;
+    content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px;
     height: 2px; background: var(--rd-accent); border-radius: 2px;
   }
   .sidebar-tab[data-tab="ai"] { margin-left: auto; color: var(--rd-text); }
-  .sidebar-tab[data-tab="ai"] .rd-ic { width: 16px; height: 16px; color: var(--rd-accent); }
+  .sidebar-tab[data-tab="ai"] .rd-ic { width: 15px; height: 15px; color: var(--rd-accent); }
   .sidebar-tab-badge {
-    font-size: 12px; font-weight: 600;
-    padding: 1px 7px;
+    font-size: 11px; font-weight: 600;
+    padding: 0 6px;
     background: var(--rd-accent-soft);
     color: var(--rd-accent-ink);
     border-radius: 999px;
-    line-height: 1.5;
+    line-height: 1.55;
     font-variant-numeric: tabular-nums;
   }
 
