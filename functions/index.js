@@ -8985,6 +8985,16 @@ exports.ppNotifyBuildingChanged = _ppWebhook.ppNotifyBuildingChanged;
 exports.ppNotifyPaymentChanged = _ppWebhook.ppNotifyPaymentChanged;
 exports.ppWebhookFlushScheduled = _ppWebhook.ppWebhookFlushScheduled;
 
+// ─── Серверный алерт-триггер регрессий зданий (Ф3 stale-tab-protection) ──────
+// ВТОРОЙ onDocumentWritten на buildings/{bid} (рядом с ppNotifyBuildingChanged).
+// Сравнивает before/after и пишет алерт-док в top-level clobberAlerts при
+// сигнатурах инцидента 2026-06-09 (_savedRev-понижение / падение occupancy /
+// исчезновение code / wipe юнитов). Пишет ТОЛЬКО в clobberAlerts; buildings/
+// payments/монолит/Stripe не трогает; никогда не кидает (retry:false).
+// См. docs/incident-2026-06-09-suite344.md, FIXES_LOG 65/67.
+const _clobberAlert = require('./clobber-alert');
+exports.clobberAlertBuildingWrite = _clobberAlert.clobberAlertBuildingWrite;
+
 // ─── Тест-хуки (ТОЛЬКО под env-флагом) ──────────────────────────────────────
 // Деплой-дискавери firebase никогда не выставляет SFA_TEST_EXPORTS — в проде
 // этих экспортов не существует. Нужны эмуляторным тестам, которые проверяют
