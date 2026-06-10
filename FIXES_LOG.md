@@ -62,8 +62,8 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ### 68. Backup snapshots were empty shells under strip-ON — rehydrate + chunked verify + cascade prune (backup/data-safety, 2026-06-10)
 
-- **Status:** needs-porting
-- **Branch / commit:** `fix/backup-collections` @ (this commit) — NOT deployed; functions deploy is §2-gated, awaiting Tony GO
+- **Status:** active (deployed 2026-06-10; live-verified — frequent snapshots now chunked=true, 5 chunks, ~1.15MB with rehydrated buildings vs 48KB empty shells before)
+- **Branch / commit:** `fix/backup-collections` @ `5810147`, merged via `cf5a067`. Deployed all 5 touchers: frequentBackupSnapshot, dailyBackupSnapshot, monthlyBackupVerify, takeManualBackup, restoreBackup
 - **Area:** Backups (`_writeBackupSnapshot` / frequent+daily crons / prune / monthlyBackupVerify)
 - **Files:** functions/index.js
 - **Functions:** `_writeBackupSnapshot` (~4812), `_pruneOldBackups`, `_pruneOldFrequentBackups`, `monthlyBackupVerify`; test hooks under `SFA_TEST_EXPORTS`
@@ -73,7 +73,7 @@ to the replacement entry) if a fix is intentionally rewritten.
 - **Verification:** `firebase emulators:exec --only firestore "SFA_TEST_EXPORTS=1 node functions/test-harness/test-backup-collections.js"` — 13 asserts incl. the incident regression case (tenant+deposit stamp+merged payments present in a chunked, read-back-verified snapshot; empty rehydrate throws; prune cascades). All passed 2026-06-10.
 - **Regression test:** functions/test-harness/test-backup-collections.js (emulator; local-only)
 - **Related PR / issue:** docs/incident-2026-06-09-suite344.md (lesson #3). Cost: rehydrate ≈ +1.3k reads / 15-min snapshot ≈ $2-3/mo; chunked storage ≈ 350MB resident at 48h frequent retention.
-- **Porting note:** deploy = full `firebase deploy --only functions` (or at least frequentBackupSnapshot, dailyBackupSnapshot, monthlyBackupVerify + any callable using `_writeBackupSnapshot`). Until deployed, prod snapshots remain building-empty; PITR (7-day) is the only net.
+- **Porting note:** DEPLOYED 2026-06-10 (targeted: 3 crons + takeManualBackup + restoreBackup). Live verification same day: 3 consecutive 15-min snapshots chunked with buildings.
 
 ---
 
