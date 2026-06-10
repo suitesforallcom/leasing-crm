@@ -6969,7 +6969,11 @@
     color: var(--text); border-radius: 7px;
     font: 600 12px inherit; cursor: pointer;
     transition: all .12s;
+    /* redesign cosmetics: иконка спрайта + label в один ряд (эмодзи заменены
+       на sprite-иконки в unit-header-actions) */
+    display: inline-flex; align-items: center; gap: 5px;
   }
+  .unit-btn .rd-ic { width: 13px; height: 13px; }
   .unit-btn:hover { background: var(--surface-3); border-color: var(--accent); }
   .unit-btn.unit-btn-primary {
     background: var(--accent); color: white; border-color: var(--accent);
@@ -9099,19 +9103,9 @@
     0%, 100% { stroke-opacity: 0.9; }
     50%      { stroke-opacity: 0.4; }
   }
-  /* Legend toggle-chips: compact interactive variant of .legend-item.
-     Active state uses accent color; inactive is muted and semi-transparent. */
-  .legend-toggle {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 3px 8px; border-radius: 999px; cursor: pointer;
-    border: 1px solid var(--border); font-size: 11px;
-    background: var(--surface); user-select: none;
-    transition: all 0.12s ease;
-  }
-  .legend-toggle:hover { border-color: #0ea5e9; }
-  .legend-toggle.on    { background: rgba(14,165,233,0.12); border-color: #0ea5e9; color: #0369a1; }
-  .legend-toggle.off   { opacity: 0.5; }
-  :root[data-theme="light"] .legend-toggle.on { color: #0369a1; }
+  /* .legend-toggle удалён (redesign cosmetics): Step 3 заменил легенду на
+     .dash-ovl / .dash-leg / .mlb-* — на .legend-toggle не ссылались ни разметка,
+     ни JS-шаблоны (grep: 0 совпадений вне самого CSS-блока). */
 
   .wall-line { stroke-width: 4; stroke-linecap: round; cursor: pointer; }
   .wall-line:hover { stroke-width: 5; }
@@ -21088,9 +21082,9 @@
               <button onclick="aiToggleLang()" title="Switch chat language" id="aiLangBtn" style="padding:2px 7px; background:#eef2ff; color:#4338ca; border:0; border-radius:4px; font-size:10px; font-weight:700; cursor:pointer; letter-spacing:0.4px;">EN</button>
             </div>
             <div style="display:flex; gap:6px;">
-              <button onclick="aiGenerateDailyReport()" title="Generate today's portfolio report" style="padding:4px 8px; background:#fef3c7; color:#92400e; border:0; border-radius:5px; font-size:11px; font-weight:700; cursor:pointer;">📊 Report</button>
-              <button onclick="aiResetChat()" title="Clear chat history" style="padding:4px 8px; background:transparent; color:#64748b; border:1px solid #cbd5e1; border-radius:5px; font-size:11px; cursor:pointer;">↺</button>
-              <button onclick="aiOpenSettings()" title="Change API key" style="padding:4px 8px; background:transparent; color:#64748b; border:1px solid #cbd5e1; border-radius:5px; font-size:11px; cursor:pointer;">⚙</button>
+              <button onclick="aiGenerateDailyReport()" title="Generate today's portfolio report" style="padding:4px 8px; background:var(--rd-accent-soft); color:var(--rd-accent-ink); border:0; border-radius:5px; font-size:11px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; gap:5px;"><svg class="rd-ic" style="width:13px;height:13px" aria-hidden="true"><use href="#i-chart"></use></svg>Report</button>
+              <button onclick="aiResetChat()" title="Clear chat history" style="padding:4px 8px; background:transparent; color:var(--rd-text2); border:1px solid var(--rd-border-strong); border-radius:5px; font-size:11px; cursor:pointer; display:inline-flex; align-items:center;"><svg class="rd-ic" style="width:13px;height:13px" aria-hidden="true"><use href="#i-refresh"></use></svg></button>
+              <button onclick="aiOpenSettings()" title="Change API key" style="padding:4px 8px; background:transparent; color:var(--rd-text2); border:1px solid var(--rd-border-strong); border-radius:5px; font-size:11px; cursor:pointer; display:inline-flex; align-items:center;"><svg class="rd-ic" style="width:13px;height:13px" aria-hidden="true"><use href="#i-gear"></use></svg></button>
             </div>
           </div>
           <!-- Suggested prompts row — visible while chat is empty, hidden once user starts -->
@@ -76257,11 +76251,11 @@ function renderDetail() {
       </div>
       <div class="unit-header-actions">
         ${editOn ? `
-          <button class="unit-btn unit-btn-primary" onclick="saveUnitDetail()">💾 Save</button>
+          <button class="unit-btn unit-btn-primary" onclick="saveUnitDetail()">${(typeof _svgIcon === 'function') ? _svgIcon('check', 13) : ''}Save</button>
           <button class="unit-btn" onclick="cancelUnitEdit()">Cancel</button>
         ` : `
-          ${showLedgerBtn ? `<button class="unit-btn unit-btn-ledger" onclick="openTenantDrawer('${bId}','${fId}','${esc(u.id)}')" title="Full tenant ledger: charges, payments, balance, invoices">📄 Ledger</button>` : ''}
-          ${allowedByRole ? `<button class="unit-btn unit-btn-primary" onclick="enterUnitEdit()">✏ Edit</button>` : ''}
+          ${showLedgerBtn ? `<button class="unit-btn unit-btn-ledger" onclick="openTenantDrawer('${bId}','${fId}','${esc(u.id)}')" title="Full tenant ledger: charges, payments, balance, invoices">${(typeof _svgIcon === 'function') ? _svgIcon('invoice', 13) : ''}Ledger</button>` : ''}
+          ${allowedByRole ? `<button class="unit-btn unit-btn-primary" onclick="enterUnitEdit()">${(typeof _svgIcon === 'function') ? _svgIcon('pencil', 13) : ''}Edit</button>` : ''}
         `}
       </div>
     </div>`;
