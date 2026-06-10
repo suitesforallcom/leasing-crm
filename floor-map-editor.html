@@ -9099,19 +9099,9 @@
     0%, 100% { stroke-opacity: 0.9; }
     50%      { stroke-opacity: 0.4; }
   }
-  /* Legend toggle-chips: compact interactive variant of .legend-item.
-     Active state uses accent color; inactive is muted and semi-transparent. */
-  .legend-toggle {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 3px 8px; border-radius: 999px; cursor: pointer;
-    border: 1px solid var(--border); font-size: 11px;
-    background: var(--surface); user-select: none;
-    transition: all 0.12s ease;
-  }
-  .legend-toggle:hover { border-color: #0ea5e9; }
-  .legend-toggle.on    { background: rgba(14,165,233,0.12); border-color: #0ea5e9; color: #0369a1; }
-  .legend-toggle.off   { opacity: 0.5; }
-  :root[data-theme="light"] .legend-toggle.on { color: #0369a1; }
+  /* .legend-toggle удалён (redesign cosmetics): Step 3 заменил легенду на
+     .dash-ovl / .dash-leg / .mlb-* — на .legend-toggle не ссылались ни разметка,
+     ни JS-шаблоны (grep: 0 совпадений вне самого CSS-блока). */
 
   .wall-line { stroke-width: 4; stroke-linecap: round; cursor: pointer; }
   .wall-line:hover { stroke-width: 5; }
