@@ -60,6 +60,28 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 66. Entire-floor lease — gross area becomes the leased/rentable area (feature/finance-surface, 2026-06-09)
+
+- **Status:** active
+- **Branch / commit:** `main` @ (this commit)
+- **Area:** Floor leasing / rentable-area definition / multi-suite lease head
+- **Files:** floor-map-editor.html · FINANCIAL_MODEL_REFERENCE.md (EQ-8)
+- **Functions:** `_floorRentableSqft`, `_floorFullLeaseActive` (after `_floorGrossSqft`), `_floorFullLeaseEnable` / `_floorFullLeaseDisable` / `bmSetFloorFullLease` (Building modal block), `_groupCreate` (new `opts.keepStatus`), wiring in `_renderStackingChart` + summary tables, `updateStats`, `calcStatsPerFloor`, settings Manage Floors list, `renderRentRoll` KPIs, `saveBuildingModal` (flag transitions)
+- **Bug it fixed:** none — feature (operator request 2026-06-09: «Когда арендуется весь этаж включается абсолютно все помещения в аренду. Т.е. гросс эрия арендуется»). Design from workflow wf_c8a13109-eb2, approved then built.
+- **Invariant — DO NOT BREAK:**
+  1. `_floorRentableSqft(f, base)` is a PURE resolver — `f.rentableSqft` is NEVER overwritten by this feature; disabling the flag must restore prior area numbers byte-identically.
+  2. Money lives on the EXISTING group-lease head (Entry/EQ-2): no `floor.rent` / `floor.tenant` fields. Enable = `_groupCreate` over `_stRentableUnits(f)` (head = largest sqft); disable = `_groupDissolve` (keeps per-unit data).
+  3. Restroom/common/circulation units are NEVER marked `rentable=true` — their area enters only arithmetically via `_floorGrossSqft`.
+  4. Occupancy honesty: 100%-occupied ONLY while `_floorFullLeaseActive(f)` (head `status==='occupied'` AND `head.tenant||head.company` — LLC-only fallback). The bare flag must not inflate occupancy.
+  5. `_groupCreate` third arg `opts.keepStatus` — vacant-floor enable must NOT force members to `occupied` (anti-phantom-lease). Existing callers pass no opts → behavior unchanged.
+  6. Enable guards: block when the floor already has any suite group (commingling) or >1 distinct tenant. Vacant-floor enable zeroes head `contractRent` (proforma only — no phantom contract).
+- **Verification:** Building modal → Floors → tick "Lease entire floor" on a floor with units → Save. Dashboard Rentable/RSF, Stacking Rentable column, Manage Floors occupancy, Rent Roll Rentable KPI all show gross for that floor; $/ft² drops accordingly. Untick → all numbers revert exactly. Vacant floor: occupancy does NOT jump to 100%.
+- **Regression test:** none — manual UI only.
+- **Related PR / issue:** none (auto-deploy pipeline). Design memory: project_floor_rentable_and_total_area.
+- **Known limitation (v1):** units drawn on the floor AFTER enabling are not auto-added to the full-floor group (re-toggle to rebuild); no map overlay yet (planned follow-up).
+
+---
+
 ### 65. Follower-tab building clobber → DATA LOSS (New Tampa floors 4-6); leader-gate _mirrorBuildingsToV2 (sync/data-safety, 2026-06-08)
 
 - **Status:** active

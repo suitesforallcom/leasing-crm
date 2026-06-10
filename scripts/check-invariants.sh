@@ -231,6 +231,16 @@ else
 fi
 
 echo
+echo "Entry 66 — entire-floor lease: pure resolver + keepStatus opt:"
+if grep -qE "^function _floorRentableSqft\(f, baseSqft\)" "$HTML" \
+   && grep -qE "opts && opts\.keepStatus" "$HTML"; then
+  echo "  ✓ _floorRentableSqft resolver + _groupCreate keepStatus present"
+else
+  echo "  ✗ Entry 66 — _floorRentableSqft (pure rentable→gross resolver) or _groupCreate opts.keepStatus missing — entire-floor lease math regresses (FIXES_LOG 66 / EQ-8)"
+  FAIL=1
+fi
+
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."

@@ -675,6 +675,16 @@
   }
   .bm-floor-row:last-child { margin-bottom: 0; }
   .bm-floor-row:hover { border-color: var(--accent); }
+  /* «Lease entire floor» — вторая строка внутри row, на всю ширину грида */
+  .bm-floor-fulllease {
+    grid-column: 1 / -1;
+    display: flex; align-items: center; gap: 6px;
+    font-size: 11.5px; color: var(--muted);
+    cursor: pointer; user-select: none;
+  }
+  .bm-floor-fulllease input { accent-color: var(--accent); margin: 0; }
+  .bm-floor-fulllease.on { color: var(--accent); font-weight: 600; }
+  .bm-floor-fulllease input:disabled + span { opacity: .55; cursor: not-allowed; }
   .bm-floor-num {
     width: 32px; height: 32px; flex-shrink: 0;
     border: 1.5px solid var(--border); border-radius: 6px;
@@ -60098,6 +60108,48 @@ function _floorGrossSqft(f) {
   return s;
 }
 
+// ===== Аренда всего этажа одной компанией (full-floor lease) ==============
+// f.leaseEntireFloor (default undefined/false) — этаж сдаётся ЦЕЛИКОМ: в
+// аренду уходит вся gross-площадь (коридоры / санузлы / общие зоны входят
+// арифметически через gross; их юниты НИКОГДА не помечаются rentable=true).
+// f.fullFloorGroupId — указатель на групп-лиз, созданный при включении.
+// Деньги живут на голове группы (существующий lease-head примитив), никаких
+// новых полей floor.rent / floor.tenant нет (FINANCIAL_INVARIANTS §III).
+//
+// _floorRentableSqft — ЧИСТЫЙ резолвер знаменателя rentable-площади.
+// НИКОГДА не перезаписывает f.rentableSqft: выключение флага возвращает все
+// цифры байт-в-байт. baseSqft — то, что поверхность считала до этой фичи
+// (своя ветка: Σ офисных юнитов либо f.rentableSqft).
+function _floorRentableSqft(f, baseSqft) {
+  const base = +baseSqft || 0;
+  if (f && f.leaseEntireFloor) {
+    const g = _floorGrossSqft(f);
+    if (g > 0) return g;
+  }
+  return base;
+}
+
+// Полнопольная аренда АКТИВНА только когда голова лиза реально занята
+// арендатором: status==='occupied' И (tenant || company) — честная вакансия,
+// сам по себе флаг этаж занятым не делает. Company-fallback обязателен для
+// LLC-only арендаторов (см. FIXES_LOG — Suite 421).
+function _floorFullLeaseActive(f) {
+  if (!f || !f.leaseEntireFloor) return false;
+  let head = null;
+  if (f.fullFloorGroupId && typeof _groupPrimary === 'function') {
+    head = _groupPrimary(f.fullFloorGroupId);
+  }
+  if (!head) {
+    // Этаж с единственным офисом — группы нет, голова = этот офис.
+    const us = _stRentableUnits(f);
+    if (us.length === 1) head = us[0];
+  }
+  if (!head) return false;
+  return head.status === 'occupied' && !!(head.tenant || head.company);
+}
+window._floorRentableSqft = _floorRentableSqft;
+window._floorFullLeaseActive = _floorFullLeaseActive;
+
 function _renderStackingChart(b) {
   const host = document.getElementById('svChart'); if (!host) return;
   const s = _stState();
@@ -60130,6 +60182,12 @@ function _renderStackingChart(b) {
     const unitsAll = (f.units || []).filter(_stIsOffice);
     const units = unitsAll.slice().sort((a, c) => (a.x || 0) - (c.x || 0) || String(a.id).localeCompare(String(c.id)));
     const rentableSqft = units.reduce((x, u) => x + (+u.sqft || 0), 0) || 1;
+    // Полнопольный лиз (f.leaseEntireFloor): знаменатель денег / occupancy =
+    // gross-площадь этажа (весь этаж сдан одной компанией, load factor 1.0).
+    // Ширины баров остаются на Σ офисных юнитов (rentableSqft), чтобы
+    // сегменты не сжимались относительно соседних этажей.
+    const _ffActive = _floorFullLeaseActive(f);
+    const rentDenomSqft = _floorRentableSqft(f, rentableSqft);
     // Total floor area = polygon outline area (operator-drawn boundary)
     // converted via floor.scale. Falls back to rentable sqft if outline /
     // scale missing, so downstream math still works.
@@ -60137,15 +60195,16 @@ function _renderStackingChart(b) {
     const totalSqft = (outlineSqft != null && outlineSqft > 0) ? outlineSqft : rentableSqft;
     const rentable = units;   // all units here are already rentable offices
     const leased = rentable.filter(u => stackingUnitStatus(u) !== 'vacant');
-    const leasedSqft = leased.reduce((x, u) => x + (+u.sqft || 0), 0);
+    // Активный полнопольный лиз → занят ВЕСЬ этаж (числитель = gross).
+    const leasedSqft = _ffActive ? rentDenomSqft : leased.reduce((x, u) => x + (+u.sqft || 0), 0);
     const occCount = leased.length;
-    const occPct = rentableSqft ? Math.round(leasedSqft / rentableSqft * 100) : 0; // [5]: occupancy по ПЛОЩАДИ (sqft), не по числу юнитов
+    const occPct = rentDenomSqft ? Math.round(leasedSqft / rentDenomSqft * 100) : 0; // [5]: occupancy по ПЛОЩАДИ (sqft), не по числу юнитов
     // totalRent here = SUM of every office's contract rent (i.e. revenue
     // from leased units only — vacant suites have rent=0). This is the
     // floor's Monthly Recurring Revenue.
     const totalRent = rentable.reduce((x, u) => x + (+u.contractRent || +u.rent || 0), 0);
     const leasedRent = leased.reduce((x, u) => x + (+u.contractRent || +u.rent || 0), 0);
-    const rateRentable = rentableSqft ? (totalRent * 12 / rentableSqft) : 0;
+    const rateRentable = rentDenomSqft ? (totalRent * 12 / rentDenomSqft) : 0;
     const rateTotal    = totalSqft    ? (totalRent * 12 / totalSqft)    : 0;
     const rateLeased   = leasedSqft   ? (leasedRent * 12 / leasedSqft)  : 0;
     const isSel = selectedLevel !== null && f.number === selectedLevel;
@@ -60308,7 +60367,7 @@ function _renderStackingChart(b) {
                sqft (rentable) + sum of leased office sqft (leased). -->
           <div class="sv-floor-areas sv-mono">
             <div><span class="sv-area-l">Total</span><span class="sv-area-v">${_outlineMissing ? '—' : totalSqft.toLocaleString() + ' ft²'}</span></div>
-            <div><span class="sv-area-l">Rentable</span><span class="sv-area-v">${rentableSqft.toLocaleString()} ft²</span></div>
+            <div title="${_ffActive ? 'Entire-floor lease — rentable = gross floor area (load factor 1.0)' : ''}"><span class="sv-area-l">Rentable</span><span class="sv-area-v">${rentDenomSqft.toLocaleString()} ft²</span></div>
             <div><span class="sv-area-l" style="color:#3d6b4a;">Leased</span><span class="sv-area-v" style="color:#3d6b4a;">${leasedSqft.toLocaleString()} ft²</span></div>
           </div>
         </div>
@@ -60332,7 +60391,7 @@ function _renderStackingChart(b) {
               <tr>
                 <th>ft²</th>
                 <td>${totalCellSqftV}</td>
-                <td>${rentableSqft.toLocaleString()}</td>
+                <td title="${_ffActive ? 'Per gross floor area — entire-floor lease' : ''}">${rentDenomSqft.toLocaleString()}</td>
                 <td style="color:#3d6b4a;">${leasedSqft.toLocaleString()}</td>
               </tr>
               <tr>
@@ -60375,8 +60434,10 @@ function _renderStackingChart(b) {
     const usForSum = _stRentableUnits(f);
     const occ        = us.filter(u => stackingUnitStatus(u) !== 'vacant');
     const occForSum  = usForSum.filter(u => stackingUnitStatus(u) !== 'vacant');
-    const rentSqft = usForSum.reduce((x, u) => x + (+u.sqft || 0), 0);
-    const lsdSqft  = occForSum.reduce((x, u) => x + (+u.sqft || 0), 0);
+    // Полнопольный лиз: rentable = gross, активный лиз занимает весь этаж.
+    const _ffAct   = _floorFullLeaseActive(f);
+    const rentSqft = _floorRentableSqft(f, usForSum.reduce((x, u) => x + (+u.sqft || 0), 0));
+    const lsdSqft  = _ffAct ? rentSqft : occForSum.reduce((x, u) => x + (+u.sqft || 0), 0);
     const totSqft  = _stOutlineAreaSqft(f);
     const rent     = usForSum.reduce((x, u) => x + (+u.contractRent || +u.rent || 0), 0);
     const lsdRent  = occForSum.reduce((x, u) => x + (+u.contractRent || +u.rent || 0), 0);
@@ -60624,8 +60685,10 @@ function _renderStackingSidebar(b) {
         const usForSum = _stRentableUnits(f);
         const occ        = us.filter(u => stackingUnitStatus(u) !== 'vacant');
         const occForSum  = usForSum.filter(u => stackingUnitStatus(u) !== 'vacant');
-        const rentSqft = usForSum.reduce((x, u) => x + (+u.sqft || 0), 0);
-        const lsdSqft  = occForSum.reduce((x, u) => x + (+u.sqft || 0), 0);
+        // Полнопольный лиз: rentable = gross, активный лиз = весь этаж.
+        const _ffAct   = _floorFullLeaseActive(f);
+        const rentSqft = _floorRentableSqft(f, usForSum.reduce((x, u) => x + (+u.sqft || 0), 0));
+        const lsdSqft  = _ffAct ? rentSqft : occForSum.reduce((x, u) => x + (+u.sqft || 0), 0);
         const totSqft  = _stOutlineAreaSqft(f);
         const rent     = usForSum.reduce((x, u) => x + (+u.contractRent || +u.rent || 0), 0);
         const lsdRent  = occForSum.reduce((x, u) => x + (+u.contractRent || +u.rent || 0), 0);
@@ -62451,6 +62514,7 @@ function openEditBuilding(bid) {
       name: f.name,
       grossSqft: +f.grossSqft || 0,
       rentableSqft: +f.rentableSqft || 0,
+      leaseEntireFloor: !!f.leaseEntireFloor, // аренда всего этажа (gross)
       _existingId: f.id,
     }));
   // Deep-copy the building's ancillary data so Cancel truly reverts changes
@@ -63611,6 +63675,12 @@ function renderBmFloorList() {
         <button type="button" class="bm-floor-remove"
                 ${!canDelete ? 'disabled title="A building needs at least one floor"' : 'title="Remove this floor"'}
                 onclick="bmRemoveFloor(${i})">×</button>
+        <label class="bm-floor-fulllease ${f.leaseEntireFloor ? 'on' : ''}"
+               title="Lease the ENTIRE floor to a single company — the whole gross floor area (corridors, restrooms, common areas included) becomes the leased / rentable area. $/ft² is then computed per gross area (load factor 1.0). Money flows through one multi-suite lease head. Applied when you save the building.">
+          <input type="checkbox" ${f.leaseEntireFloor ? 'checked' : ''} ${f._existingId ? '' : 'disabled'}
+                 onchange="bmSetFloorFullLease(${i}, this.checked)">
+          <span>Lease entire floor (single tenant) — gross area</span>
+        </label>
       </div>
     `;
   }).join('');
@@ -63624,6 +63694,84 @@ function bmSetFloorSqft(idx, field, v) {
     bmDraftFloors[idx][field] = n;
     bmUpdateFloorTotals();
   }
+}
+
+// «Lease entire floor» — только драфт; гарды и создание группы происходят
+// на Save building (см. _floorFullLeaseEnable / saveBuildingModal).
+function bmSetFloorFullLease(idx, on) {
+  if (bmDraftFloors[idx]) {
+    bmDraftFloors[idx].leaseEntireFloor = !!on;
+    renderBmFloorList();
+  }
+}
+
+// Включение полнопольного лиза на закоммиченном floor-объекте. Создаёт
+// групп-лиз по всем офисным юнитам этажа через СУЩЕСТВУЮЩИЙ примитив
+// _groupCreate (голова = крупнейший офис, вся аренда консолидируется на
+// голове, secondaries → 0). Возвращает false если включать нельзя — флаг
+// откатывается вызывающим кодом.
+function _floorFullLeaseEnable(f) {
+  const offices = (typeof _stRentableUnits === 'function') ? _stRentableUnits(f) : [];
+  if (!offices.length) {
+    toast(`${f.name}: no leasable suites on this floor yet — draw units first`, 'error');
+    return false;
+  }
+  // Гард от комминглинга: на этаже уже есть группа (частичная или
+  // межэтажная) — оператор должен сначала растворить её.
+  if (offices.some(u => u.groupId)) {
+    toast(`${f.name}: floor already has a suite group — dissolve it first, then enable the entire-floor lease`, 'error');
+    return false;
+  }
+  // Несколько разных арендаторов на этаже слить в один лиз нельзя.
+  const tenantKeys = new Set();
+  let src = null;
+  for (const u of offices) {
+    if (u.status === 'occupied' && (u.tenant || u.company)) {
+      tenantKeys.add(`${u.tenant || ''}|${u.company || ''}`);
+      if (!src) src = u;
+    }
+  }
+  if (tenantKeys.size > 1) {
+    toast(`${f.name}: floor has ${tenantKeys.size} different tenants — an entire-floor lease needs a single tenant`, 'error');
+    return false;
+  }
+  f.leaseEntireFloor = true;
+  if (offices.length >= 2 && typeof _groupCreate === 'function') {
+    // Текущая аренда этажа консолидируется на голове (стандартная семантика
+    // мульти-сьют лиза); на пустом этаже это Σ asking (proforma).
+    const totalRent = offices.reduce((s, u) => s + (+u.contractRent || +u.rent || 0), 0);
+    const td = { totalRent };
+    if (src) {
+      for (const k of ['tenant', 'company', 'email', 'tel', 'leaseStart', 'until']) {
+        if (src[k] !== undefined && src[k] !== null && src[k] !== '') td[k] = src[k];
+      }
+    }
+    // Вакантный этаж (src нет): статусы юнитов НЕ трогаем (keepStatus) —
+    // флаг сам по себе этаж занятым не делает (честная вакансия).
+    const gid = _groupCreate(offices.map(u => u.id), td, { keepStatus: !src });
+    if (gid) {
+      f.fullFloorGroupId = gid;
+      if (!src) {
+        // Без арендатора contractRent на голове не имеет контракта за
+        // собой — держим только proforma; контракт появится при заселении.
+        const head = (typeof _groupPrimary === 'function') ? _groupPrimary(gid) : null;
+        if (head) head.contractRent = 0;
+      }
+    }
+  }
+  return true;
+}
+
+// Выключение: растворяем группу (tenant/rent остаются на юнитах — вся
+// аренда на бывшей голове, стандартная семантика _groupDissolve), флаги
+// убираем. f.rentableSqft никогда не перезаписывался — цифры площади
+// возвращаются к прежним автоматически.
+function _floorFullLeaseDisable(f) {
+  if (f.fullFloorGroupId && typeof _groupDissolve === 'function') {
+    _groupDissolve(f.fullFloorGroupId, /*silent*/ true);
+  }
+  delete f.leaseEntireFloor;
+  delete f.fullFloorGroupId;
 }
 
 function bmUpdateFloorTotals() {
@@ -65046,6 +65194,10 @@ function saveBuildingModal() {
     // building-level transition off→on.
     const _wasLfEnabledOnBuilding = !!(b.billingRulesOverride?.lateFee?.enabled);
 
+    // Снимок флагов «Lease entire floor» ДО пересборки floors — переключения
+    // применяем ниже, уже на закоммиченном b.floors.
+    const _prevFullLease = new Map((b.floors || []).map(f => [f.id, !!f.leaseEntireFloor]));
+
     // Map existing floor-ids for unit preservation
     const existingById = new Map((b.floors || []).map(f => [f.id, f]));
     // Build the new floor list from the draft. Each draft entry with
@@ -65059,6 +65211,8 @@ function saveBuildingModal() {
           name: df.name || ordinalFloorName(+df.number),
           grossSqft:    +df.grossSqft    || 0,
           rentableSqft: +df.rentableSqft || 0,
+          // Полнопольный лиз: флаг из драфта; fullFloorGroupId едет спредом.
+          leaseEntireFloor: !!df.leaseEntireFloor,
         };
       }
       return {
@@ -65142,6 +65296,22 @@ function saveBuildingModal() {
       }
     }
     dedupeFloorsIn(b);
+
+    // Переключения «Lease entire floor» — применяем на закоммиченных floors.
+    // Включение проходит гарды (_floorFullLeaseEnable); провал гарда
+    // откатывает флаг, чекбокс вернётся в прежнее состояние при переоткрытии.
+    for (const f of b.floors) {
+      const was = _prevFullLease.get(f.id) || false;
+      const now = !!f.leaseEntireFloor;
+      if (was && !now) {
+        _floorFullLeaseDisable(f);
+      } else if (!was && now) {
+        if (!_floorFullLeaseEnable(f)) {
+          delete f.leaseEntireFloor;
+          delete f.fullFloorGroupId;
+        }
+      }
+    }
 
     if (!b.floors.find(f => f.id === state.ui.currentFloorId)) {
       state.ui.currentFloorId = b.floors[0]?.id;
@@ -73752,7 +73922,10 @@ function _groupPrimary(groupId) {
 // pro-rates the total rent across members by sqft (rounded to whole
 // dollars; primary absorbs rounding remainder). Any units already in
 // other groups are dissolved out of those first — single membership only.
-function _groupCreate(unitIds, tenantData) {
+// opts.keepStatus — НЕ форсить status='occupied' на членах (нужно для
+// полнопольного лиза по вакантному этажу: группа создаётся заранее, юниты
+// остаются vacant до реального заселения арендатора).
+function _groupCreate(unitIds, tenantData, opts) {
   if (!Array.isArray(unitIds) || unitIds.length < 2) {
     if (typeof toast === 'function') toast('Need at least 2 units to create a group', 'error');
     return null;
@@ -73811,7 +73984,7 @@ function _groupCreate(unitIds, tenantData) {
     }
     u.groupId = groupId;
     u.groupRole = (u === primary) ? 'primary' : 'secondary';
-    u.status = 'occupied';
+    if (!(opts && opts.keepStatus)) u.status = 'occupied';
   }
   return groupId;
 }
@@ -98988,14 +99161,21 @@ function calcStats() {
 function calcStatsPerFloor() {
   const b = currentBuilding();
   if (!b) return [];
-  return b.floors.map(f => ({
-    id: f.id,
-    name: f.name,
-    number: f.number,
-    grossSqft: +f.grossSqft || 0,
-    rentableSqft: +f.rentableSqft || 0,
-    ...calcStatsForUnits(f.units),
-  }));
+  return b.floors.map(f => {
+    const row = {
+      id: f.id,
+      name: f.name,
+      number: f.number,
+      grossSqft: +f.grossSqft || 0,
+      // Полнопольный лиз: rentable этажа = gross (резолвер, f.rentableSqft
+      // в state не трогаем).
+      rentableSqft: _floorRentableSqft(f, +f.rentableSqft || 0),
+      ...calcStatsForUnits(f.units),
+    };
+    // Активный полнопольный лиз → этаж занят целиком.
+    if (_floorFullLeaseActive(f)) row.occSqft = row.rentableSqft || row.totSqft;
+    return row;
+  });
 }
 function updateStats() {
   const s = calcStats();
@@ -99045,10 +99225,14 @@ function updateStats() {
   // denominator (more accurate), fall back to the sum of this floor's
   // unit sqft so floors without RSF still render sensibly.
   const f = currentFloor();
-  const rsf = f ? (+f.rentableSqft || 0) : 0;
+  // Полнопольный лиз: знаменатель = gross (резолвер), активный лиз
+  // занимает весь этаж (числитель = знаменатель). Честная вакансия:
+  // флаг без реального арендатора на голове occupancy не надувает.
+  const rsf = f ? _floorRentableSqft(f, +f.rentableSqft || 0) : 0;
   const denom = rsf || s.totSqft || 0;
-  const occPct = denom ? Math.round((s.occSqft / denom) * 100) : 0;
-  setText('occSqft', s.occSqft.toLocaleString());
+  const occSqftEff = (f && _floorFullLeaseActive(f)) ? denom : s.occSqft;
+  const occPct = denom ? Math.round((occSqftEff / denom) * 100) : 0;
+  setText('occSqft', occSqftEff.toLocaleString());
   setText('totSqft', denom.toLocaleString());
   setText('occPctText', occPct + '% occupied');
   // Полная (gross) площадь этажа — read-only показатель рядом с Rentable.
@@ -123212,7 +123396,8 @@ function renderSettingsFloors() {
     ? ` · managing ${b.floors.length} of ${b.totalFloors} floors`
     : ` · ${b.floors.length} floor${b.floors.length === 1 ? '' : 's'}`;
   const totalGFA = b.floors.reduce((s, fl) => s + (+fl.grossSqft || 0), 0);
-  const totalRSF = b.floors.reduce((s, fl) => s + (+fl.rentableSqft || 0), 0);
+  // Полнопольные лизы: их этажи входят в RSF здания gross-площадью.
+  const totalRSF = b.floors.reduce((s, fl) => s + _floorRentableSqft(fl, +fl.rentableSqft || 0), 0);
   const totalsLine = (totalGFA || totalRSF)
     ? `<span style="color: var(--muted);">GFA: <b>${totalGFA.toLocaleString()}</b> ft² · RSF: <b>${totalRSF.toLocaleString()}</b> ft²</span><br>`
     : '';
@@ -123255,8 +123440,11 @@ function renderSettingsFloors() {
 
   listEl.innerHTML = renameSection + areaHeader + b.floors.map(fl => {
     const isActive = fl.id === state.ui.currentFloorId;
-    const occSqft = fl.units.reduce((s, u) => s + (u.status === 'occupied' ? (+u.sqft || 0) : 0), 0);
-    const denom = (+fl.rentableSqft || 0) || fl.units.reduce((s, u) => s + (+u.sqft || 0), 0);
+    // Полнопольный лиз: знаменатель = gross, активный лиз = весь этаж.
+    const denom = _floorRentableSqft(fl, (+fl.rentableSqft || 0) || fl.units.reduce((s, u) => s + (+u.sqft || 0), 0));
+    const occSqft = _floorFullLeaseActive(fl)
+      ? denom
+      : fl.units.reduce((s, u) => s + (u.status === 'occupied' ? (+u.sqft || 0) : 0), 0);
     const occPct = denom ? Math.round((occSqft / denom) * 100) : 0;
     return `
       <div style="display:grid; grid-template-columns: 1fr 110px 110px 90px; gap:6px; align-items:center; padding:8px 12px; background:${isActive ? 'var(--accent-light)' : 'var(--surface-2)'}; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px;">
@@ -132674,13 +132862,31 @@ function renderRentRoll() {
   const _rrScopeB = getMSValues('rrBuildingMS');
   const _rrScopeF = getMSValues('rrFloorMS');
   let grossSqftTotal = 0;
+  // Полнопольные лизы (f.leaseEntireFloor): rentable этажа = gross. К
+  // unit-based KPI добавляем дельту (gross − Σ офисных юнитов) — Rentable
+  // и, при активном лизе, Occupied ft². Та же building/floor-область, что
+  // и gross-цикл (search/expiring-фильтры дельту не сужают — как и gross).
+  let _ffRentExtra = 0, _ffOccExtra = 0;
   state.buildings.forEach(b => {
     if (_rrScopeB.length && !_rrScopeB.includes(b.id)) return;
     (b.floors || []).forEach(f => {
       if (_rrScopeF.length && !_rrScopeF.includes(f.id)) return;
       grossSqftTotal += (+f.grossSqft || 0);
+      if (f.leaseEntireFloor) {
+        const unitSum = (typeof _stRentableUnits === 'function')
+          ? _stRentableUnits(f).reduce((s, u) => s + (+u.sqft || 0), 0) : 0;
+        const g = (typeof _floorGrossSqft === 'function') ? _floorGrossSqft(f) : 0;
+        if (g > unitSum) {
+          _ffRentExtra += g - unitSum;
+          if (typeof _floorFullLeaseActive === 'function' && _floorFullLeaseActive(f)) {
+            _ffOccExtra += g - unitSum;
+          }
+        }
+      }
     });
   });
+  const totalSqftEff = totalSqft + _ffRentExtra;
+  const occSqftEff   = occSqft + _ffOccExtra;
 
   // Scope subtitle — shows buildings and floors currently filtered in
   const sub = document.getElementById('rrSub');
@@ -132704,14 +132910,14 @@ function renderRentRoll() {
   const _rrUnit = (txt) => `<span style="font-size:18px; color:#8f887c; margin-left:4px; font-family:'Instrument Serif',Georgia,serif;">${txt}</span>`;
 
   document.getElementById('rrKpis').innerHTML = `
-    <div class="rr-kpi"><div class="rr-kpi-label">Total Units</div><div class="rr-kpi-value">${totalUnits}</div><div class="rr-kpi-sub">${_rrFmtSqft(totalSqft)} ft² total</div></div>
-    <div class="rr-kpi"><div class="rr-kpi-label">Occupied</div><div class="rr-kpi-value free">${occ.length}</div><div class="rr-kpi-sub">${occRate}% · ${_rrFmtSqft(occSqft)} ft² leased</div></div>
-    <div class="rr-kpi"><div class="rr-kpi-label">Vacant</div><div class="rr-kpi-value" style="color: #8f887c;">${vac.length}</div><div class="rr-kpi-sub">${100 - occRate}% · ${_rrFmtSqft(totalSqft - occSqft)} ft²</div></div>
+    <div class="rr-kpi"><div class="rr-kpi-label">Total Units</div><div class="rr-kpi-value">${totalUnits}</div><div class="rr-kpi-sub">${_rrFmtSqft(totalSqftEff)} ft² total</div></div>
+    <div class="rr-kpi"><div class="rr-kpi-label">Occupied</div><div class="rr-kpi-value free">${occ.length}</div><div class="rr-kpi-sub">${occRate}% · ${_rrFmtSqft(occSqftEff)} ft² leased</div></div>
+    <div class="rr-kpi"><div class="rr-kpi-label">Vacant</div><div class="rr-kpi-value" style="color: #8f887c;">${vac.length}</div><div class="rr-kpi-sub">${100 - occRate}% · ${_rrFmtSqft(totalSqftEff - occSqftEff)} ft²</div></div>
     <div class="rr-kpi"><div class="rr-kpi-label">Total Area</div><div class="rr-kpi-value">${_rrFmtSqft(grossSqftTotal)}${_rrUnit('ft²')}</div><div class="rr-kpi-sub">Gross floor area</div></div>
-    <div class="rr-kpi"><div class="rr-kpi-label">Rentable</div><div class="rr-kpi-value">${_rrFmtSqft(totalSqft)}${_rrUnit('ft²')}</div><div class="rr-kpi-sub">${grossSqftTotal > 0 ? Math.round(totalSqft / grossSqftTotal * 100) + '% of gross' : 'Leasable area'}</div></div>
+    <div class="rr-kpi"><div class="rr-kpi-label">Rentable</div><div class="rr-kpi-value">${_rrFmtSqft(totalSqftEff)}${_rrUnit('ft²')}</div><div class="rr-kpi-sub">${grossSqftTotal > 0 ? Math.round(totalSqftEff / grossSqftTotal * 100) + '% of gross' : 'Leasable area'}</div></div>
     <div class="rr-kpi"><div class="rr-kpi-label">Current monthly</div><div class="rr-kpi-value money">${_rrFmtMoney(actualRevenue)}</div><div class="rr-kpi-sub">Contract rent · in-place</div></div>
     <div class="rr-kpi"><div class="rr-kpi-label">Potential monthly</div><div class="rr-kpi-value money">${_rrFmtMoney(potentialRevenue)}</div><div class="rr-kpi-sub">Proforma · fully leased</div></div>
-    <div class="rr-kpi"><div class="rr-kpi-label">Annual current</div><div class="rr-kpi-value money">${_rrFmtMoney(actualRevenue * 12)}</div><div class="rr-kpi-sub">${totalSqft > 0 ? '$' + (actualRevenue * 12 / totalSqft).toFixed(2) + '/ft/yr' : ''}</div></div>
+    <div class="rr-kpi"><div class="rr-kpi-label">Annual current</div><div class="rr-kpi-value money">${_rrFmtMoney(actualRevenue * 12)}</div><div class="rr-kpi-sub">${totalSqftEff > 0 ? '$' + (actualRevenue * 12 / totalSqftEff).toFixed(2) + '/ft/yr' : ''}</div></div>
     <div class="rr-kpi"><div class="rr-kpi-label">Expiring · &lt;30d</div><div class="rr-kpi-value ${expiring30.length > 0 ? 'critical' : ''}">${expiring30.length}</div><div class="rr-kpi-sub">${expiring60.length} within 60d</div></div>
   `;
 
