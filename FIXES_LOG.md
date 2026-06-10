@@ -60,6 +60,23 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 67. CF building mirror wiped _savedRev — Entry 65 guard floor reset by every server mirror (sync/data-safety, 2026-06-09)
+
+- **Status:** needs-porting
+- **Branch / commit:** `fix/cf-mirror-savedrev` @ (this commit) — NOT deployed; functions deploy is §2-gated, awaiting Tony GO
+- **Area:** Sync / buildings-strip mirror — SERVER write path (`_mirrorBuildingV2CF`)
+- **Files:** functions/index.js
+- **Functions:** `_mirrorBuildingV2CF` (~248); test hook `exports._test_mirrorBuildingV2CF` (env-gated `SFA_TEST_EXPORTS=1`, invisible to deploy discovery)
+- **Bug it fixed:** `_mirrorBuildingV2CF` did a full `.set()` of `{_schema, buildingId, doc, _mirroredAt, _mirroredBy}` WITHOUT `_savedRev`. Every server-side mirror (Stripe webhook → mutateWorkspaceState, runAutoInvoices / runAutoLateFees crons) therefore DELETED `_savedRev` from `workspaces/{ws}/buildings/{bid}`. The Entry 65 Layer-2 rules guard (`request.resource.data.get('_savedRev',0) >= resource.data.get('_savedRev',0)`) then read resource `_savedRev` as 0 — the next stale-tab client write passed the guard, RE-OPENING the 2026-06-08 data-loss clobber vector. Found by adversarial review during the PP-webhook design (the webhook trigger observes CF-mirror writes).
+- **Fix:** mirror now runs in a transaction: `tx.get` current `_savedRev` (missing/non-number → 0), `tx.set` full replacement INCLUDING `_savedRev: cur + 1`. Transaction also closes the read-modify-write race with a concurrent client mirror (tx retries with fresh rev). Legacy docs already wiped by the old code self-heal to `_savedRev: 1` on the next CF mirror. `doc` stays a FULL replace — never merge (deleted units must not linger).
+- **Invariant — DO NOT BREAK:** every server-side write to `buildings/{bid}` MUST preserve-and-advance the top-level `_savedRev` inside a transaction. Never `.set()` a building doc without `_savedRev`; never lower it; never `merge:true` the `doc` field. (Extends Entry 65 invariant #2 from client writes to CF writes.)
+- **Verification:** `firebase emulators:exec --only firestore "SFA_TEST_EXPORTS=1 node functions/test-harness/test-mirror-savedrev.js"` — 9 asserts: 5→6 advance, create→1, legacy-no-field→1 heal, monotonic re-mirror→7, full doc replace, pointsFlat flattening intact. All passed 2026-06-09.
+- **Regression test:** functions/test-harness/test-mirror-savedrev.js (emulator; local-only)
+- **Related PR / issue:** none. Related: Entry 65 (the guard this fix restores).
+- **Porting note:** deploy = `firebase deploy --only functions` touchers of this path are all in index.js; the change is server-only (no client/rules edits). Until deployed, prod CF mirrors keep wiping `_savedRev` — guard floor on affected buildings stays 0 until the next CLIENT mirror write re-stamps it.
+
+---
+
 ### 66. Entire-floor lease — gross area becomes the leased/rentable area (feature/finance-surface, 2026-06-09)
 
 - **Status:** active
