@@ -212,4 +212,6 @@ function ppBuildExportDTO(state, opts) {
   };
 }
 
-module.exports = { SCHEMA_VERSION, extractApiKey, checkApiKey, ppBuildExportDTO };
+// curateBuilding экспортируется для pp-webhook.js: contentHash вебхука
+// считается по той же PP-видимой проекции, что и DTO экспорта.
+module.exports = { SCHEMA_VERSION, extractApiKey, checkApiKey, ppBuildExportDTO, curateBuilding };
