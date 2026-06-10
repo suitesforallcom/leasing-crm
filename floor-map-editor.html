@@ -82093,9 +82093,9 @@ function _invHistoryRowMenu(event, rowEl) {
       return `${monthsShort[monthIdx] || m[1]} ${m[0]}`;
     })();
     items.push(_invHistoryMenuBtn(
-      `🗓 ${linkLabel} · Change…`,
+      `${linkLabel} · Change…`,
       `_invHistoryOpenMonthLink('${esc(id)}'); document.getElementById('invHistoryCtxMenu').style.display='none';`,
-      '#0284c7'
+      '#0284c7', 'calendar'
     ));
     items.push(_invHistoryMenuBtn(
       '⨯ Unlink month',
@@ -82104,9 +82104,9 @@ function _invHistoryRowMenu(event, rowEl) {
     ));
   } else {
     items.push(_invHistoryMenuBtn(
-      '🗓 Link to month…',
+      'Link to month…',
       `_invHistoryOpenMonthLink('${esc(id)}'); document.getElementById('invHistoryCtxMenu').style.display='none';`,
-      '#0284c7'
+      '#0284c7', 'calendar'
     ));
   }
   items.push(`<div style="height:1px; background:#f1f5f9; margin:4px 0;"></div>`);
@@ -82120,25 +82120,25 @@ function _invHistoryRowMenu(event, rowEl) {
     let hasStripeActions = false;
     if (pdfUrl) {
       items.push(_invHistoryMenuBtn(
-        '📄 Download PDF',
+        'Download PDF',
         `_invHistoryDownloadPdf('${esc(pdfUrl)}', '${esc(number)}'); document.getElementById('invHistoryCtxMenu').style.display='none';`,
-        '#0f172a'
+        '#0f172a', 'download'
       ));
       hasStripeActions = true;
     }
     if (hostedUrl) {
       items.push(_invHistoryMenuBtn(
-        '🔗 Copy payment link',
+        'Copy payment link',
         `_invHistoryCopyPaymentLink('${esc(hostedUrl)}'); document.getElementById('invHistoryCtxMenu').style.display='none';`,
-        '#0f172a'
+        '#0f172a', 'copy'
       ));
       hasStripeActions = true;
     }
     if (isResendable) {
       items.push(_invHistoryMenuBtn(
-        '✉ Resend via Stripe',
+        'Resend via Stripe',
         `_invHistoryResendInvoice('${esc(id)}', '${esc(number)}'); document.getElementById('invHistoryCtxMenu').style.display='none';`,
-        '#0f172a'
+        '#0f172a', 'mail'
       ));
       hasStripeActions = true;
     }
@@ -82194,14 +82194,16 @@ function _invHistoryRowMenu(event, rowEl) {
   menu.style.top  = Math.max(margin, y) + 'px';
 }
 
-function _invHistoryMenuBtn(label, onclickJs, color) {
+// Приёмка редизайна: опциональный 4-й аргумент icon — имя символа спрайта
+// (label по-прежнему esc()-ится; эмодзи-префиксы 🗓/📄/🔗 заменены иконками).
+function _invHistoryMenuBtn(label, onclickJs, color, icon) {
   return `<button type="button" onclick="${onclickJs}" style="
-    display:block; width:100%; text-align:left;
+    display:flex; align-items:center; gap:8px; width:100%; text-align:left;
     padding:8px 12px; margin:0;
     background:transparent; border:0; border-radius:6px;
     font-size:13px; color:${color}; font-weight:600;
     cursor:pointer;
-  " onmouseover="this.style.background='#f1f5f9'" onmouseout="this.style.background='transparent'">${esc(label)}</button>`;
+  " onmouseover="this.style.background='#f1f5f9'" onmouseout="this.style.background='transparent'">${icon ? _rdIc(icon, 13) : ''}${esc(label)}</button>`;
 }
 
 // Скачать Stripe PDF — открываем в новой вкладке. Stripe-овский
