@@ -2000,25 +2000,28 @@
   /* Tenant-name row — mirrors the address row so the paperclip button
      sits flush to the right of the name input. */
   .tenant-name-row .tenant-name-wrap {
-    display: flex; align-items: center; gap: 4px;
+    display: flex; align-items: center; gap: 8px;
   }
   .tenant-name-row .tenant-name-wrap input { flex: 1; }
+  /* Шаг 8 редизайна: paperclip-кнопка = тот же 40px .sidebtn макета
+     (i-clip 15px), бейдж-счётчик сохранён. */
   .tenant-doc-btn {
     flex-shrink: 0;
     position: relative;
-    width: 32px; height: 32px;
+    width: 40px; height: 40px;
     display: inline-flex; align-items: center; justify-content: center;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--surface);
+    border: 1px solid var(--rd-border-strong);
+    border-radius: 10px;
+    background: #fff;
+    color: var(--rd-text2);
     cursor: pointer;
     font-size: 14px; line-height: 1;
-    transition: border-color .1s, background .1s;
+    transition: border-color .1s, background .1s, color .1s;
     padding: 0;
   }
   .tenant-doc-btn:hover {
-    border-color: var(--accent);
-    background: var(--surface-2);
+    background: #f6f6f8;
+    color: var(--rd-text);
   }
   .tenant-doc-btn .tenant-doc-count {
     position: absolute;
@@ -12216,30 +12219,30 @@
   }
 
   /* Inline copy button — used next to email / phone / text fields.
-     Ghost chrome until hover so it doesn't compete with the input. */
-  .field-with-copy { display: flex; gap: 6px; align-items: stretch; }
+     Шаг 8 редизайна: 40px side-кнопка .sidebtn макета «Suite 354 Tenant» —
+     белая, border-strong, радиус 10, спрайт i-copy 15px; .copied — зелёная
+     вспышка (green-soft/green-border per tokens). */
+  .field-with-copy { display: flex; gap: 8px; align-items: stretch; }
   .field-with-copy > input { flex: 1 1 auto; min-width: 0; }
   .field-copy-btn {
     flex: 0 0 auto;
-    width: 36px; height: auto;
-    border: 1px solid var(--border);
-    background: var(--surface);
-    border-radius: 7px;
-    color: var(--muted);
-    font-size: 13px;
+    width: 40px; height: auto; min-height: 40px;
+    border: 1px solid var(--rd-border-strong);
+    background: #fff;
+    border-radius: 10px;
+    color: var(--rd-text2);
     cursor: pointer;
     display: inline-flex; align-items: center; justify-content: center;
     transition: background .12s, color .12s, border-color .12s;
   }
   .field-copy-btn:hover {
-    background: var(--surface-2);
-    color: var(--text);
-    border-color: var(--muted);
+    background: #f6f6f8;
+    color: var(--rd-text);
   }
   .field-copy-btn.copied {
-    background: rgba(22,163,74,0.12);
-    color: #16a34a;
-    border-color: rgba(22,163,74,0.35);
+    background: var(--rd-green-soft);
+    color: var(--rd-green);
+    border-color: var(--rd-green-border);
   }
 
   /* Stripe billing-recipient marker — компактная кнопка "$" прямо
@@ -12780,6 +12783,16 @@
     margin: 22px 0 10px; padding-bottom: 0;
     border-bottom: none;
     font-family: var(--rd-font);
+  }
+  /* Шаг 8 редизайна: бейдж «team only» в шапке секции (sec-head .note
+     макета — 12/500 text-3, без капса) + хинт под textarea (.f-hint). */
+  .rd-team-badge {
+    font-size: 12px; font-weight: 500; color: var(--rd-text3);
+    text-transform: none; letter-spacing: 0; margin-left: 4px;
+  }
+  .rd-form-hint {
+    font-size: 12px; color: var(--rd-text3);
+    margin: 6px 0 0;
   }
 
   /* Services tab — integration cards (UniFi placeholders).
@@ -77941,12 +77954,15 @@ function _copyFieldValue(inputId, btn) {
   const val = (inp.value || '').trim();
   if (!val) return;
   navigator.clipboard.writeText(val).then(() => {
-    const orig = btn.textContent;
+    // Шаг 8 редизайна: кнопка содержит спрайт i-copy — снимаем/восстанавливаем
+    // innerHTML (textContent стёр бы <svg>), паттерн _remindLateFeeInvoice.
+    // Вспышка: зелёная галочка i-check на 1.4s, затем исходная иконка.
+    const orig = btn.innerHTML;
     btn.classList.add('copied');
-    btn.textContent = '✓';
+    btn.innerHTML = _rdIc('check', 15);
     setTimeout(() => {
       btn.classList.remove('copied');
-      btn.textContent = orig;
+      btn.innerHTML = orig;
     }, 1400);
   }).catch(() => toast('Copy failed', 'error'));
 }
@@ -78951,7 +78967,7 @@ function _renderUnitTenantPane(u, editOn, ro) {
       <div class="tenant-name-wrap">
         <input type="text" id="fTenant" value="${esc(u.tenant)}" ${ro}>
         <button type="button" class="tenant-doc-btn" onclick="openTenantDocsModal()" title="Attach copies of tenant documents">
-          📎<span class="tenant-doc-count" id="fTenantDocCount" style="${(u.tenantDocs && u.tenantDocs.length) ? '' : 'display:none;'}">${(u.tenantDocs||[]).length}</span>
+          ${_rdIc('clip', 15)}<span class="tenant-doc-count" id="fTenantDocCount" style="${(u.tenantDocs && u.tenantDocs.length) ? '' : 'display:none;'}">${(u.tenantDocs||[]).length}</span>
         </button>
       </div>
     </div>
@@ -78960,7 +78976,7 @@ function _renderUnitTenantPane(u, editOn, ro) {
       <label>Phone</label>
       <div class="field-with-copy">
         <input type="tel" id="fTel" value="${esc(u.tel || '')}" ${ro} placeholder="(555) 123-4567">
-        ${u.tel ? `<button type="button" class="field-copy-btn" onclick="_copyFieldValue('fTel', this)" title="Copy phone">⧉</button>` : ''}
+        ${u.tel ? `<button type="button" class="field-copy-btn" onclick="_copyFieldValue('fTel', this)" title="Copy phone">${_rdIc('copy', 15)}</button>` : ''}
       </div>
     </div>
     ${(() => {
@@ -78997,7 +79013,7 @@ function _renderUnitTenantPane(u, editOn, ro) {
       <div class="field-with-copy">
         <input type="email" id="fEmail" value="${esc(u.email || '')}" ${ro} placeholder="tenant@example.com">
         ${_stripeBtn('primary')}
-        ${u.email ? `<button type="button" class="field-copy-btn" onclick="_copyFieldValue('fEmail', this)" title="Copy email">⧉</button>` : ''}
+        ${u.email ? `<button type="button" class="field-copy-btn" onclick="_copyFieldValue('fEmail', this)" title="Copy email">${_rdIc('copy', 15)}</button>` : ''}
       </div>
     </div>
     ${(u.emailCc || !editOn) ? `
@@ -79006,7 +79022,7 @@ function _renderUnitTenantPane(u, editOn, ro) {
       <div class="field-with-copy">
         <input type="email" id="fEmailCc" value="${esc(u.emailCc || '')}" ${ro} placeholder="cc@example.com">
         ${_stripeBtn('cc')}
-        ${u.emailCc ? `<button type="button" class="field-copy-btn" onclick="_copyFieldValue('fEmailCc', this)" title="Copy CC email">⧉</button>` : ''}
+        ${u.emailCc ? `<button type="button" class="field-copy-btn" onclick="_copyFieldValue('fEmailCc', this)" title="Copy CC email">${_rdIc('copy', 15)}</button>` : ''}
       </div>
     </div>
     ` : `
@@ -79019,7 +79035,7 @@ function _renderUnitTenantPane(u, editOn, ro) {
     `}`;
     })()}
     <div class="field tenant-addr-row">
-      <label>Address <span style="color:var(--muted); font-weight:400;">(optional)</span></label>
+      <label>Address <span style="color:var(--muted); font-weight:400;">· optional</span></label>
       <div class="tenant-addr-wrap addr-ac-wrap">
         <input type="text" id="fTenantAddr" value="${esc(u.tenantAddress || '')}"
                ${ro} placeholder="123 Main St, Tampa, FL"
@@ -79027,8 +79043,10 @@ function _renderUnitTenantPane(u, editOn, ro) {
         <div class="addr-ac" id="fTenantAddrAc"></div>
       </div>
     </div>
-    <div class="upv2-section-title">Internal notes</div>
-    <div class="field"><textarea id="fNote" ${ro} placeholder="Notes only your team can see — never shared with the tenant.">${esc(u.note)}</textarea></div>
+    <div class="upv2-section-title">Internal notes <span class="rd-team-badge">team only</span></div>
+    <div class="field"><textarea id="fNote" ${ro} placeholder="Notes only your team can see — never shared with the tenant.">${esc(u.note)}</textarea>
+      <p class="rd-form-hint">Shown as the yellow note on the Overview tab.</p>
+    </div>
     <!-- Previous tenants list lives only in ⋯ → Rental history now;
          keeping it out of the inline pane keeps the Tenant tab focused
          on the live record. -->
@@ -79437,7 +79455,7 @@ function _renderLeaseGuarantor(u, editOn, ro) {
         <div class="field-with-copy">
           <input type="tel" id="fGuarantorTel" value="${esc(g.tel || '')}" ${ro}
                  placeholder="(555) 123-4567">
-          ${g.tel ? `<button type="button" class="field-copy-btn" onclick="_copyFieldValue('fGuarantorTel', this)" title="Copy">⧉</button>` : ''}
+          ${g.tel ? `<button type="button" class="field-copy-btn" onclick="_copyFieldValue('fGuarantorTel', this)" title="Copy">${_rdIc('copy', 15)}</button>` : ''}
         </div>
       </div>
       <div class="field">
@@ -79445,7 +79463,7 @@ function _renderLeaseGuarantor(u, editOn, ro) {
         <div class="field-with-copy">
           <input type="email" id="fGuarantorEmail" value="${esc(g.email || '')}" ${ro}
                  placeholder="guarantor@example.com">
-          ${g.email ? `<button type="button" class="field-copy-btn" onclick="_copyFieldValue('fGuarantorEmail', this)" title="Copy">⧉</button>` : ''}
+          ${g.email ? `<button type="button" class="field-copy-btn" onclick="_copyFieldValue('fGuarantorEmail', this)" title="Copy">${_rdIc('copy', 15)}</button>` : ''}
         </div>
       </div>
       <div class="field">
