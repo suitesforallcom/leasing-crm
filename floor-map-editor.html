@@ -9389,20 +9389,27 @@
     font-family: var(--rd-font);
   }
 
-  /* Контекст-строка над hero. Лёгкое выравнивание под eyebrow-паттерн
-     макета (11.5/700/.07em uppercase text-3); структура и id statsScope
-     не меняются — полный fhead с unitchip отложен на следующий экран. */
-  .dash-context {
-    display: flex; flex-direction: column; gap: 2px;
-    margin-bottom: 10px;
+  /* Шапка этажа (fhead из макета): эйбрау здания + крупное имя этажа с
+     шевроном + чип «N units · X ft²». Запитывается из updateStats. */
+  .fhead { margin-bottom: 10px; }
+  .fhead .eyebrow {
+    font-size: 11.5px; font-weight: 700; letter-spacing: 0.07em;
+    text-transform: uppercase; color: var(--rd-text3); margin: 0 0 4px;
   }
-  .dash-context-label {
-    font-size: 11.5px; color: var(--rd-text3);
-    text-transform: uppercase; letter-spacing: 0.07em; font-weight: 700;
+  .fhead-row { display: flex; align-items: center; gap: 10px; }
+  .fhead h1 {
+    font-size: 22px; font-weight: 700; letter-spacing: -0.02em; margin: 0;
+    line-height: 1.15; display: flex; align-items: center; gap: 6px; cursor: pointer;
   }
-  .dash-context-value {
-    font-size: 15px; font-weight: 700; letter-spacing: -0.01em; color: var(--rd-text);
+  .fhead h1 .rd-ic { width: 17px; height: 17px; color: var(--rd-text3); margin-top: 2px; }
+  .fhead h1:hover .rd-ic { color: var(--rd-text2); }
+  .unitchip {
+    margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+    font-size: 13px; font-weight: 600; color: var(--rd-text2);
+    background: #f2f2f3; border: 1px solid var(--rd-border-strong);
+    padding: 4px 11px; border-radius: 999px; white-space: nowrap;
   }
+  .unitchip b { color: var(--rd-text); font-weight: 700; }
 
   /* Hero card — revcard из макета: градиент green-soft → #fbfdfc 70%,
      radius 16, padding 18, бордер #d9ece1, revenue 30/800/-0.03em. */
@@ -20714,10 +20721,13 @@
         <!-- Context strip — "FLOOR <building · floor>" mirrors the redesign mock.
              Drives a single line that tells the user what the headline numbers
              below are scoped to. Updated by updateStats(). -->
-        <div class="dash-context" title="Stats are scoped to this floor; per-floor breakdown below">
-          <div class="dash-context-label">FLOOR</div>
-          <div class="dash-context-value" id="statsScope">—</div>
-        </div>
+        <header class="fhead">
+          <p class="eyebrow" id="fhEyebrow">—</p>
+          <div class="fhead-row">
+            <h1 id="fhFloorName" title="Switch to the next floor" onclick="_fheadCycleFloor()">—<svg class="rd-ic" style="width:17px;height:17px" aria-hidden="true"><use href="#i-chev-d"></use></svg></h1>
+            <span class="unitchip" id="fhUnitChip"></span>
+          </div>
+        </header>
 
         <!-- Hero card — monthly run-rate revenue + occupancy progress + 3
              headline mini-stats (Occupied / Vacant / Rentable). All numbers
@@ -66871,6 +66881,20 @@ function switchFloor(fid) {
   try { _syncBgPanel(); } catch {}
 }
 
+// Шеврон в шапке этажа (fhead) — переключение на следующий этаж здания по кругу.
+// Чистая навигация поверх существующего switchFloor; нового состояния не вводит.
+function _fheadCycleFloor() {
+  try {
+    const b = currentBuilding();
+    if (!b || !Array.isArray(b.floors) || b.floors.length < 2) return;
+    const floors = b.floors.slice().sort((a, c) => (a.number || 0) - (c.number || 0));
+    const i = floors.findIndex(fl => fl.id === state.ui.currentFloorId);
+    const next = floors[(i + 1 + floors.length) % floors.length];
+    if (next && next.id) switchFloor(next.id);
+  } catch (e) { /* навигационный хелпер — глушим, основной поток не трогаем */ }
+}
+window._fheadCycleFloor = _fheadCycleFloor;
+
 function ordinalFloorName(n) {
   // Proper English ordinal: 1st, 2nd, 3rd, 4th, 11th, 12th, 13th, 21st, 22nd, 101st, etc.
   const rem100 = n % 100;
@@ -100466,14 +100490,38 @@ function updateStats() {
   const occSeg = document.getElementById('dashOccSeg');
   if (occSeg) occSeg.style.width = occCountPct + '%';
 
-  // Context label — building · floor, e.g. "SuitesForAll · 3rd Floor"
+  // Шапка этажа (fhead макета): эйбрау здания (имя · юниты · gross),
+  // имя этажа + чип «N units · X ft²». Всё — read-only производные от
+  // существующих расчётов: building-итоги считаем тем же calcStatsForUnits,
+  // что и сводная карточка (occ+vac+res), floor-чип берёт уже посчитанные
+  // totalUnits + floorGross. Никакого нового state.
   const b = currentBuilding();
-  const scope = document.getElementById('statsScope');
-  if (scope) scope.textContent = b ? `${buildingLabel(b)}${f ? ' · ' + f.name : ''}` : '—';
-  // (Old .stats-scope chrome was removed in the redesign; the label
-  // selector below stays as a no-op for any leftover markup.)
-  const scopeLabel = document.querySelector('.stats-scope .stats-scope-label');
-  if (scopeLabel) scopeLabel.textContent = 'Floor';
+  let buUnits = 0, buGross = 0;
+  if (b) {
+    for (const fl of (b.floors || [])) {
+      const fst = (typeof calcStatsForUnits === 'function') ? calcStatsForUnits(fl.units || []) : null;
+      if (fst) buUnits += (fst.occ + fst.vac + fst.res);
+      buGross += (typeof _floorGrossSqft === 'function') ? (+_floorGrossSqft(fl) || 0) : 0;
+    }
+  }
+  const eyebrowEl = document.getElementById('fhEyebrow');
+  if (eyebrowEl) {
+    eyebrowEl.textContent = b
+      ? `${buildingLabel(b)} · ${buUnits.toLocaleString()} unit${buUnits === 1 ? '' : 's'} · ${Math.round(buGross).toLocaleString()} ft²`
+      : '—';
+  }
+  const fnEl = document.getElementById('fhFloorName');
+  if (fnEl) {
+    // Сохраняем шеврон-иконку (последний дочерний SVG), переписываем только текст.
+    const chev = fnEl.querySelector('svg');
+    fnEl.textContent = f ? f.name : (b ? 'No floor' : '—');
+    if (chev) fnEl.appendChild(chev);
+  }
+  const chipEl = document.getElementById('fhUnitChip');
+  if (chipEl) {
+    chipEl.style.display = f ? '' : 'none';
+    if (f) chipEl.innerHTML = `<b>${totalUnits.toLocaleString()}</b>&nbsp;unit${totalUnits === 1 ? '' : 's'} · ${Math.round(floorGross).toLocaleString()} ft²`;
+  }
 
   renderFloorBreakdown();
   renderNeedsAttention();
