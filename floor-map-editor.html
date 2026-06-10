@@ -7275,24 +7275,26 @@
      all lease-related docs (lease/amendment/addendum/renewal/termination).
      Style language matches the rest of the right panel: warm-neutral
      surface, soft borders, ZIP-palette status pills. */
+  /* Шаг 6 редизайна (Suite 363 Lease.html, .docs-head): заголовок секции
+     12.5/700 uppercase .06em text-2 + счётчик-пилюля #ececee. */
   .lease-docs-section {
-    font-family: "Inter Tight", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    font-family: var(--rd-font);
   }
   .lease-docs-head {
     display: flex; align-items: center; justify-content: space-between;
-    margin-bottom: 12px; gap: 10px;
+    margin: 16px 0 10px; gap: 10px;
   }
   .lease-docs-title {
-    font-size: 12px; font-weight: 700; color: #6B665C;
-    text-transform: uppercase; letter-spacing: 0.5px;
+    font-size: 12.5px; font-weight: 700; color: var(--rd-text2);
+    text-transform: uppercase; letter-spacing: 0.06em;
     display: inline-flex; align-items: center; gap: 8px;
   }
   .lease-docs-count {
-    font-size: 10px; font-weight: 700;
-    padding: 1px 7px;
-    background: #F4F2EE;
-    color: #94908A;
-    border-radius: 8px;
+    font-size: 11.5px; font-weight: 700;
+    padding: 1px 8px;
+    background: #ececee;
+    color: var(--rd-text2);
+    border-radius: 999px;
     text-transform: none; letter-spacing: 0;
   }
   /* + Add document dropdown — minimal indigo button + menu */
@@ -7376,31 +7378,39 @@
      Внешний контейнер БОЛЬШЕ НЕ рисует рамку и фон, чтобы не было
      эффекта «карточка в карточке». Только секционный заголовок сверху
      + плотный список карточек. */
+  /* Шаг 6 редизайна (Suite 363 Lease.html, .prospects): пунктирная индиго-
+     карточка — 1.5px dashed #c9cdf8 на #f9faff, радиус 14; head = чип-иконка
+     28px (i-target) + тайтл 14.5/700 + Add prospect по rd-btn паттерну. */
   .prospects-panel {
-    background: transparent;
-    border: none;
-    border-radius: 0;
-    padding: 0;
+    background: #f9faff;
+    border: 1.5px dashed #c9cdf8;
+    border-radius: 14px;
+    padding: 14px 16px;
     margin-bottom: 16px;
-  }
-  .prospects-panel.prospects-empty {
-    background: #fafbff;
-    border: 1px dashed #e0e3f0;
-    border-radius: 8px;
-    padding: 16px;
+    font-family: var(--rd-font);
   }
   .prospects-head {
     display: flex; align-items: center; justify-content: space-between;
-    margin-bottom: 10px;
+    gap: 8px; margin-bottom: 10px;
   }
-  .prospects-title { font-weight: 600; font-size: 14px; color: #2d2d3d; }
-  .prospects-count { font-weight: 400; color: var(--muted); font-size: 12px; }
+  .prospects-title {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-weight: 700; font-size: 14.5px; color: var(--rd-text);
+  }
+  .prospects-picon {
+    width: 28px; height: 28px; border-radius: 8px;
+    background: var(--rd-accent-soft); color: var(--rd-accent-ink);
+    display: inline-flex; align-items: center; justify-content: center; flex: none;
+  }
+  .prospects-count { font-weight: 500; color: var(--rd-text3); font-size: 14.5px; }
   .prospect-add-btn {
-    background: #3D3BE8; color: #fff; border: none; border-radius: 6px;
-    padding: 5px 12px; font-size: 12px; font-weight: 500; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--rd-accent); color: #fff; border: none; border-radius: 9px;
+    padding: 7px 13px; font-size: 13px; font-weight: 600; cursor: pointer;
+    font-family: inherit; white-space: nowrap;
   }
-  .prospect-add-btn:hover { background: #2c2ad0; }
-  .prospects-empty-hint { font-size: 12px; color: var(--muted); font-style: italic; }
+  .prospect-add-btn:hover { background: var(--rd-accent-ink); }
+  .prospects-empty-hint { font-size: 12.5px; color: var(--rd-text2); line-height: 1.5; margin-top: 10px; }
   .prospects-list { display: flex; flex-direction: column; gap: 8px; }
   /* === Prospect card v3 (redesign 2026-05-05 — removed nested frames) ====
      Принципы: ровно ОДНА рамка вокруг карточки. Внутренние «коробки» —
@@ -7897,19 +7907,22 @@
   .prospect-detail-footer button.is-danger:hover { background: #fee2e2; border-color: #fca5a5; }
 
   .lease-add-wrap { position: relative; }
+  /* Шаг 6 редизайна: primary «Add document» в шапке секции — .btn-add макета
+     (accent bg, радиус 9, 13/600, плюс-иконка 13px). */
   .lease-add-btn {
-    display: inline-flex; align-items: center; gap: 5px;
-    padding: 6px 12px;
-    background: #3D3BE8;
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 7px 13px;
+    background: var(--rd-accent);
     color: #fff;
     border: none;
-    border-radius: 6px;
-    font-size: 12px; font-weight: 600;
+    border-radius: 9px;
+    font-size: 13px; font-weight: 600;
     cursor: pointer;
     font-family: inherit;
     transition: background .12s;
+    white-space: nowrap;
   }
-  .lease-add-btn:hover { background: #2B2AC4; }
+  .lease-add-btn:hover { background: var(--rd-accent-ink); }
   .lease-add-chev { font-size: 10px; opacity: 0.85; }
   .lease-add-menu {
     position: absolute; top: calc(100% + 4px); right: 0; z-index: 30;
@@ -8005,115 +8018,129 @@
      the first lease. */
   .lease-docs-empty {
     padding: 32px 16px;
-    border: 1px dashed #D6D2CA;
-    border-radius: 10px;
+    border: 1.5px dashed var(--rd-border-strong);
+    border-radius: 12px;
     text-align: center;
-    background: #FFFFFF;
+    background: var(--rd-bg);
   }
-  .lease-docs-empty-icon { font-size: 28px; opacity: 0.55; }
+  .lease-docs-empty-icon {
+    display: flex; align-items: center; justify-content: center;
+    color: var(--rd-text3);
+  }
   .lease-docs-empty-title {
-    font-size: 13.5px; font-weight: 600; color: #14120F;
+    font-size: 13.5px; font-weight: 700; color: var(--rd-text);
     margin-top: 8px;
   }
   .lease-docs-empty-sub {
-    font-size: 11.5px; color: #6B665C;
+    font-size: 12.5px; color: var(--rd-text2);
     margin-top: 4px; max-width: 260px; margin-left: auto; margin-right: auto;
-    line-height: 1.45;
+    line-height: 1.5;
   }
 
-  /* Step 2: Unit Lease-template badge bar */
+  /* Шаг 6 редизайна (Suite 363 Lease.html, .tpl): строка шаблона — surface-фон,
+     радиус 11, file-иконка, label 13.5/600 text-2, chip uppercase 10.5/700. */
   .lease-tpl-bar {
-    display: flex; align-items: center; gap: 8px;
-    padding: 8px 12px; margin-bottom: 10px;
-    background: #F8F6F1; border: 1px solid #E8E5DF; border-radius: 8px;
-    font-size: 13px;
+    display: flex; align-items: center; gap: 9px;
+    padding: 11px 13px; margin-bottom: 10px;
+    background: var(--rd-surface); border: none; border-radius: 11px;
+    font-size: 13.5px;
   }
-  .lease-tpl-bar-icon { font-size: 15px; }
-  .lease-tpl-bar-label { color: #6B7280; font-weight: 500; }
-  .lease-tpl-bar-name { color: #111; font-weight: 600; flex: 1; min-width: 0;
+  .lease-tpl-bar-icon {
+    display: flex; align-items: center; color: var(--rd-text2);
+  }
+  .lease-tpl-bar-label { color: var(--rd-text2); font-weight: 600; }
+  .lease-tpl-bar-name { color: var(--rd-text); font-weight: 600; flex: 1; min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .lease-tpl-src {
-    display: inline-block; padding: 2px 7px; border-radius: 10px;
-    font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px;
+    display: inline-block; padding: 2px 8px; border-radius: 6px;
+    font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
   }
-  .lease-tpl-src-unit    { background: #DCFCE7; color: #166534; }
-  .lease-tpl-src-floor   { background: #DBEAFE; color: #1E40AF; }
-  .lease-tpl-src-default { background: #F3F4F6; color: #6B7280; }
+  .lease-tpl-src-unit    { background: var(--rd-green-soft); color: var(--rd-green); }
+  .lease-tpl-src-floor   { background: var(--rd-blue-soft); color: var(--rd-blue-link); }
+  .lease-tpl-src-default { background: #e7e7e3; color: var(--rd-text2); }
   .lease-tpl-change-btn {
-    background: #FFFFFF; border: 1px solid #D1D5DB; border-radius: 6px;
-    padding: 4px 10px; font-size: 12px; font-weight: 600; color: #374151;
-    cursor: pointer; transition: all 0.15s;
+    background: #fff; border: 1px solid var(--rd-border-strong); border-radius: 8px;
+    padding: 6px 12px; font-size: 12.5px; font-weight: 600; color: var(--rd-text);
+    cursor: pointer; transition: all 0.15s; font-family: inherit;
   }
-  .lease-tpl-change-btn:hover { background: #F3F4F6; border-color: #9CA3AF; }
+  .lease-tpl-change-btn:hover { background: #f6f6f8; }
   .lease-tpl-pick-row:hover { background: #F9FAFB !important; }
 
-  /* Doc list & individual cards */
+  /* Doc list & individual cards — Шаг 6 редизайна (Suite 363 Lease.html,
+     .doc): рамка border-strong радиус 12, head = чип-иконка 30px + тайтл
+     14.5/700 + Signed-пилюля; meta 13px text-2, sub 12px text-3. */
   .lease-docs-list { display: flex; flex-direction: column; gap: 8px; }
   .lease-doc-card {
-    background: #FFFFFF;
-    border: 1px solid #E8E5DF;
-    border-radius: 10px;
-    padding: 12px 14px;
+    background: var(--rd-bg);
+    border: 1px solid var(--rd-border-strong);
+    border-radius: 12px;
+    padding: 13px 14px;
     display: flex; flex-direction: column; gap: 6px;
   }
   .lease-doc-head {
-    display: flex; align-items: center; gap: 8px;
+    display: flex; align-items: center; gap: 9px;
   }
-  .lease-doc-icon { font-size: 16px; line-height: 1; flex-shrink: 0; }
+  .lease-doc-icon {
+    width: 30px; height: 30px; border-radius: 8px;
+    background: var(--rd-surface); color: var(--rd-text2);
+    display: flex; align-items: center; justify-content: center; flex: none;
+  }
   .lease-doc-title {
     flex: 1; min-width: 0;
-    font-size: 13px; font-weight: 600; color: #14120F;
+    font-size: 14.5px; font-weight: 700; color: var(--rd-text);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .lease-doc-pill {
-    font-size: 10.5px; font-weight: 600;
-    padding: 2px 8px;
+    font-size: 11px; font-weight: 700;
+    padding: 3px 9px;
     border-radius: 999px;
     flex-shrink: 0;
     line-height: 1.4;
+    letter-spacing: 0;
   }
   .lease-doc-sub {
-    font-size: 11.5px; color: #14120F;
+    font-size: 13px; color: var(--rd-text2);
+    line-height: 1.5;
     font-variant-numeric: tabular-nums;
   }
   .lease-doc-source {
-    font-size: 10.5px; color: #94908A;
+    font-size: 12px; color: var(--rd-text3);
     font-variant-numeric: tabular-nums;
   }
   .lease-doc-notes {
-    font-size: 11px; color: #6B665C;
+    font-size: 12px; color: var(--rd-text2);
     padding: 6px 8px;
-    background: #F4F2EE;
-    border-radius: 6px;
+    background: var(--rd-surface);
+    border-radius: 8px;
     margin-top: 2px;
   }
   /* === Version history (collapsible) === */
   .lease-doc-history {
     margin-top: 6px;
-    border: 1px solid #E8E5DF;
+    border: 1px solid var(--rd-border);
     border-radius: 8px;
-    background: #FAFAF8;
+    background: #fafaf9;
     font-size: 11px;
   }
+  /* Шаг 6 редизайна: ▸-псевдочеврон убит — вместо него i-chev-d спрайт,
+     повёрнутый на -90° в закрытом состоянии (как .rd-sec-chev). */
   .lease-doc-history > summary {
     cursor: pointer;
     list-style: none;
+    display: flex; align-items: center; gap: 6px;
     padding: 7px 10px;
-    color: #6B665C;
+    color: var(--rd-text2);
     font-weight: 600;
     user-select: none;
     transition: background .1s;
   }
   .lease-doc-history > summary::-webkit-details-marker { display: none; }
-  .lease-doc-history > summary::before {
-    content: "▸";
-    display: inline-block;
-    margin-right: 6px;
+  .lease-doc-history > summary > .rd-ic {
+    color: var(--rd-text3);
     transition: transform .15s;
-    color: #94908A;
   }
-  .lease-doc-history[open] > summary::before { transform: rotate(90deg); }
-  .lease-doc-history > summary:hover { background: #F4F2EE; }
+  .lease-doc-history:not([open]) > summary > .rd-ic { transform: rotate(-90deg); }
+  .lease-doc-history > summary:hover { background: var(--rd-surface); }
   .lease-doc-vlist {
     padding: 4px 8px 8px;
     display: flex; flex-direction: column; gap: 4px;
@@ -8130,11 +8157,14 @@
     font-size: 10.5px;
   }
   .lease-doc-vrow-num {
-    font-weight: 700; color: #3D3BE8;
-    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-weight: 700; color: var(--rd-accent);
+    font-family: var(--rd-mono);
     font-size: 11px;
   }
-  .lease-doc-vrow-icon { font-size: 14px; line-height: 1; }
+  .lease-doc-vrow-icon {
+    display: flex; align-items: center; justify-content: center;
+    color: var(--rd-text2);
+  }
   .lease-doc-vrow-status {
     padding: 2px 7px;
     border-radius: 10px;
@@ -8150,18 +8180,18 @@
   .lease-doc-vrow-link {
     display: inline-flex; align-items: center; justify-content: center;
     width: 22px; height: 22px;
-    background: #F4F2EE;
-    border: 1px solid #E8E5DF;
+    background: var(--rd-surface);
+    border: 1px solid var(--rd-border);
     border-radius: 5px;
-    color: #6B665C;
+    color: var(--rd-text2);
     font-weight: 700;
     text-decoration: none;
     font-size: 13px;
     transition: all .1s;
   }
   .lease-doc-vrow-link:hover {
-    background: #3D3BE8;
-    border-color: #3D3BE8;
+    background: var(--rd-accent);
+    border-color: var(--rd-accent);
     color: #fff;
   }
   /* === Source picker cards (Add document modal) ===
@@ -8216,48 +8246,18 @@
   .lease-doc-source-card:has(input[type="radio"]:checked) .lease-doc-source-card-title {
     color: #1E1B9F;
   }
+  /* Шаг 6 редизайна (Suite 363 Lease.html, .doc-actions): ряд действий
+     отбит верхней линией; кнопки переведены на примитивы .rd-btn /
+     .rd-btn2 / .rd-btn-danger — локальные .lease-doc-action-* стили
+     упразднены (spacer прижимает корзину вправо). */
   .lease-doc-actions {
-    display: flex; flex-wrap: wrap; gap: 6px;
-    margin-top: 4px; padding-top: 8px;
-    border-top: 1px solid #F4F2EE;
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    margin-top: 6px; padding-top: 12px;
+    border-top: 1px solid var(--rd-border);
   }
-  .lease-doc-action {
-    display: inline-flex; align-items: center; gap: 4px;
-    padding: 4px 10px;
-    font-size: 11px; font-weight: 500;
-    border: 1px solid #E8E5DF;
-    border-radius: 6px;
-    background: #FFFFFF;
-    color: #6B665C;
-    cursor: pointer;
-    text-decoration: none;
-    font-family: inherit;
-    transition: all .1s;
-  }
-  .lease-doc-action:hover {
-    border-color: #3D3BE8;
-    color: #3D3BE8;
-  }
-  .lease-doc-action-primary {
-    background: #3D3BE8;
-    border-color: #3D3BE8;
-    color: #FFFFFF;
-  }
-  .lease-doc-action-primary:hover {
-    background: #2B2AC4;
-    border-color: #2B2AC4;
-    color: #FFFFFF;
-  }
-  .lease-doc-action-danger {
-    color: #9F1239;
-  }
-  .lease-doc-action-danger:hover {
-    border-color: #9F1239;
-    color: #9F1239;
-  }
-  .lease-doc-action-icon {
-    padding: 4px 7px;
-  }
+  .lease-doc-actions .lease-doc-spacer { flex: 1; }
+  .lease-doc-actions .rd-btn2 .rd-ic { color: var(--rd-text2); }
+  .lease-doc-actions .rd-btn2.rd-btn-danger .rd-ic { color: var(--rd-red); }
 
   /* ===== Settings → Templates — list of workspace lease templates ====== */
   .lease-templates-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
@@ -12316,56 +12316,97 @@
     background: var(--text); border-radius: 1px;
   }
 
-  /* Critical dates — stacked mini-cards */
+  /* Critical dates — stacked mini-cards. Шаг 6 редизайна: токены --rd-* +
+     иконка-чип 28px со спрайтом вместо эмодзи; логика тонов не менялась. */
   .lease-crit {
     display: flex; flex-direction: column; gap: 6px;
     margin-bottom: 14px;
+    font-family: var(--rd-font);
   }
   .lease-crit-card {
     display: flex; align-items: center; gap: 10px;
     padding: 10px 12px;
-    background: var(--surface);
-    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--rd-bg);
+    border: 1px solid var(--rd-border-strong); border-radius: 12px;
   }
-  .lease-crit-card.warn { border-color: rgba(245,158,11,0.35); background: rgba(245,158,11,0.06); }
-  .lease-crit-card.danger { border-color: rgba(220,38,38,0.35); background: rgba(220,38,38,0.06); }
-  .lease-crit-icon { font-size: 16px; flex: 0 0 auto; width: 24px; text-align: center; }
+  .lease-crit-card.warn { border-color: #f0ddba; background: var(--rd-amber-soft); }
+  .lease-crit-card.danger { border-color: #f5c6d0; background: var(--rd-red-soft); }
+  .lease-crit-icon {
+    flex: 0 0 auto; width: 28px; height: 28px; border-radius: 8px;
+    background: var(--rd-surface); color: var(--rd-text2);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .lease-crit-card.warn .lease-crit-icon { background: #fff; color: var(--rd-amber); }
+  .lease-crit-card.danger .lease-crit-icon { background: #fff; color: var(--rd-red); }
   .lease-crit-body { flex: 1 1 auto; min-width: 0; }
-  .lease-crit-label { font: 500 12.5px system-ui; color: var(--text); }
-  .lease-crit-sub { font-size: 11px; color: var(--muted); margin-top: 1px; }
-  .lease-crit-when { font: 600 12px system-ui; color: var(--text); flex: 0 0 auto; }
-  .lease-crit-card.warn .lease-crit-when { color: #b45309; }
-  .lease-crit-card.danger .lease-crit-when { color: #dc2626; }
+  .lease-crit-label { font: 600 12.5px var(--rd-font); color: var(--rd-text); }
+  .lease-crit-sub { font-size: 11px; color: var(--rd-text3); margin-top: 1px; }
+  .lease-crit-when { font: 700 12px var(--rd-font); color: var(--rd-text); flex: 0 0 auto; }
+  .lease-crit-card.warn .lease-crit-when { color: var(--rd-amber); }
+  .lease-crit-card.danger .lease-crit-when { color: var(--rd-red); }
 
-  /* Generic "subcard" used for Business Terms / Guarantor / Insurance */
+  /* Generic "subcard" used for Business Terms / Guarantor / Insurance.
+     Шаг 6 редизайна (Suite 363 Lease.html, .col): белая карточка
+     border-strong/радиус 14; шапка = единый .rd-sec-head (чип-иконка 30px
+     + тайтл 14.5/700 + muted-статус справа + i-chev-d, -90° закрыт).
+     ▸-псевдочеврон убит; вращение — через details.rd-collapsible
+     (primitive-правило в rd-блоке). Горизонтальный паддинг на контейнере,
+     summary компенсирует его отрицательными маржинами — тело карточки
+     получает поля макета (16px) без обёртки-div. */
   .lease-subcard {
-    padding: 12px 14px;
-    background: var(--surface);
-    border: 1px solid var(--border); border-radius: 10px;
-    margin-bottom: 12px;
-  }
-  .lease-subcard-head {
-    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 16px;
+    background: var(--rd-bg);
+    border: 1px solid var(--rd-border-strong); border-radius: 14px;
     margin-bottom: 10px;
+    font-family: var(--rd-font);
+    overflow: hidden;
   }
-  .lease-subcard-title { font: 600 13px system-ui; color: var(--text); }
-  .lease-subcard-meta { font-size: 11px; color: var(--muted); }
   .lease-subcard .field + .field,
   .lease-subcard .field-row + .field { margin-top: 6px; }
 
   /* Collapsible subcard */
   details.lease-subcard summary {
     cursor: pointer; list-style: none;
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 0; margin: 0;
+    margin: 0 -16px; padding: 14px 16px;
   }
-  details.lease-subcard summary::before {
-    content: '▸'; color: var(--muted); margin-right: 8px;
-    transition: transform .12s; display: inline-block;
+  details.lease-subcard summary::-webkit-details-marker { display: none; }
+  details.lease-subcard summary:hover { background: #fafafb; }
+  details.lease-subcard[open] { padding-bottom: 16px; }
+  details.lease-subcard[open] summary { margin-bottom: 2px; }
+  /* Формы внутри секций — .f-label / .f-in макета: label uppercase
+     10.5/700/.06em text-3 (хвост-подсказка в span — без uppercase),
+     инпуты 40px, радиус 10, белый фон, focus-кольцо accent-soft. */
+  .lease-subcard .field label {
+    font: 700 10.5px var(--rd-font);
+    letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--rd-text3); margin-bottom: 5px;
   }
-  details.lease-subcard[open] summary::before { transform: rotate(90deg); }
-  details.lease-subcard[open] { padding-bottom: 14px; }
-  details.lease-subcard[open] summary { margin-bottom: 10px; }
+  .lease-subcard .field label span {
+    text-transform: none; letter-spacing: 0.02em; color: var(--rd-text3);
+  }
+  .lease-subcard .field input,
+  .lease-subcard .field textarea,
+  .lease-subcard .field select {
+    border: 1px solid var(--rd-border-strong); border-radius: 10px;
+    background: #fff; color: var(--rd-text);
+    font-size: 14px; min-height: 40px; padding: 8px 12px;
+  }
+  .lease-subcard .field input:focus,
+  .lease-subcard .field textarea:focus,
+  .lease-subcard .field select:focus {
+    border-color: var(--rd-accent);
+    box-shadow: 0 0 0 3px var(--rd-accent-soft);
+  }
+  /* Чекбокс (Personal guarantee signed) — .checkrow макета: 17px, accent. */
+  .lease-subcard .field input[type="checkbox"] {
+    width: 17px; height: 17px; min-height: 0; padding: 0;
+    accent-color: var(--rd-accent); flex: none;
+  }
+  /* Lease end — auto-вычисляемое поле, по макету выглядит read-only:
+     серый фон + text-2 (handlers/autosave не тронуты). */
+  .lease-subcard .field input#fUntil {
+    background: #fafaf9; color: var(--rd-text2);
+  }
 
   /* Previous tenants collapsible block */
   .upv2-prev-tenants {
@@ -78899,10 +78940,12 @@ function _renderLeaseDates(u, editOn, ro, hasLease) {
   else if (startIso)      metaHtml = `Starts ${esc(fmtShort(startIso))}`;
   else                    metaHtml = 'Not set';
   return `
-    <details class="lease-subcard"${hasLease ? ' open' : ''}>
-      <summary>
-        <span class="lease-subcard-title">📅 Lease dates</span>
-        <span class="lease-subcard-meta">${metaHtml}</span>
+    <details class="lease-subcard rd-collapsible"${hasLease ? ' open' : ''}>
+      <summary class="rd-sec-head">
+        <span class="rd-sec-chip">${_rdIc('calendar', 16)}</span>
+        <span class="rd-sec-title">Lease dates</span>
+        <span class="rd-sec-status">${metaHtml}</span>
+        <span class="rd-sec-chev">${_rdIc('chev-d', 15)}</span>
       </summary>
       <div class="field-row">
         <div class="field">
@@ -78977,10 +79020,12 @@ function _renderLeaseEscalation(u) {
   let out = '';
   if (sched.length) {
     out += `
-    <details class="lease-subcard" open>
-      <summary>
-        <span class="lease-subcard-title">📈 Rent escalation</span>
-        <span class="lease-subcard-meta">${sched.length} periods · reference</span>
+    <details class="lease-subcard rd-collapsible" open>
+      <summary class="rd-sec-head">
+        <span class="rd-sec-chip">${_rdIc('chart', 16)}</span>
+        <span class="rd-sec-title">Rent escalation</span>
+        <span class="rd-sec-status">${sched.length} periods · reference</span>
+        <span class="rd-sec-chev">${_rdIc('chev-d', 15)}</span>
       </summary>
       ${(typeof _leaseEscalationTableHtml === 'function' ? _leaseEscalationTableHtml(sched) : '')}
       <div style="font-size:10.5px; color:var(--muted); margin-top:6px; line-height:1.4;">
@@ -78993,10 +79038,12 @@ function _renderLeaseEscalation(u) {
     const rank = { high: 0, medium: 1, low: 2 };
     const sorted = notes.slice().sort((a, b) => (rank[a.severity] ?? 1) - (rank[b.severity] ?? 1));
     out += `
-    <details class="lease-subcard">
-      <summary>
-        <span class="lease-subcard-title">⚖️ Lease key points</span>
-        <span class="lease-subcard-meta">AI review · ${notes.length}</span>
+    <details class="lease-subcard rd-collapsible">
+      <summary class="rd-sec-head">
+        <span class="rd-sec-chip">${_rdIc('gavel', 16)}</span>
+        <span class="rd-sec-title">Lease key points</span>
+        <span class="rd-sec-status">AI review · ${notes.length}</span>
+        <span class="rd-sec-chev">${_rdIc('chev-d', 15)}</span>
       </summary>
       ${sorted.map(k => {
         const sev = ['high', 'medium', 'low'].includes(k.severity) ? k.severity : 'medium';
@@ -79092,13 +79139,14 @@ function _renderLeaseCriticalDates(u) {
     const deadline = new Date(end);
     deadline.setMonth(deadline.getMonth() - noticeMo);
     const deadIso = deadline.toISOString().slice(0,10);
-    pushDate(deadIso, 'Renewal notice deadline', `Tenant must notify ${noticeMo}mo before lease end`, '📮');
+    // Шаг 6 редизайна: имена спрайт-иконок вместо эмодзи (рендер в чипе ниже).
+    pushDate(deadIso, 'Renewal notice deadline', `Tenant must notify ${noticeMo}mo before lease end`, 'mail');
   }
   // Lease end
-  if (u.until) pushDate(u.until, 'Lease ends', 'Current term expires', '📅');
+  if (u.until) pushDate(u.until, 'Lease ends', 'Current term expires', 'calendar');
   // Insurance expiry
   const insExp = u.insurance?.expiresAt;
-  if (insExp) pushDate(insExp, 'Insurance certificate expires', u.insurance?.carrier || 'Renewal required', '🛡');
+  if (insExp) pushDate(insExp, 'Insurance certificate expires', u.insurance?.carrier || 'Renewal required', 'shield');
   // Next rent escalation — only if a non-zero annual bump is set.
   const escPct = +u.rentEscalationPct || 0;
   if (escPct > 0 && u.leaseStart) {
@@ -79113,7 +79161,7 @@ function _renderLeaseCriticalDates(u) {
         nextBump.toISOString().slice(0,10),
         `Rent increases ${escPct}%`,
         'Annual escalation per lease terms',
-        '📈'
+        'chart'
       );
     }
   }
@@ -79125,7 +79173,7 @@ function _renderLeaseCriticalDates(u) {
     <div class="lease-crit">
       ${items.map(it => `
         <div class="lease-crit-card ${it.tone}">
-          <div class="lease-crit-icon">${it.icon}</div>
+          <div class="lease-crit-icon">${_rdIc(it.icon, 14)}</div>
           <div class="lease-crit-body">
             <div class="lease-crit-label">${esc(it.label)}</div>
             <div class="lease-crit-sub">${esc(it.sub)} · ${esc(new Date(it.dateIso + 'T00:00:00').toLocaleDateString('en-US',{month:'short', day:'numeric', year:'numeric'}))}</div>
@@ -79154,10 +79202,12 @@ function _renderLeaseBusinessTerms(u, editOn, ro) {
   // don't get truncated in narrow side panels. Short numerics pair
   // up in a row since they fit comfortably. No label wrapping.
   return `
-    <details class="lease-subcard">
-      <summary>
-        <span class="lease-subcard-title">📋 Business terms</span>
-        <span class="lease-subcard-meta">Key clauses</span>
+    <details class="lease-subcard rd-collapsible">
+      <summary class="rd-sec-head">
+        <span class="rd-sec-chip">${_rdIc('clipboard', 16)}</span>
+        <span class="rd-sec-title">Business terms</span>
+        <span class="rd-sec-status">Key clauses</span>
+        <span class="rd-sec-chev">${_rdIc('chev-d', 15)}</span>
       </summary>
       <div class="field">
         <label>Permitted use</label>
@@ -79204,15 +79254,17 @@ function _renderLeaseRenewal(u, editOn, ro) {
     const days = Math.round((dl.getTime() - Date.now()) / 86400000);
     const label = dl.toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'});
     let tone = '';
-    if (days < 0) tone = 'style="color:#dc2626;"';
-    else if (days <= 30) tone = 'style="color:#b45309;"';
+    if (days < 0) tone = 'style="color:var(--rd-red);"';
+    else if (days <= 30) tone = 'style="color:var(--rd-amber);"';
     hintHtml = `<div class="field-hint-row" ${tone}>Tenant must notify by <b>${esc(label)}</b>${days >= 0 ? ` (in ${days}d)` : ` (${Math.abs(days)}d overdue)`}</div>`;
   }
   return `
-    <details class="lease-subcard">
-      <summary>
-        <span class="lease-subcard-title">🔄 Renewal &amp; notice</span>
-        <span class="lease-subcard-meta">Options + notice period</span>
+    <details class="lease-subcard rd-collapsible">
+      <summary class="rd-sec-head">
+        <span class="rd-sec-chip">${_rdIc('refresh', 16)}</span>
+        <span class="rd-sec-title">Renewal &amp; notice</span>
+        <span class="rd-sec-status">Options + notice period</span>
+        <span class="rd-sec-chev">${_rdIc('chev-d', 15)}</span>
       </summary>
       <div class="field">
         <label>Renewal option</label>
@@ -79237,10 +79289,12 @@ function _renderLeaseGuarantor(u, editOn, ro) {
   const g = u.guarantor || {};
   const hasData = !!(g.name || g.email || g.tel);
   return `
-    <details class="lease-subcard">
-      <summary>
-        <span class="lease-subcard-title">🤝 Guarantor</span>
-        <span class="lease-subcard-meta">${g.personalGuarantee ? 'Personal guarantee' : (hasData ? 'Contact on file' : 'Not set')}</span>
+    <details class="lease-subcard rd-collapsible">
+      <summary class="rd-sec-head">
+        <span class="rd-sec-chip">${_rdIc('usercheck', 16)}</span>
+        <span class="rd-sec-title">Guarantor</span>
+        <span class="rd-sec-status">${g.personalGuarantee ? 'Personal guarantee' : (hasData ? 'Contact on file' : 'Not set')}</span>
+        <span class="rd-sec-chev">${_rdIc('chev-d', 15)}</span>
       </summary>
       <div class="field">
         <label>Guarantor name</label>
@@ -79292,10 +79346,12 @@ function _renderLeaseInsurance(u, editOn, ro) {
     statusMeta = 'Expiry not set';
   }
   return `
-    <details class="lease-subcard">
-      <summary>
-        <span class="lease-subcard-title">🛡 Insurance certificate</span>
-        <span class="lease-subcard-meta">${esc(statusMeta)}</span>
+    <details class="lease-subcard rd-collapsible">
+      <summary class="rd-sec-head">
+        <span class="rd-sec-chip">${_rdIc('shield', 16)}</span>
+        <span class="rd-sec-title">Insurance certificate</span>
+        <span class="rd-sec-status">${esc(statusMeta)}</span>
+        <span class="rd-sec-chev">${_rdIc('chev-d', 15)}</span>
       </summary>
       <div class="field">
         <label>Carrier</label>
@@ -89092,10 +89148,12 @@ function _renderLeaseAbstract(u) {
   const html = (typeof _leaseAbstractHtml === 'function') ? _leaseAbstractHtml(abs) : '';
   if (!html) return '';
   return `
-    <details class="lease-subcard">
-      <summary>
-        <span class="lease-subcard-title">📑 Lease abstract</span>
-        <span class="lease-subcard-meta">AI · reference</span>
+    <details class="lease-subcard rd-collapsible">
+      <summary class="rd-sec-head">
+        <span class="rd-sec-chip">${_rdIc('note', 16)}</span>
+        <span class="rd-sec-title">Lease abstract</span>
+        <span class="rd-sec-status">AI · reference</span>
+        <span class="rd-sec-chev">${_rdIc('chev-d', 15)}</span>
       </summary>
       ${html}
     </details>`;
@@ -93331,7 +93389,7 @@ function _renderLeaseDocumentsTimeline(u, editOn) {
       <button type="button" class="lease-add-btn"
               onclick="_openAddLeaseDocPicker('${esc(b.id)}','${esc(f.id)}','${esc(u.id)}')"
               title="Add a new lease document">
-        + Add document
+        ${_rdIc('plus', 13)}Add document
       </button>
     </div>
   ` : '';
@@ -93341,7 +93399,7 @@ function _renderLeaseDocumentsTimeline(u, editOn) {
   if (!docs.length) {
     body = `
       <div class="lease-docs-empty">
-        <div class="lease-docs-empty-icon">📂</div>
+        <div class="lease-docs-empty-icon">${_rdIc('folder', 24)}</div>
         <div class="lease-docs-empty-title">No lease documents yet</div>
         <div class="lease-docs-empty-sub">Add the original lease, amendments, addendums or renewals — they'll all live here.</div>
       </div>`;
@@ -93380,7 +93438,7 @@ function _renderLeaseDocumentsTimeline(u, editOn) {
       : '';
     tplBadge = `
       <div class="lease-tpl-bar" title="Lease template that will be used when sending the next Lease document for this suite">
-        <span class="lease-tpl-bar-icon">📄</span>
+        <span class="lease-tpl-bar-icon">${_rdIc('file', 15)}</span>
         <span class="lease-tpl-bar-label">Lease template:</span>
         <span class="lease-tpl-bar-name">${tplName}</span>
         ${sourceLabel}
@@ -93398,8 +93456,8 @@ function _renderLeaseDocumentsTimeline(u, editOn) {
   // Hidden-older-leases hint — let the operator know prior signed leases
   // still exist (in Files) without cluttering this tab.
   const olderLeasesHint = _olderLeasesHidden > 0 ? `
-    <div style="padding: 8px 12px; margin-top: 6px; font-size: 11.5px; color: var(--muted); background: var(--surface-2); border-radius: 6px; border: 1px dashed var(--border);">
-      <span style="font-size: 12px;">📁</span> ${_olderLeasesHidden} prior lease${_olderLeasesHidden === 1 ? '' : 's'} hidden — see them in the Files tab.
+    <div style="display: flex; align-items: center; gap: 6px; padding: 8px 12px; margin-top: 6px; font-size: 12px; color: var(--rd-text2); background: #fafaf9; border-radius: 8px; border: 1px dashed var(--rd-border-strong);">
+      ${_rdIc('folder', 13)} ${_olderLeasesHidden} prior lease${_olderLeasesHidden === 1 ? '' : 's'} hidden — see them in the Files tab.
     </div>
   ` : '';
 
@@ -93931,18 +93989,21 @@ function _renderLeaseDocCard(doc, u, b, f, editOn) {
     return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
   };
 
-  // Status pill — colour palette reuses the ZIP THEME tokens we
-  // already use elsewhere (paid emerald, pending sky, overdue rose,
-  // muted warm-grey for inactive states).
+  // Status pill — Шаг 6 редизайна: палитра --rd-* (Signed/Uploaded идут
+  // классом .rd-pill-paid по макету; остальные статусы — те же rd-тона
+  // inline). Семантика бакетов не менялась.
   const STATUS_PILL = {
-    signed:    { label: 'Signed',   bg: '#E3F6EE', fg: '#065F46' },
-    pending:   { label: 'Awaiting signature', bg: '#E0F2FE', fg: '#075985' },
-    voided:    { label: 'Voided',   bg: '#F4F2EE', fg: '#6B665C' },
-    declined:  { label: 'Declined', bg: '#FDE7EC', fg: '#9F1239' },
-    expired:   { label: 'Expired',  bg: '#F4F2EE', fg: '#6B665C' },
-    uploaded:  { label: 'Uploaded', bg: '#E3F6EE', fg: '#065F46' },
+    signed:    { label: 'Signed',   paid: true },
+    pending:   { label: 'Awaiting signature', bg: '#e8f4fd', fg: '#0284c7' },
+    voided:    { label: 'Voided',   bg: '#f2f2f3', fg: '#6b7180' },
+    declined:  { label: 'Declined', bg: '#fdecef', fg: '#e11d48' },
+    expired:   { label: 'Expired',  bg: '#f2f2f3', fg: '#6b7180' },
+    uploaded:  { label: 'Uploaded', paid: true },
   };
   const pill = STATUS_PILL[liveStatus] || STATUS_PILL.signed;
+  const pillHtml = pill.paid
+    ? `<span class="lease-doc-pill rd-pill-paid">${esc(pill.label)}</span>`
+    : `<span class="lease-doc-pill" style="background:${pill.bg}; color:${pill.fg};">${esc(pill.label)}</span>`;
 
   // Sub-line: dates + rent / term highlights.
   const subBits = [];
@@ -93983,7 +94044,7 @@ function _renderLeaseDocCard(doc, u, b, f, editOn) {
             background:#fef2f2; border:1px solid #fecaca; border-radius:7px;
             font-size:11.5px; color:#991b1b;
           " onclick="event.stopPropagation();">
-            <span style="font-size:13px;">⚠️</span>
+            ${_rdIc('alert', 14)}
             <span style="flex:1;">
               Suite rent shows <b>$${suiteRent.toLocaleString()}/mo</b>, but this lease says
               <b>$${docRent.toLocaleString()}/mo</b>. The lease is the source of truth.
@@ -94022,7 +94083,9 @@ function _renderLeaseDocCard(doc, u, b, f, editOn) {
         const ext = (activeVersion.file?.ext || '').toUpperCase();
         const vMeta = _leaseDocVersionStatusMeta(activeVersion.status);
         const vWho = activeVersion.uploadedBy ? ' · ' + esc(activeVersion.uploadedBy) : '';
-        return `${vMeta.icon} v${activeVersion.v} · ${esc(vMeta.label)}${ext ? ' · ' + ext : ''}${sizeKb ? ' · ' + sizeKb : ''}${vWho}`;
+        // Шаг 6 редизайна: без эмодзи-иконки статуса — формат .doc-sub макета
+        // «v1 · Signed · PDF · 358 KB · email».
+        return `v${activeVersion.v} · ${esc(vMeta.label)}${ext ? ' · ' + ext : ''}${sizeKb ? ' · ' + sizeKb : ''}${vWho}`;
       }
       if (doc.source === 'external') {
         return '<em style="color:var(--muted);">External tracking — no file uploaded yet.</em>';
@@ -94043,21 +94106,22 @@ function _renderLeaseDocCard(doc, u, b, f, editOn) {
       .slice()
       .sort((a, z) => (z.v || 0) - (a.v || 0))
       .filter(v => activeVersion ? v.v !== activeVersion.v : true);
+    // Шаг 6 редизайна: эмодзи статусов/файлов → спрайт (file/download),
+    // 📚 в summary заменён вращающимся i-chev-d (▸-псевдочеврон убит в CSS).
     const rows = prior.map(v => {
       const vMeta = _leaseDocVersionStatusMeta(v.status);
       const sizeKb = v.file?.size ? Math.round(v.file.size / 1024) + ' KB' : '';
       const ext = (v.file?.ext || '').toUpperCase();
-      const fIcon = _leaseDocFileIcon(v.file?.ext);
       const dateStr = fmtDate(v.uploadedAt);
       const url = v.file?.url || '';
       const dl = url
-        ? `<a href="${esc(_safeHttpUrl(url))}" target="_blank" rel="noopener" onclick="event.stopPropagation();" class="lease-doc-vrow-link" title="Download v${v.v}">↓</a>`
+        ? `<a href="${esc(_safeHttpUrl(url))}" target="_blank" rel="noopener" onclick="event.stopPropagation();" class="lease-doc-vrow-link" title="Download v${v.v}">${_rdIc('download', 12)}</a>`
         : '';
       return `
         <div class="lease-doc-vrow" onclick="event.stopPropagation();">
           <span class="lease-doc-vrow-num">v${v.v}</span>
-          <span class="lease-doc-vrow-icon">${fIcon}</span>
-          <span class="lease-doc-vrow-status" style="background:${vMeta.bg}; color:${vMeta.fg};">${vMeta.icon} ${esc(vMeta.label)}</span>
+          <span class="lease-doc-vrow-icon">${_rdIc('file', 13)}</span>
+          <span class="lease-doc-vrow-status" style="background:${vMeta.bg}; color:${vMeta.fg};">${esc(vMeta.label)}</span>
           <span class="lease-doc-vrow-meta">${esc(v.label || '')}${dateStr ? ' · ' + esc(dateStr) : ''}${ext ? ' · ' + ext : ''}${sizeKb ? ' · ' + sizeKb : ''}${v.uploadedBy ? ' · ' + esc(v.uploadedBy) : ''}</span>
           ${dl}
         </div>
@@ -94066,46 +94130,50 @@ function _renderLeaseDocCard(doc, u, b, f, editOn) {
     const summaryId = `vh-${doc.id}`;
     historyBlock = `
       <details class="lease-doc-history" onclick="event.stopPropagation();">
-        <summary id="${summaryId}">📚 ${prior.length} prior version${prior.length === 1 ? '' : 's'}</summary>
+        <summary id="${summaryId}">${_rdIc('chev-d', 12)}${prior.length} prior version${prior.length === 1 ? '' : 's'}</summary>
         <div class="lease-doc-vlist">${rows}</div>
       </details>
     `;
   }
 
-  // Action buttons — minimal layout. Главное изменение: появляется
-  // «📤 Upload new version» если у doc уже есть хотя бы одна версия
-  // (или это external-track), чтобы было ясно — карточка про версии.
+  // Action buttons — minimal layout. «Upload new version» появляется
+  // если у doc уже есть хотя бы одна версия (или это external-track),
+  // чтобы было ясно — карточка про версии.
   //
-  //   📂 Open document        — primary, всегда показан если есть file
-  //   📤 Upload new version   — для upload/external doc'ов с edit правами
-  //   📤 Resend               — только для pending DocuSign envelopes
-  //   ✕ Cancel envelope       — только для pending DocuSign envelopes
-  //   ✏️ Edit details         — metadata (title, dates, rent change, notes)
-  //   ✏️ Edit template        — per-unit template editor (только для DocuSign)
-  //   🗑                      — delete, edit-mode only
+  //   Open document (ext)     — primary, всегда показан если есть file
+  //   Upload new version      — для upload/external doc'ов с edit правами
+  //   Resend (mail)           — только для pending DocuSign envelopes
+  //   Cancel                  — только для pending DocuSign envelopes
+  //   Edit details (pencil)   — metadata (title, dates, rent change, notes)
+  //   Edit template (pencil)  — per-unit template editor (только для DocuSign)
+  //   trash                   — delete, edit-mode only, прижат вправо
+  // Шаг 6 редизайна (.doc-actions макета): primary Open document = .rd-btn
+  // (i-ext), остальные = .rd-btn2 (upload/mail/pencil), корзина = .rd-btn2
+  // .rd-btn-danger с i-trash, прижата вправо spacer'ом. Обработчики/титулы
+  // не менялись; эмодзи убраны.
   const actions = [];
   // Primary: Open document. Для uploaded файлов открываем preview-модал
   // с iframe. Для DocuSign — рендерим HTML body. Operator остаётся в app.
   if (pdfUrl || activeVersion?.file?.url || doc.source === 'docusign') {
-    actions.push(`<button type="button" class="lease-doc-action lease-doc-action-primary" onclick="event.stopPropagation(); _leaseDocOpenViewer('${esc(doc.id)}')" title="Open this document in a preview popup">📂 Open document</button>`);
+    actions.push(`<button type="button" class="rd-btn" onclick="event.stopPropagation(); _leaseDocOpenViewer('${esc(doc.id)}')" title="Open this document in a preview popup">${_rdIc('ext', 13)}Open document</button>`);
   }
   // Upload new version — главное добавление этого PR'а. Показываем для
   // upload + external doc'ов; DocuSign-doc'ам версионирование делаем
   // через resend, не через файлы (envelope = single source of truth).
   if (_hasEdit && (doc.source === 'upload' || doc.source === 'external')) {
-    const verb = activeVersion ? '📤 Upload new version' : '📤 Upload first version';
-    actions.push(`<button type="button" class="lease-doc-action" onclick="event.stopPropagation(); _openUploadVersionModal('${esc(doc.id)}')" title="Add another version to this document — previous versions stay in history">${verb}</button>`);
+    const verb = activeVersion ? 'Upload new version' : 'Upload first version';
+    actions.push(`<button type="button" class="rd-btn2" onclick="event.stopPropagation(); _openUploadVersionModal('${esc(doc.id)}')" title="Add another version to this document — previous versions stay in history">${_rdIc('upload', 13)}${verb}</button>`);
   }
   if (doc.source === 'docusign' && liveStatus === 'pending' && _hasEdit) {
-    actions.push(`<button type="button" class="lease-doc-action" onclick="event.stopPropagation(); _leaseDocResend('${esc(doc.id)}')" title="Send a reminder to the tenant">📤 Resend</button>`);
-    actions.push(`<button type="button" class="lease-doc-action lease-doc-action-danger" onclick="event.stopPropagation(); _leaseDocVoidEnvelope('${esc(doc.id)}')" title="Void this envelope on DocuSign">✕ Cancel</button>`);
+    actions.push(`<button type="button" class="rd-btn2" onclick="event.stopPropagation(); _leaseDocResend('${esc(doc.id)}')" title="Send a reminder to the tenant">${_rdIc('mail', 13)}Resend</button>`);
+    actions.push(`<button type="button" class="rd-btn2 rd-btn-danger" onclick="event.stopPropagation(); _leaseDocVoidEnvelope('${esc(doc.id)}')" title="Void this envelope on DocuSign">Cancel</button>`);
   }
   if (_hasEdit) {
-    actions.push(`<button type="button" class="lease-doc-action" onclick="event.stopPropagation(); _openEditLeaseDocModal('${esc(doc.id)}')" title="Edit the title, dates, rent change, or notes">✏️ Edit details</button>`);
+    actions.push(`<button type="button" class="rd-btn2" onclick="event.stopPropagation(); _openEditLeaseDocModal('${esc(doc.id)}')" title="Edit the title, dates, rent change, or notes">${_rdIc('pencil', 13)}Edit details</button>`);
     if (doc.source === 'docusign') {
-      actions.push(`<button type="button" class="lease-doc-action" onclick="event.stopPropagation(); _openLeaseTemplateModal('${esc(doc.type)}', 'unit', { unitId: '${esc(u.id)}' })" title="Edit the ${esc(meta.label.toLowerCase())} template for Suite ${esc(u.id)}">✏️ Edit template</button>`);
+      actions.push(`<button type="button" class="rd-btn2" onclick="event.stopPropagation(); _openLeaseTemplateModal('${esc(doc.type)}', 'unit', { unitId: '${esc(u.id)}' })" title="Edit the ${esc(meta.label.toLowerCase())} template for Suite ${esc(u.id)}">${_rdIc('pencil', 13)}Edit template</button>`);
     }
-    actions.push(`<button type="button" class="lease-doc-action lease-doc-action-icon" onclick="event.stopPropagation(); _leaseDocDelete('${esc(doc.id)}')" title="Remove this document">🗑</button>`);
+    actions.push(`<span class="lease-doc-spacer"></span><button type="button" class="rd-btn2 rd-btn-danger" onclick="event.stopPropagation(); _leaseDocDelete('${esc(doc.id)}')" title="Remove this document" aria-label="Delete">${_rdIc('trash', 14)}</button>`);
   }
 
   // Wrap the card in an editor-opener click target (only when the
@@ -94122,12 +94190,19 @@ function _renderLeaseDocCard(doc, u, b, f, editOn) {
       <b>${esc(tenantName)}</b>
     </div>` : '';
 
+  // Шаг 6 редизайна: эмодзи типа документа → спрайт в 30px чипе (.dicon
+  // макета); LEASE_DOC_TYPES не трогаем (его эмодзи ещё живут в модалках).
+  const _docSpriteByKind = {
+    loi: 'note', lease: 'file', amendment: 'pencil', addendum: 'clipboard',
+    renewal: 'refresh', termination: 'alert', move_out_email: 'mail',
+    collections_notice: 'gavel',
+  };
   return `
     <div class="lease-doc-card" data-doc-id="${esc(doc.id)}" ${cardOnclick}>
       <div class="lease-doc-head">
-        <span class="lease-doc-icon">${meta.icon}</span>
+        <span class="lease-doc-icon">${_rdIc(_docSpriteByKind[doc.type] || 'file', 15)}</span>
         <span class="lease-doc-title">${esc(doc.title || meta.defaultTitle)}</span>
-        <span class="lease-doc-pill" style="background:${pill.bg}; color:${pill.fg};">${esc(pill.label)}</span>
+        ${pillHtml}
       </div>
       ${tenantLine}
       ${subLine}
@@ -108280,10 +108355,12 @@ function _renderProspectsPanel(u, editOn) {
 
   const activeCount = list.length;
 
+  // Шаг 6 редизайна: «+» в кнопке → спрайт i-plus, 🎯 в тайтле → чип i-target
+  // (.pr-head макета). Тексты и обработчики не менялись.
   const addBtn = _hasEdit ? `
     <button type="button" class="prospect-add-btn"
             onclick="_openAddProspectModal('${bId}','${fId}','${uId}')">
-      + Add prospect
+      ${_rdIc('plus', 13)}Add prospect
     </button>` : '';
 
   // Если пуcто и есть права — показываем приглашение.
@@ -108294,7 +108371,7 @@ function _renderProspectsPanel(u, editOn) {
     return `
       <div class="prospects-panel prospects-empty">
         <div class="prospects-head">
-          <span class="prospects-title">🎯 Prospects <span class="prospects-count">(0)</span></span>
+          <span class="prospects-title"><span class="prospects-picon">${_rdIc('target', 14)}</span>Prospects <span class="prospects-count">(0)</span></span>
           ${addBtn}
         </div>
         <div class="prospects-empty-hint">
@@ -108307,7 +108384,7 @@ function _renderProspectsPanel(u, editOn) {
   return `
     <div class="prospects-panel">
       <div class="prospects-head">
-        <span class="prospects-title">🎯 Prospects <span class="prospects-count">(${activeCount})</span></span>
+        <span class="prospects-title"><span class="prospects-picon">${_rdIc('target', 14)}</span>Prospects <span class="prospects-count">(${activeCount})</span></span>
         ${addBtn}
       </div>
       <div class="prospects-list">
@@ -108405,15 +108482,17 @@ function _renderProspectCard(p, u, b, f, editOn) {
   const isTerminal = (p.stage === 'signed' || p.stage === 'lost');
 
   // Stage badge + days pill (≥7 / ≥14 stale).
+  // \u0428\u0430\u0433 6 \u0440\u0435\u0434\u0438\u0437\u0430\u0439\u043d\u0430: \u044d\u043c\u043e\u0434\u0437\u0438 \u0441\u0442\u0430\u0434\u0438\u0438 \u0443\u0431\u0440\u0430\u043d (funnel-\u0447\u0438\u043f\u044b \u043c\u0430\u043a\u0435\u0442\u0430 \u0442\u0435\u043a\u0441\u0442\u043e\u0432\u044b\u0435);
+  // \u26a0 stale-\u043c\u0430\u0440\u043a\u0435\u0440 \u043b\u0438\u0448\u043d\u0438\u0439 \u2014 \u043a\u043b\u0430\u0441\u0441 .is-stale \u0443\u0436\u0435 \u043a\u0440\u0430\u0441\u0438\u0442 \u043f\u0438\u043b\u044e\u043b\u044e \u0432 \u043a\u0440\u0430\u0441\u043d\u044b\u0439.
   const stageBadge = `
     <span class="prospect-stage" style="background:${meta.color}; color:#fff;">
-      ${meta.icon} ${esc(meta.label)}
+      ${esc(meta.label)}
     </span>`;
   const stale = PROSPECT_ACTIVE_STAGES.has(p.stage) && days > 14;
   const showDays = stale || days >= 7;
   const daysPill = showDays ? `
     <span class="prospect-days${stale ? ' is-stale' : ''}">
-      ${days}d in stage${stale ? ' \u26a0' : ''}
+      ${days}d in stage
     </span>` : '';
 
   // Компания — подзаголовком под именем.
@@ -108425,7 +108504,8 @@ function _renderProspectCard(p, u, b, f, editOn) {
   // не открывал детальный модал параллельно с почтовым клиентом.
   const contactChips = [];
   if (p.email) {
-    contactChips.push(`<a class="prospect-contact-chip" href="mailto:${esc(p.email)}" title="${esc(p.email)}" onclick="event.stopPropagation()">\u2709 ${esc(p.email)}</a>`);
+    // \u0428\u0430\u0433 6 \u0440\u0435\u0434\u0438\u0437\u0430\u0439\u043d\u0430: \u0433\u043b\u0438\u0444\u044b \u2709/\ud83c\udfaf/\u260e/\ud83d\udcca \u0438 \u043f\u0440. \u2192 \u0441\u043f\u0440\u0430\u0439\u0442 (zero-emoji \u0432 pane).
+    contactChips.push(`<a class="prospect-contact-chip" href="mailto:${esc(p.email)}" title="${esc(p.email)}" onclick="event.stopPropagation()">${_rdIc('mail', 11)} ${esc(p.email)}</a>`);
     // Phase 19 rev \u2014 HubSpot owner badge. \u0415\u0441\u043b\u0438 email \u0435\u0441\u0442\u044c \u0432 HubSpot
     // contacts \u0438 \u0437\u0430 \u043d\u0438\u043c \u0437\u0430\u043a\u0440\u0435\u043f\u043b\u0451\u043d owner \u2014 \u043f\u043e\u043a\u0430\u0437\u044b\u0432\u0430\u0435\u043c \u00ab\ud83c\udfaf <owner>\u00bb,
     // \u043a\u043b\u0438\u043a \u043e\u0442\u043a\u0440\u044b\u0432\u0430\u0435\u0442 \u043a\u043e\u043d\u0442\u0430\u043a\u0442 \u0432 HubSpot. \u0415\u0441\u043b\u0438 \u0434\u0430\u043d\u043d\u044b\u0445 \u043d\u0435\u0442 \u2014 chip \u043f\u0440\u043e\u0441\u0442\u043e \u043d\u0435
@@ -108442,13 +108522,15 @@ function _renderProspectCard(p, u, b, f, editOn) {
           `title="In HubSpot \u2014 owned by ${esc(_ownerLabel)}${_stageHint}. Click to open." ` +
           `onclick="event.stopPropagation()" ` +
           `style="background:#fff7ed;border-color:#fdba74;color:#9a3412;">` +
-          `\ud83c\udfaf ${esc(_firstName)}` +
+          `${_rdIc('target', 11)} ${esc(_firstName)}` +
         `</a>`
       );
     }
   }
   if (p.phone) {
-    contactChips.push(`<a class="prospect-contact-chip" href="tel:${esc(p.phone)}" title="Call ${esc(p.phone)}" onclick="event.stopPropagation()">\u260e ${esc(p.phone)}</a>`);
+    // \u0422\u0435\u043b\u0435\u0444\u043e\u043d\u043d\u043e\u0439 \u0438\u043a\u043e\u043d\u043a\u0438 \u0432 \u0441\u043f\u0440\u0430\u0439\u0442\u0435 \u0445\u044d\u043d\u0434\u043e\u0444\u0444\u0430 \u043d\u0435\u0442 \u2014 chip \u043e\u0441\u0442\u0430\u0451\u0442\u0441\u044f \u0442\u0435\u043a\u0441\u0442\u043e\u0432\u044b\u043c
+    // (title "Call \u2026" \u0441\u043e\u0445\u0440\u0430\u043d\u044f\u0435\u0442 \u0430\u0444\u0444\u043e\u0440\u0434\u0430\u043d\u0441), \u0433\u043b\u0438\u0444 \u260e \u0443\u0431\u0440\u0430\u043d.
+    contactChips.push(`<a class="prospect-contact-chip" href="tel:${esc(p.phone)}" title="Call ${esc(p.phone)}" onclick="event.stopPropagation()">${esc(p.phone)}</a>`);
   }
   const contactRow = contactChips.length
     ? `<div class="prospect-card-contacts">${contactChips.join('')}</div>`
@@ -108461,23 +108543,23 @@ function _renderProspectCard(p, u, b, f, editOn) {
   if (p.loiTermMonths)  miniLoiParts.push(`${p.loiTermMonths} mo`);
   if (p.loiStartDate)   miniLoiParts.push(`starts ${esc(p.loiStartDate)}`);
   const miniLoi = miniLoiParts.length
-    ? `<div class="prospect-card-mini-loi">\ud83d\udcca ${miniLoiParts.map(part => `<span>${part}</span>`).join('<span class="prospect-card-mini-loi-sep">\u00b7</span>')}</div>`
+    ? `<div class="prospect-card-mini-loi">${_rdIc('chart', 12)} ${miniLoiParts.map(part => `<span>${part}</span>`).join('<span class="prospect-card-mini-loi-sep">\u00b7</span>')}</div>`
     : '';
 
   // Doc indicators — короткая сводка «есть LOI / есть Draft», полная
   // отрисовка в детальной модалке.
   const docIndicators = [];
-  if (p.loiDoc)                          docIndicators.push('\ud83d\udce5 LOI');
-  if (ctx_pHasDraft(p) && !isTerminal)   docIndicators.push('\ud83d\udcdd Draft');
+  if (p.loiDoc)                          docIndicators.push('LOI');
+  if (ctx_pHasDraft(p) && !isTerminal)   docIndicators.push('Draft');
   const docLine = docIndicators.length
-    ? `<div class="prospect-card-mini-docs">\ud83d\udcce ${docIndicators.join(' \u00b7 ')}</div>`
+    ? `<div class="prospect-card-mini-docs">${_rdIc('clip', 12)} ${docIndicators.join(' \u00b7 ')}</div>`
     : '';
 
   // Notes preview — однострочный с многоточием (полная редактура в модалке).
-  const noteLine = p.notes ? `<div class="prospect-card-notes">\ud83d\udcdd ${esc(p.notes)}</div>` : '';
+  const noteLine = p.notes ? `<div class="prospect-card-notes">${_rdIc('note', 12)} ${esc(p.notes)}</div>` : '';
 
   // Hint — оператор должен понять, что карточка кликабельна.
-  const hint = `<div class="prospect-card-open-hint">\u25b8 Click to open details</div>`;
+  const hint = `<div class="prospect-card-open-hint">${_rdIc('chev-r', 10)} Click to open details</div>`;
 
   // Overflow ⋯ — quick-access для опытных операторов. Прячем под editOn,
   // а сама карточка остаётся кликабельной для всех (читать детали может
@@ -108488,21 +108570,21 @@ function _renderProspectCard(p, u, b, f, editOn) {
     const lostMenuItem = (!isTerminal) ? `
       <button type="button" class="is-danger"
               onclick="event.stopPropagation(); this.closest('details').open=false; _markProspectLost('${bId}','${fId}','${uId}','${pId}')">
-        \ud83d\udeab Mark as lost
+        ${_rdIc('alert', 13)} Mark as lost
       </button>` : '';
     overflow = `
       <details class="prospect-overflow" onclick="event.stopPropagation()">
-        <summary title="More actions">\u22ef</summary>
+        <summary title="More actions">${_rdIc('dots', 15)}</summary>
         <div class="prospect-overflow-menu">
           <button type="button"
                   onclick="event.stopPropagation(); this.closest('details').open=false; _openEditProspectModal('${bId}','${fId}','${uId}','${pId}')">
-            \u270f Edit details
+            ${_rdIc('pencil', 13)} Edit details
           </button>
           ${lostMenuItem ? `<hr>${lostMenuItem}` : ''}
           <hr>
           <button type="button" class="is-danger"
                   onclick="event.stopPropagation(); this.closest('details').open=false; _deleteProspect('${bId}','${fId}','${uId}','${pId}')">
-            \ud83d\uddd1 Delete prospect
+            ${_rdIc('trash', 13)} Delete prospect
           </button>
         </div>
       </details>`;
