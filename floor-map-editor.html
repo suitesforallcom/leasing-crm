@@ -9277,7 +9277,7 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .sidebar-content { padding: 16px; flex: 1; overflow-y: auto; min-height: 0; }   /* Entry 63: min-height:0 — чтобы flex-скролл реально включался при ограниченной высоте панели */
+  .sidebar-content { padding: 12px; flex: 1; overflow-y: auto; min-height: 0; }   /* Entry 63: min-height:0 — чтобы flex-скролл реально включался при ограниченной высоте панели. Паддинг ужат 16→12 по запросу оператора (компактнее). */
 
   .stats-scope {
     display: flex; align-items: baseline; gap: 8px;
@@ -9893,7 +9893,7 @@
     position: sticky; top: 0; z-index: 5;
     background: var(--rd-bg);
     border-radius: 10px 10px 0 0;
-    padding: 18px 16px 14px;
+    padding: 11px 16px 10px;  /* ужато 18/14 → 11/10 по запросу оператора (компактнее) */
     /* hairline снизу остаётся: шапка sticky, контент панелей подъезжает
        под неё при скролле — в макете такого контекста нет */
     border-bottom: 1px solid var(--rd-border);
@@ -9906,7 +9906,7 @@
     margin-bottom: 0;
   }
   .upv2-h-title {
-    margin: 0; font-size: 25px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1;
+    margin: 0; font-size: 21px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1;
     flex: 0 1 auto; min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     color: var(--rd-text);
@@ -9988,9 +9988,9 @@
 
   /* Meta-строка — .submeta макета */
   .upv2-header .upv2-h-sub {
-    font-size: 14px;
+    font-size: 13px;
     color: var(--rd-text2);
-    margin: 8px 0 0;
+    margin: 4px 0 0;
   }
 
   /* Карточка тенант + рента — .rentcard макета: surface #f4f3f0, радиус 14,
@@ -10095,13 +10095,13 @@
   /* Кебаб-меню — .menu-btn макета: 34px, радиус 9, спрайт i-dots 18px */
   .upv2-menu-wrap { position: relative; }
   .upv2-menu-btn {
-    width: 34px; height: 34px; border-radius: 9px;
+    width: 30px; height: 30px; border-radius: 8px;
     border: 1px solid var(--rd-border-strong); background: var(--rd-bg);
     color: var(--rd-text2); cursor: pointer;
     display: inline-flex; align-items: center; justify-content: center;
   }
   .upv2-menu-btn:hover { background: #f6f6f8; color: var(--rd-text); }
-  .upv2-menu-btn .rd-ic { width: 18px; height: 18px; }
+  .upv2-menu-btn .rd-ic { width: 17px; height: 17px; }
   .upv2-menu {
     position: absolute; top: calc(100% + 4px); right: 0; z-index: 20;
     min-width: 230px;
