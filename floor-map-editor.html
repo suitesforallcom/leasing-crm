@@ -9191,14 +9191,13 @@
      they'd be white-on-white and the fill would have nothing to ride on.
      Use --border (#E8E5DF) which is just one shade darker than the panel
      so the bar reads as "track" without re-introducing the cream feel. */
-  .sidebar .revenue-bar,
-  .sidebar .dash-newt-progress,
-  .sidebar .fb-bar {
+  .sidebar .revenue-bar {
     background: var(--border);
   }
   /* Cards / rows that previously relied on the cream background to
-     separate themselves from the pane now need a thin outline. */
-  .sidebar .dash-needs-head,
+     separate themselves from the pane now need a thin outline.
+     (Редизайн 2026-06: .dash-needs-head и .fb-bar убраны из этих
+     списков — у них теперь собственные цвета по макету.) */
   .sidebar .detail-card.empty,
   .sidebar .toggle-row {
     border: 1px solid var(--border);
@@ -9258,56 +9257,73 @@
   }
   .stats-scope-value { color: var(--text); font-weight: 600; font-size: 12.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
-  /* Floors-in-building row — pixel-matched to the redesign mock:
-     bordered rounded card with the floor name + suites/revenue summary
-     on the left, and a right-aligned percent + thin progress track on
-     the right. Active row gets a blue tint + blue progress fill. */
-  .floor-breakdown { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+  /* Floors-in-building — .floor-паттерн макета: карточка radius 13,
+     активный этаж = accent-soft фон + #c9cdf8 бордер + indigo-ink текст.
+     Сверху — сводная карточка здания .fb-bsum (.bsum макета). */
+  .floor-breakdown { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+  .fb-bsum {
+    background: var(--rd-surface);
+    border: 1px solid var(--rd-border-strong);
+    border-radius: 13px;
+    padding: 13px 14px;
+    margin-bottom: 2px;
+  }
+  .fb-bsum-grid { display: grid; grid-template-columns: 1fr 1.2fr 1fr; gap: 10px; }
+  .fb-bsum .k {
+    font-size: 10.5px; font-weight: 700; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--rd-text3); margin-bottom: 3px;
+  }
+  .fb-bsum .v {
+    font-size: 16px; font-weight: 800; letter-spacing: -.01em; color: var(--rd-text);
+    font-variant-numeric: tabular-nums;
+  }
+  .fb-bsum .m { font-size: 11.5px; color: var(--rd-text3); margin-top: 1px; }
   .fb-row {
-    display: flex; align-items: center; gap: 10px;
-    padding: 10px 12px; border-radius: 8px;
-    background: var(--surface);
-    border: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px;
+    padding: 13px 14px; border-radius: 13px;
+    background: #fff;
+    border: 1px solid var(--rd-border-strong);
     cursor: pointer; transition: background 0.12s, border-color 0.12s;
   }
-  .fb-row:hover { background: var(--surface-2); }
+  .fb-row:hover { background: #fafafb; }
   .fb-row.active {
-    background: var(--accent-light, rgba(99,102,241,0.08));
-    border-color: var(--accent);
+    background: var(--rd-accent-soft);
+    border-color: #c9cdf8;
   }
   .fb-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
   .fb-name {
-    font-size: 13px; font-weight: 600; color: var(--text);
+    font-size: 14.5px; font-weight: 700; color: var(--rd-text);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .fb-row.active .fb-name { color: var(--accent); }
+  .fb-row.active .fb-name { color: var(--rd-accent-ink); }
   .fb-sub {
-    font-size: 11px; color: var(--muted);
+    font-size: 12.5px; color: var(--rd-text2);
     font-variant-numeric: tabular-nums;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .fb-progress {
-    width: 56px;
-    display: flex; flex-direction: column; align-items: flex-end; gap: 4px;
+    width: 84px;
+    display: flex; flex-direction: column; align-items: flex-end; gap: 5px;
     flex-shrink: 0;
   }
   .fb-pct-num {
-    font-size: 13px; font-weight: 700; color: var(--text);
+    font-size: 15px; font-weight: 800; letter-spacing: -.01em; color: var(--rd-text);
     font-variant-numeric: tabular-nums;
   }
-  .fb-row.active .fb-pct-num { color: var(--accent); }
+  .fb-row.active .fb-pct-num { color: var(--rd-accent-ink); }
   .fb-bar {
-    width: 100%; height: 3px;
-    background: var(--surface-3, var(--surface-2));
-    border-radius: 2px; overflow: hidden;
+    width: 100%; height: 6px;
+    background: #e3e6e2;
+    border-radius: 99px; overflow: hidden;
   }
+  .fb-row.active .fb-bar { background: #dadcf6; }
   .fb-bar-fill {
     height: 100%;
-    background: var(--muted);
-    border-radius: 2px;
+    background: #6b7180;
+    border-radius: 99px;
     transition: width .25s;
   }
-  .fb-row.active .fb-bar-fill { background: var(--accent); }
+  .fb-row.active .fb-bar-fill { background: var(--rd-accent); }
 
   .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
   .stat-card {
@@ -9390,371 +9406,426 @@
      dashboard scope we override so the right panel reads exactly like
      /redesign/. */
   #sbDashboard {
-    font-family: "Inter Tight", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: var(--rd-font);
   }
 
+  /* Контекст-строка над hero. Лёгкое выравнивание под eyebrow-паттерн
+     макета (11.5/700/.07em uppercase text-3); структура и id statsScope
+     не меняются — полный fhead с unitchip отложен на следующий экран. */
   .dash-context {
     display: flex; flex-direction: column; gap: 2px;
     margin-bottom: 10px;
   }
   .dash-context-label {
-    font-size: 10px; color: #94908A;
-    text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;
+    font-size: 11.5px; color: var(--rd-text3);
+    text-transform: uppercase; letter-spacing: 0.07em; font-weight: 700;
   }
   .dash-context-value {
-    font-size: 13px; font-weight: 500; color: #14120F;
+    font-size: 15px; font-weight: 700; letter-spacing: -0.01em; color: var(--rd-text);
   }
 
-  /* Hero card — paidSoft → surface gradient with paidInk numerals.
-     padding 14, borderRadius 10, 1px border on #E8E5DF. */
+  /* Hero card — revcard из макета: градиент green-soft → #fbfdfc 70%,
+     radius 16, padding 18, бордер #d9ece1, revenue 30/800/-0.03em. */
   .dash-hero {
-    background: linear-gradient(180deg, #E3F6EE, #FFFFFF 70%);
-    padding: 14px;
-    border-radius: 10px;
-    border: 1px solid #E8E5DF;
-    display: flex; flex-direction: column; gap: 8px;
+    background: var(--rd-rev-grad);
+    padding: 18px;
+    border-radius: 16px;
+    border: 1px solid #d9ece1;
     margin-bottom: 16px;
   }
   .dash-hero-row {
     display: flex; align-items: baseline; gap: 8px;
   }
-  /* Override the global .revenue-big (used by the legacy revenue-block)
-     when it lives inside the redesign hero — paidInk emerald, 28px,
-     letter-spacing -0.5, tabular nums. Scoping to .dash-hero leaves the
-     legacy .revenue-block styling untouched elsewhere. */
+  /* Переопределяем глобальный .revenue-big (legacy revenue-block) только
+     внутри hero — точные значения revenueStat из design-tokens.json. */
   .dash-hero .revenue-big {
-    font-size: 28px;
-    font-weight: 700;
-    color: #065F46;
-    line-height: 1.05;
+    font-size: 30px;
+    font-weight: 800;
+    color: var(--rd-green);
+    line-height: 1;
     font-variant-numeric: tabular-nums;
-    letter-spacing: -0.5px;
+    letter-spacing: -0.03em;
   }
   .dash-hero-unit {
-    font-size: 11px; color: #94908A;
+    font-size: 14px; color: var(--rd-text2);
   }
   .dash-hero .revenue-sub {
-    font-size: 11px; color: #6B665C; margin-top: 0;
+    font-size: 13px; color: var(--rd-text2); margin: 7px 0 9px;
   }
-  /* Progress bar inside hero — flat 4px, paid emerald fill on a
-     surfaceAlt track. Override the legacy .revenue-bar (8px on
-     var(--surface)) only inside the redesigned hero. */
+  .dash-hero .revenue-sub b { color: var(--rd-text); font-weight: 600; }
+  /* Прогресс-бар hero — 6px, radius 99, трек #e3e6e2, emerald-заливка.
+     Переопределяем legacy .revenue-bar только внутри hero. */
   .dash-hero .revenue-bar {
-    height: 4px;
-    background: #F4F2EE;
-    border-radius: 2px;
+    height: 6px;
+    background: #e3e6e2;
+    border-radius: 99px;
     margin-top: 0;
     overflow: hidden;
     display: flex;
   }
-  .dash-hero .revenue-bar > #revBarActual { background: #10B981 !important; }
+  .dash-hero .revenue-bar > #revBarActual { background: var(--rd-green-bar) !important; border-radius: 99px; }
   .dash-hero .revenue-bar > #revBarLoss   { background: transparent !important; }
 
+  /* Occupancy-блок hero — «32 / 66 units» + двухсегментный бар + легенда
+     occupied/vacant. Числа пишет updateStats (sOcc/sVac/sOccPct/sVacPct +
+     новые display-only id dashUnitsTotal/dashOccN/dashOccSeg). */
+  .dash-occ { margin-top: 16px; padding-top: 14px; border-top: 1px solid #dfeae3; }
+  .dash-occ-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+  .dash-occ-head .lbl { font-size: 11.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--rd-text3); }
+  .dash-occ-head .tot { font-size: 13px; color: var(--rd-text2); }
+  .dash-occ-head .tot b { color: var(--rd-text); font-weight: 700; }
+  .dash-occbar { height: 10px; border-radius: 99px; background: #e3e6e2; overflow: hidden; display: flex; }
+  .dash-occbar .seg-occ { background: var(--rd-green-bar); transition: width .25s; }
+  .dash-occ-legend { display: flex; gap: 16px; margin-top: 8px; font-size: 12.5px; color: var(--rd-text2); }
+  .dash-occ-legend .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; vertical-align: baseline; }
+  .dash-occ-legend b { color: var(--rd-text); font-weight: 700; }
+
+  /* rev-grid макета — два stat-а (Rentable / Total floor area). */
   .dash-mini-stats {
-    display: grid; grid-template-columns: repeat(2, 1fr);
-    gap: 10px;
-    padding-top: 10px;
-    border-top: 1px solid #E8E5DF;
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid #dfeae3;
   }
-  .dash-mini { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .dash-mini { display: flex; flex-direction: column; min-width: 0; }
   .dash-mini-label {
-    font-size: 10px; color: #94908A;
-    text-transform: uppercase; letter-spacing: 0.4px; font-weight: 600;
+    font-size: 11px; color: var(--rd-text3);
+    text-transform: uppercase; letter-spacing: .06em; font-weight: 700;
+    margin-bottom: 3px;
   }
   .dash-mini-val {
-    font-size: 14px; font-weight: 600; color: #14120F;
+    font-size: 17px; font-weight: 700; letter-spacing: -.01em; color: var(--rd-text);
     font-variant-numeric: tabular-nums;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .dash-mini-sub {
-    font-size: 10px; color: #94908A;
+    font-size: 12px; color: var(--rd-text3); margin-top: 1px;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
 
-  /* Average rent — three sqft-weighted $/ft²/yr cards. Each card has
-     a small icon + uppercase muted label on the first line, a big
-     tabular number, and a "per ft²" sub. Pixel-matched to the redesign
-     RateCard component (Window=window-pane, Interior=wrench, Average=$). */
+  /* Легенда — 2 колонки, свотчи 18×14 radius 5, цвета из
+     tokens.legendSwatches (inline в разметке). */
+  .dash-legend { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; margin-bottom: 14px; }
+  .dash-leg { display: flex; align-items: center; gap: 9px; font-size: 13.5px; color: var(--rd-text); }
+  .dash-leg .dash-leg-sw { width: 18px; height: 14px; border-radius: 5px; border: 1px solid rgba(0,0,0,.14); flex: none; }
+  .dash-leg .rd-ic { width: 16px; height: 16px; color: var(--rd-text2); flex: none; margin: 0 1px; }
+
+  /* Map overlays — .ovl-паттерн макета: ряд с иконкой + подписью +
+     CSS-свитчем 34×20. Класс .on пишут toggleMapOverlay /
+     _syncMapOverlayChips (логика не тронута — только обёртка). */
+  .dash-ovl {
+    display: flex; align-items: center; gap: 10px; padding: 11px 13px;
+    border-radius: 12px; border: 1px solid var(--rd-border-strong);
+    background: #fff; cursor: pointer; user-select: none;
+  }
+  .dash-ovl + .dash-ovl { margin-top: 8px; }
+  .dash-ovl > .rd-ic { width: 16px; height: 16px; color: var(--rd-text3); flex: none; }
+  .dash-ovl-lbl { font-size: 13.5px; font-weight: 500; flex: 1; color: var(--rd-text2); }
+  .dash-ovl.on { background: var(--rd-blue-soft); border-color: #a8d8f5; }
+  .dash-ovl.on .dash-ovl-lbl { color: #075985; font-weight: 600; }
+  .dash-ovl.on > .rd-ic { color: var(--rd-blue-link); }
+  .dash-ovl-sw {
+    width: 34px; height: 20px; border-radius: 99px; background: #dcdcdf;
+    position: relative; flex: none; transition: background .15s;
+  }
+  .dash-ovl-sw::after {
+    content: ""; position: absolute; top: 2px; left: 2px;
+    width: 16px; height: 16px; border-radius: 50%; background: #fff;
+    box-shadow: 0 1px 2px rgba(0,0,0,.2); transition: left .15s;
+  }
+  .dash-ovl.on .dash-ovl-sw { background: var(--rd-blue-link); }
+  .dash-ovl.on .dash-ovl-sw::after { left: 16px; }
+
+  /* Секционные заголовки .panel-title в этих двух панелях — sec-head
+     паттерн макета (13/700/.06em uppercase text-2). */
+  #sbDashboard .panel-title, #sbLayers .panel-title {
+    font-size: 13px; font-weight: 700; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--rd-text2);
+  }
+
+  /* Свитчи панели Layers — рестайл существующих div.toggle (классы .on
+     пишут существующие хэндлеры toggleBg() и т.д. — не тронуты) под
+     rd-sw 34×20 с синим on-цветом per tokens. */
+  #sbLayers .toggle { width: 34px; height: 20px; border-radius: 99px; background: #dcdcdf; transition: background .15s; }
+  #sbLayers .toggle::after {
+    content: ''; position: absolute; top: 2px; left: 2px;
+    width: 16px; height: 16px; background: #fff; border-radius: 50%;
+    box-shadow: 0 1px 2px rgba(0,0,0,.2); transition: left .15s;
+  }
+  #sbLayers .toggle.on { background: var(--rd-blue); }
+  #sbLayers .toggle.on::after { left: 16px; }
+
+  /* Average rent — три $/ft²/yr тайла по .tile-паттерну макета:
+     radius 13, padding 12, бордер border-strong, value 19/800/-0.02em;
+     тайл Average подсвечен поверхностью (.hl). */
   .dash-rate-cards {
     display: grid; grid-template-columns: 1fr 1fr 1fr;
     gap: 8px;
     margin-bottom: 14px;
   }
   .dash-rate-card {
-    padding: 10px 8px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    min-width: 0;                    /* allow shrink in narrow panels */
-    display: flex; flex-direction: column; gap: 4px;
+    padding: 12px;
+    background: #fff;
+    border: 1px solid var(--rd-border-strong);
+    border-radius: 13px;
+    min-width: 0;                    /* сжатие в узких панелях */
   }
+  .dash-rate-card.hl { background: var(--rd-surface); }
   .dash-rate-head {
-    display: flex; align-items: center; gap: 5px;
-    color: var(--muted);
+    display: flex; align-items: center; gap: 6px;
+    color: var(--rd-text3);
+    margin-bottom: 6px;
   }
   .dash-rate-icon {
-    width: 11px; height: 11px;
+    width: 13px; height: 13px;
     flex-shrink: 0;
   }
   .dash-rate-label {
-    font-size: 10px; color: var(--muted);
-    text-transform: uppercase; letter-spacing: 0.4px; font-weight: 700;
+    font-size: 11px; color: var(--rd-text3);
+    text-transform: uppercase; letter-spacing: .05em; font-weight: 700;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .dash-rate-val {
-    font-size: 18px; font-weight: 600; color: var(--text);
+    font-size: 19px; font-weight: 800; color: var(--rd-text);
+    letter-spacing: -.02em;
     font-variant-numeric: tabular-nums;
     line-height: 1.1;
   }
-  .dash-rate-sub { font-size: 10px; color: var(--muted); }
 
-  /* Section heading — uppercase muted label + optional count badge.
-     Mirrors the redesign's <Section title="…" count={…}/> component. */
+  /* Секционный заголовок — sec-head макета: 13/700/.06em uppercase
+     text-2, note 12.5 text-3, счётчик-пилюля прижат вправо. */
   .dash-section-head {
-    display: flex; align-items: center; justify-content: space-between;
-    font-size: 11px; font-weight: 700; color: var(--muted);
-    text-transform: uppercase; letter-spacing: 0.5px;
-    margin: 0 0 8px;
+    display: flex; align-items: center; gap: 8px;
+    font-size: 13px; font-weight: 700; color: var(--rd-text2);
+    text-transform: uppercase; letter-spacing: .06em;
+    margin: 0 0 10px;
+  }
+  .dash-section-note {
+    font-size: 12.5px; color: var(--rd-text3); font-weight: 500;
+    text-transform: none; letter-spacing: 0;
   }
   .dash-section-count {
-    font-size: 10px; font-weight: 700;
-    padding: 1px 7px;
-    background: var(--surface-3, var(--surface-2));
-    color: var(--muted);
-    border-radius: 8px;
+    margin-left: auto;
+    font-size: 12px; font-weight: 700;
+    padding: 2px 9px;
+    background: #ececee;
+    color: var(--rd-text2);
+    border-radius: 999px;
+    letter-spacing: 0;
   }
 
-  /* Needs-attention list — three collapsible action groups (overdue,
-     awaiting signature, due this week). Each group has a header bar
-     with a coloured dot + count + total $, and a body listing 4 rows
-     max with a per-row action button. */
-  .dash-needs-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+  /* Needs-attention — .group-паттерн макета: карточка radius 14 на
+     border-strong, заголовок с точкой 8px + суммой в цвете группы +
+     шевроном i-chev-d; ряды отделены border-top. Имена классов, которые
+     читает JS (_dashNeedsToggle: .dash-needs-group[data-needs-kind],
+     .dash-needs-head, .dash-needs-title), сохранены. */
+  .dash-needs-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
   .dash-needs-empty {
     padding: 12px 10px;
-    border: 1px dashed var(--border);
-    border-radius: 8px;
-    font-size: 11px; color: var(--muted);
+    border: 1px dashed var(--rd-border-strong);
+    border-radius: 12px;
+    font-size: 12.5px; color: var(--rd-text3);
     text-align: center;
   }
   .dash-needs-group {
-    border: 1px solid var(--border);
-    border-radius: 8px;
+    border: 1px solid var(--rd-border-strong);
+    border-radius: 14px;
     overflow: hidden;
-    background: var(--surface);
+    background: #fff;
   }
   .dash-needs-head {
-    display: flex; align-items: center; gap: 8px;
-    padding: 8px 10px;
-    background: var(--surface-2);
+    display: flex; align-items: center; gap: 9px;
+    width: 100%;
+    padding: 13px 14px;
+    background: none;
     cursor: pointer;
     border: none;
-    width: 100%;
     text-align: left;
     color: inherit;
-    font-family: inherit;
-    border-bottom: 1px solid var(--border);
+    font: inherit;
     transition: background .12s;
   }
-  .dash-needs-head:hover { background: var(--surface-3, var(--surface-2)); }
+  .dash-needs-head:hover { background: #fafafb; }
   .dash-needs-head .dash-needs-dot {
-    width: 7px; height: 7px; border-radius: 4px; flex-shrink: 0;
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
   }
   .dash-needs-head .dash-needs-title {
     flex: 1;
-    font-size: 12px; font-weight: 600; color: var(--text);
+    font-size: 14.5px; font-weight: 700; color: var(--rd-text);
     text-transform: none; letter-spacing: 0;
   }
   .dash-needs-head .dash-needs-amt {
-    font-size: 12px; font-weight: 700;
+    font-size: 14.5px; font-weight: 700;
     font-variant-numeric: tabular-nums;
   }
-  /* Chevron — SVG inside a span, sized to 14×14 so it lines up with the
-     row text. Rotates -90° when the group is collapsed (chevron-right
-     visual). currentColor inherits from the head's muted text colour. */
+  /* Шеврон — спрайтовая иконка i-chev-d 16×16, -90° в свёрнутом виде. */
   .dash-needs-head .dash-needs-chev {
-    width: 14px; height: 14px;
+    width: 16px; height: 16px;
     display: inline-flex; align-items: center; justify-content: center;
-    color: #94908A;
+    color: var(--rd-text3);
     transition: transform .15s;
     flex-shrink: 0;
   }
   .dash-needs-head .dash-needs-chev svg {
     width: 100%; height: 100%; display: block;
   }
-  .dash-needs-group.collapsed .dash-needs-head { border-bottom: none; }
   .dash-needs-group.collapsed .dash-needs-body { display: none; }
   .dash-needs-group.collapsed .dash-needs-chev { transform: rotate(-90deg); }
   .dash-needs-body { display: flex; flex-direction: column; }
   .dash-needs-row {
-    display: flex; align-items: center; gap: 8px;
-    padding: 8px 10px;
-    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px;
+    padding: 11px 14px;
+    border-top: 1px solid var(--rd-border);
     cursor: pointer;
     transition: background .12s;
   }
-  .dash-needs-row:last-child { border-bottom: none; }
-  .dash-needs-row:hover { background: var(--surface-2); }
+  .dash-needs-row:hover { background: #fafafb; }
   .dash-needs-row .dash-needs-rowmain {
     flex: 1; min-width: 0;
   }
   .dash-needs-row .dash-needs-suite {
-    font-size: 12px; font-weight: 600; color: var(--text);
+    font-size: 14px; font-weight: 700; color: var(--rd-text); line-height: 1.3;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .dash-needs-row .dash-needs-tenant {
-    color: var(--muted); font-weight: 400; margin-left: 2px;
+    color: var(--rd-text2); font-weight: 400; margin-left: 2px;
   }
   .dash-needs-row .dash-needs-rowsub {
-    font-size: 10px; color: var(--muted);
+    font-size: 12.5px; color: var(--rd-text3); margin-top: 1px;
     font-variant-numeric: tabular-nums;
   }
+  /* Кнопка-действие — .minibtn макета: пилюля 12.5/600 с иконкой bell. */
   .dash-needs-row .dash-needs-action {
-    display: inline-flex; align-items: center; gap: 4px;
-    font-size: 10px; font-weight: 500;
-    padding: 3px 8px;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    color: var(--muted);
-    background: var(--surface);
+    display: inline-flex; align-items: center; gap: 6px;
+    font: inherit; font-size: 12.5px; font-weight: 600;
+    padding: 6px 13px;
+    border: 1px solid var(--rd-border-strong);
+    border-radius: 999px;
+    color: var(--rd-text2);
+    background: #fff;
     cursor: pointer;
     flex-shrink: 0;
+    white-space: nowrap;
     transition: all .12s;
   }
+  .dash-needs-row .dash-needs-action .rd-ic { width: 13px; height: 13px; }
   .dash-needs-row .dash-needs-action:hover {
-    border-color: var(--accent);
-    color: var(--accent);
+    background: #f6f6f8;
+    color: var(--rd-text);
   }
-  /* Footer of each group — either "+ N more" (when collapsed to top-4)
-     or "Show less" (when fully expanded). Acts as a real button now,
-     not a static label, so the cursor + hover state make it discoverable. */
+  /* Футер группы — «Show N more» / «Show less», .more-паттерн макета. */
   .dash-needs-more {
-    padding: 6px 10px;
-    font-size: 11px; color: var(--muted);
+    padding: 11px;
+    font-size: 13px; font-weight: 600; color: var(--rd-accent-ink);
     text-align: center;
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--rd-border);
   }
   .dash-needs-more-btn {
     display: block;
     width: 100%;
     background: transparent;
     border: none;
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--rd-border);
     font-family: inherit;
     cursor: pointer;
-    transition: background .12s, color .12s;
+    transition: background .12s;
   }
   .dash-needs-more-btn:hover {
-    background: var(--surface-2);
-    color: var(--text);
+    background: #fafafb;
   }
-  /* Status colours for the dot — overdue red, pending sky, due amber. */
-  .dash-needs-dot.dot-overdue  { background: #e11d48; }
-  .dash-needs-dot.dot-pending  { background: #0ea5e9; }
-  .dash-needs-dot.dot-due      { background: #f59e0b; }
-  .dash-needs-amt.amt-overdue  { color: #e11d48; }
-  .dash-needs-amt.amt-pending  { color: #0ea5e9; }
-  .dash-needs-amt.amt-due      { color: #f59e0b; }
+  /* Цвета статусов — red/amber из токенов (pending не рендерится, blue
+     оставлен для совместимости). */
+  .dash-needs-dot.dot-overdue  { background: var(--rd-red); }
+  .dash-needs-dot.dot-pending  { background: var(--rd-blue); }
+  .dash-needs-dot.dot-due      { background: var(--rd-amber); }
+  .dash-needs-amt.amt-overdue  { color: var(--rd-red); }
+  .dash-needs-amt.amt-pending  { color: var(--rd-blue); }
+  .dash-needs-amt.amt-due      { color: var(--rd-amber); }
 
-  /* === New tenants — move-in pipeline ===
-     Each row shows the suite + tenant + signed-date, plus a 3-step
-     onboarding checklist: lease signed / deposit paid / 1st rent paid.
-     Done steps render in emerald (paidInk), pending in muted grey. */
+  /* === New tenants — .trow-паттерн макета ===
+     Компактная карточка: верхняя строка (suite · tenant + 3-сегментный
+     мини-прогресс), meta-строка, затем три step-чипа Lease/Deposit/
+     1st rent (done = зелёный green-ink/#f2faf5). Первые 4 видимы,
+     остальные раскрываются кнопкой «Show all N tenants». */
   .dash-newt-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
   .dash-newt-empty {
     padding: 12px 10px;
-    border: 1px dashed var(--border);
-    border-radius: 8px;
-    font-size: 11px; color: var(--muted);
+    border: 1px dashed var(--rd-border-strong);
+    border-radius: 12px;
+    font-size: 12.5px; color: var(--rd-text3);
     text-align: center;
   }
   .dash-newt-row {
-    border: 1px solid #E8E5DF;
-    border-radius: 8px;
-    background: var(--surface);
-    padding: 10px 12px;
+    border: 1px solid var(--rd-border-strong);
+    border-radius: 14px;
+    background: #fff;
+    padding: 12px 14px;
     cursor: pointer;
-    transition: background .12s, border-color .12s;
-    display: flex; flex-direction: column; gap: 8px;
+    transition: background .12s;
   }
-  .dash-newt-row:hover {
-    background: var(--surface-2);
-    border-color: #D6D2CA;
-  }
-  /* Fully-onboarded row — lease signed + deposit paid + first rent paid.
-     Whole card flips to a soft mint surface with an emerald border so
-     the manager can see at a glance which tenants are completely set up. */
-  .dash-newt-row.complete {
-    background: #E3F6EE;
-    border-color: #10B981;
-  }
-  .dash-newt-row.complete:hover {
-    background: #D1F0E0;
-    border-color: #059669;
-  }
+  .dash-newt-row:hover { background: #fafafb; }
+  /* Скрытые ряды (index ≥ 4) — раскрываются классом .expanded на списке. */
+  .dash-newt-row.dash-newt-hidden { display: none; }
+  .dash-newt-list.expanded .dash-newt-row.dash-newt-hidden { display: block; }
   .dash-newt-head {
-    display: flex; align-items: flex-start; gap: 8px;
+    display: flex; align-items: center; gap: 10px;
   }
   .dash-newt-info { flex: 1; min-width: 0; }
   .dash-newt-suite {
-    font-size: 12.5px; font-weight: 600; color: #14120F;
+    font-size: 14px; font-weight: 700; color: var(--rd-text);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .dash-newt-tenant { color: #6B665C; font-weight: 400; }
+  .dash-newt-tenant { color: var(--rd-text2); font-weight: 400; }
   .dash-newt-meta {
-    font-size: 10.5px; color: #94908A;
+    font-size: 12.5px; color: var(--rd-text3);
     font-variant-numeric: tabular-nums;
     margin-top: 2px;
   }
-  .dash-newt-progress {
-    font-size: 10px; color: #94908A;
-    text-transform: uppercase; letter-spacing: 0.4px; font-weight: 700;
-    background: #F4F2EE;
-    padding: 2px 7px;
-    border-radius: 10px;
-    flex-shrink: 0;
-    font-variant-numeric: tabular-nums;
-  }
-  /* Pill turns mint+emerald only on full completion. Other states
-     (1/3, 2/3) stay in the neutral default — no separate pending
-     colour treatment, matching the flat chip styling below. */
-  .dash-newt-progress.complete {
-    background: #E3F6EE;
-    color: #065F46;
-  }
+  /* 3-сегментный мини-прогресс (steps3 макета): 14×4, on = emerald. */
+  .dash-newt-steps3 { display: flex; gap: 3px; flex: none; }
+  .dash-newt-steps3 i { width: 14px; height: 4px; border-radius: 99px; background: #e6e6e8; }
+  .dash-newt-steps3 i.on { background: var(--rd-green-bar); }
   .dash-newt-checks {
-    display: grid; grid-template-columns: 1fr 1fr 1fr;
-    gap: 6px;
+    display: flex; gap: 6px; margin-top: 9px;
   }
-  /* Onboarding chips — visually flat. All three (done / pending / none)
-     share the same neutral surface + muted text colour. The state
-     difference is carried entirely by the icon (checkmark = done, open
-     circle = pending or not started) and the surrounding progress pill
-     (e.g. "1/3"). Per operator request: no colour treatment per chip,
-     keeps the panel calm. */
+  /* Step-чипы — пилюли .step макета; done = green-ink на #f2faf5 с
+     бордером green-border; иконка несёт состояние (check / circle). */
   .dash-newt-check {
-    display: flex; align-items: center; gap: 4px;
-    font-size: 10.5px;
-    color: #6B665C;
-    padding: 4px 6px;
-    background: transparent;
-    border: 1px solid #E8E5DF;
-    border-radius: 6px;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    flex: 1;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    font-size: 12.5px; font-weight: 600;
+    color: var(--rd-text3);
+    padding: 5px 4px;
+    background: #fff;
+    border: 1px solid var(--rd-border-strong);
+    border-radius: 999px;
+    white-space: nowrap; overflow: hidden;
     min-width: 0;
   }
-  /* Done chip uses a slightly heavier text weight + emerald icon tint
-     so the "completed" signal is still readable without backgrounds. */
   .dash-newt-check.done {
-    color: #14120F;
-    font-weight: 500;
+    color: var(--rd-green-ink);
+    border-color: var(--rd-green-border);
+    background: #f2faf5;
   }
-  .dash-newt-check.done .dash-newt-check-icon { color: #10B981; }
   .dash-newt-check-icon {
-    width: 11px; height: 11px;
+    width: 13px; height: 13px;
     display: inline-flex; align-items: center; justify-content: center;
     flex-shrink: 0;
   }
-  .dash-newt-check svg { width: 11px; height: 11px; display: block; }
+  .dash-newt-check .rd-ic, .dash-newt-check svg { width: 13px; height: 13px; display: block; }
+  /* Экспандер списка — .showall макета (dashed, indigo ink). */
+  .dash-newt-showall {
+    width: 100%;
+    padding: 10px;
+    border: 1px dashed var(--rd-border-strong);
+    border-radius: 12px;
+    background: none;
+    font: inherit; font-size: 13px; font-weight: 600;
+    color: var(--rd-accent-ink);
+    cursor: pointer;
+  }
+  .dash-newt-showall:hover { background: #fafafb; }
 
   .revenue-block {
     background: var(--surface-2); padding: 16px;
@@ -20330,6 +20401,11 @@
              are filled in by updateStats(). The revenue-bar / revenue-big /
              revenue-sub IDs are kept so existing wiring doesn't have to
              change — only the surrounding chrome was redesigned. -->
+        <!-- Hero — revcard макета: revenue + «X% of potential $Y» + бар,
+             затем Occupancy-блок «occ / total units» с баром и легендой,
+             затем rev-grid (Rentable / Total floor area). Все id, которые
+             пишет updateStats, сохранены — поменялась только группировка:
+             sOcc/sVac/sOccPct/sVacPct теперь живут в occupancy-блоке. -->
         <div class="dash-hero">
           <div class="dash-hero-row">
             <span class="revenue-big" id="revActual">$0</span>
@@ -20338,22 +20414,23 @@
           <div id="revServicesLine" style="display:none; font-size: 12px; color: var(--accent); font-weight: 600; margin-top: 2px;">
             <!-- populated when portfolio has additional-services revenue -->
           </div>
-          <div class="revenue-sub">Monthly revenue (<span id="revPct">0%</span> of potential <span id="revPot">$0</span>)</div>
+          <div class="revenue-sub"><b><span id="revPct">0%</span></b> of potential <span id="revPot">$0</span></div>
           <div class="revenue-bar">
             <div id="revBarActual" style="background: var(--success); width: 0%"></div>
             <div id="revBarLoss" style="background: var(--surface-3); width: 100%"></div>
           </div>
+          <div class="dash-occ">
+            <div class="dash-occ-head">
+              <span class="lbl">Occupancy</span>
+              <span class="tot"><b><span id="sOcc">0</span> / <span id="dashUnitsTotal">0</span></b> units</span>
+            </div>
+            <div class="dash-occbar"><div class="seg-occ" id="dashOccSeg" style="width:0%"></div></div>
+            <div class="dash-occ-legend">
+              <span><span class="dot" style="background:var(--rd-green-bar)"></span><b><span id="dashOccN">0</span></b> occupied · <span id="sOccPct">0%</span></span>
+              <span><span class="dot" style="background:#c9cdc9"></span><b><span id="sVac">0</span></b> vacant · <span id="sVacPct">0%</span></span>
+            </div>
+          </div>
           <div class="dash-mini-stats">
-            <div class="dash-mini">
-              <div class="dash-mini-label">Occupied</div>
-              <div class="dash-mini-val" id="sOcc">0</div>
-              <div class="dash-mini-sub" id="sOccPct">0%</div>
-            </div>
-            <div class="dash-mini">
-              <div class="dash-mini-label">Vacant</div>
-              <div class="dash-mini-val" id="sVac">0</div>
-              <div class="dash-mini-sub" id="sVacPct">0%</div>
-            </div>
             <div class="dash-mini">
               <div class="dash-mini-label">Rentable</div>
               <div class="dash-mini-val"><span id="occSqft">0</span> / <span id="totSqft">0</span></div>
@@ -20381,15 +20458,16 @@
         <div id="needsAttentionList" class="dash-needs-list"></div>
 
         <!-- New tenants — onboarding pipeline. Lists units where a tenant
-             has signed a lease in the last 30 days, with three checkmark
-             indicators for the move-in steps:
-                ✓ Lease signed     (DocuSign envelope completed OR signedPdf uploaded)
-                ✓ Deposit paid     (depositInvoice in 'paid' bucket OR manual mark)
-                ✓ 1st rent paid    (first month after lease start has paid status)
+             has signed a lease in the last 30 days, with three step chips
+             for the move-in steps:
+                [x] Lease signed   (DocuSign envelope completed OR signedPdf uploaded)
+                [x] Deposit paid   (depositInvoice in 'paid' bucket OR manual mark)
+                [x] 1st rent paid  (first month after lease start has paid status)
              Lets the property manager track who's fully onboarded vs. who
              still owes deposit / first rent at a glance. -->
         <div class="dash-section-head" style="margin-top: 16px;">
-          <span>New tenants <span style="font-size: 9px; font-weight: 500; color: #94908A; text-transform: none; letter-spacing: 0; margin-left: 4px;">· last 30 days</span></span>
+          <span>New tenants</span>
+          <span class="dash-section-note">last 30 days</span>
           <span class="dash-section-count" id="newTenantsCount">0</span>
         </div>
         <div id="newTenantsList" class="dash-newt-list"></div>
@@ -20400,99 +20478,110 @@
              these three numbers lets a manager spot pricing drift fast. -->
         <div class="dash-section-head" style="margin-top: 16px;">
           <span>Average rent</span>
+          <span class="dash-section-note">per ft² / yr</span>
         </div>
         <div class="dash-rate-cards">
           <div class="dash-rate-card">
             <div class="dash-rate-head">
-              <svg class="dash-rate-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="1"/><path d="M8 3v10M2 8h12"/></svg>
+              <svg class="rd-ic dash-rate-icon" aria-hidden="true"><use href="#i-window"></use></svg>
               <span class="dash-rate-label">Window</span>
             </div>
             <div class="dash-rate-val" id="sAvgW">$—</div>
-            <div class="dash-rate-sub">per ft² / yr</div>
           </div>
           <div class="dash-rate-card">
             <div class="dash-rate-head">
-              <svg class="dash-rate-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 2a3 3 0 00-2.8 4L2 11.2V14h2.8L10 8.8A3 3 0 1010 2z"/></svg>
+              <svg class="rd-ic dash-rate-icon" aria-hidden="true"><use href="#i-interior"></use></svg>
               <span class="dash-rate-label">Interior</span>
             </div>
             <div class="dash-rate-val" id="sAvgI">$—</div>
-            <div class="dash-rate-sub">per ft² / yr</div>
           </div>
-          <div class="dash-rate-card">
+          <div class="dash-rate-card hl">
             <div class="dash-rate-head">
-              <svg class="dash-rate-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1v14"/><path d="M11.5 4.5C11 3.5 9.7 3 8 3c-2 0-3 1-3 2.2 0 1.4 1.5 1.8 3 2.2 1.5.4 3 .8 3 2.2 0 1.2-1 2.2-3 2.2-1.7 0-3-.5-3.5-1.5"/></svg>
+              <svg class="rd-ic dash-rate-icon" aria-hidden="true"><use href="#i-dollar"></use></svg>
               <span class="dash-rate-label">Average</span>
             </div>
             <div class="dash-rate-val" id="sAvgAll">$—</div>
-            <div class="dash-rate-sub">per ft² / yr</div>
           </div>
         </div>
 
         <div class="dash-section-head" style="margin-top: 16px;">
           <span>Floors in this building</span>
+          <span class="dash-section-count" id="dashFloorsCount">—</span>
         </div>
         <div class="floor-breakdown" id="floorBreakdown"></div>
 
         <div class="dash-section-head" style="margin-top: 16px;">
           <span>Legend</span>
         </div>
-        <div class="legend">
-          <div class="legend-item"><span class="legend-swatch" style="background:#c8ecc7"></span>Vacant</div>
-          <div class="legend-item"><span class="legend-swatch" style="background:#e8ecd1"></span>Occupied</div>
-          <div class="legend-item"><span class="legend-swatch" style="background:#fef3c7"></span>Reserved</div>
-          <div class="legend-item"><span class="legend-swatch" style="background:#F3E8FF"></span>Lease signed</div>
-          <div class="legend-item"><span class="legend-swatch" style="background:#60a5fa; border-radius:50%"></span>Window</div>
-          <div class="legend-item"><span style="font-size: 14px; line-height:1;">🚰</span>Sink</div>
-          <div class="legend-item"><span class="legend-swatch" style="background:#d4d4d8"></span>Common areas</div>
+        <!-- Свотчи — точные значения tokens.legendSwatches из design-tokens.json. -->
+        <div class="dash-legend">
+          <div class="dash-leg"><span class="dash-leg-sw" style="background:#d9f0de"></span>Vacant</div>
+          <div class="dash-leg"><span class="dash-leg-sw" style="background:#eef3d8"></span>Occupied</div>
+          <div class="dash-leg"><span class="dash-leg-sw" style="background:#fdeec7"></span>Reserved</div>
+          <div class="dash-leg"><span class="dash-leg-sw" style="background:#ece6fa"></span>Lease signed</div>
+          <div class="dash-leg"><span class="dash-leg-sw" style="background:#bcd9fb"></span>Window</div>
+          <div class="dash-leg"><svg class="rd-ic" aria-hidden="true"><use href="#i-drop"></use></svg>Sink</div>
+          <div class="dash-leg"><span class="dash-leg-sw" style="background:#dcdcdf"></span>Common areas</div>
         </div>
 
         <!-- Map overlays — shown ONLY on tenants with lease activity
              in the last 30 days (newly onboarded). Keeps the floor
              plan uncluttered for long-term occupants while making
-             fresh move-ins instantly scannable. -->
-        <div class="panel-title" style="margin-top: 14px;">Map overlays — new tenants (last 30 days)</div>
-        <div class="legend" style="grid-template-columns: 1fr; gap: 6px;" id="mapOverlayToggles">
-          <div class="legend-toggle on" id="toggleLeaseIcon" onclick="toggleMapOverlay('showLeaseIcon')"
+             fresh move-ins instantly scannable.
+             Редизайн 2026-06: .ovl-ряды макета со свитчами (синий on).
+             id + onclick + классы on/off, которые пишут toggleMapOverlay /
+             _syncMapOverlayChips, не тронуты — поменялась только обёртка. -->
+        <div class="dash-section-head" style="margin-top: 16px;">
+          <span>Map overlays</span>
+          <span class="dash-section-note">new tenants · 30d</span>
+        </div>
+        <div id="mapOverlayToggles">
+          <div class="dash-ovl on" id="toggleLeaseIcon" onclick="toggleMapOverlay('showLeaseIcon')"
                title="Lease / DocuSign status pill — shown only on tenants with activity in the last 30 days">
-            <span style="display:inline-flex; width:14px; height:14px; border-radius:50%; background:#16a34a; color:#fff; font:bold 10px system-ui; align-items:center; justify-content:center;">L</span>
-            <span>Lease / DocuSign status</span>
+            <svg class="rd-ic" aria-hidden="true"><use href="#i-sign"></use></svg>
+            <span class="dash-ovl-lbl">Lease / DocuSign status</span>
+            <span class="dash-ovl-sw"></span>
           </div>
-          <div class="legend-toggle on" id="toggleRentIcon" onclick="toggleMapOverlay('showRentIcon')"
+          <div class="dash-ovl on" id="toggleRentIcon" onclick="toggleMapOverlay('showRentIcon')"
                title="Current-month invoice status pill — shown only on tenants with activity in the last 30 days">
-            <span style="display:inline-flex; width:14px; height:14px; border-radius:50%; background:#0284c7; color:#fff; font:bold 10px system-ui; align-items:center; justify-content:center;">$</span>
-            <span>Invoice status (current month)</span>
+            <svg class="rd-ic" aria-hidden="true"><use href="#i-invoice"></use></svg>
+            <span class="dash-ovl-lbl">Invoice status (current month)</span>
+            <span class="dash-ovl-sw"></span>
           </div>
-          <div class="legend-toggle on" id="toggleNewBadge" onclick="toggleMapOverlay('showNewBadge')"
-               title="Gold ⭐ + pulsing ring on tenants with any lease activity in the last 30 days">
-            <span style="display:inline-flex; width:14px; height:14px; border-radius:50%; background:#fff; border:1px solid #f59e0b; color:#f59e0b; font:bold 9px system-ui; align-items:center; justify-content:center;">★</span>
-            <span>New tenant highlight (30d)</span>
+          <div class="dash-ovl on" id="toggleNewBadge" onclick="toggleMapOverlay('showNewBadge')"
+               title="Gold star + pulsing ring on tenants with any lease activity in the last 30 days">
+            <svg class="rd-ic" aria-hidden="true"><use href="#i-star"></use></svg>
+            <span class="dash-ovl-lbl">New tenant highlight (30d)</span>
+            <span class="dash-ovl-sw"></span>
           </div>
-          <div class="legend-toggle on" id="toggleOverdueAlert" onclick="toggleMapOverlay('showOverdueAlert')"
-               title="Pulsing red border + ⚠ icon on tenants with overdue rent">
-            <span style="display:inline-flex; width:14px; height:14px; border-radius:50%; background:#dc2626; color:#fff; font:bold 10px system-ui; align-items:center; justify-content:center;">⚠</span>
-            <span>Overdue rent (alert)</span>
+          <div class="dash-ovl on" id="toggleOverdueAlert" onclick="toggleMapOverlay('showOverdueAlert')"
+               title="Pulsing red border + alert icon on tenants with overdue rent">
+            <svg class="rd-ic" aria-hidden="true"><use href="#i-alert"></use></svg>
+            <span class="dash-ovl-lbl">Overdue rent (alert)</span>
+            <span class="dash-ovl-sw"></span>
           </div>
-          <div class="legend-toggle on" id="togglePendingOnboarding" onclick="toggleMapOverlay('showPendingOnboarding')"
+          <div class="dash-ovl on" id="togglePendingOnboarding" onclick="toggleMapOverlay('showPendingOnboarding')"
                title="Pulsing violet border on tenants whose lease, deposit, or first rent is still in flight">
-            <span style="display:inline-flex; width:14px; height:14px; border-radius:50%; background:#7C3AED; color:#fff; font:bold 10px system-ui; align-items:center; justify-content:center;">⏳</span>
-            <span>Pending onboarding</span>
+            <svg class="rd-ic" aria-hidden="true"><use href="#i-hourglass"></use></svg>
+            <span class="dash-ovl-lbl">Pending onboarding</span>
+            <span class="dash-ovl-sw"></span>
           </div>
         </div>
 
         <div class="dashboard-edit-only">
           <div class="panel-title">Data</div>
           <div class="data-btns">
-            <button onclick="exportLayout()">💾 Export</button>
-            <button onclick="document.getElementById('impF').click()">📂 Import</button>
-            <button onclick="resetLayout()">🔄 Reset to sample</button>
+            <button onclick="exportLayout()"><svg class="rd-ic" style="width:13px;height:13px;vertical-align:-2px" aria-hidden="true"><use href="#i-download"></use></svg> Export</button>
+            <button onclick="document.getElementById('impF').click()"><svg class="rd-ic" style="width:13px;height:13px;vertical-align:-2px" aria-hidden="true"><use href="#i-upload"></use></svg> Import</button>
+            <button onclick="resetLayout()"><svg class="rd-ic" style="width:13px;height:13px;vertical-align:-2px" aria-hidden="true"><use href="#i-refresh"></use></svg> Reset to sample</button>
             <input type="file" id="impF" style="display:none" accept=".json" onchange="importLayout(event)">
           </div>
 
           <div class="panel-title">Clear</div>
           <div class="data-btns">
-            <button onclick="clearAllUnits()" style="border-color: var(--warning); color: var(--warning);">🗑 Clear all units</button>
-            <button onclick="removeBg()" style="border-color: var(--warning); color: var(--warning);">🗑 Clear background</button>
-            <button onclick="clearFloor()" style="border-color: var(--danger); color: var(--danger);">⚠️ Clear floor (everything)</button>
+            <button onclick="clearAllUnits()" style="border-color: var(--warning); color: var(--warning);"><svg class="rd-ic" style="width:13px;height:13px;vertical-align:-2px" aria-hidden="true"><use href="#i-trash"></use></svg> Clear all units</button>
+            <button onclick="removeBg()" style="border-color: var(--warning); color: var(--warning);"><svg class="rd-ic" style="width:13px;height:13px;vertical-align:-2px" aria-hidden="true"><use href="#i-trash"></use></svg> Clear background</button>
+            <button onclick="clearFloor()" style="border-color: var(--danger); color: var(--danger);"><svg class="rd-ic" style="width:13px;height:13px;vertical-align:-2px" aria-hidden="true"><use href="#i-alert"></use></svg> Clear floor (everything)</button>
           </div>
         </div>
       </div>
@@ -20513,12 +20602,12 @@
         <div class="toggle-row" style="padding-left: 14px;" title="Shows the tenant's name inside the unit on the map."><label>Show tenant name <span style="color:var(--muted); font-weight:400; font-size:10px;">(on map)</span></label><div class="toggle on" id="tglTenant" onclick="toggleShowTenant()"></div></div>
 
         <!-- Map markers — feature overlays that aren't text labels.
-             Plumbing layer drops a teal 🚰 disc on units that have a sink.
+             Plumbing layer drops a teal sink disc on units that have a sink.
              Default OFF (opt-in) so the map stays clean for anyone not
              currently scoping out wet-spec offices. -->
         <div class="panel-title">Map markers</div>
         <div class="toggle-row">
-          <label>🚰 Plumbing (units with sink)</label>
+          <label><svg class="rd-ic" style="width:14px;height:14px;vertical-align:-2px" aria-hidden="true"><use href="#i-drop"></use></svg> Plumbing (units with sink)</label>
           <div class="toggle" id="tglSink" onclick="toggleShowSink()"></div>
         </div>
 
@@ -20632,8 +20721,8 @@
           <input type="range" id="bgY" min="-1000" max="1000" value="0">
           <span class="val" id="bgYVal">0</span>
         </div>
-        <button class="save-btn" onclick="openCropModal()" style="margin-top:8px">✂️ Crop Image</button>
-        <button class="save-btn danger" onclick="removeBg()" style="margin-top:8px">🗑 Remove Background</button>
+        <button class="save-btn" onclick="openCropModal()" style="margin-top:8px"><svg class="rd-ic" style="width:13px;height:13px;vertical-align:-2px" aria-hidden="true"><use href="#i-pencil"></use></svg> Crop Image</button>
+        <button class="save-btn danger" onclick="removeBg()" style="margin-top:8px"><svg class="rd-ic" style="width:13px;height:13px;vertical-align:-2px" aria-hidden="true"><use href="#i-trash"></use></svg> Remove Background</button>
       </div>
 
       <!-- ===== AI Assistant tab ===== -->
@@ -99355,6 +99444,13 @@ function updateStats() {
   const vacCountPct = totalUnits ? Math.round((s.vac / totalUnits) * 100) : 0;
   setText('sOccPct', occCountPct + '%');
   setText('sVacPct', vacCountPct + '%');
+  // Редизайн 2026-06: occupancy-блок hero («X / Y units» + бар) —
+  // display-only элементы; существующие id (sOcc/sVac/sOccPct/sVacPct)
+  // и их записи выше не тронуты.
+  setText('dashUnitsTotal', totalUnits);
+  setText('dashOccN', s.occ);
+  const occSeg = document.getElementById('dashOccSeg');
+  if (occSeg) occSeg.style.width = occCountPct + '%';
 
   // Context label — building · floor, e.g. "SuitesForAll · 3rd Floor"
   const b = currentBuilding();
@@ -99549,23 +99645,22 @@ function renderNeedsAttention() {
             <div class="dash-needs-suite">${headLabel}<span class="dash-needs-tenant"> · ${esc(r.tenant || 'vacant')}</span></div>
             <div class="dash-needs-rowsub">$${(+r.rent || 0).toLocaleString()} / mo${isGroup ? ' total' : ''}</div>
           </div>
-          <button class="dash-needs-action" onclick="event.stopPropagation(); _dashNeedsAction('${kind}', ${buildingFloorPayload})">${actionLabel}</button>
+          <button class="dash-needs-action" onclick="event.stopPropagation(); _dashNeedsAction('${kind}', ${buildingFloorPayload})">${typeof _svgIcon === 'function' ? _svgIcon('bell', 13) : ''}${actionLabel}</button>
         </div>
       `;
     }).join('');
-    // "+ N more" → clickable button that toggles expandAll for this group.
-    // After click the group re-renders with all items; the button text flips
-    // to "Show less" so the user can collapse back to the compact 4-item view.
+    // «Show N more» → кнопка-тоггл expandAll для группы. После клика группа
+    // ререндерится со всеми рядами; текст меняется на «Show less».
     let moreLine = '';
     if (items.length > 4) {
       moreLine = isExpandedAll
         ? `<button class="dash-needs-more dash-needs-more-btn" type="button" onclick="event.stopPropagation(); _dashNeedsToggleExpandAll('${kind}')">Show less</button>`
-        : `<button class="dash-needs-more dash-needs-more-btn" type="button" onclick="event.stopPropagation(); _dashNeedsToggleExpandAll('${kind}')">+ ${moreCount} more</button>`;
+        : `<button class="dash-needs-more dash-needs-more-btn" type="button" onclick="event.stopPropagation(); _dashNeedsToggleExpandAll('${kind}')">Show ${moreCount} more</button>`;
     }
-    // Inline SVG chevron (16×16) — rotates -90° when collapsed via CSS.
-    // Using SVG instead of a text glyph so the indicator is sharp at any
-    // zoom and respects currentColor for theming.
-    const chevronSvg = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>`;
+    // Шеврон — спрайтовая иконка i-chev-d (поворот -90° через CSS .collapsed).
+    const chevronSvg = (typeof _svgIcon === 'function')
+      ? _svgIcon('chev-d', 16)
+      : `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>`;
     return `
       <div class="dash-needs-group ${isCollapsed ? 'collapsed' : ''}" data-needs-kind="${kind}">
         <button class="dash-needs-head" onclick="_dashNeedsToggle('${kind}')" type="button" aria-expanded="${!isCollapsed}" title="${isCollapsed ? 'Expand' : 'Collapse'} ${title}">
@@ -99759,12 +99854,14 @@ function renderNewTenants() {
     return;
   }
 
-  // SVG icons — one per state. done = checkmark (emerald), pending and
-  // none both use the same open circle so the chip's background colour
-  // is what carries the state difference (lavender for pending, grey
-  // for not-started). Cleaner read than a separate clock glyph.
-  const checkSvg = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8l3.5 3.5L13 5"/></svg>`;
-  const circleSvg = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="8" cy="8" r="4"/></svg>`;
+  // Иконки состояний — спрайт: done = галочка (emerald через CSS .done),
+  // pending и none — одинаковый открытый кружок; разницу несёт tooltip.
+  const checkSvg = (typeof _svgIcon === 'function')
+    ? _svgIcon('check', 13)
+    : `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8l3.5 3.5L13 5"/></svg>`;
+  const circleSvg = (typeof _svgIcon === 'function')
+    ? _svgIcon('circle', 13)
+    : `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="8" cy="8" r="4"/></svg>`;
   const iconForState = (s) => s === 'done' ? checkSvg : circleSvg;
   const labelForState = (s, full) => `${full} — ${s === 'done' ? 'done' : (s === 'pending' ? 'in progress' : 'pending')}`;
 
@@ -99778,37 +99875,30 @@ function renderNewTenants() {
     return `${Math.floor(days/30)}mo ago`;
   };
 
-  listEl.innerHTML = items.map(r => {
+  // Экспандер «первые 4 видимы» — состояние живёт на window, переживает
+  // ререндеры (паттерн как у _needsExpandAll).
+  const expanded = window._newtExpanded === true;
+  listEl.classList.toggle('expanded', expanded);
+
+  listEl.innerHTML = items.map((r, idx) => {
     const buildingFloorPayload = `'${esc(r.b?.id || '')}','${esc(r.f?.id || '')}','${esc(r.u?.id || '')}'`;
-    // Counts: full credit only for 'done'. The progress pill shows
-    // x/3 of *completed* steps; pending steps are visible inside the
-    // chip grid via the lavender colour treatment, so they're not
-    // hidden — just not counted as finished.
-    const stepsDone    = (r.leaseSigned === 'done' ? 1 : 0) + (r.depositPaid === 'done' ? 1 : 0) + (r.firstRentPaid === 'done' ? 1 : 0);
-    const stepsPending = (r.leaseSigned === 'pending' ? 1 : 0) + (r.depositPaid === 'pending' ? 1 : 0) + (r.firstRentPaid === 'pending' ? 1 : 0);
-    // Progress-pill colour: emerald only when fully complete; lavender
-    // when at least one step is pending and none are stuck "none";
-    // otherwise neutral grey (default).
-    let progressClass = '';
-    if (stepsDone === 3) progressClass = 'complete';
-    else if (stepsPending > 0) progressClass = 'pending';
+    // 3-сегментный мини-прогресс (.steps3 макета) — порядок сегментов
+    // совпадает с чипами: Lease / Deposit / 1st rent; on = только 'done'.
+    const seg = (st) => `<i${st === 'done' ? ' class="on"' : ''}></i>`;
     const checkRow = (label, state, fullLabel) => `
       <span class="dash-newt-check ${state}" title="${esc(labelForState(state, fullLabel))}">
         <span class="dash-newt-check-icon">${iconForState(state)}</span>
         <span>${label}</span>
       </span>`;
-    // When all three steps are done, mark the whole row as `complete`
-    // so the card itself flips to mint-surface / emerald-border. Visual
-    // signal that this tenant is fully onboarded — no further action needed.
-    const rowClass = stepsDone === 3 ? 'dash-newt-row complete' : 'dash-newt-row';
+    const hiddenCls = idx >= 4 ? ' dash-newt-hidden' : '';
     return `
-      <div class="${rowClass}" onclick="_dashOpenUnit(${buildingFloorPayload})" title="Open Suite ${esc(r.u.id)}">
+      <div class="dash-newt-row${hiddenCls}" onclick="_dashOpenUnit(${buildingFloorPayload})" title="Open Suite ${esc(r.u.id)}">
         <div class="dash-newt-head">
           <div class="dash-newt-info">
             <div class="dash-newt-suite">Suite ${esc(r.u.id)}<span class="dash-newt-tenant"> · ${esc(r.tenant)}</span></div>
             <div class="dash-newt-meta">$${(+r.rent || 0).toLocaleString()} / mo · signed ${esc(relDate(r.signedAt))}</div>
           </div>
-          <div class="dash-newt-progress ${progressClass}">${stepsDone}/3</div>
+          <div class="dash-newt-steps3">${seg(r.leaseSigned)}${seg(r.depositPaid)}${seg(r.firstRentPaid)}</div>
         </div>
         <div class="dash-newt-checks">
           ${checkRow('Lease',    r.leaseSigned,   'Lease signed')}
@@ -99817,7 +99907,15 @@ function renderNewTenants() {
         </div>
       </div>
     `;
-  }).join('');
+  }).join('') + (items.length > 4
+    ? `<button class="dash-newt-showall" type="button" onclick="event.stopPropagation(); _dashNewtToggleExpand()">${expanded ? 'Show less' : `Show all ${items.length} tenants`}</button>`
+    : '');
+}
+
+// Тоггл «Show all N tenants» — display-only; ререндер списка новосёлов.
+function _dashNewtToggleExpand() {
+  window._newtExpanded = !window._newtExpanded;
+  if (typeof renderNewTenants === 'function') renderNewTenants();
 }
 
 // Toggle "show all" for a needs-attention group. Re-renders the entire
@@ -99906,7 +100004,46 @@ function renderFloorBreakdown() {
   const b = currentBuilding();
   if (!b) { el.innerHTML = ''; return; }
   const perFloor = calcStatsPerFloor();
-  el.innerHTML = perFloor.map(fs => {
+
+  // Счётчик секции «N floors» — display-only, пишем только новый id.
+  const cntEl = document.getElementById('dashFloorsCount');
+  if (cntEl) cntEl.textContent = `${perFloor.length} floor${perFloor.length === 1 ? '' : 's'}`;
+
+  // Сводная карточка здания (.bsum макета) — read-only производные от
+  // perFloor + _floorGrossSqft; никакого нового state.
+  let totalUnitsB = 0, occUnitsB = 0, revenueB = 0, grossB = 0;
+  for (const fs of perFloor) {
+    totalUnitsB += fs.occ + fs.vac + fs.res;
+    occUnitsB   += fs.occ;
+    revenueB    += +fs.actual || 0;
+  }
+  for (const f of (b.floors || [])) {
+    grossB += (typeof _floorGrossSqft === 'function') ? (+_floorGrossSqft(f) || 0) : 0;
+  }
+  const occPctB = totalUnitsB ? Math.round((occUnitsB / totalUnitsB) * 100) : 0;
+  const bsumHtml = `
+    <div class="fb-bsum">
+      <div class="fb-bsum-grid">
+        <div>
+          <div class="k">Total units</div>
+          <div class="v">${totalUnitsB.toLocaleString()}</div>
+          <div class="m">${perFloor.length} floor${perFloor.length === 1 ? '' : 's'}</div>
+        </div>
+        <div>
+          <div class="k">Occupied</div>
+          <div class="v">${occUnitsB.toLocaleString()} / ${totalUnitsB.toLocaleString()}</div>
+          <div class="m">${occPctB}% · $${Math.round(revenueB).toLocaleString()} / mo</div>
+        </div>
+        <div>
+          <div class="k">Gross area</div>
+          <div class="v">${grossB > 0 ? Math.round(grossB).toLocaleString() : '—'}</div>
+          <div class="m">ft² · building</div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  el.innerHTML = bsumHtml + perFloor.map(fs => {
     const denom = fs.rentableSqft || fs.totSqft || 0;
     const occPct = denom ? Math.round((fs.occSqft / denom) * 100) : 0;
     const isActive = fs.id === state.ui.currentFloorId;
@@ -99915,7 +100052,7 @@ function renderFloorBreakdown() {
       <div class="fb-row ${isActive ? 'active' : ''}" onclick="switchFloor('${fs.id}')" title="Go to ${esc(fs.name)}">
         <div class="fb-info">
           <div class="fb-name">${esc(fs.name)}</div>
-          <div class="fb-sub">${fs.occ}/${total} suites · $${fs.actual.toLocaleString()}</div>
+          <div class="fb-sub">${fs.occ} / ${total} units · $${fs.actual.toLocaleString()} / mo</div>
         </div>
         <div class="fb-progress">
           <div class="fb-pct-num" title="Occupancy % (RSF basis)">${occPct}%</div>
