@@ -32,6 +32,10 @@
  *                                   accountId is not in active connections.
  *                                   Each deletion writes an audit entry to
  *                                   workspaces/{ws}/audit.
+ *   pp-webhook-config             — показать runtime-конфиг PP-вебхука
+ *                                   (ppWebhookQueue/_config: enabled/url/debounceMs)
+ *   pp-webhook-config --enable  --url=https://… --confirm — включить вебхук
+ *   pp-webhook-config --disable --confirm                 — kill switch (без редеплоя)
  *
  * Безопасность:
  *   - Все WRITE команды требуют явный --confirm флаг (защита от случайностей)
@@ -339,6 +343,42 @@ async function cmdUpdateEmployeeEmail(id, newEmail, confirm) {
   console.log('✓ Updated');
 }
 
+// ── PP webhook runtime config (ppWebhookQueue/_config) ──────────────────
+// Активация/kill switch вебхука БЕЗ редеплоя функций. Сам секрет подписи
+// живёт в Secret Manager (PP_WEBHOOK_SECRET) и этим скриптом не трогается.
+async function cmdPpWebhookConfig(args) {
+  const ref = db.doc('ppWebhookQueue/_config');
+  const flags = (args || []).filter((a) => String(a).startsWith('--'));
+  const enable = flags.includes('--enable');
+  const disable = flags.includes('--disable');
+  const confirm = flags.includes('--confirm');
+  const urlArg = flags.find((a) => a.startsWith('--url='));
+  if (!enable && !disable) {
+    const snap = await ref.get();
+    console.log('ppWebhookQueue/_config:', snap.exists ? JSON.stringify(snap.data(), null, 2) : '(absent — webhook DORMANT)');
+    return;
+  }
+  if (enable && disable) throw new Error('--enable и --disable одновременно нельзя');
+  if (!confirm) throw new Error('WRITE-команда: добавь --confirm');
+  if (enable) {
+    const url = urlArg ? urlArg.slice('--url='.length) : '';
+    let u;
+    try { u = new URL(url); } catch (_) { throw new Error('--url= обязателен и должен быть валидным https://… URL'); }
+    if (u.protocol !== 'https:' || u.username || u.password) {
+      throw new Error('url: только https, без user:pass');
+    }
+    const prev = await ref.get();
+    await ref.set({
+      enabled: true, url,
+      debounceMs: (prev.exists && typeof prev.data().debounceMs === 'number') ? prev.data().debounceMs : 60000,
+    });
+    console.log(new Date().toISOString(), 'pp-webhook ENABLED →', u.origin + u.pathname);
+  } else {
+    await ref.set({ enabled: false }, { merge: true });
+    console.log(new Date().toISOString(), 'pp-webhook DISABLED (kill switch; триггеры увидят ≤60s — TTL конфиг-кэша)');
+  }
+}
+
 const COMMANDS = {
   'state-summary':        () => cmdStateSummary(),
   'employees':            () => cmdEmployees(),
@@ -350,6 +390,7 @@ const COMMANDS = {
   'bank-list-orphan':     () => cmdBankListOrphan(),
   'bank-cleanup-orphan':  (a) => cmdBankCleanupOrphan(a[0]),
   'update-employee-email':(a) => cmdUpdateEmployeeEmail(a[0], a[1], a[2]),
+  'pp-webhook-config':    (a) => cmdPpWebhookConfig(a),
 };
 
 const cmd = process.argv[2];

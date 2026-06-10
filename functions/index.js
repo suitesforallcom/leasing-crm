@@ -8919,3 +8919,13 @@ exports.ppOfficeExport = onRequest(
   }
 );
 
+// ─── PropertyPulse webhook-нотификатор (notify + pull) ──────────────────────
+// Сигнал building.changed → PP сам тянет ppOfficeExport?buildingId=…
+// Модуль самодостаточен (свой defineSecret PP_WEBHOOK_SECRET, runtime-конфиг
+// ppWebhookQueue/_config). Пишет ТОЛЬКО в ppWebhookQueue; buildings/payments/
+// монолит/Stripe не трогает. См. docs/pp-webhook-design.md.
+const _ppWebhook = require('./pp-webhook');
+exports.ppNotifyBuildingChanged = _ppWebhook.ppNotifyBuildingChanged;
+exports.ppNotifyPaymentChanged = _ppWebhook.ppNotifyPaymentChanged;
+exports.ppWebhookFlushScheduled = _ppWebhook.ppWebhookFlushScheduled;
+
