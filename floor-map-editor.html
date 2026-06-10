@@ -10254,142 +10254,161 @@
 
   /* Activity log — per-unit timeline (Tony 2026-05-23).
      Toolbar reorganised 2026-05-23 (Tony: «очень кривая эта часть»):
-     row 1 = category chips, row 2 = filters + actions, row 3 = search. */
-  .ual-section { padding: 4px 2px 14px; }
+     row 1 = category chips, row 2 = filters + actions, row 3 = search.
+     Шаг 9 редизайна 2026-06: визуальный язык макета «Suite 344 Activity» —
+     токены --rd-*, спрайт-иконки, чипы-пилюли (active = залитая индиго),
+     38px тулбар-контролы, 42px search c i-search, day-группы с линейкой,
+     34px event-чипы с тонами, mono-теги. Handlers/IDs не менялись. */
+  .ual-section { padding: 4px 2px 14px; font-family: var(--rd-font); }
   .ual-chips-row {
-    display: flex; flex-wrap: wrap; gap: 5px;
-    margin-bottom: 8px;
+    display: flex; flex-wrap: wrap; gap: 6px;
+    margin-bottom: 12px;
   }
   .ual-actions-row {
-    display: flex; flex-wrap: wrap; gap: 6px;
-    align-items: center; margin-bottom: 8px;
+    display: flex; flex-wrap: wrap; gap: 8px;
+    align-items: center; margin-bottom: 10px;
   }
+  .ual-spacer { flex: 1; }
   .ual-chip {
-    padding: 4px 10px; border-radius: 999px;
-    background: var(--surface-2); border: 1px solid var(--border);
-    color: var(--text); font-size: 11.5px; font-weight: 600;
-    cursor: pointer; user-select: none;
-    transition: background 120ms, border-color 120ms;
-    white-space: nowrap;
+    appearance: none; cursor: pointer; font: inherit;
+    font-size: 13px; font-weight: 600; white-space: nowrap;
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 13px; border-radius: 999px;
+    border: 1px solid var(--rd-border-strong); background: #fff; color: var(--rd-text2);
+    transition: background 120ms, border-color 120ms, color 120ms;
+    user-select: none;
   }
-  .ual-chip:hover { background: var(--border); }
+  .ual-chip:hover { background: #f6f6f8; color: var(--rd-text); }
   .ual-chip.active {
-    background: var(--accent); color: #fff; border-color: var(--accent);
+    background: var(--rd-accent); color: #fff; border-color: var(--rd-accent);
   }
   .ual-select {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 6px; padding: 4px 8px; font-size: 11.5px;
-    cursor: pointer; color: var(--text); height: 28px;
-    min-width: 110px;
+    appearance: none; font: inherit; font-size: 13.5px; font-weight: 500;
+    color: var(--rd-text); background: #fff;
+    border: 1px solid var(--rd-border-strong); border-radius: 9px;
+    height: 38px; padding: 0 32px 0 12px; cursor: pointer; min-width: 110px;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%236b7180' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'><path d='M4 6l4 4 4-4'/></svg>");
+    background-repeat: no-repeat; background-position: right 11px center;
   }
+  .ual-select:hover { background-color: #f6f6f8; border-color: #cfcfca; }
+  .ual-select-grow { flex: 1; min-width: 150px; }
   .ual-action-btn {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 6px; padding: 4px 10px; font-size: 11.5px;
-    cursor: pointer; color: var(--text); height: 28px;
-    display: inline-flex; align-items: center; gap: 4px;
+    appearance: none; font: inherit; font-size: 13.5px; font-weight: 500;
+    color: var(--rd-text); background: #fff;
+    border: 1px solid var(--rd-border-strong); border-radius: 9px;
+    height: 38px; padding: 0 12px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 7px;
     white-space: nowrap;
   }
-  .ual-action-btn:hover { background: var(--surface-2); }
-  .ual-action-btn.ual-action-first { margin-left: auto; }
+  .ual-action-btn .rd-ic { color: var(--rd-text2); }
+  .ual-action-btn:hover { background: #f6f6f8; border-color: #cfcfca; }
   .ual-custom-range {
-    display: flex; gap: 4px; align-items: center;
+    display: flex; gap: 6px; align-items: center;
   }
   .ual-custom-range input[type="date"] {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 6px; padding: 3px 6px; font-size: 11.5px;
-    color: var(--text); height: 28px;
+    background: #fff; border: 1px solid var(--rd-border-strong);
+    border-radius: 9px; padding: 0 8px; font-size: 13px;
+    color: var(--rd-text); height: 38px;
+  }
+  .ual-search-wrap { position: relative; margin-bottom: 14px; }
+  .ual-search-wrap > .rd-ic {
+    position: absolute; left: 13px; top: 50%; transform: translateY(-50%);
+    color: var(--rd-text3); pointer-events: none;
   }
   .ual-search {
-    width: 100%; padding: 6px 10px; font-size: 12px;
-    border: 1px solid var(--border); border-radius: 6px;
-    background: var(--surface); color: var(--text);
-    margin-bottom: 10px;
+    width: 100%; height: 42px; font: inherit; font-size: 14px;
+    border: 1px solid var(--rd-border-strong); border-radius: 10px;
+    background: #fff; color: var(--rd-text);
+    padding: 0 14px 0 38px;
   }
+  .ual-search::placeholder { color: var(--rd-text3); }
+  .ual-search:focus { outline: none; border-color: var(--rd-accent); box-shadow: 0 0 0 3px var(--rd-accent-soft); }
   /* Legacy alias — keep for back-compat. */
   .ual-toolbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
   .ual-daterange { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 11.5px; cursor: pointer; color: var(--text); height: 28px; }
-  .ual-list { display: flex; flex-direction: column; gap: 1px; }
+  .ual-dayhead {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 11.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--rd-text3); padding: 14px 0 6px;
+  }
+  .ual-dayrule { flex: 1; height: 1px; background: var(--rd-border); }
+  .ual-list { display: flex; flex-direction: column; }
   .ual-row {
-    display: grid; grid-template-columns: 28px 1fr auto;
-    gap: 10px; padding: 8px 10px;
-    border-bottom: 1px solid var(--border);
+    display: grid; grid-template-columns: 34px 1fr 16px;
+    gap: 12px; padding: 14px 0;
+    border-top: 1px solid var(--rd-border);
+    align-items: start;
     cursor: pointer; transition: background 120ms;
   }
-  .ual-row:hover { background: var(--surface-2); }
-  .ual-row.expanded { background: var(--surface-2); }
+  .ual-row:hover { background: #fafafb; }
+  .ual-row.expanded { background: #fafafb; }
   .ual-icon {
-    width: 28px; height: 28px;
+    width: 34px; height: 34px; border-radius: 9px;
     display: flex; align-items: center; justify-content: center;
-    background: var(--surface-2); border-radius: 50%;
-    font-size: 14px;
+    background: #f4f4f5; color: var(--rd-text2);
   }
-  .ual-row.synthetic .ual-icon {
-    opacity: 0.55;
-    background: transparent;
-    border: 1px dashed var(--border);
-  }
+  .ual-icon.tone-money  { background: var(--rd-money-bg); color: var(--rd-money-fg); }
+  .ual-icon.tone-danger { background: #fdeceb; color: #b42318; }
+  .ual-icon.tone-lease  { background: var(--rd-accent-soft); color: var(--rd-accent-ink); }
+  .ual-icon.tone-system { background: #f2f2f3; color: var(--rd-text3); }
   .ual-main { min-width: 0; }
   .ual-headline {
-    font-size: 12.5px; color: var(--text); font-weight: 600;
-    line-height: 1.3; word-wrap: break-word;
+    font-size: 14.5px; color: var(--rd-text); font-weight: 600;
+    line-height: 1.35; letter-spacing: -.005em; word-wrap: break-word;
+    margin-top: 1px;
   }
-  .ual-row.synthetic .ual-headline { font-style: italic; }
+  .ual-row.synthetic .ual-headline { font-style: italic; font-weight: 500; color: var(--rd-text2); }
+  .ual-mono { font-family: var(--rd-mono); font-size: 13px; font-weight: 600; }
   .ual-meta {
-    display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
-    font-size: 10.5px; color: var(--muted); margin-top: 2px;
+    display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+    font-size: 12.5px; color: var(--rd-text3); margin-top: 6px;
   }
-  .ual-meta .ual-actor {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 3px; padding: 0 5px; font-size: 10px;
+  .ual-meta .ual-time { color: var(--rd-text2); font-weight: 500; }
+  .ual-meta .ual-sep { color: var(--rd-border-strong); }
+  .ual-actor {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11.5px; color: var(--rd-text2);
+    background: #f6f6f7; border: 1px solid var(--rd-border);
+    border-radius: 6px; padding: 1px 7px; max-width: 100%;
   }
-  .ual-meta .ual-action-tag {
-    font-family: var(--mono, monospace);
-    font-size: 9.5px;
-    background: rgba(99,91,255,0.10);
-    color: var(--accent);
-    padding: 0 5px; border-radius: 3px; font-weight: 600;
-  }
-  .ual-meta .ual-synthetic-tag {
-    font-style: italic;
-    font-size: 9.5px;
-    background: var(--surface-2);
-    color: var(--muted);
-    padding: 0 5px; border-radius: 3px;
-  }
+  .ual-actor .rd-ic { color: var(--rd-text3); }
+  .ual-actor span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ual-tags { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .ual-tags .ual-synthetic-tag { background: #f2f2f3; color: var(--rd-text2); }
   .ual-chev {
-    color: var(--muted); font-size: 11px;
-    align-self: center; transition: transform 200ms;
+    color: var(--rd-text3); padding-top: 9px;
+    transition: transform 200ms;
   }
   .ual-row.expanded .ual-chev { transform: rotate(90deg); }
   .ual-payload {
     grid-column: 1 / -1;
     margin-top: 8px; padding: 8px 10px;
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 6px;
-    font-family: var(--mono, monospace);
-    font-size: 10.5px; color: var(--text);
+    background: #fafaf9; border: 1px solid var(--rd-border);
+    border-radius: 8px;
+    font-family: var(--rd-mono);
+    font-size: 10.5px; color: var(--rd-text);
     white-space: pre-wrap; word-wrap: break-word;
     max-height: 280px; overflow-y: auto;
   }
   .ual-empty {
     padding: 24px 12px; text-align: center;
-    color: var(--muted); font-size: 12px;
+    color: var(--rd-text2); font-size: 12.5px;
   }
   .ual-loading {
     padding: 10px; text-align: center;
-    color: var(--muted); font-size: 11.5px;
+    color: var(--rd-text3); font-size: 11.5px;
   }
   .ual-loadmore {
     margin: 8px auto 0; display: block;
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 6px; padding: 6px 14px;
-    font-size: 11.5px; color: var(--accent); font-weight: 600;
+    background: #fff; border: 1px solid var(--rd-border-strong);
+    border-radius: 9px; padding: 6px 14px;
+    font-size: 12px; color: var(--rd-accent-ink); font-weight: 600;
     cursor: pointer;
   }
-  .ual-loadmore:hover { background: var(--surface-2); }
+  .ual-loadmore:hover { background: #f6f6f8; }
   .ual-count {
     margin-left: auto;
-    font-size: 11px; color: var(--muted); font-weight: 400;
+    font-size: 11px; color: var(--rd-text3); font-weight: 400;
   }
 
   /* Quick stat cards (Overview) — 2 bigger cards, Stripe-Dashboard style.
@@ -12865,63 +12884,75 @@
   }
   .upv2-svc-cta button.primary:hover { background: var(--rd-accent-ink); }
 
-  /* Files tab — empty state */
+  /* Files tab — empty state. Шаг 9 редизайна: чип-иконка 52px по
+     паттерну .eicon макета (surface, радиус 14, спрайт 24px). */
   .upv2-files-empty {
     text-align: center; padding: 30px 14px;
-    color: var(--muted); font-size: 12.5px;
+    color: var(--rd-text2); font-size: 12.5px;
+    font-family: var(--rd-font);
   }
+  .upv2-files-empty-icon {
+    width: 52px; height: 52px; border-radius: 14px;
+    background: var(--rd-surface);
+    display: flex; align-items: center; justify-content: center;
+    margin: 0 auto 14px; color: var(--rd-text2);
+  }
+  .upv2-files-empty .rd-btn2 { display: inline-flex; }
 
   /* === Files pane — единые компактные строки файлов ===
      Шаг 1 редизайна 2026-05-06. Используется для read-only зеркала
      lease docs и prospect LOI. Уже чем .upv2-svc-card — на узком
      сайдбаре умещается 4-5 строк без скролла. Каждая строка:
-     иконка типа + имя + meta + кнопки View/Manage. */
+     иконка типа + имя + meta + кнопки View/Manage.
+     Шаг 9 редизайна: токен-карточки (белая, border-strong, радиус 12,
+     30px чип-иконка по .cicon-паттерну, кнопки .rd-btn2-стиля). */
   .filepane-list {
     display: flex; flex-direction: column; gap: 6px;
     margin-bottom: 4px;
+    font-family: var(--rd-font);
   }
   .filepane-row {
     display: flex; align-items: center; gap: 10px;
-    padding: 9px 11px;
-    border: 1px solid var(--border); border-radius: 8px;
-    background: var(--surface);
-    transition: border-color .12s;
+    padding: 10px 12px;
+    border: 1px solid var(--rd-border-strong); border-radius: 12px;
+    background: #fff;
+    transition: background .12s;
   }
-  .filepane-row:hover { border-color: var(--accent); }
+  .filepane-row:hover { background: #fafafb; }
   .filepane-row-icon {
-    font-size: 16px; line-height: 1;
     flex-shrink: 0;
-    width: 28px; height: 28px;
+    width: 30px; height: 30px;
     display: flex; align-items: center; justify-content: center;
-    background: var(--surface-2); border-radius: 6px;
+    background: var(--rd-surface); border-radius: 8px;
+    color: var(--rd-text2);
   }
   .filepane-row-body {
     flex: 1; min-width: 0;
   }
   .filepane-row-title {
-    font-size: 12.5px; font-weight: 600; color: var(--text);
+    font-size: 13px; font-weight: 600; color: var(--rd-text);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .filepane-row-meta {
-    font-size: 10.5px; color: var(--muted); margin-top: 2px;
+    font-size: 11px; color: var(--rd-text3); margin-top: 2px;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .filepane-row-actions {
-    display: flex; gap: 4px; flex-shrink: 0;
+    display: flex; gap: 5px; flex-shrink: 0;
   }
   .filepane-row-btn {
-    padding: 4px 9px; border-radius: 5px;
-    border: 1px solid var(--border); background: var(--surface);
-    font: 600 10.5px inherit; color: var(--text);
+    padding: 5px 10px; border-radius: 7px;
+    border: 1px solid var(--rd-border-strong); background: #fff;
+    font: 600 11px var(--rd-font); color: var(--rd-text);
     cursor: pointer; text-decoration: none;
     display: inline-flex; align-items: center;
     white-space: nowrap;
   }
-  .filepane-row-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .filepane-row-btn:hover { background: #f6f6f8; }
   .filepane-row-btn.primary {
-    background: var(--accent); border-color: var(--accent); color: #fff;
+    background: var(--rd-accent); border-color: var(--rd-accent); color: #fff;
   }
-  .filepane-row-btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: #fff; }
+  .filepane-row-btn.primary:hover { background: var(--rd-accent-ink); border-color: var(--rd-accent-ink); color: #fff; }
 
   .detail-card { background: var(--surface-2); border-radius: 10px; padding: 14px; border: 1px solid var(--border); }
   .detail-card.readonly input:disabled,
@@ -83473,22 +83504,33 @@ function _filesPaneCountProspectDocs(u) {
 // язык независимо от источника.
 function _ualClassify(action) {
   const a = String(action || '').toLowerCase();
-  if (!a) return { category: 'other', icon: '•' };
-  if (/^(payment|deposit|rent|refund)\./.test(a)) return { category: 'money', icon: '💵' };
-  if (/^invoice\./.test(a)) return { category: 'money', icon: '📨' };
-  if (/^subscription\./.test(a)) return { category: 'money', icon: '🔁' };
-  if (/^envelope\./.test(a) || /docusign/.test(a)) return { category: 'lease', icon: '✉️' };
-  if (/^document\./.test(a)) return { category: 'lease', icon: '📄' };
-  if (/^lease\./.test(a)) return { category: 'lease', icon: '📝' };
-  if (/^prospect\./.test(a)) return { category: 'tenant', icon: '🎯' };
-  if (/^outreach\./.test(a)) return { category: 'tenant', icon: '💬' };
-  if (/^promise\./.test(a)) return { category: 'tenant', icon: '🤝' };
-  if (/^tenant\./.test(a)) return { category: 'tenant', icon: '👤' };
-  if (/^unit\.(archive|restore|delete)/.test(a)) return { category: 'status', icon: '🗑' };
-  if (/^status\./.test(a)) return { category: 'status', icon: '🔄' };
-  if (/^unit\./.test(a)) return { category: 'settings', icon: '⚙️' };
-  if (/^system\./.test(a) || /\.auto-/.test(a) || /cron/.test(a)) return { category: 'system', icon: '🤖' };
-  return { category: 'other', icon: '•' };
+  // Шаг 9 редизайна: icon = имя символа спрайта (вместо эмодзи), tone =
+  // окраска 34px-чипа таймлайна по макету (money=зелёный / danger=красный /
+  // lease=индиго / system=серый / neutral=дефолт). КАТЕГОРИИ НЕ МЕНЯЛИСЬ —
+  // chip-фильтры и CSV работают ровно как раньше (visual-only правка).
+  if (!a) return { category: 'other', icon: 'circle', tone: 'neutral' };
+  // Неуспешные платежи — красный чип i-alert (паттерн «Charge failed» макета);
+  // категория остаётся money, фильтр не затронут.
+  if (/^(payment|charge|deposit|rent|refund)\./.test(a) && /fail|bounce|nsf|decline/.test(a))
+    return { category: 'money', icon: 'alert', tone: 'danger' };
+  if (/^(payment|deposit|rent|refund)\./.test(a)) return { category: 'money', icon: 'dollar', tone: 'money' };
+  if (/^invoice\./.test(a)) return { category: 'money', icon: 'mail', tone: 'money' };
+  if (/^subscription\./.test(a)) return { category: 'money', icon: 'refresh', tone: 'money' };
+  if (/^bank\./.test(a)) return { category: 'other', icon: 'bank', tone: 'money' };
+  if (/^files\./.test(a)) return { category: 'other', icon: 'archive', tone: 'lease' };
+  if (/^envelope\./.test(a) || /docusign/.test(a)) return { category: 'lease', icon: 'sign', tone: 'lease' };
+  if (/^document\./.test(a)) return { category: 'lease', icon: 'file', tone: 'lease' };
+  if (/^lease\./.test(a)) return { category: 'lease', icon: 'sign', tone: 'lease' };
+  if (/^prospect\./.test(a)) return { category: 'tenant', icon: 'target', tone: 'neutral' };
+  if (/^outreach\.lease/.test(a)) return { category: 'tenant', icon: 'sign', tone: 'lease' };
+  if (/^outreach\./.test(a)) return { category: 'tenant', icon: 'note', tone: 'neutral' };
+  if (/^promise\./.test(a)) return { category: 'tenant', icon: 'usercheck', tone: 'neutral' };
+  if (/^tenant\./.test(a)) return { category: 'tenant', icon: 'user', tone: 'neutral' };
+  if (/^unit\.(archive|restore|delete)/.test(a)) return { category: 'status', icon: 'trash', tone: 'neutral' };
+  if (/^status\./.test(a)) return { category: 'status', icon: 'refresh', tone: 'system' };
+  if (/^unit\./.test(a)) return { category: 'settings', icon: 'gear', tone: 'neutral' };
+  if (/^system\./.test(a) || /\.auto-/.test(a) || /cron/.test(a)) return { category: 'system', icon: 'gear', tone: 'system' };
+  return { category: 'other', icon: 'circle', tone: 'neutral' };
 }
 
 // Synthetic events — то что мы можем восстановить из state на каждом
@@ -83724,7 +83766,8 @@ function _ualBuildSynthetic(u) {
           ts: group[0].ts,
           action: 'rent.bulk-import',
           category: 'money',
-          icon: '📥',
+          icon: 'download',
+          tone: 'money',
           actor: group[0].actor,
           headline: `${group.length} rent payments imported${yms.length ? ` (${yms[0]} → ${yms[yms.length-1]})` : ''}${total > 0 ? ` · $${total.toLocaleString()} total` : ''}`,
           payload: { count: group.length, yms, total, items: group.map(g => g.payload) },
@@ -83818,7 +83861,9 @@ window._printUnitActivity = async function(unitId) {
 function _renderUnitActivityPane(u, editOn, ro) {
   if (!u) return '';
   const filter = window._ualFilter || {};
-  const chip = (key, label) => `<button class="ual-chip ${filter.category === key ? 'active' : ''}" onclick="_ualSetCategory('${key}')">${esc(label)}</button>`;
+  // Шаг 9 редизайна: чипы-фильтры по макету «Suite 344 Activity» — спрайт-
+  // иконка 14px + label, active = залитая индиго пилюля. Handlers прежние.
+  const chip = (key, label, ic) => `<button class="ual-chip ${filter.category === key ? 'active' : ''}" onclick="_ualSetCategory('${key}')">${ic ? _rdIc(ic, 14) : ''}${esc(label)}</button>`;
   // Synthetic immediately — async audit appends after fetch.
   const synth = _ualBuildSynthetic(u);
   synth.sort((a, b) => String(b.ts || '').localeCompare(String(a.ts || '')));
@@ -83828,19 +83873,20 @@ function _renderUnitActivityPane(u, editOn, ro) {
   const groupedHtml = _ualRenderGrouped(synth, filter);
   // Async load real audit + replace.
   setTimeout(() => _ualAsyncLoad(u.id), 50);
-  // Row 1: category chips (no extras). Row 2: filters + actions
-  // (date range, actor, custom range, refresh, CSV). Row 3: search.
+  // Row 1: category chips. Row 2: date + person selects (макет toolbar #1).
+  // Row 3: Export CSV ←spacer→ Refresh (макет toolbar #2). Row 4: search
+  // с иконкой i-search внутри инпута.
   const showCustomRange = !!filter.dateFrom;
   return `
     <div class="ual-section" data-ual-unit="${esc(u.id)}">
       <div class="ual-chips-row">
         ${chip('all',     'All')}
-        ${chip('money',   '💵 Money')}
-        ${chip('lease',   '📝 Lease')}
-        ${chip('tenant',  '👤 Tenant')}
-        ${chip('status',  '🔄 Status')}
-        ${chip('settings','⚙️ Settings')}
-        ${chip('system',  '🤖 System')}
+        ${chip('money',   'Money',    'dollar')}
+        ${chip('lease',   'Lease',    'sign')}
+        ${chip('tenant',  'Tenant',   'user')}
+        ${chip('status',  'Status',   'refresh')}
+        ${chip('settings','Settings', 'gear')}
+        ${chip('system',  'System',   'cube')}
       </div>
       <div class="ual-actions-row">
         <select class="ual-select" onchange="_ualSetDateRange(this.value)" title="Date range filter">
@@ -83851,23 +83897,29 @@ function _renderUnitActivityPane(u, editOn, ro) {
           <option value="365"   ${filter.dateRangeDays === 365 ? 'selected' : ''}>Last year</option>
           <option value="custom" ${showCustomRange ? 'selected' : ''}>Custom…</option>
         </select>
-        <select class="ual-select" onchange="_ualSetActor(this.value)" title="Filter by actor">
-          <option value="">👤 Anyone</option>
+        <select class="ual-select ual-select-grow" onchange="_ualSetActor(this.value)" title="Filter by actor">
+          <option value="">Anyone</option>
           ${actors.map(a => `<option value="${esc(a)}" ${filter.actor === a ? 'selected' : ''}>${esc(a)}</option>`).join('')}
         </select>
         ${showCustomRange ? `
         <div class="ual-custom-range">
           <input type="date" value="${esc(filter.dateFrom || '')}" onchange="_ualSetDateFrom(this.value)" title="From date">
-          <span style="color: var(--muted);">→</span>
+          <span style="color: var(--rd-text3);">→</span>
           <input type="date" value="${esc(filter.dateTo || '')}" onchange="_ualSetDateTo(this.value)" title="To date">
         </div>
         ` : ''}
-        <button class="ual-action-btn ual-action-first" onclick="_ualRefresh('${esc(u.id)}')" title="Reload audit entries from Firestore">↻ Refresh</button>
-        <button class="ual-action-btn" onclick="_ualExportCsv('${esc(u.id)}')" title="Download activity as CSV">↓ CSV</button>
       </div>
-      <input type="search" class="ual-search" placeholder="🔍 Search note, actor, action..."
-             value="${esc(filter.search || '')}"
-             oninput="_ualSetSearch(this.value)">
+      <div class="ual-actions-row">
+        <button class="ual-action-btn" onclick="_ualExportCsv('${esc(u.id)}')" title="Download activity as CSV">${_rdIc('download', 15)}Export CSV</button>
+        <span class="ual-spacer"></span>
+        <button class="ual-action-btn" onclick="_ualRefresh('${esc(u.id)}')" title="Reload audit entries from Firestore">${_rdIc('refresh', 15)}Refresh</button>
+      </div>
+      <div class="ual-search-wrap">
+        ${_rdIc('search', 16)}
+        <input type="search" class="ual-search" placeholder="Search note, actor, action…"
+               value="${esc(filter.search || '')}"
+               oninput="_ualSetSearch(this.value)">
+      </div>
       <div class="ual-list" id="ualList-${esc(u.id)}">${groupedHtml}</div>
       <div class="ual-loading" id="ualLoading-${esc(u.id)}">Loading audit entries…</div>
     </div>`;
@@ -83971,7 +84023,37 @@ function _ualRenderPayload(e) {
   return `<pre class="ual-payload">${esc(JSON.stringify(e.payload, null, 2))}</pre>`;
 }
 
+// Шаг 9 редизайна: иконка 34px-чипа события. icon после _ualClassify —
+// имя символа спрайта; защитный fallback 'circle' на случай легаси-кэша
+// со старым эмодзи (валидное имя = только [a-z0-9-]).
+function _ualEventIcon(e) {
+  const n = (e && typeof e.icon === 'string' && /^[a-z0-9-]+$/.test(e.icon)) ? e.icon : 'circle';
+  return _rdIc(n, 17);
+}
+
+// Иконка внутри пилюли актёра: webhook/stripe → i-refresh, system/cron →
+// i-cube, человек → i-user (паттерн .actor макета «Suite 344 Activity»).
+function _ualActorIcon(actor) {
+  const a = String(actor || '').toLowerCase();
+  if (/webhook|stripe|bot/.test(a)) return 'refresh';
+  if (/system|cron|legacy|auto/.test(a)) return 'cube';
+  return 'user';
+}
+
+// Моноширинные ID в заголовке события (.ev-mono макета). Консервативные
+// паттерны: Stripe-ids (in_/sub_/pi_/ch_/cus_/evt_/inv_/px_), UUID-хвосты,
+// invoice-номера вида PIN-D-344-JUN08-1306, email-адреса. Применяется
+// ПОСЛЕ esc() — обёртка добавляет только <span>, текст уже экранирован.
+function _ualMonofyHeadline(raw) {
+  const s = esc(raw);
+  const re = /\b((?:in|sub|pi|ch|cus|evt|inv|px)_[A-Za-z0-9]{8,}|[0-9a-f]{8}-[0-9a-f][0-9a-f-]{2,}|[A-Z]{2,5}(?:-[A-Z0-9]{1,12}){2,}|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})\b/g;
+  return s.replace(re, '<span class="ual-mono">$1</span>');
+}
+
 // Filter + group-by-day + render. Replaces old _ualRenderRows.
+// Шаг 9 редизайна: day-группы с линейкой (.dayhead макета), 34px icon-чипы
+// с тонами, meta «time · ago · actor-pill», mono-теги действия. Структура
+// данных, фильтры, expand/collapse и payload-рендер не менялись.
 function _ualRenderGrouped(events, filter) {
   const filtered = _ualApplyFilters(events, filter);
   if (filtered.length === 0) {
@@ -83993,25 +84075,30 @@ function _ualRenderGrouped(events, filter) {
   // are already sorted desc).
   const parts = [];
   for (const [day, items] of byDay) {
-    parts.push(`<div style="font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; padding: 10px 4px 4px; border-bottom: 1px solid var(--border); margin-bottom: 2px;">${esc(day)} <span style="color: var(--muted); font-weight: 400;">· ${items.length} event${items.length === 1 ? '' : 's'}</span></div>`);
+    parts.push(`<div class="ual-dayhead"><span>${esc(day)}</span><span class="ual-dayrule"></span><span>${items.length} event${items.length === 1 ? '' : 's'}</span></div>`);
     for (const e of items) {
       const key = (e.ts || '') + '|' + (e.action || '');
       const expanded = window._ualExpanded.has(key);
       const payloadHtml = expanded ? _ualRenderPayload(e) : '';
+      const tone = (e.tone && e.tone !== 'neutral') ? ` tone-${esc(e.tone)}` : '';
       parts.push(`
         <div class="ual-row ${e.isSynthetic ? 'synthetic' : ''} ${expanded ? 'expanded' : ''}"
              onclick="_ualToggleRow('${esc(key)}')">
-          <div class="ual-icon">${e.icon || '•'}</div>
+          <div class="ual-icon${tone}">${_ualEventIcon(e)}</div>
           <div class="ual-main">
-            <div class="ual-headline">${esc(e.headline || e.action || 'event')}</div>
+            <div class="ual-headline">${_ualMonofyHeadline(e.headline || e.action || 'event')}</div>
             <div class="ual-meta">
-              <span title="${esc(e.ts || '')}">${esc(fmtTime(e.ts))} · ${esc(_ualRelTime(e.ts))}</span>
-              <span class="ual-actor">${esc(e.actor || '(unknown)')}</span>
-              <span class="ual-action-tag">${esc(e.action || '')}</span>
-              ${e.isSynthetic ? '<span class="ual-synthetic-tag">inferred</span>' : ''}
+              <span class="ual-time" title="${esc(e.ts || '')}">${esc(fmtTime(e.ts))}</span>
+              <span class="ual-sep">·</span>
+              <span>${esc(_ualRelTime(e.ts))}</span>
+              <span class="ual-actor">${_rdIc(_ualActorIcon(e.actor), 11)}<span>${esc(e.actor || '(unknown)')}</span></span>
+            </div>
+            <div class="ual-tags">
+              <span class="rd-monotag ual-action-tag">${esc(e.action || '')}</span>
+              ${e.isSynthetic ? '<span class="rd-monotag ual-synthetic-tag">inferred</span>' : ''}
             </div>
           </div>
-          <div class="ual-chev">›</div>
+          <div class="ual-chev">${_rdIc('chev-r', 16)}</div>
           ${payloadHtml}
         </div>`);
     }
@@ -84059,7 +84146,7 @@ function _ualRepopulateActorDropdown(unitId, events) {
   if (!actorSel) return;
   const cur = window._ualFilter?.actor || '';
   const actors = _ualUniqueActors(events);
-  actorSel.innerHTML = '<option value="">👤 Anyone</option>' +
+  actorSel.innerHTML = '<option value="">Anyone</option>' +
     actors.map(a => `<option value="${esc(a)}" ${cur === a ? 'selected' : ''}>${esc(a)}</option>`).join('');
 }
 
@@ -84207,9 +84294,16 @@ function _filesPaneRenderLeaseDocsSection(u) {
     .map(d => ({ doc: d, file: _filesPaneLeaseDocFile(d) }))
     .filter(x => x.file);
   if (items.length === 0) return '';
+  // Шаг 9 редизайна: эмодзи типа документа → спрайт (зеркало
+  // _docSpriteByKind из Lease-карточек Шага 6; LEASE_DOC_TYPES не трогаем).
+  const _docSpriteByKind = {
+    loi: 'note', lease: 'file', amendment: 'pencil', addendum: 'clipboard',
+    renewal: 'refresh', termination: 'alert', move_out_email: 'mail',
+    collections_notice: 'gavel',
+  };
   const rows = items.map(({ doc, file }) => {
     const meta = (typeof _leaseDocTypeMeta === 'function') ? _leaseDocTypeMeta(doc.type) : null;
-    const icon = (meta && meta.icon) || '📄';
+    const icon = _rdIc(_docSpriteByKind[doc.type] || 'file', 15);
     const kindLabel = (meta && meta.label) || doc.type || 'Document';
     const versionCount = (Array.isArray(doc.versions) ? doc.versions.length : 0);
     const verStr = versionCount > 1 ? `${versionCount} versions` : (file.versionLabel || '');
@@ -84257,7 +84351,7 @@ function _filesPaneRenderProspectDocsSection(u) {
       : '';
     return `
       <div class="filepane-row">
-        <div class="filepane-row-icon">🤝</div>
+        <div class="filepane-row-icon">${_rdIc('note', 15)}</div>
         <div class="filepane-row-body">
           <div class="filepane-row-title">${esc(file.name || 'LOI')}</div>
           <div class="filepane-row-meta">${esc(bits.join(' · '))}</div>
@@ -84315,12 +84409,14 @@ function _renderUnitFilesPane(u, editOn, ro) {
   // total в этом методе никогда не разъезжались.
   const total = _unitFilesCount(u);
   if (total === 0) {
+    // Шаг 9 редизайна: эмодзи 📂/📎 → спрайт; чип-иконка 52px по паттерну
+    // .eicon vacant-эмпти-стейта макета; кнопка на примитиве .rd-btn2.
     return `
       <div class="upv2-files-empty">
-        <div style="font-size: 32px; opacity: 0.3; margin-bottom: 10px;">📂</div>
-        <div style="font-weight: 600; color: var(--text); margin-bottom: 4px;">No files yet</div>
+        <div class="upv2-files-empty-icon">${_rdIc('folder', 24)}</div>
+        <div style="font-weight: 600; color: var(--rd-text); margin-bottom: 4px;">No files yet</div>
         <div>Lease documents, prospect LOIs, tenant docs, signed PDFs, photos — they all show up here.</div>
-        <button class="upv2-qa-btn" style="margin-top:14px; max-width: 200px;" onclick="openTenantDocsModal()">📎 Add tenant document</button>
+        <button class="rd-btn2" style="margin-top:14px;" onclick="openTenantDocsModal()">${_rdIc('clip', 14)}Add tenant document</button>
       </div>`;
   }
   // Signed-lease action set — view always; admin also gets Replace +
@@ -84334,7 +84430,7 @@ function _renderUnitFilesPane(u, editOn, ro) {
     <div class="upv2-svc-card">
       <div class="upv2-svc-desc">${docs > 0 ? `${docs} document${docs===1?'':'s'} attached — click Manage to view, download, or remove.` : 'None yet.'}</div>
       <div class="upv2-svc-cta">
-        <button onclick="openTenantDocsModal()">📎 Manage documents</button>
+        <button onclick="openTenantDocsModal()">${_rdIc('clip', 13)}Manage documents</button>
       </div>
     </div>
     ${hasLeasePdf ? `
@@ -84342,10 +84438,10 @@ function _renderUnitFilesPane(u, editOn, ro) {
       <div class="upv2-svc-card">
         <div class="upv2-svc-desc">${isDocuSignPdf ? 'DocuSign envelope PDF — managed from the Lease tab.' : 'Manually uploaded PDF on file.'}</div>
         <div class="upv2-svc-cta" style="display:flex; flex-wrap:wrap; gap:6px;">
-          <a href="${esc(_safeHttpUrl(u.signedPdf.url || '#'))}" target="_blank" rel="noopener" class="upv2-qa-btn primary" style="text-decoration:none; max-width:180px;">📄 View lease PDF</a>
+          <a href="${esc(_safeHttpUrl(u.signedPdf.url || '#'))}" target="_blank" rel="noopener" class="rd-btn" style="text-decoration:none;">${_rdIc('file', 13)}View lease PDF</a>
           ${canManagePdf ? `
-            <button onclick="replaceSignedPdf()" title="Upload a new PDF — old one is deleted from Cloud Storage">↻ Replace</button>
-            <button onclick="clearSignedPdf()" style="color:var(--danger); border-color:var(--danger);">× Remove</button>
+            <button onclick="replaceSignedPdf()" title="Upload a new PDF — old one is deleted from Cloud Storage">${_rdIc('refresh', 13)}Replace</button>
+            <button onclick="clearSignedPdf()" style="color:var(--rd-red); border-color:#f5c6d0;">${_rdIc('trash', 13)}Remove</button>
           ` : ''}
         </div>
       </div>` : ''}
