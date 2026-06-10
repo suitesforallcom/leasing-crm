@@ -76119,7 +76119,7 @@ function renderDetail() {
         <!-- Шаг 7 редизайна: div.toggle → настоящий .rd-sw свитч (индиго,
              default --rd-accent); handler toggleField тот же, вне edit-режима
              input disabled. Эмодзи 🌞/🚰 → спрайт i-window / i-drop. -->
-        <div class="toggle-row"><label>Rentable</label><label class="rd-sw"><input type="checkbox" ${u.rentable !== false ? 'checked' : ''} ${editOn ? `onchange="toggleField('rentable')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>
+        <div class="toggle-row"><label>${_rdIc('dollar', 14)}Rentable</label><label class="rd-sw"><input type="checkbox" ${u.rentable !== false ? 'checked' : ''} ${editOn ? `onchange="toggleField('rentable')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>
         <div class="toggle-row"><label>${_rdIc('window', 14)}Window</label><label class="rd-sw"><input type="checkbox" ${u.window ? 'checked' : ''} ${editOn ? `onchange="toggleField('window')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>
         <div class="toggle-row"><label>${_rdIc('drop', 14)}Sink / plumbing</label><label class="rd-sw"><input type="checkbox" ${u.sink ? 'checked' : ''} ${editOn ? `onchange="toggleField('sink')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>
         ${(() => {
