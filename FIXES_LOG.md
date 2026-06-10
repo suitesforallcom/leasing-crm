@@ -62,8 +62,8 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ### 67. CF building mirror wiped _savedRev — Entry 65 guard floor reset by every server mirror (sync/data-safety, 2026-06-09)
 
-- **Status:** needs-porting
-- **Branch / commit:** `fix/cf-mirror-savedrev` @ (this commit) — NOT deployed; functions deploy is §2-gated, awaiting Tony GO
+- **Status:** active (deployed 2026-06-10 03:34Z, full `firebase deploy --only functions`)
+- **Branch / commit:** `fix/cf-mirror-savedrev` @ `83614f6`, merged to main via `d6f4784`. Deploy was forced by the 2026-06-09 Suite 344 incident (docs/incident-2026-06-09-suite344.md): this exact hole let a stale tab clobber building b1 — webhook deposit mark-paid 06-08 22:01Z wiped _savedRev, stale client wrote rev=2 on 06-09 12:30-12:45Z. Restored from PITR 12:30Z + _savedRev floors raised to 50000 on b1/Pasadena/BayVista. New Tampa & Tech Data survived BECAUSE their floors were intact — live proof the Entry 65 guard works when not wiped
 - **Area:** Sync / buildings-strip mirror — SERVER write path (`_mirrorBuildingV2CF`)
 - **Files:** functions/index.js
 - **Functions:** `_mirrorBuildingV2CF` (~248); test hook `exports._test_mirrorBuildingV2CF` (env-gated `SFA_TEST_EXPORTS=1`, invisible to deploy discovery)
@@ -73,7 +73,7 @@ to the replacement entry) if a fix is intentionally rewritten.
 - **Verification:** `firebase emulators:exec --only firestore "SFA_TEST_EXPORTS=1 node functions/test-harness/test-mirror-savedrev.js"` — 9 asserts: 5→6 advance, create→1, legacy-no-field→1 heal, monotonic re-mirror→7, full doc replace, pointsFlat flattening intact. All passed 2026-06-09.
 - **Regression test:** functions/test-harness/test-mirror-savedrev.js (emulator; local-only)
 - **Related PR / issue:** none. Related: Entry 65 (the guard this fix restores).
-- **Porting note:** deploy = `firebase deploy --only functions` touchers of this path are all in index.js; the change is server-only (no client/rules edits). Until deployed, prod CF mirrors keep wiping `_savedRev` — guard floor on affected buildings stays 0 until the next CLIENT mirror write re-stamps it.
+- **Porting note:** DEPLOYED 2026-06-10. (Historical: until deployed, prod CF mirrors kept wiping `_savedRev` — which materialized as the 2026-06-09 incident.)
 
 ---
 
