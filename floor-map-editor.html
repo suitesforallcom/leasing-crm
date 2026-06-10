@@ -5751,17 +5751,20 @@
   .inv-table td[style*="tabular-nums"],
   .inv-table tfoot td { white-space: nowrap; }
 
+  /* Редизайн 2026-06 (Шаг 5): статус-пилюли инвойсов по макету
+     «Suite 363 Overview.html» (.pill): 10.5/700/.05em, радиус 999,
+     PAID = green на green-soft. Семантика бакетов не менялась. */
   .inv-status-badge {
-    display: inline-block; padding: 2px 8px; border-radius: 10px;
-    font-size: 10.5px; font-weight: 700; letter-spacing: 0.3px;
+    display: inline-block; padding: 3px 9px; border-radius: 999px;
+    font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em;
     text-transform: uppercase;
   }
-  .inv-status-badge.draft    { background: var(--surface-3); color: var(--muted); }
-  .inv-status-badge.open     { background: rgba(59,130,246,0.12); color: var(--accent); }
-  .inv-status-badge.paid     { background: rgba(34,197,94,0.12); color: var(--success); }
-  .inv-status-badge.past_due { background: rgba(239,68,68,0.12); color: var(--danger); }
-  .inv-status-badge.void     { background: var(--surface-2); color: var(--muted); text-decoration: line-through; }
-  .inv-status-badge.uncollectible { background: rgba(239,68,68,0.12); color: var(--danger); }
+  .inv-status-badge.draft    { background: #f2f2f3; color: var(--rd-text2); }
+  .inv-status-badge.open     { background: var(--rd-blue-soft); color: var(--rd-blue-link); }
+  .inv-status-badge.paid     { background: var(--rd-green-soft); color: var(--rd-green); }
+  .inv-status-badge.past_due { background: var(--rd-red-soft); color: var(--rd-red); }
+  .inv-status-badge.void     { background: #f2f2f3; color: var(--rd-text3); text-decoration: line-through; }
+  .inv-status-badge.uncollectible { background: var(--rd-red-soft); color: var(--rd-red); }
 
   /* Invoices table — checkbox selection column. Fixed width, centered,
      disabled state for paid rows (Stripe refuses to void paid invoices). */
@@ -6998,10 +7001,12 @@
   .unit-photos {
     margin: 10px 0 12px;
   }
+  /* Шаг 5: подсказка пустого состояния Photos — 13px text-3, по макету
+     (без italic), вертикально по центру рядом с Add-тайлом. */
   .unit-photos-empty-note {
-    font-size: 11px; color: var(--muted); padding: 6px 0;
-    text-align: center;
-    font-style: italic;
+    font-size: 13px; color: var(--rd-text3); padding: 0;
+    text-align: left; line-height: 1.5;
+    align-self: center;
   }
 
   /* ===== Unit detail sections — payment history, alerts, history ===== */
@@ -7020,21 +7025,26 @@
   }
   .unit-section-count { font-size: 10.5px; font-weight: 500; opacity: 0.75; }
 
+  /* Шаг 5 редизайна: токены --rd-* для алертов панели юнита; иконка —
+     спрайт (см. _renderUnitPaymentHealth / _renderUnitOverviewAlerts). */
   .unit-alert {
     display: flex; align-items: center; gap: 10px;
-    padding: 10px 12px; border-radius: 8px;
+    padding: 10px 12px; border-radius: 12px;
     margin: 10px 0;
+    font-family: var(--rd-font);
   }
   .unit-alert-danger {
-    background: rgba(239,68,68,0.12);
-    border: 1px solid rgba(239,68,68,0.35);
+    background: var(--rd-red-soft);
+    border: 1px solid #f5c6d0;
   }
   .unit-alert-icon {
-    font-size: 20px; color: var(--danger); flex-shrink: 0;
+    color: var(--rd-red); flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
   }
-  .unit-alert-body { font-size: 12.5px; color: var(--text); flex: 1; }
-  .unit-alert-body b { color: var(--danger); }
-  .unit-alert-sub { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .unit-alert-icon .rd-ic { width: 16px; height: 16px; }
+  .unit-alert-body { font-size: 12.5px; color: var(--rd-text); flex: 1; }
+  .unit-alert-body b { color: var(--rd-red); }
+  .unit-alert-sub { color: var(--rd-text3); font-size: 11px; margin-top: 2px; }
   /* Tony 2026-05-21 — clickable alert (shortcut to Record Manual Payment).
      Visual hover hint так чтобы оператор понял что это кнопка. */
   .unit-alert-clickable {
@@ -7042,8 +7052,8 @@
     transition: background 0.12s, border-color 0.12s, transform 0.05s;
   }
   .unit-alert-clickable:hover {
-    background: rgba(239,68,68,0.18);
-    border-color: rgba(239,68,68,0.55);
+    background: #fbdce4;
+    border-color: #f0aebd;
   }
   .unit-alert-clickable:active { transform: translateY(1px); }
   .unit-alert-clickable:focus-visible {
@@ -7051,7 +7061,7 @@
     outline-offset: 1px;
   }
   .unit-alert-clickable .unit-alert-sub {
-    color: var(--danger);
+    color: var(--rd-red);
     font-weight: 600;
   }
 
@@ -7061,39 +7071,38 @@
     gap: 3px;
     margin-bottom: 6px;
   }
+  /* Шаг 5 редизайна (design_handoff_unit_tabs_redesign, paymentGrid из
+     design-tokens.json): клетка aspect-ratio 1, радиус 6, литера месяца
+     9.5/700; paid = сплошной --rd-green-bar с БЕЛОЙ галкой-спрайтом
+     (без буквы), paid-late = --rd-lime + галка, current/invoice-sent =
+     --rd-blue, overdue = --rd-red. Два уровня muted: внутри лизы
+     (#f1f1ed/#c2c2bb) и вне лизы (#f7f7f4/#d9d9d3). Все state-классы и
+     onclick-логика сохранены 1:1. */
   .ph-cell {
     aspect-ratio: 1;
-    border-radius: 3px;
+    border-radius: 6px;
     display: flex; align-items: center; justify-content: center;
     cursor: pointer;
     transition: transform 0.08s, box-shadow 0.08s;
     position: relative;
+    background: #e7e7e2;
   }
   .ph-cell:hover {
     transform: scale(1.15);
     box-shadow: 0 2px 8px rgba(0,0,0,0.25);
     z-index: 2;
   }
-  .ph-cell-label { font-size: 9px; font-weight: 700; color: white; opacity: 0.85; line-height: 1; }
-  /* Payment-history grid colours — Stripe-inspired palette so cells
-     visually pair with the rest of the right panel (pills, hero card,
-     status indicators):
-       paid       = #10B981 (emerald-500 — deep success)
-       paid-late  = #84CC16 (lime-500 — yellow-tinted green, still
-                              "success" but unmistakably different
-                              from paid; emerald-400 was so close in
-                              hue that operators couldn't tell on-time
-                              from late at a glance)
-       overdue    = #E11D48 (rose)
-       current    = #0EA5E9 (sky)
-       free       = #94908A (warm-grey, inkSubtle) */
-  .ph-cell.paid        { background: #10B981; }
-  .ph-cell.paid-late   { background: #84CC16; }
-  /* Waived / free-month — green like paid (no debt this month) but
-     keeps the "—" label instead of "✓" so operator can tell at a
-     glance which months were credits vs. real payments. */
-  .ph-cell.free        { background: #10B981; }
-  .ph-cell.current     { background: #0EA5E9; }
+  .ph-cell-label { font-size: 9.5px; font-weight: 700; color: #8d8d86; line-height: 1; }
+  /* Белая галка внутри paid/paid-late клеток — .cell.paid .icon макета */
+  .ph-cell > .rd-ic { width: 11px; height: 11px; stroke-width: 2.6; color: #fff; }
+  .ph-cell.paid        { background: var(--rd-green-bar); }
+  .ph-cell.paid-late   { background: var(--rd-lime); }
+  /* Waived / free-month — зелёный как paid (долга нет), но с «—» вместо
+     галки, чтобы оператор отличал кредиты от реальных платежей. */
+  .ph-cell.free        { background: var(--rd-green-bar); }
+  .ph-cell.free .ph-cell-label { color: #fff; }
+  .ph-cell.current     { background: var(--rd-blue); }
+  .ph-cell.current .ph-cell-label { color: #fff; }
   /* fee-paid overlay — tiny gold $ in the corner of any cell where a
      late-fee invoice was paid for that month. Signals "base rent AND
      the late penalty were both collected" without changing the cell's
@@ -7101,7 +7110,7 @@
   .ph-cell.fee-paid { position: relative; }
   .ph-cell-fee-dot {
     position: absolute; top: 1px; right: 2px;
-    font: 700 8.5px "Inter", system-ui, sans-serif;
+    font: 700 8.5px var(--rd-font);
     color: #fff;
     background: #ca8a04;
     border: 1px solid rgba(255,255,255,0.6);
@@ -7120,9 +7129,9 @@
   .ph-cell.advance-paid { position: relative; }
   .ph-cell-advance-dot {
     position: absolute; top: 1px; left: 2px;
-    font: 700 8.5px "Inter", system-ui, sans-serif;
+    font: 700 8.5px var(--rd-font);
     color: #fff;
-    background: #d97706;
+    background: var(--rd-amber);
     border: 1px solid rgba(255,255,255,0.6);
     width: 11px; height: 11px;
     border-radius: 50%;
@@ -7131,38 +7140,36 @@
     pointer-events: none;
     box-shadow: 0 1px 2px rgba(0,0,0,0.2);
   }
-  /* Payment-source overlay (Tony 2026-05-21) — small emoji в правом
+  /* Payment-source overlay (Tony 2026-05-21) — маленький маркер в правом
      нижнем углу paid-cell показывает откуда пришёл платёж. Yardi/
      AppFolio/Buildium pattern: визуальное различие auto vs manual
      vs import vs stripe — оператор сканирует ledger в один взгляд.
-     Все 4 источника используют один CSS class .ph-cell-src-dot,
-     icon приходит inline через emoji. */
+     Шаг 5 редизайна: emoji → спрайт-иконка в белом кружке (см.
+     sourceIconMap в _renderUnitPaymentHealth); классификация не менялась. */
   .ph-cell.auto-applied,
   .ph-cell.src-auto,
   .ph-cell.src-import,
   .ph-cell.src-stripe,
   .ph-cell.src-manual { position: relative; }
   .ph-cell-src-dot {
-    position: absolute; bottom: 0; right: 1px;
-    font: 9px system-ui;
+    position: absolute; bottom: 1px; right: 1px;
+    width: 11px; height: 11px; border-radius: 50%;
+    background: #fff; color: var(--rd-text2);
+    display: flex; align-items: center; justify-content: center;
     pointer-events: none;
-    line-height: 1;
-    filter: drop-shadow(0 1px 1px rgba(0,0,0,0.35));
+    box-shadow: 0 1px 2px rgba(0,0,0,0.25);
   }
-  /* Pre-tenancy / outside-lease / post-lease — solid SLATE (much
-     darker than the prior pale grey, after the operator said even
-     slate-300 was barely visible). White text labels for contrast on
-     the dark background. Dark-theme override stays close in tone
-     since dark mode already has more contrast against panel bg. */
-  /* Pre-tenancy / outside-lease — warm-grey from ZIP palette
-     (borderStrong) instead of cool slate, so the muted cells stay
-     in the same colour family as the rest of the right panel. */
+  .ph-cell-src-dot .rd-ic { width: 7px; height: 7px; stroke-width: 2.4; }
+  /* Два muted-уровня по paymentGrid-токенам макета:
+       вне лизы (pre-tenancy / ph-empty / post-lease) = #f7f7f4 / #d9d9d3
+       внутри лизы, ещё не наступил (future)          = #f1f1ed / #c2c2bb
+     Тёмная тема сохраняет прежние тёплые оттенки (макет light-only). */
   .ph-cell.pre-tenancy,
   .ph-cell.ph-empty {
-    background: #D6D2CA; cursor: not-allowed;    /* warm borderStrong */
+    background: #f7f7f4; cursor: not-allowed;
   }
   .ph-cell.pre-tenancy .ph-cell-label,
-  .ph-cell.ph-empty    .ph-cell-label { color: #fff; font-weight: 600; }
+  .ph-cell.ph-empty    .ph-cell-label { color: #d9d9d3; font-weight: 700; }
   :root[data-theme="dark"] .ph-cell.pre-tenancy,
   :root[data-theme="dark"] .ph-cell.ph-empty {
     background: #6B665C;                         /* warm inkMuted */
@@ -7170,31 +7177,26 @@
   :root[data-theme="dark"] .ph-cell.pre-tenancy .ph-cell-label,
   :root[data-theme="dark"] .ph-cell.ph-empty    .ph-cell-label { color: #e2e8f0; }
   .ph-cell.ph-empty { cursor: default; }
-  /* Future month within lease — not yet due. One step lighter than
-     pre-tenancy so "hasn't happened yet" is visually distinct from
-     "wasn't part of the lease at all". */
-  /* Future months — neutral warm-grey so they don't compete with
-     the active paid/overdue/current cells visually. */
-  .ph-cell.future { background: #94908A; cursor: default; }    /* warm inkSubtle */
-  .ph-cell.future .ph-cell-label { color: #fff; }
+  .ph-cell.future { background: #f1f1ed; cursor: default; }
+  .ph-cell.future .ph-cell-label { color: #c2c2bb; }
   :root[data-theme="dark"] .ph-cell.future { background: #4A4640; }
   :root[data-theme="dark"] .ph-cell.future .ph-cell-label { color: #E8E5DF; }
-  /* Year-row layout: [YY label][12 month cells] */
+  /* Year-row layout: [YY label][12 month cells] — .pg-row макета */
   .pay-history-years {
     display: flex; flex-direction: column;
-    gap: 4px;
+    gap: 3px;
     margin-bottom: 8px;
   }
   .pay-history-year-row {
     display: grid;
     grid-template-columns: 28px 1fr;
-    gap: 6px;
+    gap: 3px;
     align-items: center;
   }
   .ph-year-label {
-    font: 700 11px "Inter", system-ui, sans-serif;
-    color: var(--muted);
-    text-align: right;
+    font: 700 11px var(--rd-font);
+    color: var(--rd-text3);
+    text-align: left;
     font-variant-numeric: tabular-nums;
   }
   .ph-year-grid {
@@ -7205,7 +7207,7 @@
   /* Single red bucket for ANY late payment past the 5-day grace.
      Operators asked to drop the 30/60/90 gradients — too many color
      buckets blurred the signal. Late = late, regardless of how late. */
-  .ph-cell.overdue     { background: #E11D48; }
+  .ph-cell.overdue     { background: var(--rd-red); }
   .ph-cell.overdue .ph-cell-label { color: #fff; }
   /* Legacy classes kept as aliases so older renders still color sanely */
   .ph-cell.overdue-0,
@@ -7217,33 +7219,56 @@
   .ph-cell.overdue-60 .ph-cell-label,
   .ph-cell.overdue-90 .ph-cell-label { color: #fff; }
 
+  /* Легенда — .pg-legend макета: 12.5px text-2, свотчи 11px радиус 4,
+     «Late fee paid» = янтарный контурный кружок с «$». */
   .pay-history-legend {
-    display: flex; gap: 10px; flex-wrap: wrap;
-    font-size: 10.5px; color: var(--muted);
-    margin-top: 4px;
+    display: flex; gap: 7px 14px; flex-wrap: wrap;
+    font-size: 12.5px; color: var(--rd-text2);
+    margin-top: 13px;
   }
-  .ph-legend { display: inline-flex; align-items: center; gap: 4px; }
-  .ph-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .ph-legend { display: inline-flex; align-items: center; gap: 6px; }
+  .ph-swatch { width: 11px; height: 11px; border-radius: 4px; display: inline-block; }
   /* Legend swatches must mirror the cell colours one-for-one — keep
-     in sync with the .ph-cell.* rules above (ZIP redesign palette). */
-  .ph-swatch.paid       { background: #10B981; }
-  .ph-swatch.paid-late  { background: #84CC16; }
-  .ph-swatch.overdue    { background: #E11D48; }
-  .ph-swatch.current    { background: #0EA5E9; }
+     in sync with the .ph-cell.* rules above (--rd-* tokens). */
+  .ph-swatch.paid       { background: var(--rd-green-bar); }
+  .ph-swatch.paid-late  { background: var(--rd-lime); }
+  .ph-swatch.overdue    { background: var(--rd-red); }
+  .ph-swatch.current    { background: var(--rd-blue); }
   /* Legacy aliases — still get the new red color */
   .ph-swatch.overdue-90,
-  .ph-swatch.overdue-30 { background: #E11D48; }
-  /* Inline gold-dot swatch for the "Late fee paid" legend entry */
+  .ph-swatch.overdue-30 { background: var(--rd-red); }
+  /* Контурный «$»-кружок для записи «Late fee paid» — .fee макета */
   .ph-swatch-dot {
     display: inline-flex; align-items: center; justify-content: center;
-    width: 12px; height: 12px;
-    background: #ca8a04;
-    color: #fff; border-radius: 50%;
-    font: 700 8px "Inter", system-ui, sans-serif;
-    margin-right: 4px;
+    width: 14px; height: 14px;
+    background: none;
+    color: var(--rd-amber); border: 1.5px solid var(--rd-amber);
+    border-radius: 50%;
+    font: 700 11px var(--rd-font);
     vertical-align: middle;
   }
-  .pay-history-last { margin-top: 6px; font-size: 11px; color: var(--muted); }
+  .pay-history-last { margin-top: 10px; font-size: 12.5px; color: var(--rd-text3); }
+
+  /* Шаг 5: карточка «Payment history» — .card макета (белая, border-strong,
+     радиус 14, паддинг 15/16); заголовок 14.5/700 без uppercase + бейдж
+     «N MO» 12/700/.05em text-3. Scoped к .upv2-payment-health, чтобы не
+     трогать прочие .unit-section до их шагов редизайна. */
+  .unit-section.upv2-payment-health {
+    background: var(--rd-bg);
+    border: 1px solid var(--rd-border-strong);
+    border-radius: 14px;
+    padding: 15px 16px;
+    font-family: var(--rd-font);
+  }
+  .upv2-payment-health .unit-section-head {
+    text-transform: none; letter-spacing: 0;
+    font: 700 14.5px var(--rd-font); color: var(--rd-text);
+    margin-bottom: 12px;
+  }
+  .upv2-payment-health .unit-section-count {
+    font-size: 12px; font-weight: 700; letter-spacing: .05em;
+    color: var(--rd-text3); opacity: 1; text-transform: uppercase;
+  }
 
   /* ===== Lease Documents Timeline (multi-doc redesign) =================
      Replaces the single-document Lease surface with a vertical list of
@@ -8750,14 +8775,15 @@
     scroll-snap-type: x mandatory;
   }
   .unit-photos-strip::-webkit-scrollbar { height: 6px; }
+  /* Шаг 5 редизайна: тайлы 86px радиус 12 — .addtile макета */
   .unit-photo-tile {
     position: relative;
-    width: 72px; height: 72px; flex-shrink: 0;
-    border-radius: 6px; overflow: hidden;
-    background: var(--surface-3);
+    width: 86px; height: 86px; flex-shrink: 0;
+    border-radius: 12px; overflow: hidden;
+    background: var(--rd-surface);
     scroll-snap-align: start;
     cursor: pointer;
-    border: 1px solid var(--border);
+    border: 1px solid var(--rd-border);
   }
   .unit-photo-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .unit-photo-tile .up-x {
@@ -8770,17 +8796,18 @@
   }
   .unit-photo-tile:hover .up-x { display: flex; }
   .unit-photo-add {
-    width: 72px; height: 72px; flex-shrink: 0;
-    border-radius: 6px;
+    width: 86px; height: 86px; flex-shrink: 0;
+    border-radius: 12px;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    background: var(--surface); color: var(--muted);
-    border: 1.5px dashed var(--border);
-    cursor: pointer; font-size: 10px; font-weight: 600;
-    gap: 3px;
+    background: none; color: var(--rd-text2);
+    border: 1.5px dashed var(--rd-border-strong);
+    cursor: pointer; font-size: 12px; font-weight: 600;
+    gap: 4px;
     transition: all .12s;
+    font-family: var(--rd-font);
   }
-  .unit-photo-add:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-light); }
-  .unit-photo-add svg { width: 16px; height: 16px; }
+  .unit-photo-add:hover { border-color: #c9c9c4; color: var(--rd-text2); background: #fafafb; }
+  .unit-photo-add svg { width: 18px; height: 18px; color: var(--rd-text3); }
   .unit-photos-empty {
     text-align: center; padding: 12px; font-size: 11.5px; color: var(--muted);
   }
@@ -10402,34 +10429,42 @@
   .upv2-stat-value.success { color: #16a34a; }
 
   /* Alert banner stack at top of Overview */
+  /* Шаг 5 редизайна: баннеры Overview на токенах --rd-*; иконки — спрайт
+     (alert / calendar / mail в _renderUnitOverviewAlerts). Цвет текста на
+     soft-фоне — затемнённые red/amber (паттерн пилюль Шага 4). */
   .upv2-alerts {
     display: flex; flex-direction: column; gap: 6px;
     margin-bottom: 14px;
+    font-family: var(--rd-font);
   }
   .upv2-alert {
     display: flex; align-items: center; gap: 10px;
-    padding: 9px 12px;
-    border-radius: 8px;
-    font-size: 12.5px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    font-size: 13px;
   }
   .upv2-alert-danger {
-    background: rgba(220,38,38,0.08);
-    border: 1px solid rgba(220,38,38,0.3);
-    color: #b91c1c;
+    background: var(--rd-red-soft);
+    border: 1px solid #f5c6d0;
+    color: var(--rd-red);
   }
   .upv2-alert-warn {
-    background: rgba(245,158,11,0.08);
-    border: 1px solid rgba(245,158,11,0.3);
-    color: #b45309;
+    background: var(--rd-amber-soft);
+    border: 1px solid #f3dfb8;
+    color: #92400e;
   }
-  .upv2-alert-icon { font-size: 14px; flex-shrink: 0; }
+  .upv2-alert-icon {
+    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .upv2-alert-icon .rd-ic { width: 14px; height: 14px; }
   .upv2-alert-text { flex: 1; line-height: 1.4; }
   .upv2-alert-cta {
     flex-shrink: 0;
     background: transparent; border: 1px solid currentColor;
     color: inherit; cursor: pointer;
-    padding: 3px 10px; border-radius: 5px;
-    font: 600 11px inherit;
+    padding: 3px 10px; border-radius: 7px;
+    font: 600 11.5px inherit;
   }
   .upv2-alert-cta:hover { background: currentColor; color: white; }
 
@@ -10516,41 +10551,48 @@
      percent of brightness difference). Wrapping the whole group in
      one elevated white panel makes "INSIGHTS" read as a distinct
      section instead of dissolving into the surrounding pane. */
+  /* Шаг 5 редизайна: Insights — .card.ins макета: белая карточка
+     border-strong/радиус 14, ряды с разделителями, иконка в 30px чипе
+     (warn = янтарный clock, neutral = индиго user, good = зелёный). */
   .upv2-insights {
     display: flex; flex-direction: column;
     margin-bottom: 14px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 4px 14px;        /* breathing room inside the white card */
-    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05),
-                0 1px 1px rgba(15, 23, 42, 0.03);
+    background: var(--rd-bg);
+    border: 1px solid var(--rd-border-strong);
+    border-radius: 14px;
+    padding: 2px 16px;
+    box-shadow: none;
+    font-family: var(--rd-font);
   }
   :root[data-theme="dark"] .upv2-insights { box-shadow: none; }
   .upv2-insight {
-    display: flex; gap: 12px; align-items: flex-start;
-    padding: 12px 0;
-    border-bottom: 1px solid var(--border);
-    /* No per-row background; the wrapper handles the white surface
-       and the divider lines do the visual grouping. */
+    display: flex; gap: 11px; align-items: flex-start;
+    padding: 13px 2px;
+    border-bottom: 1px solid var(--rd-border);
     background: transparent;
     border-radius: 0;
   }
   .upv2-insight:last-child { border-bottom: none; }
   .upv2-insight-icon {
-    font-size: 16px; line-height: 1.3;
-    margin-top: 1px;          /* nudge to align with the heavier text baseline */
+    width: 30px; height: 30px; border-radius: 8px; flex: none;
+    display: flex; align-items: center; justify-content: center;
+    margin-top: 0;
   }
+  .upv2-insight-icon .rd-ic { width: 15px; height: 15px; }
+  .upv2-insight-icon.warn    { background: var(--rd-amber-soft);  color: var(--rd-amber); }
+  .upv2-insight-icon.neutral { background: var(--rd-accent-soft); color: var(--rd-accent-ink); }
+  .upv2-insight-icon.good    { background: var(--rd-green-soft);  color: var(--rd-green); }
   .upv2-insight-body { flex: 1; min-width: 0; }
   .upv2-insight-text {
-    font-size: 13.5px;        /* was 12.5 — a touch larger for primary read */
-    color: var(--text);
-    line-height: 1.45;
+    font-size: 14px;
+    color: var(--rd-text);
+    line-height: 1.35;
   }
+  .upv2-insight-text b { font-weight: 750; }
   .upv2-insight-sub {
-    font-size: 11.5px;        /* was 10.5 — secondary line was too small */
-    color: var(--muted);
-    margin-top: 3px;
+    font-size: 12.5px;
+    color: var(--rd-text3);
+    margin-top: 2px;
     line-height: 1.4;
   }
 
@@ -10624,14 +10666,21 @@
      they're just "tenant owes a bit more". Keep the visual weight
      proportional to actual urgency. */
   /* ============ Invoice history table in Finance tab ============ */
+  /* Шаг 5 редизайна: таблица Invoice history по макету (.inv): белая
+     карточка border-strong/радиус 14, шапка 10.5 uppercase на #fafaf9,
+     суммы справа tabular-nums 700, даты «May 28 ’26» без переноса,
+     PAID-пилюли (.inv-status-badge выше). Grid-структура и обработчики
+     строк (row-click, контекст-меню, Link-месяц) не менялись. */
   .upv2-inv-empty {
-    padding: 14px 16px; text-align: center; color: var(--muted);
-    font-size: 12px; background: var(--surface-2);
-    border: 1px dashed var(--border); border-radius: 8px;
+    padding: 14px 16px; text-align: center; color: var(--rd-text3);
+    font-size: 12.5px; background: #fafaf9;
+    border: 1px dashed var(--rd-border-strong); border-radius: 12px;
     margin-bottom: 14px;
+    font-family: var(--rd-font);
   }
   .upv2-inv-table {
-    border: 1px solid var(--border); border-radius: 8px;
+    border: 1px solid var(--rd-border-strong); border-radius: 14px;
+    font-family: var(--rd-font);
     /* overflow: hidden was previously used to clip child corners to
        the rounded border; that also clipped row tooltips when they
        opened above the topmost row and got cut off by the table top
@@ -10640,20 +10689,20 @@
        last row backgrounds so the rounded look is preserved. */
     overflow: visible;
     margin-bottom: 14px;
-    background: var(--surface);
+    background: var(--rd-bg);
   }
   /* Match rounded corners to outermost rows (header row at top, last
      invoice row at bottom). border-radius on the children mirrors what
-     overflow:hidden used to give us "for free". */
+     overflow:hidden used to give us "for free". (13px = радиус 14 − 1px рамка) */
   .upv2-inv-table > .upv2-inv-head,
   .upv2-inv-table > details:first-of-type > summary {
-    border-top-left-radius: 7px;
-    border-top-right-radius: 7px;
+    border-top-left-radius: 13px;
+    border-top-right-radius: 13px;
   }
   .upv2-inv-table > .upv2-inv-row:last-child,
   .upv2-inv-table > details:last-of-type > .upv2-inv-group-body > .upv2-inv-row:last-child {
-    border-bottom-left-radius: 7px;
-    border-bottom-right-radius: 7px;
+    border-bottom-left-radius: 13px;
+    border-bottom-right-radius: 13px;
   }
   .upv2-inv-head, .upv2-inv-row {
     display: grid;
@@ -10664,23 +10713,27 @@
        little extra width, gap stays at 4px. */
     grid-template-columns: 1fr 50px 80px 70px;
     gap: 6px;
-    padding: 7px 10px;
+    padding: 10px 12px;
     align-items: center;
-    font-size: 12px;
+    font-size: 13px;
   }
   .upv2-inv-head {
-    background: var(--surface-2);
-    font-size: 10.5px; color: var(--muted);
-    text-transform: uppercase; letter-spacing: 0.05em;
-    font-weight: 600;
-    border-bottom: 1px solid var(--border);
+    background: #fafaf9;
+    font-size: 10.5px; color: var(--rd-text3);
+    text-transform: uppercase; letter-spacing: 0.06em;
+    font-weight: 700;
+    padding-top: 8px; padding-bottom: 8px;
+    border-bottom: 1px solid var(--rd-border);
   }
+  /* Заголовки Amount/Status — справа, как th.num/.Status макета */
+  .upv2-inv-head .upv2-inv-cell:nth-child(3),
+  .upv2-inv-head .upv2-inv-cell:nth-child(4) { text-align: right; }
   .upv2-inv-row {
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--rd-border);
     transition: background .12s;
   }
   .upv2-inv-row:last-child { border-bottom: none; }
-  .upv2-inv-row:hover { background: var(--surface-2); }
+  .upv2-inv-row:hover { background: #fafaf9; }
   /* Voided invoices — strike through every cell so the operator can
      scan the ledger and instantly tell which lines are dead. The badge
      itself already has line-through (.inv-status-badge.void); applying
@@ -10689,7 +10742,7 @@
   .upv2-inv-row.is-void { opacity: 0.55; }
   .upv2-inv-row.is-void .upv2-inv-cell {
     text-decoration: line-through;
-    text-decoration-color: var(--muted);
+    text-decoration-color: var(--rd-text3);
   }
   /* Don't double-strike the status badge — its own .void style already
      handles it, and stacking decorations looks messy. */
@@ -10698,7 +10751,14 @@
     text-decoration: none;
   }
   .upv2-inv-cell { min-width: 0; overflow: hidden; }
-  .upv2-inv-date { font-variant-numeric: tabular-nums; color: var(--muted); }
+  /* Даты — «May 28 ’26», цвет text (не muted), без переноса (макет .date) */
+  .upv2-inv-date { font-variant-numeric: tabular-nums; color: var(--rd-text); white-space: nowrap; }
+  /* Иконка «внешняя ссылка» у строк с hostedUrl — i-ext макета */
+  .upv2-inv-extic {
+    display: inline-flex; vertical-align: -1px; margin-left: 5px;
+    color: var(--rd-blue-link);
+  }
+  .upv2-inv-extic .rd-ic { width: 11px; height: 11px; }
   .upv2-inv-purpose {
     display: flex; align-items: center; gap: 6px;
     min-width: 0;
@@ -10707,101 +10767,107 @@
     flex: 0 0 auto;
     display: inline-flex; align-items: center; justify-content: center;
     min-width: 24px; padding: 1px 5px;
-    background: var(--surface-3);
-    color: var(--text);
+    background: var(--rd-surface);
+    color: var(--rd-text2);
     border-radius: 4px;
-    font: 700 10px ui-monospace, Menlo, monospace;
+    font: 700 10px var(--rd-mono);
     letter-spacing: 0.03em;
   }
   .upv2-inv-desc {
-    color: var(--text);
+    color: var(--rd-text);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  /* Суммы — справа, tabular-nums, 700 (макет .num) */
   .upv2-inv-amt {
     text-align: right;
     font-variant-numeric: tabular-nums;
-    font-weight: 600;
-    color: var(--text);
+    font-weight: 700;
+    color: var(--rd-text);
   }
   .upv2-inv-status { text-align: right; }
   .upv2-inv-paid {
     font-variant-numeric: tabular-nums;
-    color: var(--muted);
+    color: var(--rd-text3);
     text-align: right;
     font-size: 11px;
   }
   .upv2-inv-more {
-    border-top: 1px solid var(--border);
-    background: var(--surface-2);
+    border-top: 1px solid var(--rd-border);
+    background: #fafaf9;
   }
   .upv2-inv-more summary {
     padding: 7px 10px;
-    font-size: 11.5px; color: var(--accent);
+    font-size: 11.5px; color: var(--rd-accent-ink);
     cursor: pointer;
     text-align: center;
     list-style: none;
     font-weight: 600;
   }
   .upv2-inv-more summary::-webkit-details-marker { display: none; }
-  .upv2-inv-more summary:hover { background: var(--surface-3); }
+  .upv2-inv-more summary:hover { background: #f6f6f8; }
   .upv2-inv-more[open] summary::after {
-    content: '  ↑ collapse'; color: var(--muted); font-weight: 400;
+    content: '  ↑ collapse'; color: var(--rd-text3); font-weight: 400;
   }
-  /* Invoice history: tenant grouping + "open report" button */
+  /* «Open report» — .report макета: 13/600 accent-ink, белая, радиус 9 */
   .upv2-inv-report-btn {
-    font-size: 11.5px; font-weight: 600; color: var(--accent);
-    background: transparent; border: 1px solid var(--border);
-    border-radius: 6px; padding: 4px 10px; cursor: pointer;
+    font-size: 13px; font-weight: 600; color: var(--rd-accent-ink);
+    background: var(--rd-bg); border: 1px solid var(--rd-border-strong);
+    border-radius: 9px; padding: 7px 12px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--rd-font);
     transition: background .12s, border-color .12s;
   }
+  .upv2-inv-report-btn .rd-ic { width: 14px; height: 14px; }
   .upv2-inv-report-btn:hover {
-    background: var(--accent-light); border-color: var(--accent);
+    background: var(--rd-accent-soft); border-color: #c9cdf8;
   }
   .upv2-inv-group {
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--rd-border);
   }
   .upv2-inv-group:last-child { border-bottom: none; }
+  /* Шапка группы — .inv-head макета: имя 14/700 + CURRENT-чип + сумма справа */
   .upv2-inv-group summary {
-    padding: 8px 12px;
+    padding: 12px 14px;
     cursor: pointer;
     list-style: none;
     display: flex; align-items: center; justify-content: space-between;
     gap: 10px;
-    background: var(--surface-2);
+    background: var(--rd-bg);
   }
   .upv2-inv-group summary::-webkit-details-marker { display: none; }
   .upv2-inv-group summary::before {
-    content: '▸'; color: var(--muted); font-size: 10px;
+    content: '▸'; color: var(--rd-text3); font-size: 10px;
     transition: transform .12s;
     flex: 0 0 auto;
   }
   .upv2-inv-group[open] summary::before { transform: rotate(90deg); }
-  .upv2-inv-group summary:hover { background: var(--surface-3); }
+  .upv2-inv-group summary:hover { background: #fafaf9; }
   .upv2-inv-group-head {
     display: flex; align-items: center; gap: 8px;
     flex: 1 1 auto; min-width: 0;
   }
   .upv2-inv-group-name {
-    font: 600 12.5px system-ui; color: var(--text);
+    font: 700 14px var(--rd-font); color: var(--rd-text);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .upv2-inv-group-email {
-    font-size: 11px; color: var(--muted);
+    font-size: 11px; color: var(--rd-text3);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .upv2-inv-group-pill {
-    padding: 1px 6px; border-radius: 3px;
-    font: 700 9.5px system-ui; letter-spacing: 0.04em;
-    background: rgba(22,163,74,0.15); color: #16a34a;
+    padding: 2px 8px; border-radius: 6px;
+    font: 700 10.5px var(--rd-font); letter-spacing: 0.05em;
+    background: var(--rd-green-soft); color: var(--rd-green);
     flex: 0 0 auto;
   }
   .upv2-inv-group-sub {
-    font-size: 11px; color: var(--muted);
+    font-size: 12.5px; color: var(--rd-text2);
     flex: 0 0 auto;
+    white-space: nowrap;
     font-variant-numeric: tabular-nums;
   }
   .upv2-inv-group-body {
-    background: var(--surface);
+    background: var(--rd-bg);
   }
 
   /* ============ Unit invoice report modal (fullscreen) ============ */
@@ -11161,25 +11227,33 @@
   }
   .field-in-input-wrap > input.has-action { padding-right: 92px; }
 
-  /* Notes preview in Overview — clickable card */
+  /* Notes preview in Overview — жёлтая заметка .note макета:
+     --rd-note-bg/--rd-note-border, радиус 12, иконка-карандаш слева,
+     аффорданс «Tenant tab ›» справа. Клик-обработчик не менялся. */
   .upv2-notes-preview {
-    display: flex; gap: 10px; align-items: flex-start;
-    padding: 10px 12px; margin-bottom: 14px;
-    background: #fefce8; border: 1px solid #fde68a;
-    border-radius: 8px;
+    display: flex; gap: 10px; align-items: center;
+    padding: 12px 14px; margin-bottom: 14px;
+    background: var(--rd-note-bg); border: 1px solid var(--rd-note-border);
+    border-radius: 12px;
     cursor: pointer;
-    transition: border-color .1s;
+    font-family: var(--rd-font);
   }
   :root[data-theme="dark"] .upv2-notes-preview {
     background: rgba(245,158,11,0.08);
     border-color: rgba(245,158,11,0.3);
   }
-  .upv2-notes-preview:hover { border-color: #f59e0b; }
-  .upv2-notes-icon { font-size: 14px; flex-shrink: 0; }
+  .upv2-notes-preview:hover { filter: brightness(.985); }
+  .upv2-notes-icon { flex-shrink: 0; color: #a07d18; display: flex; }
+  .upv2-notes-icon .rd-ic { width: 15px; height: 15px; }
   .upv2-notes-text {
-    font-size: 12.5px; line-height: 1.5; color: var(--text);
-    white-space: pre-wrap;
+    font-size: 14px; line-height: 1.45; color: var(--rd-text);
+    white-space: pre-wrap; flex: 1; min-width: 0;
   }
+  .upv2-notes-go {
+    font-size: 11.5px; color: #a07d18; white-space: nowrap;
+    display: flex; align-items: center; gap: 3px; flex: none;
+  }
+  .upv2-notes-go .rd-ic { width: 12px; height: 12px; }
 
   /* Live move-in preview inside Quick Add Tenant modal. */
   .qat-prv {
@@ -12195,41 +12269,46 @@
 
   /* ============ Lease page v2 ============ */
   /* Lease health / progress card at top of lease pane */
+  /* Шаг 5 редизайна: карточка Lease progress по макету — белая,
+     border-strong/радиус 14, тайтл 14.5/700 с muted-хвостом «· N% elapsed»,
+     бар 6px на #ececee, заливка индиго (warn/late оттенки сохранены). */
   .lease-timeline {
-    background: var(--surface);
-    border: 1px solid var(--border); border-radius: 10px;
-    padding: 14px 16px; margin-bottom: 14px;
+    background: var(--rd-bg);
+    border: 1px solid var(--rd-border-strong); border-radius: 14px;
+    padding: 15px 16px; margin-bottom: 10px;
+    font-family: var(--rd-font);
   }
   .lease-timeline-head {
     display: flex; justify-content: space-between; align-items: baseline;
-    gap: 12px; margin-bottom: 10px;
+    gap: 12px; margin-bottom: 9px;
   }
   .lease-timeline-title {
-    font: 600 13px system-ui; color: var(--text);
+    font: 700 14.5px var(--rd-font); color: var(--rd-text);
   }
+  .lease-timeline-title span { color: var(--rd-text2); font-weight: 500; }
   .lease-timeline-right {
-    font: 600 13px system-ui; color: var(--text);
+    font: 700 14px var(--rd-font); color: var(--rd-text);
   }
-  .lease-timeline-right.warn { color: #b45309; }
-  .lease-timeline-right.danger { color: #dc2626; }
+  .lease-timeline-right.warn { color: var(--rd-amber); }
+  .lease-timeline-right.danger { color: var(--rd-red); }
   .lease-timeline-bar {
     position: relative;
-    height: 6px; border-radius: 999px;
-    background: var(--surface-3);
+    height: 6px; border-radius: 99px;
+    background: #ececee;
     overflow: hidden;
   }
   .lease-timeline-fill {
     position: absolute; left: 0; top: 0; bottom: 0;
-    background: linear-gradient(90deg, #3b82f6, #6366f1);
-    border-radius: 999px;
+    background: var(--rd-accent);
+    border-radius: 99px;
     transition: width .3s;
   }
-  .lease-timeline-fill.late { background: linear-gradient(90deg, #ef4444, #b91c1c); }
-  .lease-timeline-fill.warn { background: linear-gradient(90deg, #f59e0b, #b45309); }
+  .lease-timeline-fill.late { background: var(--rd-red); }
+  .lease-timeline-fill.warn { background: var(--rd-amber); }
   .lease-timeline-labels {
     display: flex; justify-content: space-between;
-    margin-top: 6px;
-    font-size: 10.5px; color: var(--muted);
+    margin-top: 7px;
+    font-size: 12.5px; color: var(--rd-text3);
   }
   .lease-timeline-now {
     position: absolute;
@@ -12307,61 +12386,90 @@
   }
   .upv2-prev-tenants[open] summary::before { transform: rotate(90deg); }
 
-  /* Vacant-unit CTA — prominent call to add tenant */
-  .upv2-vacant-cta { margin-bottom: 16px; }
+  /* Vacant-unit CTA — .empty макета «Suite 344 Activity.html»: dashed-карта
+     радиус 16, чип 52px с иконкой здания, primary/outline CTA в ряд,
+     full-width AI-градиент, левосторонняя hint-карта с funnel-чипами.
+     Обработчики (openQuickAddTenantModal / _overviewAddProspect /
+     openLeaseAiModal) не менялись. */
+  .upv2-vacant-cta { margin-bottom: 16px; font-family: var(--rd-font); }
   .upv2-vacant-hero {
     text-align: center;
-    padding: 28px 20px;
-    background: var(--surface-2);
-    border: 2px dashed var(--border);
-    border-radius: 12px;
+    padding: 26px 20px 20px;
+    background: none;
+    border: 1.5px dashed var(--rd-border-strong);
+    border-radius: 16px;
   }
   .upv2-vacant-icon {
-    font-size: 36px; opacity: 0.5;
-    margin-bottom: 10px;
+    width: 52px; height: 52px; border-radius: 14px;
+    background: var(--rd-surface); color: var(--rd-text2);
+    display: flex; align-items: center; justify-content: center;
+    margin: 0 auto 14px;
   }
+  .upv2-vacant-icon .rd-ic { width: 24px; height: 24px; }
   .upv2-vacant-title {
-    font: 700 16px system-ui; color: var(--text);
-    margin-bottom: 4px;
+    font: 700 18px var(--rd-font); letter-spacing: -.01em; color: var(--rd-text);
+    margin-bottom: 3px;
   }
   .upv2-vacant-sub {
-    font-size: 12.5px; color: var(--muted);
-    margin-bottom: 16px;
+    font-size: 14px; color: var(--rd-text2);
+    margin-bottom: 18px;
   }
   .upv2-vacant-btn {
-    padding: 9px 18px; border-radius: 8px;
-    background: var(--accent); color: white;
-    border: none; font: 600 13px inherit;
+    flex: 1; padding: 11px 14px; border-radius: 10px;
+    background: var(--rd-accent); color: #fff;
+    border: 1px solid var(--rd-accent); font: 600 14px var(--rd-font);
     cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px;
   }
-  .upv2-vacant-btn:hover { background: var(--accent-hover); }
+  .upv2-vacant-btn .rd-ic { width: 15px; height: 15px; }
+  .upv2-vacant-btn:hover { background: var(--rd-accent-ink); }
   /* Две CTA-кнопки на vacant юните: tenant (primary) и prospect
-     (secondary). Secondary — outline, чтобы visually subordinate первой,
-     но всё равно явно кликабельно. */
+     (secondary outline) — .cta-primary / .cta-outline макета. */
   .upv2-vacant-actions {
-    display: inline-flex; gap: 10px; flex-wrap: wrap; justify-content: center;
+    display: flex; gap: 8px;
   }
   .upv2-vacant-btn-secondary {
-    background: var(--surface) !important;
-    color: var(--accent) !important;
-    border: 1px solid var(--accent) !important;
+    background: #fff !important;
+    color: var(--rd-accent-ink) !important;
+    border: 1px solid #c9cdf8 !important;
   }
   .upv2-vacant-btn-secondary:hover {
-    background: var(--accent-light) !important;
+    background: var(--rd-accent-soft) !important;
   }
+  /* Hint-карта — .hint макета: левосторонняя, #fafaf9, ряды с иконками */
   .upv2-vacant-hint {
-    font-size: 11px; color: var(--muted);
-    margin-top: 10px; line-height: 1.4;
+    margin-top: 18px; text-align: left;
+    background: #fafaf9; border: 1px solid var(--rd-border);
+    border-radius: 12px; padding: 13px 14px;
+    display: flex; flex-direction: column; gap: 10px;
+    font-size: 12.5px; color: var(--rd-text2); line-height: 1.5;
   }
-  /* AI «import from lease» — отдельная кнопка под двумя CTA. Градиент-индиго,
-     full-width, со «спарклом» — визуально маркирует «умное» действие. */
+  .upv2-vacant-hint b { color: var(--rd-text); font-weight: 650; }
+  .upv2-vacant-hint-row { display: flex; gap: 9px; }
+  .upv2-vacant-hint-row > .rd-ic {
+    width: 14px; height: 14px; color: var(--rd-text3);
+    margin-top: 2px; flex: none;
+  }
+  .upv2-vacant-hint-row p { margin: 0; }
+  /* Funnel-чипы Inquiry→Toured→LOI→Lease sent→Signed — .funnel макета */
+  .upv2-vacant-funnel {
+    display: inline-flex; flex-wrap: wrap; gap: 3px; align-items: center;
+    margin-top: 3px;
+    font-family: var(--rd-mono); font-size: 10.5px; font-weight: 600;
+  }
+  .upv2-vacant-funnel .rd-monotag { font-size: 10.5px; padding: 1px 6px; border-radius: 5px; }
+  .upv2-vacant-funnel i { font-style: normal; color: var(--rd-text3); }
+  /* AI «import from lease» — full-width градиент var(--rd-ai-grad) со
+     спарклом (.cta-ai макета); handler openLeaseAiModal не менялся. */
   .upv2-vacant-btn-ai {
-    display: block; width: 100%; margin-top: 10px;
-    padding: 9px 14px; border-radius: 8px; border: none;
-    background: linear-gradient(90deg, #6366f1, #8b5cf6); color: #fff;
-    font: 700 12.5px inherit; cursor: pointer; letter-spacing: .2px;
+    display: flex; width: 100%; margin-top: 8px;
+    align-items: center; justify-content: center; gap: 7px;
+    padding: 11px 14px; border-radius: 10px; border: none;
+    background: var(--rd-ai-grad); color: #fff;
+    font: 600 14px var(--rd-font); cursor: pointer; letter-spacing: 0;
   }
-  .upv2-vacant-btn-ai:hover { filter: brightness(1.07); }
+  .upv2-vacant-btn-ai .rd-ic { width: 15px; height: 15px; }
+  .upv2-vacant-btn-ai:hover { filter: brightness(1.06); }
 
   /* ===== AI lease-import modal (split view: doc left, fields right) ===== */
   .lease-ai-overlay {
@@ -12498,28 +12606,33 @@
      фон (как Move-in card на сиреневом, но теплее) — отличается от alerts
      (красный) и от прочих info-блоков. Inline layout: иконка + текст слева,
      кнопка справа. На узких экранах — переносит кнопку под текст. */
+  /* Шаг 5 редизайна: токены amber-семьи + спрайт-иконка; логика показа
+     (нет реальной лизы / offline-signed) не менялась. */
   .upv2-send-lease-cta {
     display: flex; align-items: center; gap: 12px;
     padding: 12px 14px;
     margin-bottom: 14px;
-    background: #fef3e2;
-    border: 1px solid #f5d6a0;
-    border-radius: 10px;
+    background: var(--rd-amber-soft);
+    border: 1px solid #f3dfb8;
+    border-radius: 12px;
     flex-wrap: wrap;
+    font-family: var(--rd-font);
   }
   .upv2-send-lease-left {
     display: flex; align-items: center; gap: 10px;
     flex: 1; min-width: 0;
   }
   .upv2-send-lease-icon {
-    font-size: 22px; line-height: 1; flex-shrink: 0;
+    flex-shrink: 0; color: var(--rd-amber);
+    display: flex; align-items: center; justify-content: center;
   }
+  .upv2-send-lease-icon .rd-ic { width: 18px; height: 18px; }
   .upv2-send-lease-title {
-    font-size: 13px; font-weight: 600; color: #7c4a03;
+    font-size: 13px; font-weight: 600; color: #92400e;
     line-height: 1.2;
   }
   .upv2-send-lease-sub {
-    font-size: 11.5px; color: #92621b;
+    font-size: 11.5px; color: #a16207;
     margin-top: 2px; line-height: 1.35;
   }
   /* Lease-signed CTA buttons. Tony 2026-05-23: «кнопки сделай меньше,
@@ -12527,22 +12640,23 @@
      secondary so they sit on one visual line with the same vertical
      metrics — primary keeps colour weight to retain hierarchy. */
   .upv2-send-lease-btn {
-    background: var(--accent, #3D3BE8);
+    background: var(--rd-accent);
     color: #fff;
-    border: 1px solid var(--accent, #3D3BE8);
-    border-radius: 6px;
+    border: 1px solid var(--rd-accent);
+    border-radius: 9px;
     padding: 5px 12px;
     height: 30px;
-    font-size: 12px; font-weight: 600;
+    font-size: 12.5px; font-weight: 600;
     cursor: pointer;
     white-space: nowrap;
     transition: background 0.1s;
-    font-family: inherit;
+    font-family: var(--rd-font);
     flex-shrink: 0;
-    display: inline-flex; align-items: center; gap: 4px;
+    display: inline-flex; align-items: center; gap: 5px;
     box-sizing: border-box;
   }
-  .upv2-send-lease-btn:hover { background: var(--accent-hover, #2b29b8); border-color: var(--accent-hover, #2b29b8); }
+  .upv2-send-lease-btn .rd-ic { width: 13px; height: 13px; }
+  .upv2-send-lease-btn:hover { background: var(--rd-accent-ink); border-color: var(--rd-accent-ink); }
   .upv2-send-lease-actions {
     display: flex; gap: 6px; align-items: center;
     flex-wrap: wrap; min-width: 0;
@@ -12551,63 +12665,74 @@
        сжимается до ширины строки и кнопки переносятся стопкой вместо overflow. */
   }
   .upv2-send-lease-btn-secondary {
-    background: transparent;
-    color: #7c4a03;
-    border: 1px solid #d8b878;
+    background: #fff;
+    color: var(--rd-text);
+    border: 1px solid var(--rd-border-strong);
     padding: 5px 12px;
     height: 30px;
     font-weight: 600;
-    font-size: 12px;
+    font-size: 12.5px;
   }
   .upv2-send-lease-btn-secondary:hover {
-    background: rgba(216,184,120,0.18);
-    border-color: #b8924a;
+    background: #f6f6f8;
+    border-color: var(--rd-border-strong);
   }
-  /* Сводка проспектов — бледно-сиреневый bar над CTA, кликом уводит в Lease tab. */
+  /* Сводка проспектов — accent-soft bar над CTA, кликом уводит в Lease tab.
+     Шаг 5: токены --rd-accent-*; 🎯 → спрайт i-target. */
   .upv2-vacant-prospects {
-    background: #eef2ff; border: 1px solid #c7d2fe;
-    border-radius: 8px; padding: 8px 12px;
-    font-size: 12px; color: #3730a3;
+    background: var(--rd-accent-soft); border: 1px solid var(--rd-accent-border);
+    border-radius: 10px; padding: 8px 12px;
+    font-size: 12.5px; color: var(--rd-accent-ink);
     margin-bottom: 14px; cursor: pointer;
     transition: background .12s;
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
     justify-content: center;
+    font-family: var(--rd-font);
   }
-  .upv2-vacant-prospects:hover { background: #e0e7ff; }
+  .upv2-vacant-prospects:hover { background: #e3e7fd; }
+  .upv2-vacant-prospects > .rd-ic { width: 13px; height: 13px; flex: none; }
   .upv2-vacant-prospects-link {
-    margin-left: auto; font-weight: 600; color: #3730a3;
+    margin-left: auto; font-weight: 600; color: var(--rd-accent-ink);
   }
 
-  /* Activity timeline — simple stacked rows */
+  /* Activity timeline — simple stacked rows. Шаг 5: иконки в чипах
+     (money = зелёный, neutral = индиго), белая карточка border-strong. */
   .upv2-activity {
-    border: 1px solid var(--border); border-radius: 10px;
-    padding: 4px 0; background: var(--surface);
+    border: 1px solid var(--rd-border-strong); border-radius: 14px;
+    padding: 4px 0; background: var(--rd-bg);
     margin-bottom: 14px;
+    font-family: var(--rd-font);
   }
   .upv2-activity-row {
     display: flex; align-items: flex-start; gap: 10px;
     padding: 10px 14px;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--rd-border);
   }
   .upv2-activity-row:last-child { border-bottom: none; }
   .upv2-activity-icon {
-    font-size: 14px; width: 24px; text-align: center;
-    flex-shrink: 0; line-height: 1.4;
+    width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--rd-surface); color: var(--rd-text2);
   }
+  .upv2-activity-icon .rd-ic { width: 14px; height: 14px; }
+  .upv2-activity-icon.money   { background: var(--rd-money-bg);    color: var(--rd-money-fg); }
+  .upv2-activity-icon.neutral { background: var(--rd-accent-soft); color: var(--rd-accent-ink); }
   .upv2-activity-text {
     flex: 1; min-width: 0;
-    font-size: 12.5px; color: var(--text); line-height: 1.4;
+    font-size: 13px; color: var(--rd-text); line-height: 1.4;
   }
   .upv2-activity-when {
-    font-size: 11px; color: var(--muted); margin-top: 2px;
+    font-size: 11.5px; color: var(--rd-text3); margin-top: 2px;
   }
 
-  /* Section title within a tab */
+  /* Section title within a tab — .sec-head h2 макета:
+     13/700/.06em uppercase text-2, без нижней линии */
   .upv2-section-title {
-    font-size: 12px; font-weight: 700; color: var(--text);
-    text-transform: uppercase; letter-spacing: 0.4px;
-    margin: 18px 0 8px; padding-bottom: 6px;
-    border-bottom: 1px solid var(--border);
+    font-size: 13px; font-weight: 700; color: var(--rd-text2);
+    text-transform: uppercase; letter-spacing: 0.06em;
+    margin: 22px 0 10px; padding-bottom: 0;
+    border-bottom: none;
+    font-family: var(--rd-font);
   }
 
   /* Services tab — integration cards (UniFi placeholders) */
@@ -78014,7 +78139,8 @@ function _renderUnitOverviewAlerts(u) {
     const text = currentOverdue && unpaidMonths === 1
       ? `Current month overdue — $${owed.toLocaleString()} due`
       : `${unpaidMonths} month${unpaidMonths===1?'':'s'} unpaid · $${owed.toLocaleString()} owed`;
-    alerts.push({ tone: 'danger', icon: '⚠', text, cta: 'View', onClick: `setUnitTab('finance')` });
+    // Шаг 5 редизайна: icon — имя символа спрайта (рендер через _rdIc ниже)
+    alerts.push({ tone: 'danger', icon: 'alert', text, cta: 'View', onClick: `setUnitTab('finance')` });
     // The actionable late-fee block ("Send invoice incl. fee" + per-month
     // waive buttons) renders directly on Overview now — no need to
     // duplicate the policy text as a separate banner here.
@@ -78027,7 +78153,7 @@ function _renderUnitOverviewAlerts(u) {
       if (days >= 0 && days <= 60) {
         alerts.push({
           tone: 'warn',
-          icon: '📅',
+          icon: 'calendar',
           text: `Lease ends in ${days}d — renewal decision pending`,
           cta: 'Lease',
           onClick: `setUnitTab('lease')`,
@@ -78035,7 +78161,7 @@ function _renderUnitOverviewAlerts(u) {
       } else if (days < 0) {
         alerts.push({
           tone: 'danger',
-          icon: '⚠',
+          icon: 'alert',
           text: `Lease expired ${Math.abs(days)}d ago`,
           cta: 'Lease',
           onClick: `setUnitTab('lease')`,
@@ -78047,7 +78173,7 @@ function _renderUnitOverviewAlerts(u) {
   if (u.tenant && (!u.email || !/@/.test(u.email))) {
     alerts.push({
       tone: 'warn',
-      icon: 'ⓘ',
+      icon: 'mail',
       text: `No tenant email — required for Stripe invoicing`,
       cta: 'Add',
       onClick: `setUnitTab('tenant')`,
@@ -78057,7 +78183,7 @@ function _renderUnitOverviewAlerts(u) {
   return `<div class="upv2-alerts">
     ${alerts.map(a => `
       <div class="upv2-alert upv2-alert-${a.tone}">
-        <span class="upv2-alert-icon">${a.icon}</span>
+        <span class="upv2-alert-icon">${_rdIc(a.icon, 14)}</span>
         <span class="upv2-alert-text">${esc(a.text)}</span>
         ${a.cta ? `<button class="upv2-alert-cta" onclick="${a.onClick}">${esc(a.cta)} →</button>` : ''}
       </div>
@@ -78085,8 +78211,12 @@ function _renderUnitInsights(u) {
       }
       if (total > 0) {
         const rate = Math.round((onTime / total) * 100);
+        // Шаг 5 редизайна: icon/tone вместо эмодзи — i-clock в чипе,
+        // янтарный warn при низком on-time rate (макет Insights),
+        // зелёный good при ≥70%. Пороговая логика прежняя.
         facts.push({
-          icon: rate >= 90 ? '✅' : rate >= 70 ? '🟢' : '🟡',
+          icon: 'clock',
+          tone: rate >= 70 ? 'good' : 'warn',
           text: `Pays on time <b>${rate}%</b> of the time`,
           sub: `${onTime} of ${total} recorded payments`,
         });
@@ -78102,7 +78232,8 @@ function _renderUnitInsights(u) {
     const pct = Math.round((delta / market) * 100);
     const above = delta > 0;
     facts.push({
-      icon: above ? '📈' : '📉',
+      icon: 'chart',
+      tone: 'neutral',
       text: `Rent is <b>${above ? '+' : '−'}$${Math.abs(delta).toLocaleString()}</b> (${above ? '+' : ''}${pct}%) vs market`,
       sub: `Current $${contract.toLocaleString()} · Market $${market.toLocaleString()}`,
     });
@@ -78119,7 +78250,8 @@ function _renderUnitInsights(u) {
       else if (days < 365) tenure = `${Math.round(days / 30)} month${Math.round(days/30)===1?'':'s'}`;
       else tenure = `${(days / 365).toFixed(1)} year${(days/365).toFixed(1)==='1.0'?'':'s'}`;
       facts.push({
-        icon: '👤',
+        icon: 'user',
+        tone: 'neutral',
         text: `Tenant since <b>${tenure}</b>`,
         sub: t.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
       });
@@ -78132,7 +78264,7 @@ function _renderUnitInsights(u) {
     <div class="upv2-insights">
       ${facts.map(f => `
         <div class="upv2-insight">
-          <span class="upv2-insight-icon">${f.icon}</span>
+          <span class="upv2-insight-icon ${f.tone || 'neutral'}">${_rdIc(f.icon, 15)}</span>
           <div class="upv2-insight-body">
             <div class="upv2-insight-text">${f.text}</div>
             <div class="upv2-insight-sub">${esc(f.sub)}</div>
@@ -78209,10 +78341,11 @@ function _renderUnitOverviewPane(u, editOn, ro) {
         // Берём «самого продвинутого» — приоритет lease-sent > loi > toured > inquiry.
         const ap = _activeProspect(u);
         const meta = ap ? _prospectStageMeta(ap.stage) : null;
+        // Шаг 5 редизайна: 🎯 → спрайт i-target, у stage-пилюли убран emoji
         prospectsLine = `
           <div class="upv2-vacant-prospects" onclick="_unitJumpToLease()">
-            🎯 <b>${prospectsCount}</b> active ${prospectsCount === 1 ? 'prospect' : 'prospects'}
-            ${ap ? ` · top: <b>${esc(ap.name || '?')}</b> <span style="background:${meta.color};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;">${meta.icon} ${esc(meta.label)}</span>` : ''}
+            ${_rdIc('target', 13)} <b>${prospectsCount}</b> active ${prospectsCount === 1 ? 'prospect' : 'prospects'}
+            ${ap ? ` · top: <b>${esc(ap.name || '?')}</b> <span style="background:${meta.color};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;">${esc(meta.label)}</span>` : ''}
             <span class="upv2-vacant-prospects-link">Manage in Lease →</span>
           </div>`;
       }
@@ -78221,25 +78354,34 @@ function _renderUnitOverviewPane(u, editOn, ro) {
     // Кнопка проспекта рядом с tenant — параллельные пути:
     // • Add tenant — быстрый (договорились/подписали офлайн)
     // • Add prospect — трекаемый (только инквайр/тур/LOI)
+    // Шаг 5 редизайна: эмодзи → спрайт, hint-карта макета с funnel-чипами
+    // (.rd-monotag); обработчики кнопок не менялись.
     const ctaButtons = canEdit() ? `
       <div class="upv2-vacant-actions">
-        <button class="upv2-vacant-btn" onclick="openQuickAddTenantModal()">+ Add tenant</button>
+        <button class="upv2-vacant-btn" onclick="openQuickAddTenantModal()">${_rdIc('plus', 15)}Add tenant</button>
         <button class="upv2-vacant-btn upv2-vacant-btn-secondary"
-                onclick="_overviewAddProspect()">+ Add prospect</button>
+                onclick="_overviewAddProspect()">${_rdIc('plus', 15)}Add prospect</button>
       </div>
       <button class="upv2-vacant-btn upv2-vacant-btn-ai" onclick="openLeaseAiModal()"
               title="Upload an existing signed lease — AI reads it and fills the tenant fields for you">
-        ✨ Add tenant from lease (AI)
+        ${_rdIc('sparkle', 15)}Add tenant from lease (AI)
       </button>
       <div class="upv2-vacant-hint">
-        <b>Tenant</b> — quick entry, no funnel tracking. Best for small offices or when you're ready to send the lease right away.<br>
-        <b>Prospect</b> — tracks the lead through Inquiry → Toured → LOI → Lease sent → Signed (visible on the Pipeline board).
+        <div class="upv2-vacant-hint-row">
+          ${_rdIc('user', 14)}
+          <p><b>Tenant</b> — quick entry, no funnel tracking. Best for small offices or when you're ready to send the lease right away.</p>
+        </div>
+        <div class="upv2-vacant-hint-row">
+          ${_rdIc('activity', 14)}
+          <p><b>Prospect</b> — tracks the lead on the Pipeline board:<br>
+          <span class="upv2-vacant-funnel"><span class="rd-monotag">Inquiry</span><i>→</i><span class="rd-monotag">Toured</span><i>→</i><span class="rd-monotag">LOI</span><i>→</i><span class="rd-monotag">Lease sent</span><i>→</i><span class="rd-monotag">Signed</span></span></p>
+        </div>
       </div>` : '';
 
     return `
       <div class="upv2-vacant-cta">
         <div class="upv2-vacant-hero">
-          <div class="upv2-vacant-icon">🏢</div>
+          <div class="upv2-vacant-icon">${_rdIc('building', 24)}</div>
           <div class="upv2-vacant-title">${status === 'reserved' ? 'Reserved' : 'Vacant suite'}</div>
           <div class="upv2-vacant-sub">${rent ? `Market rent: $${rent.toLocaleString()}/mo` : 'Set market rent in Unit specifications'}</div>
           ${prospectsLine}
@@ -78302,10 +78444,12 @@ function _renderUnitOverviewPane(u, editOn, ro) {
   // Recent activity. Each row may carry an `amount` (number) so the
   // operator sees the dollar value at a glance — same pattern as
   // Stripe's activity feed where every event has its $ next to it.
+  // Шаг 5 редизайна: icon — имя символа спрайта + tone чипа
+  // (money = зелёный, neutral = индиго); состав/сортировка не менялись.
   const activityRows = [];
   if (u.stripe?.moveInRent?.sentAt) {
     activityRows.push({
-      icon: '💸',
+      icon: 'invoice', tone: 'money',
       when: u.stripe.moveInRent.sentAt,
       label: `Move-in rent invoice sent`,
       amount: +u.stripe.moveInRent.amount || 0,
@@ -78313,7 +78457,7 @@ function _renderUnitOverviewPane(u, editOn, ro) {
   }
   if (u.stripe?.depositInvoice?.sentAt) {
     activityRows.push({
-      icon: '🏦',
+      icon: 'bank', tone: 'money',
       when: u.stripe.depositInvoice.sentAt,
       label: `Deposit invoice sent`,
       amount: +u.stripe.depositInvoice.amount || +u.deposit || 0,
@@ -78323,7 +78467,7 @@ function _renderUnitOverviewPane(u, editOn, ro) {
     Object.entries(u.payments).forEach(([ym, p]) => {
       if (p?.status === 'paid' && p.recordedAt) {
         activityRows.push({
-          icon: '✓',
+          icon: 'check', tone: 'money',
           when: p.recordedAt,
           label: `Payment received for ${_fmtMonthName(ym)}`,
           amount: +p.amount || 0,
@@ -78333,7 +78477,7 @@ function _renderUnitOverviewPane(u, editOn, ro) {
   }
   if (u._tenantAddedAt) {
     activityRows.push({
-      icon: '👤',
+      icon: 'user', tone: 'neutral',
       when: u._tenantAddedAt,
       label: `Tenant added: ${esc(u.tenant || u.company || '?')}`,
       // Show the monthly rent as the "value" of the tenancy event
@@ -78353,7 +78497,7 @@ function _renderUnitOverviewPane(u, editOn, ro) {
     <div class="upv2-activity">
       ${top5.map(r => `
         <div class="upv2-activity-row">
-          <span class="upv2-activity-icon">${r.icon}</span>
+          <span class="upv2-activity-icon ${r.tone || ''}">${_rdIc(r.icon, 14)}</span>
           <div class="upv2-activity-text">
             <div>${esc(r.label)}</div>
             <div class="upv2-activity-when">${esc(_fmtRelativeWhen(r.when))}${r.amount > 0 ? ' · ' + '$' + r.amount.toLocaleString(undefined,{minimumFractionDigits: r.amount % 1 ? 2 : 0, maximumFractionDigits: 2}) + (r.amountSuffix || '') : ''}</div>
@@ -78438,32 +78582,34 @@ function _renderUnitOverviewPane(u, editOn, ro) {
       const _sub = _hasSignedProspect
         ? `Upload the signed PDF for ${esc(u.tenant || u.company || 'the tenant')} to keep records — or re-send via DocuSign.`
         : `Send the lease agreement to ${esc(u.tenant || u.company || 'the tenant')} for e-signature.`;
+      // Шаг 5 редизайна: эмодзи кнопок/иконки → спрайт (clip/sign/check/file);
+      // обработчики и тексты не менялись.
       const _primaryBtn = _hasSignedProspect
         ? `<button type="button" class="upv2-send-lease-btn"
                    onclick="openUploadSignedPdf()"
                    title="Upload the PDF that ${esc(u.tenant || 'the tenant')} signed offline">
-             📎 Upload signed PDF
+             ${_rdIc('clip', 13)} Upload signed PDF
            </button>`
         : `<button type="button" class="upv2-send-lease-btn"
                    onclick="_openAddLeaseDocModal('${esc(b.id)}','${esc(f.id)}','${esc(u.id)}','lease')"
                    title="Open the Add Lease modal directly from Overview">
-             ✍ Send lease →
+             ${_rdIc('sign', 13)} Send lease →
            </button>`;
       const _secondaryBtn = _hasSignedProspect
         ? `<button type="button" class="upv2-send-lease-btn upv2-send-lease-btn-secondary"
                    onclick="_openAddLeaseDocModal('${esc(b.id)}','${esc(f.id)}','${esc(u.id)}','lease')"
                    title="Re-send via DocuSign (supersedes offline signature)">
-             ✍ Send via DocuSign
+             ${_rdIc('sign', 13)} Send via DocuSign
            </button>`
         : `<button type="button" class="upv2-send-lease-btn upv2-send-lease-btn-secondary"
                    onclick="openUploadSignedPdf()"
                    title="Upload an already-signed PDF instead of sending via DocuSign">
-             📎 Upload PDF
+             ${_rdIc('clip', 13)} Upload PDF
            </button>`;
       sendLeaseBlock = `
         <div class="upv2-send-lease-cta">
           <div class="upv2-send-lease-left">
-            <span class="upv2-send-lease-icon">${_hasSignedProspect ? '✓' : '📄'}</span>
+            <span class="upv2-send-lease-icon">${_hasSignedProspect ? _rdIc('check', 18) : _rdIc('file', 18)}</span>
             <div>
               <div class="upv2-send-lease-title">${_title}</div>
               <div class="upv2-send-lease-sub">${_sub}</div>
@@ -78487,11 +78633,14 @@ function _renderUnitOverviewPane(u, editOn, ro) {
 
   // Internal-notes preview — first 3 lines, clickable to open Tenant tab.
   const noteText = (u.note || '').trim();
+  // Шаг 5 редизайна: жёлтая заметка макета — карандаш-спрайт +
+  // аффорданс «Tenant tab ›» справа; onclick/таргет фокуса не менялись.
   const notesBlock = noteText ? `
     <div class="upv2-section-title">Notes</div>
     <div class="upv2-notes-preview" onclick="setUnitTab('tenant'); setTimeout(()=>document.getElementById('fNote')?.focus(), 100);" title="Click to edit in Tenant tab">
-      <span class="upv2-notes-icon">📝</span>
+      <span class="upv2-notes-icon">${_rdIc('pencil', 15)}</span>
       <div class="upv2-notes-text">${esc(noteText.slice(0, 240))}${noteText.length > 240 ? '…' : ''}</div>
+      <span class="upv2-notes-go">Tenant tab${_rdIc('chev-r', 12)}</span>
     </div>
   ` : '';
 
@@ -78577,35 +78726,44 @@ function _renderUnitTenantPane(u, editOn, ro) {
       if (prospectsCount > 0) {
         const ap = (typeof _activeProspect === 'function') ? _activeProspect(u) : null;
         const meta = (ap && typeof _prospectStageMeta === 'function') ? _prospectStageMeta(ap.stage) : null;
+        // Шаг 5 редизайна: зеркало Overview — i-target + пилюля без emoji
         prospectsLine = `
           <div class="upv2-vacant-prospects" onclick="_unitJumpToLease()">
-            🎯 <b>${prospectsCount}</b> active ${prospectsCount === 1 ? 'prospect' : 'prospects'}
-            ${(ap && meta) ? ` · top: <b>${esc(ap.name || '?')}</b> <span style="background:${meta.color};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;">${meta.icon} ${esc(meta.label)}</span>` : ''}
+            ${_rdIc('target', 13)} <b>${prospectsCount}</b> active ${prospectsCount === 1 ? 'prospect' : 'prospects'}
+            ${(ap && meta) ? ` · top: <b>${esc(ap.name || '?')}</b> <span style="background:${meta.color};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;">${esc(meta.label)}</span>` : ''}
             <span class="upv2-vacant-prospects-link">Manage in Lease →</span>
           </div>`;
       }
     } catch (e) { console.warn('[tenant pane prospects]', e); }
 
-    // Параллельные кнопки + пояснение — зеркало Overview-CTA.
+    // Параллельные кнопки + пояснение — зеркало Overview-CTA (Шаг 5:
+    // спрайт-иконки + hint-карта с funnel-чипами, обработчики прежние).
     const ctaButtons = canEdit() ? `
       <div class="upv2-vacant-actions">
-        <button class="upv2-vacant-btn" onclick="openQuickAddTenantModal()">+ Add tenant</button>
+        <button class="upv2-vacant-btn" onclick="openQuickAddTenantModal()">${_rdIc('plus', 15)}Add tenant</button>
         <button class="upv2-vacant-btn upv2-vacant-btn-secondary"
-                onclick="_overviewAddProspect()">+ Add prospect</button>
+                onclick="_overviewAddProspect()">${_rdIc('plus', 15)}Add prospect</button>
       </div>
       <button class="upv2-vacant-btn upv2-vacant-btn-ai" onclick="openLeaseAiModal()"
               title="Upload an existing signed lease — AI reads it and fills the tenant fields for you">
-        ✨ Add tenant from lease (AI)
+        ${_rdIc('sparkle', 15)}Add tenant from lease (AI)
       </button>
       <div class="upv2-vacant-hint">
-        <b>Tenant</b> — quick entry, no funnel tracking. Best for small offices or when you're ready to send the lease right away.<br>
-        <b>Prospect</b> — tracks the lead through Inquiry → Toured → LOI → Lease sent → Signed (visible on the Pipeline board).
+        <div class="upv2-vacant-hint-row">
+          ${_rdIc('user', 14)}
+          <p><b>Tenant</b> — quick entry, no funnel tracking. Best for small offices or when you're ready to send the lease right away.</p>
+        </div>
+        <div class="upv2-vacant-hint-row">
+          ${_rdIc('activity', 14)}
+          <p><b>Prospect</b> — tracks the lead on the Pipeline board:<br>
+          <span class="upv2-vacant-funnel"><span class="rd-monotag">Inquiry</span><i>→</i><span class="rd-monotag">Toured</span><i>→</i><span class="rd-monotag">LOI</span><i>→</i><span class="rd-monotag">Lease sent</span><i>→</i><span class="rd-monotag">Signed</span></span></p>
+        </div>
       </div>` : '';
 
     return `
       <div class="upv2-vacant-cta">
         <div class="upv2-vacant-hero">
-          <div class="upv2-vacant-icon">🏢</div>
+          <div class="upv2-vacant-icon">${_rdIc('building', 24)}</div>
           <div class="upv2-vacant-title">${status === 'reserved' ? 'Reserved' : 'Vacant suite'}</div>
           <div class="upv2-vacant-sub">${rent ? `Market rent: $${rent.toLocaleString()}/mo` : 'Set market rent in Unit specifications'}</div>
           ${prospectsLine}
@@ -78882,7 +79040,7 @@ function _renderLeaseTimeline(u) {
   return `
     <div class="lease-timeline">
       <div class="lease-timeline-head">
-        <div class="lease-timeline-title">Lease progress · ${pct.toFixed(0)}% elapsed</div>
+        <div class="lease-timeline-title">Lease progress <span>· ${pct.toFixed(0)}% elapsed</span></div>
         <div class="lease-timeline-right ${rightCls}">${esc(rightLabel)}</div>
       </div>
       <div class="lease-timeline-bar">
@@ -80674,7 +80832,7 @@ function _renderUnitInvoiceHistory(u) {
     return `
       <div class="upv2-section-title" style="display: flex; align-items: center; justify-content: space-between;">
         <span>Invoice history</span>
-        <button type="button" class="upv2-inv-report-btn" onclick="openUnitInvoiceReport()" title="Open detailed report — vacant unit shows historical invoices from prior tenants">📊 Open report →</button>
+        <button type="button" class="upv2-inv-report-btn" onclick="openUnitInvoiceReport()" title="Open detailed report — vacant unit shows historical invoices from prior tenants">${_rdIc('chart', 14)}Open report →</button>
       </div>
       <div class="upv2-inv-empty" style="margin-top: 8px; font-size: 13px;">
         Unit is vacant. Historical invoices from prior tenants are in the report.
@@ -80702,13 +80860,13 @@ function _renderUnitInvoiceHistory(u) {
       <div class="upv2-section-title" style="display: flex; align-items: center; justify-content: space-between;">
         <span>Invoice history</span>
         <div style="display: flex; gap: 6px;">
-          ${ctxArgs ? `<button type="button" class="upv2-inv-report-btn" onclick="_invoiceHistoryRefresh(${ctxArgs})" title="Pull latest invoices from Stripe">↻ Refresh</button>` : ''}
-          <button type="button" class="upv2-inv-report-btn" onclick="openUnitInvoiceReport()" title="Open detailed report with KPIs and per-tenant breakdown">📊 Open report →</button>
+          ${ctxArgs ? `<button type="button" class="upv2-inv-report-btn" onclick="_invoiceHistoryRefresh(${ctxArgs})" title="Pull latest invoices from Stripe">${_rdIc('refresh', 13)}Refresh</button>` : ''}
+          <button type="button" class="upv2-inv-report-btn" onclick="openUnitInvoiceReport()" title="Open detailed report with KPIs and per-tenant breakdown">${_rdIc('chart', 14)}Open report →</button>
         </div>
       </div>
       <div class="upv2-inv-empty" style="margin-top: 8px;">
-        ⏳ Loading invoices from Stripe…
-        <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">If this stays for more than a few seconds, click ↻ Refresh.</div>
+        <span style="display:inline-flex; vertical-align:-2px;">${_rdIc('hourglass', 13)}</span> Loading invoices from Stripe…
+        <div style="font-size: 11px; color: var(--rd-text3); margin-top: 4px;">If this stays for more than a few seconds, click ↻ Refresh.</div>
       </div>`;
   }
   if (rows.length === 0) {
@@ -80740,9 +80898,9 @@ function _renderUnitInvoiceHistory(u) {
       <div class="upv2-section-title" style="display: flex; align-items: center; justify-content: space-between;">
         <span>Invoice history</span>
         <div style="display: flex; gap: 6px;">
-          ${ctxArgs ? `<button type="button" class="upv2-inv-report-btn" onclick="_invoiceHistoryRefresh(${ctxArgs})" title="Pull latest invoices from Stripe">↻ Refresh</button>` : ''}
-          ${ctxArgs ? `<button type="button" class="upv2-inv-report-btn" onclick="_openInvoiceBrowser(${ctxArgs})" title="Browse all Stripe invoices and link manually">🔍 Browse all</button>` : ''}
-          <button type="button" class="upv2-inv-report-btn" onclick="openUnitInvoiceReport()" title="Open detailed report with KPIs and per-tenant breakdown">📊 Open report →</button>
+          ${ctxArgs ? `<button type="button" class="upv2-inv-report-btn" onclick="_invoiceHistoryRefresh(${ctxArgs})" title="Pull latest invoices from Stripe">${_rdIc('refresh', 13)}Refresh</button>` : ''}
+          ${ctxArgs ? `<button type="button" class="upv2-inv-report-btn" onclick="_openInvoiceBrowser(${ctxArgs})" title="Browse all Stripe invoices and link manually">${_rdIc('search', 13)}Browse all</button>` : ''}
+          <button type="button" class="upv2-inv-report-btn" onclick="openUnitInvoiceReport()" title="Open detailed report with KPIs and per-tenant breakdown">${_rdIc('chart', 14)}Open report →</button>
         </div>
       </div>
       <div class="upv2-inv-empty" style="margin-top: 8px;">
@@ -80773,7 +80931,14 @@ function _renderUnitInvoiceHistory(u) {
   }
 
   const groups = _groupInvoicesByTenant(u, rows);
-  const fmtDate = ms => ms ? new Date(ms).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'2-digit'}) : '—';
+  // Шаг 5 редизайна: формат «May 28 ’26» (invoiceTable.dates из
+  // design-tokens.json) — одобренная копи-замена прежнего «May 28, 26».
+  const fmtDate = ms => {
+    if (!ms) return '—';
+    const d = new Date(ms);
+    if (isNaN(d.getTime())) return '—';
+    return `${d.toLocaleDateString('en-US', { month: 'short' })} ${d.getDate()} ’${String(d.getFullYear()).slice(-2)}`;
+  };
   // Compact paid-date for the rightmost column — operator asked to drop
   // the year because it's almost always the same as ISSUED's year and
   // adds noise. Tooltip on the cell still carries the full date.
@@ -80901,7 +81066,7 @@ function _renderUnitInvoiceHistory(u) {
     const rowData = `data-inv-id="${esc(r.id)}" data-inv-bucket="${esc(r.bucket||'')}" data-inv-num="${esc(r.number||r.id)}" data-inv-amount="${esc(String(+r.total||0))}" data-inv-label="${esc(r.shortDesc || r.purposeLabel || '')}" data-inv-created-ms="${esc(String(+r.created||0))}" data-inv-pdf-url="${esc(r.pdfUrl||'')}" data-inv-hosted-url="${esc(r.hostedUrl||'')}"`;
     return `
     <div class="upv2-inv-row${voidCls}" data-tt-portal="${esc(tipText)}" ${rowData} oncontextmenu="_invHistoryRowMenu(event, this); return false;" ${r.hostedUrl ? `onclick="window.open('${esc(_safeHttpUrl(r.hostedUrl))}', '_blank')"` : ''} ${r.hostedUrl ? 'style="cursor: pointer;"' : ''}>
-      <div class="upv2-inv-cell upv2-inv-date">${esc(fmtDate(r.created))}</div>
+      <div class="upv2-inv-cell upv2-inv-date">${esc(fmtDate(r.created))}${r.hostedUrl ? `<span class="upv2-inv-extic" aria-hidden="true">${_rdIc('ext', 11)}</span>` : ''}</div>
       <div class="upv2-inv-cell upv2-inv-period" style="font-variant-numeric: tabular-nums; color: var(--muted);">${billingHtml}</div>
       <div class="upv2-inv-cell upv2-inv-amt">${esc(fmtAmount(r.total))}</div>
       <div class="upv2-inv-cell upv2-inv-status">
@@ -80936,8 +81101,8 @@ function _renderUnitInvoiceHistory(u) {
   };
   return `
     <div class="upv2-section-title" style="display: flex; align-items: center; justify-content: space-between;">
-      <span>Invoice history <span style="color: var(--muted); font-weight: 500;">(${rows.length})</span></span>
-      <button type="button" class="upv2-inv-report-btn" onclick="openUnitInvoiceReport()" title="Open detailed report with KPIs and per-tenant breakdown">📊 Open report →</button>
+      <span>Invoice history <span style="color: var(--rd-text3); font-weight: 500;">(${rows.length})</span></span>
+      <button type="button" class="upv2-inv-report-btn" onclick="openUnitInvoiceReport()" title="Open detailed report with KPIs and per-tenant breakdown">${_rdIc('chart', 14)}Open report →</button>
     </div>
     <div class="upv2-inv-table">${groups.map(renderGroup).join('')}</div>
   `;
@@ -84081,10 +84246,10 @@ function _renderUnitPaymentHealth(u) {
   if (!hasTenant) {
     if (window._unitEditOn) return '';
     return `
-      <div class="unit-alert" style="background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.45); margin: 10px 0;">
-        <div class="unit-alert-icon" style="color: #a16207;">⚠</div>
+      <div class="unit-alert" style="background: var(--rd-amber-soft); border: 1px solid #f3dfb8; margin: 10px 0;">
+        <div class="unit-alert-icon" style="color: var(--rd-amber);">${_rdIc('alert', 16)}</div>
         <div class="unit-alert-body">
-          <b style="color: #a16207;">Occupied but no tenant on file.</b>
+          <b style="color: #92400e;">Occupied but no tenant on file.</b>
           <div class="unit-alert-sub">Add a tenant name below — or mark this unit <b>Vacant</b> to clear the state. Until then, payment history is hidden to avoid phantom debt.</div>
         </div>
       </div>`;
@@ -84116,10 +84281,10 @@ function _renderUnitPaymentHealth(u) {
   if (!startDate || isNaN(startDate.getTime())) {
     if (window._unitEditOn) return '';
     return `
-      <div class="unit-alert" style="background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.45); margin: 10px 0;">
-        <div class="unit-alert-icon" style="color: #a16207;">⚠</div>
+      <div class="unit-alert" style="background: var(--rd-amber-soft); border: 1px solid #f3dfb8; margin: 10px 0;">
+        <div class="unit-alert-icon" style="color: var(--rd-amber);">${_rdIc('alert', 16)}</div>
         <div class="unit-alert-body">
-          <b style="color: #a16207;">Lease start not set.</b>
+          <b style="color: #92400e;">Lease start not set.</b>
           <div class="unit-alert-sub">Fill in <b>Lease start</b> below — payment history will appear once the lease has a start date. Until then, no rent obligation is calculated.</div>
         </div>
       </div>`;
@@ -84663,7 +84828,7 @@ function _renderUnitPaymentHealth(u) {
     const _alertClick = `event.stopPropagation(); openManualPaymentForCurrentMonth('${esc(b.id)}','${esc(f.id)}','${esc(u.id)}')`;
     alert = `
       <div class="unit-alert unit-alert-danger unit-alert-clickable" onclick="${_alertClick}" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault(); ${_alertClick};}" title="Click to record payment for the first unpaid month">
-        <div class="unit-alert-icon">⚠</div>
+        <div class="unit-alert-icon">${_rdIc('alert', 16)}</div>
         <div class="unit-alert-body">
           <b>${unpaidCount} month${unpaidCount===1?'':'s'} unpaid:</b> ${esc(monthsStr)} · $${unpaidSum.toLocaleString()} owed
           <div class="unit-alert-sub">→ Click here or a red square below to record payment.</div>
@@ -84762,25 +84927,31 @@ function _renderUnitPaymentHealth(u) {
                     c.cls === 'future'      ? '\n\nClick to record an advance payment.' :
                                               '';
                   const _phTipText = `${c.tooltip}${c.feePaid ? '\n\n💰 Late fee invoice paid this cycle' : ''}${c.advancePaid ? '\n\n📅 Prepaid as part of multi-month advance invoice' : ''}${hint}`;
-                  // Payment-source icon (Tony 2026-05-21): different
-                  // emoji per origin. Только один icon на cell — auto
+                  // Payment-source icon (Tony 2026-05-21): Шаг 5 редизайна —
+                  // спрайт-иконка вместо emoji (zap/download/dollar/user в
+                  // белом кружке). Только один icon на cell — auto
                   // выигрывает (наиболее интересен оператору).
                   const sourceIconMap = {
-                    auto:   { icon: '🤖', title: 'Auto-applied from bank feed — click to view / undo' },
-                    import: { icon: '📥', title: 'From operator CSV import — click to view' },
-                    stripe: { icon: '💳', title: 'Paid via Stripe — click to view' },
-                    manual: { icon: '👤', title: 'Manually recorded by operator — click to view' },
+                    auto:   { icon: 'zap',      title: 'Auto-applied from bank feed — click to view / undo' },
+                    import: { icon: 'download', title: 'From operator CSV import — click to view' },
+                    stripe: { icon: 'dollar',   title: 'Paid via Stripe — click to view' },
+                    manual: { icon: 'user',     title: 'Manually recorded by operator — click to view' },
                   };
                   const srcIcon = c.paymentSource ? sourceIconMap[c.paymentSource] : null;
+                  // Шаг 5: paid/paid-late — белая галка-спрайт вместо литеры
+                  // «✓» (paymentGrid макета); прочие состояния — литера месяца.
+                  const _cellInner = (c.cls === 'paid' || c.cls === 'paid-late')
+                    ? _rdIc('check', 11)
+                    : `<div class="ph-cell-label">${esc(c.label)}</div>`;
                   return `
                     <div class="ph-cell ${c.cls}${c.feePaid ? ' fee-paid' : ''}${c.advancePaid ? ' advance-paid' : ''}${c.autoApplied ? ' auto-applied' : ''}${c.paymentSource ? ' src-' + c.paymentSource : ''}"
                          onclick="openManualPaymentModal('${esc(b.id)}','${esc(f.id)}','${esc(u.id)}','${c.ym}')"
                          style="cursor: pointer;"
                          data-tt-portal="${esc(_phTipText)}">
-                      <div class="ph-cell-label">${esc(c.label)}</div>
+                      ${_cellInner}
                       ${c.feePaid ? '<div class="ph-cell-fee-dot" title="Late fee paid">$</div>' : ''}
                       ${c.advancePaid ? '<div class="ph-cell-advance-dot" title="Prepaid as part of multi-month advance">A</div>' : ''}
-                      ${srcIcon ? '<div class="ph-cell-src-dot" title="' + esc(srcIcon.title) + '">' + srcIcon.icon + '</div>' : ''}
+                      ${srcIcon ? '<div class="ph-cell-src-dot" title="' + esc(srcIcon.title) + '">' + _rdIc(srcIcon.icon, 7) + '</div>' : ''}
                     </div>`;
                 }).join('')}
               </div>
