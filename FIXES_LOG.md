@@ -60,6 +60,20 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 69. Invoices table right-edge clip — silent-refresh wiped table-prefs every 30s (UI/recurring-regression, 2026-06-10)
+
+- **Status:** active
+- **Branch / commit:** `fix/invoice-table-clip` @ `ab392b9`, merged to main
+- **Area:** Billing → Invoices table (#invTable, renderInvoicesPage/renderInvoicesHeader ~L143420); table-prefs system
+- **Bug it fixed:** rightmost columns (CREATED/SENT BY) clipped with no affordance; «fixed» repeatedly, always regressed. THREE stacked causes (measured): (1) Σ column widths 1410px > container with macOS overlay scrollbars invisible (0 layout px) → legit overflow read as hard clip; (2) SMOKING GUN — the 30s silent auto-refresh re-built the thead, wiping applyTHWidth inline widths/resizers/hidden-cols, and the sig early-return exited BEFORE mountTablePrefs → layout oscillated every 30s, so every prior CSS fix appeared to work then broke; (3) unbounded sfa_inv_col_widths prefs synced via Firestore re-poisoned every device after each fix (900/1200px cols). Bonus: checkbox TH collapsed to 0px under fixed-layout deficit.
+- **Fix:** .inv-scroll-wrap with overflow-x:auto + custom ::-webkit-scrollbar (permanently visible when overflowing; NOTE scrollbar-width:thin DISABLES ::-webkit-scrollbar in Chrome 121+ — do not re-add); silent-refresh no longer rebuilds thead (and every thead-rebuild path now reaches mountTablePrefs; sig reset on empty branch); makeTableResizable restore clamps [40..640] for ALL tables; one-time _sanitizeInvColWidths() heals the Firestore copy for keyBase sfa_inv_col_widths only; checkbox TH fixed 36px.
+- **Invariant — DO NOT BREAK:** any code path that rebuilds a prefs-mounted table thead MUST re-run mountTablePrefs afterwards (or not rebuild on silent refreshes); width-prefs restore paths MUST clamp; never style scrollbars with scrollbar-width:thin alongside ::-webkit-scrollbar.
+- **Verification:** headless Chromium @1400/@1100 with absurd prefs + silent-refresh flow: visible 11px h-scrollbar in all scenarios, no silent clip, prefs clamped, checkbox 36px.
+- **Regression test:** none — manual + headless probe (agent-run).
+- **Related PR / issue:** prior symptom patch 52d8cfb (scrollbar-gutter) — superseded by this root-cause fix.
+
+---
+
 ### 68. Backup snapshots were empty shells under strip-ON — rehydrate + chunked verify + cascade prune (backup/data-safety, 2026-06-10)
 
 - **Status:** active (deployed 2026-06-10; live-verified — frequent snapshots now chunked=true, 5 chunks, ~1.15MB with rehydrated buildings vs 48KB empty shells before)
