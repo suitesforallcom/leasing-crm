@@ -5746,6 +5746,32 @@
   .inv-table tbody tr { cursor: pointer; transition: background .08s; }
   .inv-table tbody tr:hover td { background: var(--surface-2); }
 
+  /* Root-cause fix 2026-06-10 («обрезанные CREATED / SENT BY»).
+     Сумма ширин колонок Invoices (дефолт 36+1374 = 1410px, плюс сохранённые
+     пользователем ширины из sfa_inv_col_widths) ЗАКОННО превышает контейнер
+     на ноутбуках — таблица должна скроллиться по горизонтали, а не молча
+     обрезаться. overflow:auto на обёртке БЫЛ, но overlay-скроллбар macOS
+     невидим до первого свайпа → ноль аффорданса, выглядело как клип.
+     Кастомный ::-webkit-scrollbar выключает overlay-режим: полоса занимает
+     место в layout и видна всегда, когда есть переполнение. */
+  .inv-scroll-wrap {
+    overflow-x: auto; overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;   /* инерционный скролл трекпада/тача */
+    /* ВАЖНО: НЕ добавлять сюда стандартные scrollbar-width/scrollbar-color —
+       в Chrome 121+ они ОТКЛЮЧАЮТ ::-webkit-scrollbar-стилизацию ниже, и
+       полоса снова становится невидимым overlay (проверено headless-репро:
+       hScrollbarLayoutPx падал в 0). Firefox получит платформенный дефолт. */
+  }
+  .inv-scroll-wrap::-webkit-scrollbar { height: 11px; }
+  .inv-scroll-wrap::-webkit-scrollbar-track {
+    background: var(--surface-2); border-radius: 0 0 10px 10px;
+  }
+  .inv-scroll-wrap::-webkit-scrollbar-thumb {
+    background: var(--border); border-radius: 8px;
+    border: 2px solid var(--surface-2);
+  }
+  .inv-scroll-wrap::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
   /* Числовые ячейки (tabular-nums) и TOTALS-row не должны переноситься.
      Без этого правила, когда Actions-колонка "съедает" ширину, "$21,943"
      ломалось на две строки и снизу обрезался "—$21..." (см. фидбек
@@ -19448,7 +19474,10 @@
           <div id="invBulkHintStatic" style="font-size:11.5px; color: var(--muted); margin: 6px 2px 8px;">
             Tip: tick the checkbox to the left of any row to enable <b>🗑 Void / Delete</b>. Paid invoices are locked (use refund instead).
           </div>
-          <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: auto;">
+          <!-- inv-scroll-wrap: горизонтальный скролл с ВСЕГДА видимой полосой
+               (кастомный ::-webkit-scrollbar отключает overlay-режим macOS,
+               из-за которого переполнение выглядело как обрезанные колонки). -->
+          <div class="inv-scroll-wrap" style="background: var(--surface); border: 1px solid var(--border); border-radius: 10px;">
             <table class="inv-table" id="invTable">
               <thead id="invTableHead">
                 <!-- populated dynamically so columns can be dragged + resized -->
@@ -126930,9 +126959,13 @@ function makeTableResizable(tableSelector, storageKey) {
     const saved = loadColWidths(storageKey);
     ths.forEach((th, idx) => {
       const k = keyForTh(th, idx);
-      const w = saved[k];
-      if (w && w > 40) {
-        applyTHWidth(th, w);
+      // Кламп восстановленных ширин [40..640]: мусор из старых версий /
+      // Firestore-синка (NaN, строки, гигантские px после случайного драга)
+      // не должен раздувать таблицу на тысячи пикселей. 640px хватает даже
+      // для email/notes-колонок; нижняя граница совпадает с минимумом драга.
+      const w = Number(saved[k]);
+      if (Number.isFinite(w) && w > 40) {
+        applyTHWidth(th, Math.min(Math.round(w), 640));
       } else {
         // Default width from CSS min-width (set inline via style.minWidth
         // when the header is built). Round up so we don't end at 39.x.
@@ -143335,6 +143368,35 @@ function setInvoiceStatus(status) {
   renderInvoicesPage();
 }
 
+// Одноразовая (на сессию) санация сохранённых ширин колонок Invoices-таблицы.
+// Почему: sfa_inv_col_widths синкается через Firestore ui-prefs на ВСЕ
+// устройства — одно случайно «раздутое» значение (драг на широком мониторе,
+// мусор старых версий) возвращалось после любого CSS-фикса и снова выталкивало
+// CREATED / SENT BY за правый край. Клампим [40..640] и ПЕРСИСТИМ результат
+// (writePref → fbPushUiPrefs), чтобы вылечить и облачную копию. Трогаем ТОЛЬКО
+// ключ этой таблицы — прочие *_col_widths не задеваются.
+let _invWidthsSanitized = false;
+function _sanitizeInvColWidths() {
+  if (_invWidthsSanitized) return;
+  _invWidthsSanitized = true;
+  try {
+    const KEY = 'sfa_inv_col_widths';
+    const widths = loadColWidths(KEY);
+    let changed = false;
+    for (const k of Object.keys(widths)) {
+      const w = Number(widths[k]);
+      if (!Number.isFinite(w) || w <= 0) { delete widths[k]; changed = true; }
+      else if (w > 640) { widths[k] = 640; changed = true; }
+      else if (w < 40)  { widths[k] = 40;  changed = true; }
+      else if (widths[k] !== Math.round(w)) { widths[k] = Math.round(w); changed = true; }
+    }
+    if (changed) {
+      saveColWidths(KEY, widths);
+      console.log('[invoices] sanitized stale column-width prefs', widths);
+    }
+  } catch (e) { console.warn('[invoices] width-prefs sanitize failed', e); }
+}
+
 async function renderInvoicesPage(force, opts) {
   // `opts.silent === true` — auto-refresh path. Don't wipe the tbody or show
   // a "Loading…" placeholder; fetch in the background and only repaint once
@@ -143344,9 +143406,17 @@ async function renderInvoicesPage(force, opts) {
   const tbody = document.getElementById('invTableBody');
   const empty = document.getElementById('invEmpty');
   if (!tbody) return;
-  // Render the header early — user sees column titles even while invoices
-  // are being fetched from Stripe. Idempotent.
-  renderInvoicesHeader();
+  // Заголовок рисуем рано ТОЛЬКО в не-silent режиме. Silent-тик (30s
+  // auto-refresh) не должен трогать thead: head.innerHTML стирает
+  // inline-ширины applyTHWidth, ручки .col-resizer и display:none скрытых
+  // колонок, а early-return'ы silent-пути (sig-гард, auth/fetch-ошибки)
+  // выходят ДО ensureColumnsButton/mountTablePrefs в конце функции —
+  // таблица оставалась «голой» (table-layout:fixed без ширин = равномерные
+  // колонки) и каждые 30 секунд скакала между двумя раскладками. Это
+  // root-cause части жалоб «обрезанные CREATED / SENT BY то появляются,
+  // то исчезают». Не-silent путь, как и раньше, показывает заголовки
+  // сразу, пока строки тянутся из Stripe.
+  if (!silent) renderInvoicesHeader();
 
   if (force || _invoicesCache === null) {
     if (_invoicesLoading) return;
@@ -143481,15 +143551,14 @@ async function renderInvoicesPage(force, opts) {
       empty.style.display = 'none';
       tbody.innerHTML = `<tr><td colspan="9" style="padding:40px; text-align:center; color: var(--muted);">No invoices match this filter.</td></tr>`;
     }
+    // Сбрасываем сигнатуру: tbody только что перезаписан placeholder'ом.
+    // Без сброса возврат к ПРЕЖНЕМУ набору строк на silent-тике совпал бы
+    // со старой сигнатурой и early-return оставил бы placeholder навсегда.
+    tbody.__sfaRenderSig = '';
     return;
   }
   empty.style.display = 'none';
 
-  // Render thead (in the user's saved order) + body using the same column
-  // order. Columns are draggable and resizable; widths + order persist per
-  // user. The data-col-key attributes are what the drag + resize modules
-  // key off of.
-  renderInvoicesHeader();
   const cols = getOrderedInvCols();
   // Drop any selection pointing at rows that aren't currently visible
   // (filter / search changed). Prevents bulk actions from silently
@@ -143517,8 +143586,18 @@ async function renderInvoicesPage(force, opts) {
     r.metadata?.source || '',
     _invSelection.has(r.id) ? '1' : '0'
   ].join('|')).join('\u00A7');
+  // ВАЖНО: early-return стоит ДО renderInvoicesHeader() — когда данные не
+  // изменились, thead (с навешенными ширинами/resizer'ами/скрытыми
+  // колонками) не трогаем вовсе. Раньше header перестраивался до этого
+  // return'а, и silent-тик стирал пользовательскую раскладку.
   if (silent && tbody.__sfaRenderSig === _sfaRenderSig) return;
   tbody.__sfaRenderSig = _sfaRenderSig;
+  // Render thead (in the user's saved order) + body using the same column
+  // order. Columns are draggable and resizable; widths + order persist per
+  // user. The data-col-key attributes are what the drag + resize modules
+  // key off of. mountTablePrefs ниже (через ensureColumnsButton) вернёт
+  // ширины/resizer'ы на свежий thead — этот путь ВСЕГДА доходит до него.
+  renderInvoicesHeader();
   tbody.innerHTML = rows.map(r => {
     const url = r.hostedUrl || stripeDashboardInvoiceUrl(r.id);
     const tip = invoiceTooltip(r);
@@ -143549,6 +143628,8 @@ async function renderInvoicesPage(force, opts) {
   // Universal table prefs + auto-generated Columns menu (width / order /
   // visibility, per-user, auto-synced). The menu appears as a button
   // injected into #invColsHost in the filter row.
+  // Санация ширин ДО mountTablePrefs/makeTableResizable — они читают prefs.
+  _sanitizeInvColWidths();
   ensureColumnsButton(document.getElementById('invTable'), 'sfa_inv',
                       document.getElementById('invColsHost'));
   // Click-to-sort на заголовках (sfa_inv_col_sort). onRerender — тот же
@@ -143615,7 +143696,11 @@ function renderInvoicesHeader() {
   const cols = getOrderedInvCols();
   // Select-all checkbox. Its state is driven by how many *selectable*
   // rows (non-paid) are currently checked; see updateInvSelectAllState.
-  const selectTh = `<th class="inv-select"><input type="checkbox" class="inv-check" id="invSelectAll" onclick="toggleAllInvoiceSelection(event)" title="Select all (skips paid invoices)"></th>`;
+  // Inline-ширина 36px обязательна: под table-layout:fixed при дефиците
+  // ширины (сумма колонок > контейнера) Chrome отдаёт дефицит ЕДИНСТВЕННОЙ
+  // колонке без inline-width — чекбокс схлопывался в 0px (замерено в
+  // headless-репро: colWidths[0] = 0). Значение совпадает с CSS .inv-select.
+  const selectTh = `<th class="inv-select" style="width:36px; min-width:36px; max-width:36px;"><input type="checkbox" class="inv-check" id="invSelectAll" onclick="toggleAllInvoiceSelection(event)" title="Select all (skips paid invoices)"></th>`;
   head.innerHTML = '<tr>' + selectTh + cols.map(c => {
     const sortAttr = c.sortable ? ' data-col-sortable="true"' : '';
     const tipAttr  = c.tip ? ` title="${esc(c.tip)}"` : '';
