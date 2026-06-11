@@ -124,12 +124,38 @@ function curateUnit(u) {
     phone: str(u.phone),
     leaseStart: str(u.leaseStart),
     leaseEnd: str(u.leaseEnd),
+    // until — операторский алиас leaseEnd (стекинг читает until || leaseEnd).
+    until: str(u.until),
     groupId: str(u.groupId),
     groupRole: str(u.groupRole),
+    // parentId — суб-комната внутри родительского сьюта. Нужен потребителям
+    // (PropertyPulse stacking) для того же дедупа площадей, что делает
+    // _stRentableUnits/_isInactiveSubRoom в стекинг-виде.
+    parentId: str(u.parentId),
+    // archived = soft-delete (u.deletedAt) — изArchived() стекинга.
+    archived: !!u.deletedAt,
     payments: curatePayments(u.payments),
     depositPayment: (u.payments && u.payments.deposit) ? curatePayment(u.payments.deposit) : null,
     stripe: curateStripe(u.stripe),
   };
+}
+
+// Площадь контура этажа в ft² — серверная копия _stOutlineAreaSqft из
+// floor-map-editor.html (shoelace по outline.points / pxPerFt²). Геометрию
+// самих точек НЕ экспортируем (allowlist) — только готовое число.
+function outlineAreaSqft(f) {
+  const pts = f && f.outline && Array.isArray(f.outline.points) ? f.outline.points : null;
+  if (!pts || pts.length < 3) return null;
+  const pxPerFt = f.scale && +f.scale.pxPerFt > 0 ? +f.scale.pxPerFt : null;
+  if (!pxPerFt) return null;
+  let area = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    if (!a || !b || !isFinite(+a.x) || !isFinite(+a.y) || !isFinite(+b.x) || !isFinite(+b.y)) return null;
+    area += (+a.x) * (+b.y) - (+b.x) * (+a.y);
+  }
+  const px = Math.abs(area) / 2;
+  return px > 0 ? Math.round(px / (pxPerFt * pxPerFt)) : null;
 }
 
 function curateFloor(f) {
@@ -141,6 +167,10 @@ function curateFloor(f) {
     name: str(f.name),
     grossSqft: num(f.grossSqft),
     rentableSqft: num(f.rentableSqft),
+    // Стекинг-поля (аддитивно, PropertyPulse Rental tab):
+    outlineAreaSqft: outlineAreaSqft(f),       // контур → ft²; null без калибровки
+    leaseEntireFloor: f.leaseEntireFloor === true,
+    fullFloorGroupId: str(f.fullFloorGroupId),
     unitCount: units.length,
     units,
   };
