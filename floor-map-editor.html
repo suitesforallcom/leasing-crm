@@ -77566,9 +77566,11 @@ function _renderUnitV2Header(u, editOn) {
     // богаче и содержит реальные audit-записи. Old modal оставлен в
     // коде для back-compat, но больше не доступен через kebab.
     `<button class="upv2-menu-item" onclick="closeUnitMenu(); setUnitTab('activity');">${_rdIc('clock', 16)} Activity log</button>`,
-    // Destructive
-    canArchive() ? `<button class="upv2-menu-item danger" onclick="closeUnitMenu(); openArchiveModal('${bId}','${fId}','${uId}')">${_rdIc('archive', 16)} Archive unit</button>` : '',
-    canEdit() ? `<button class="upv2-menu-item danger" onclick="deleteUnitFromMenu('${bId}','${fId}','${uId}')">${_rdIc('trash', 16)} Delete unit</button>` : '',
+    // Destructive — доступны ТОЛЬКО в режиме редактирования (global Edit Mode),
+    // чтобы случайно не удалить/не заархивировать юнит в режиме просмотра
+    // (запрос оператора). Роль (canEdit/canArchive) проверяется как и раньше.
+    (canArchive() && !!state?.settings?.editMode) ? `<button class="upv2-menu-item danger" onclick="closeUnitMenu(); openArchiveModal('${bId}','${fId}','${uId}')">${_rdIc('archive', 16)} Archive unit</button>` : '',
+    (canEdit() && !!state?.settings?.editMode) ? `<button class="upv2-menu-item danger" onclick="deleteUnitFromMenu('${bId}','${fId}','${uId}')">${_rdIc('trash', 16)} Delete unit</button>` : '',
   ].filter(Boolean).join('');
 
   return `
