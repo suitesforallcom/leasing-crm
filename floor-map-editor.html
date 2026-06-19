@@ -33100,15 +33100,21 @@ const PER_USER_SETTINGS_KEYS = new Set([
 ]);
 
 async function fbPushNow() {
-  if (!fbSync.enabled || !fbSync.sdk) return;
+  // Возвращаем структурированный результат { ok, reason, ... } во всех
+  // ветках, чтобы вызывающие (например saveQuickAddTenant) могли дождаться
+  // реального подтверждения записи и громко показать ошибку, если пуш
+  // молча пропустился (follower-вкладка) или упал. Старые fire-and-forget
+  // вызовы `fbPushNow().catch(()=>{})` игнорируют return — поведение для них
+  // не меняется (аддитивно).
+  if (!fbSync.enabled || !fbSync.sdk) return { ok: false, reason: 'disabled' };
   // Same guard at the direct-push level — belt and braces.
-  if (!canEdit()) return;
+  if (!canEdit()) return { ok: false, reason: 'no-edit' };
   // FIXES_LOG Entry 16 — follower-tabs skip pushes. State остаётся в
   // localStorage (на случай если эта вкладка станет leader'ом потом),
   // а реальный writer — другая вкладка — закроет любой race.
   if (!_sfaTabSync.isLeader()) {
     console.debug('[fb] skip push — this tab is a follower (Web Locks)');
-    return;
+    return { ok: false, reason: 'follower' };
   }
   const { sdk, db, uid } = fbSync;
   try {
@@ -33148,7 +33154,7 @@ async function fbPushNow() {
       fbSync.status = 'error';
       fbSync.lastError = `state too large (${sizeKB}KB)`;
       fbUpdateStatusBadge();
-      return;
+      return { ok: false, reason: 'too-large', sizeKB };
     }
     if (json.length > 900 * 1024) {
       console.warn(`[fb] state is ${sizeKB}KB — close to Firestore's 1MB doc limit`);
@@ -33321,7 +33327,10 @@ async function fbPushNow() {
       fbSync._conflictStreak = 0;
       fbSync._conflictSince = 0;
       if (fbSync.status === 'error') { fbSync.status = 'syncing'; fbSync.lastError = null; fbUpdateStatusBadge(); }
-      return;
+      // Deferred: запись уйдёт следующим пушем после onSnapshot-ребейза.
+      // Для вызывающего это «ещё не подтверждено» — отдаём ok:false с
+      // мягкой причиной, чтобы он мог попросить проверить перезагрузкой.
+      return { ok: false, reason: 'deferred-rebase' };
     }
 
     state._rev = newRev;
@@ -33337,6 +33346,7 @@ async function fbPushNow() {
     fbSync.status = 'syncing';
     fbSync.lastError = null;
     fbUpdateStatusBadge();
+    return { ok: true, rev: newRev };
   } catch (err) {
     const msg = String(err?.message || err);
     // Version-conflict / contention — это НЕ настоящая ошибка, а нормальное
@@ -33373,7 +33383,7 @@ async function fbPushNow() {
         clearTimeout(fbSync.pushTimer);
         fbSync.pushTimer = setTimeout(fbPushNow, backoff);
       }
-      return;
+      return { ok: false, reason: 'conflict-retry' };
     }
     // Настоящая ошибка (сеть / права / размер) — показываем как раньше.
     console.error('[fb] push failed:', err);
@@ -33382,6 +33392,7 @@ async function fbPushNow() {
     fbSync.lastError = err.message || String(err);
     fbSync.lastErrorAt = Date.now();
     fbUpdateStatusBadge();
+    return { ok: false, reason: 'error', error: err.message || String(err) };
   }
 }
 
@@ -90944,7 +90955,7 @@ function _qatSyncDeposit() {
   }
 }
 
-function saveQuickAddTenant() {
+async function saveQuickAddTenant() {
   if (!_qatCtx) {
     // Leases-mode opened the modal with the picker visible but no unit
     // chosen — surface a concrete error instead of failing silently.
@@ -91044,18 +91055,47 @@ function saveQuickAddTenant() {
   _stampTenantAdded(u);
 
   saveState();
-  if (typeof fbPushNow === 'function') fbPushNow().catch(()=>{});
   renderAll();
-
   closeQuickAddTenantModal();
 
-  // Chain into the existing post-save onboarding (Move-in + DocuSign)
-  // — restores the pre-redesign flow where Save kicks the next modal.
-  setTimeout(() => {
-    try { openNewTenantOnboarding(u); } catch (e) { console.error('[qat->onboarding]', e); }
-  }, 120);
+  // ПОДТВЕРЖДЕНИЕ ЗАПИСИ. Раньше тут был fire-and-forget
+  // `fbPushNow().catch(()=>{})` + безусловный success-toast: если пуш молча
+  // пропускался (follower-вкладка по Web Locks) или падал, оператор видел
+  // «✓ Tenant added», а арендатор в облако НЕ уходил (инцидент Suite 304).
+  // Теперь ждём реальный ack от Firestore и громко сообщаем о проблеме.
+  let _pushRes = { ok: true };
+  if (typeof fbPushNow === 'function') {
+    try { _pushRes = await fbPushNow(); }
+    catch (e) { _pushRes = { ok: false, reason: 'error', error: String(e && e.message || e) }; }
+  }
+  _pushRes = _pushRes || { ok: true };
 
-  toast(`✓ Tenant added to Suite ${u.id}`, 'success');
+  if (_pushRes.ok) {
+    toast(`✓ Tenant added to Suite ${u.id}`, 'success');
+    // Chain into the existing post-save onboarding (Move-in + DocuSign)
+    // — restores the pre-redesign flow where Save kicks the next modal.
+    setTimeout(() => {
+      try { openNewTenantOnboarding(u); } catch (e) { console.error('[qat->onboarding]', e); }
+    }, 120);
+  } else {
+    // Запись НЕ подтверждена облаком — НЕ открываем onboarding (нет смысла
+    // слать инвойсы/договор по арендатору, которого нет в облаке).
+    let m;
+    if (_pushRes.reason === 'follower') {
+      m = `⚠️ Tenant saved on THIS device only — another SuitesForAll tab is the active editor and your change was NOT synced to the cloud. Close all other SuitesForAll tabs, reload this page, then add the tenant again.`;
+    } else if (_pushRes.reason === 'too-large') {
+      m = `⚠️ Tenant NOT saved to cloud — workspace data is too large (${_pushRes.sizeKB || '?'}KB, near the 1MB limit). Ask an admin to run the scaling cleanup, then retry.`;
+    } else if (_pushRes.reason === 'disabled') {
+      m = `⚠️ Tenant NOT synced — cloud sync is offline. Check your internet connection and try again.`;
+    } else if (_pushRes.reason === 'no-edit') {
+      m = `⚠️ Tenant NOT saved — you don't have edit permission for this workspace.`;
+    } else if (_pushRes.reason === 'deferred-rebase' || _pushRes.reason === 'conflict-retry') {
+      m = `⚠️ Tenant save is still syncing (the cloud copy was being updated by another writer). Wait a few seconds, then RELOAD the page to confirm the tenant appears before sending the lease or invoices.`;
+    } else {
+      m = `⚠️ Tenant may NOT be saved to the cloud (${_pushRes.reason || 'unknown'}${_pushRes.error ? ': ' + _pushRes.error : ''}). Reload the page and verify the tenant is present before continuing.`;
+    }
+    toast(m, 'error');
+  }
 }
 
 function openNewTenantOnboarding(u) {
