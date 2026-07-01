@@ -3581,6 +3581,17 @@ async function inferPaymentMethod(invoice) {
 // =========================================================================
 const {onSchedule} = require('firebase-functions/v2/scheduler');
 
+// Версия ключа идемпотентности авто-счёта. 2026-07 backfill-$0 инцидент:
+// прогон с багом израсходовал ключи `auto-rent-<id>-2026-07(+суффиксы)`;
+// Stripe кэширует идемпотентные ответы 24ч → повтор с тем же ключом вернул бы
+// кэшированный ПУСТОЙ $0-инвойс. Сегмент версии заставляет Stripe промахнуться
+// мимо кэша. КОНСТАНТА фиксированная (не timestamp/random) → плановый крон
+// детерминирован per (unit, ym, версия): in-run retry того же юнита = ТОТ ЖЕ
+// новый инвойс, дубля нет. bump v2→v3 = рычаг оператора для форс-перевыставления
+// в 24ч; он ОТКЛЮЧАЕТ защиту идемпотентности → применять ТОЛЬКО с подтверждённо-
+// пустым Stripe Search и очищенными штампами (см. runbook).
+const AUTO_INV_KEY_VER = 'v2';
+
 const _runAutoInvoicesHandler = async (opts) => {
     opts = opts || {};
     const _targetYm = opts.ym || null;        // ручной backfill за конкретный ym
@@ -3761,6 +3772,11 @@ const _runAutoInvoicesHandler = async (opts) => {
     for (const b of state.buildings || []) {
       for (const f of b.floors || []) {
         for (const u of f.units || []) {
+          // Grouped multi-suite lease = ОДИН lease (project memory «Grouped
+          // suites = one lease»). Биллит только head (groupRole==='primary');
+          // не-head участники НЕ получают собственный rent-инвойс. Зеркалит
+          // гейт late-fee-крона.
+          if (u.groupId && u.groupRole !== 'primary') { skipped++; continue; }
           if (u.deletedAt) { skipped++; continue; }
           if (u.status !== 'occupied') { skipped++; continue; }
           // Каскад auto-invoice — зеркалит isAutoInvoiceEnabledFor +
@@ -3846,7 +3862,16 @@ const _runAutoInvoicesHandler = async (opts) => {
             if (lastId) {
               try {
                 const prev = await stripe.invoices.retrieve(lastId);
-                if (prev && (prev.status === 'void' || prev.status === 'uncollectible' || prev.deleted)) {
+                // $0-ПУСТОЙ артефакт backfill-бага 2026-07: Stripe авто-помечает
+                // $0-инвойс PAID на finalize → он НЕ void/uncollectible/deleted и
+                // штамп ложно блокирует месяц. total===0 && paid && 0 строк =
+                // не настоящий счёт → перевыставляем. ОПОРТУНИСТИЧЕСКИ: надёжная
+                // очистка штампа делается отдельным recovery-onCall.
+                if (prev && Number(prev.total ?? 0) === 0 && prev.status === 'paid'
+                    && (prev.lines?.total_count ?? 0) === 0) {
+                  cycleStillBlocked = false;
+                  logger.info(`[auto-invoice] ${u.id}: prior cycle invoice ${lastId} is a $0 empty artifact; re-issuing`);
+                } else if (prev && (prev.status === 'void' || prev.status === 'uncollectible' || prev.deleted)) {
                   cycleStillBlocked = false;
                   logger.info(`[auto-invoice] ${u.id}: prior cycle invoice ${lastId} is ${prev.status || 'deleted'}; re-issuing`);
                 }
@@ -3922,8 +3947,17 @@ const _runAutoInvoicesHandler = async (opts) => {
               const dupQ = `customer:"${customerId}" AND metadata["unitId"]:"${u.id}" `
                          + `AND metadata["purpose"]:"rent" AND metadata["ym"]:"${nextYm}"`;
               const dupRes = await stripe.invoices.search({ query: dupQ, limit: 5 });
-              const liveDup = (dupRes.data || []).find(inv =>
-                !['void', 'uncollectible', 'deleted'].includes(inv.status));
+              const liveDup = (dupRes.data || []).find(inv => {
+                if (['void', 'uncollectible', 'deleted'].includes(inv.status)) return false;
+                // $0-пустой артефакт backfill-бага 2026-07: помечен PAID на
+                // finalize; НЕ должен блокировать перевыставление. ПЕРВИЧНЫЙ
+                // сигнал — total===0 (Search-объект может не разворачивать lines).
+                const total = Number(inv.total ?? inv.amount_due ?? 0);
+                const amtPaid = Number(inv.amount_paid ?? 0);
+                const lineCount = inv.lines?.total_count ?? (inv.lines?.data?.length ?? 0);
+                if (total === 0 && amtPaid === 0 && lineCount === 0) return false;
+                return true;
+              });
               if (liveDup) {
                 logger.info(`[auto-invoice] ${u.id}: rent for ${nextYm} already exists (${liveDup.id}, ${liveDup.status}); skipping cron-create`);
                 skipped++;
@@ -3978,90 +4012,24 @@ const _runAutoInvoicesHandler = async (opts) => {
             const description = `Monthly rent — ${nm.toLocaleString('en-US', {month:'long', year:'numeric', timeZone:'UTC'})} · Suite ${u.id}`;
             const due = Math.floor((Date.now() + dueDays * 86400_000) / 1000);
 
-            // Idempotency key: ensures no duplicates even if retry happens
-            const idempotencyKey = `auto-rent-${u.id}-${nextYm}`;
+            // Idempotency key: версионирован (AUTO_INV_KEY_VER, module scope).
+            // Производные (-item/-svc-*/-rollin) конкатенируют сюда и наследуют
+            // сегмент версии → один edit покрывает все Stripe-вызовы и обходит
+            // 24ч-кэш при перевыставлении.
+            const idempotencyKey = `auto-rent-${AUTO_INV_KEY_VER}-${u.id}-${nextYm}`;
 
-            // Invoice item (line)
-            await stripe.invoiceItems.create({
-              customer: customerId,
-              amount: Math.round(rent * 100),
-              currency: 'usd',
-              description,
-              metadata: { unitId: u.id, buildingId: b.id, floorId: f.id, ym: nextYm, purpose: 'rent', source: 'auto' },
-            }, { idempotencyKey: idempotencyKey + '-item' });
+            // === CORE FIX (2026-07 $0-инцидент): зеркалим РАБОЧИЙ manual-путь
+            // createStripeInvoice @1302-1524. Раньше авто-путь создавал PENDING
+            // invoice_items БЕЗ invoice:id, ждал авто-подметания на invoices.create —
+            // в текущем Stripe API этого НЕ происходит → пустой $0. Теперь:
+            // (A) prep; (B) invoice ПЕРВЫМ с 'exclude'+auto_advance:false;
+            // (C-E) каждая строка по invoice:inv.id; (F) явный finalizeInvoice;
+            // (G) условный sendInvoice. Все фичи сохранены.
 
-            // Auto-include monthly additional services as line items
-            // (parking, cleaning, conference room, etc.). Mirrors the
-            // same logic in createStripeInvoice; one-time / hourly /
-            // daily services are not included in the recurring rent
-            // bill.
-            if (Array.isArray(u.additionalServices)) {
-              for (const svc of u.additionalServices) {
-                const freq = svc?.frequency || 'monthly';
-                const amt = +svc?.amount || 0;
-                // Mirror the manual-flow gating: must be active for this
-                // tenant AND opted into auto-invoice AND a positive monthly
-                // amount. Inactive or manual-only services are skipped.
-                if (!svc?.active) continue;
-                if (!svc?.autoInvoice) continue;
-                if (freq !== 'monthly' || amt <= 0) continue;
-                try {
-                  await stripe.invoiceItems.create({
-                    customer: customerId,
-                    amount: Math.round(amt * 100),
-                    currency: 'usd',
-                    description: String(svc.name || 'Additional service').slice(0, 250),
-                    metadata: { unitId: u.id, buildingId: b.id, floorId: f.id, ym: nextYm, purpose: 'service', serviceId: String(svc.id || ''), source: 'auto' },
-                  }, { idempotencyKey: idempotencyKey + '-svc-' + (svc.id || svc.name || '').slice(0, 30) });
-                } catch (svcErr) {
-                  logger.warn(`[runAutoInvoices] service line "${svc.name}" for ${u.id} failed: ${svcErr.message}`);
-                }
-              }
-            }
-
-            // Phase 5 LIVE: roll-in late-fee invoice item. Создаём ДО
-            // invoices.create — Stripe автоматически подцепит pending
-            // invoice_item к новому invoice того же customer'а. Описание
-            // включает оригинальный месяц для прозрачности тенанту.
-            // Idempotency: -rollin суффикс на ключ same as services pattern.
-            // Если invoiceItems.create упал — отключаем void ниже (иначе
-            // получим void standalone без roll-in line = тенант теряет
-            // обязательство).
-            if (_rollInCandidate) {
-              try {
-                const _rollInLabel = new Date(`${_rollInPrevYm}-01T00:00:00Z`)
-                  .toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
-                await stripe.invoiceItems.create({
-                  customer: customerId,
-                  amount: _rollInCandidate.total,
-                  currency: 'usd',
-                  description: `Late fee carry-over from ${_rollInLabel}`,
-                  metadata: {
-                    unitId: u.id, buildingId: b.id, floorId: f.id,
-                    ym: nextYm, purpose: 'late_fee_rollin', source: 'auto',
-                    originalInvoiceId: _rollInCandidate.id,
-                    originalYm: _rollInPrevYm,
-                  },
-                }, { idempotencyKey: idempotencyKey + '-rollin' });
-                logger.info(`[roll-late-fee:live] unit=${u.id} added rollin line amount=${_rollInCandidate.total} cents from ${_rollInCandidate.id}`);
-              } catch (rollErr) {
-                logger.error(`[roll-late-fee:live] unit=${u.id} invoiceItems.create FAILED, skipping roll-in (standalone stays): ${rollErr.message}`);
-                _rollInCandidate = null;
-              }
-            }
-
-            // Custom invoice number with "RA-" prefix marking this as
-            // an auto-generated rent invoice (vs manual "R-").
+            // --- A. PREP (перенесено СЮДА, ДО создания строк) ---
             const autoNumber = buildCustomInvoiceNumber({
               purpose: 'rent', unitId: u.id, ym: nextYm, auto: true, code: buildingInvoiceCode(b),
             });
-
-            // Auto-charge routing — same as createStripeInvoice. If the
-            // workspace/unit has auto-charge enabled AND the tenant's
-            // Stripe customer has a saved default payment method, bill
-            // automatically (no email). Otherwise fall back to hosted
-            // invoice email with save_default_payment_method so the
-            // next cycle can auto-charge.
             const wsAutoCharge = cfg.autoCharge === true;
             const unitAc = u.autoCharge;
             const acOn = unitAc === 'on' || (unitAc !== 'off' && wsAutoCharge);
@@ -4071,37 +4039,23 @@ const _runAutoInvoicesHandler = async (opts) => {
               try {
                 const cust = await stripe.customers.retrieve(customerId);
                 const dpm = cust?.invoice_settings?.default_payment_method;
-                if (dpm) {
-                  acMethod = 'charge_automatically';
-                } else {
-                  acPaymentSettings = { save_default_payment_method: 'on_confirmation' };
-                }
+                if (dpm) { acMethod = 'charge_automatically'; }
+                else { acPaymentSettings = { save_default_payment_method: 'on_confirmation' }; }
               } catch (e) {
                 logger.warn(`[auto-invoice] ${u.id}: customer retrieve failed, using send_invoice — ${e.message}`);
               }
             }
-
-            // Footer parity with the manual createStripeInvoice path —
-            // auto-invoices used to ship without the "Property / Suite /
-            // Landlord" footer block, so tenants saw a slightly different
-            // PDF depending on whether the cron or the operator sent it.
-            // Reads the same workspace landlord settings; defaults match
-            // the manual path exactly.
             const _autoLandlordEmail = String(state.settings?.invoiceLandlordEmail || 'finance@kiwi-rentals.com').trim();
             const _autoLandlordName  = String(state.settings?.invoiceLandlordName  || 'SuitesForAll').trim();
             const _autoMonthLabel = nm.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' });
             const _autoYear = nm.getUTCFullYear();
-            // FIXES_LOG Entry 60 (Phase 2) — рекуррентная аренда: due_date = 1-е
-            // месяца nextYm + grace, а не «N дней от отправки». future → due_date;
-            // прошлое (поздний запуск крона) → days_until_due:0 = сразу due/past_due.
             const _acGrace = (state.settings && state.settings.lateFee
                 && Number.isFinite(+state.settings.lateFee.graceDays)) ? +state.settings.lateFee.graceDays : 5;
             const _acDueSec = Math.floor(Date.UTC(nm.getUTCFullYear(), nm.getUTCMonth(), 1 + _acGrace) / 1000);
             const _acNowSec = Math.floor(Date.now() / 1000);
             const _acAbsDue = (_acDueSec > _acNowSec + 120) ? _acDueSec : null;
             const _acDueClause = (acMethod === 'send_invoice')
-              ? (_acAbsDue ? { due_date: _acAbsDue } : { days_until_due: 0 })
-              : {};
+              ? (_acAbsDue ? { due_date: _acAbsDue } : { days_until_due: 0 }) : {};
             const _acDueFooter = (acMethod === 'send_invoice')
               ? (_acAbsDue ? `Payment due: ${new Date(_acAbsDue * 1000).toISOString().slice(0, 10)}` : `Payment due: immediately (past due)`)
               : `Payment due: within ${dueDays} days`;
@@ -4114,28 +4068,94 @@ const _runAutoInvoicesHandler = async (opts) => {
               `Landlord: ${_autoLandlordName}${_autoLandlordEmail ? ' · ' + _autoLandlordEmail : ''}`,
             ].join(' · ');
 
-            // Invoice
+            // --- B. INVOICE ПЕРВЫМ (зеркало manual @1302-1314). Поле-в-поле как
+            // прежний @4118-4127 ПЛЮС ровно 2 ключа: auto_advance:false и
+            // pending_invoice_items_behavior:'exclude'. НЕ добавляем custom_fields
+            // (авто-PDF без изменений, skeptic #2). ---
             const inv = await stripe.invoices.create({
               customer: customerId,
-              auto_advance: true,
+              auto_advance: false,
               collection_method: acMethod,
               ..._acDueClause,
               ...(acPaymentSettings ? { payment_settings: acPaymentSettings } : {}),
+              pending_invoice_items_behavior: 'exclude',
               metadata: { unitId: u.id, buildingId: b.id, floorId: f.id, ym: nextYm, purpose: 'rent', source: 'auto' },
               description,
               footer: _autoFooter,
             }, { idempotencyKey });
-            // Apply the custom number AFTER create (Stripe rejects it
-            // on create for send_invoice collection with auto_advance).
-            try {
-              await stripe.invoices.update(inv.id, { number: autoNumber });
-            } catch (e) {
-              logger.warn(`[auto-invoice] ${u.id}: couldn't set number ${autoNumber} — ${e.message}`);
+            try { await stripe.invoices.update(inv.id, { number: autoNumber }); }
+            catch (e) { logger.warn(`[auto-invoice] ${u.id}: couldn't set number ${autoNumber} — ${e.message}`); }
+
+            // --- C. RENT строка по invoice:inv.id (зеркало @1346-1348) ---
+            await stripe.invoiceItems.create({
+              customer: customerId,
+              invoice: inv.id,
+              amount: Math.round(rent * 100),
+              currency: 'usd',
+              description,
+              metadata: { unitId: u.id, buildingId: b.id, floorId: f.id, ym: nextYm, purpose: 'rent', source: 'auto' },
+            }, { idempotencyKey: idempotencyKey + '-item' });
+
+            // --- D. SERVICES loop, каждая по invoice:inv.id (@1378-1380) ---
+            if (Array.isArray(u.additionalServices)) {
+              for (const svc of u.additionalServices) {
+                const freq = svc?.frequency || 'monthly';
+                const amt = +svc?.amount || 0;
+                if (!svc?.active) continue;
+                if (!svc?.autoInvoice) continue;
+                if (freq !== 'monthly' || amt <= 0) continue;
+                try {
+                  await stripe.invoiceItems.create({
+                    customer: customerId,
+                    invoice: inv.id,
+                    amount: Math.round(amt * 100),
+                    currency: 'usd',
+                    description: String(svc.name || 'Additional service').slice(0, 250),
+                    metadata: { unitId: u.id, buildingId: b.id, floorId: f.id, ym: nextYm, purpose: 'service', serviceId: String(svc.id || ''), source: 'auto' },
+                  }, { idempotencyKey: idempotencyKey + '-svc-' + (svc.id || svc.name || '').slice(0, 30) });
+                } catch (svcErr) {
+                  logger.warn(`[runAutoInvoices] service line "${svc.name}" for ${u.id} failed: ${svcErr.message}`);
+                }
+              }
             }
+
+            // --- E. ROLL-IN late-fee по invoice:inv.id (зеркало @1463-1465).
+            // Failure isolation прежняя: падение create → _rollInCandidate=null
+            // (void standalone ниже НЕ выполнится). Старый комментарий про
+            // «Stripe автоматически подцепит pending invoice_item» УДАЛЁН — он
+            // описывал баг. ---
+            if (_rollInCandidate) {
+              try {
+                const _rollInLabel = new Date(`${_rollInPrevYm}-01T00:00:00Z`)
+                  .toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+                await stripe.invoiceItems.create({
+                  customer: customerId,
+                  invoice: inv.id,
+                  amount: _rollInCandidate.total,
+                  currency: 'usd',
+                  description: `Late fee carry-over from ${_rollInLabel}`,
+                  metadata: {
+                    unitId: u.id, buildingId: b.id, floorId: f.id,
+                    ym: nextYm, purpose: 'late_fee_rollin', source: 'auto',
+                    originalInvoiceId: _rollInCandidate.id, originalYm: _rollInPrevYm,
+                  },
+                }, { idempotencyKey: idempotencyKey + '-rollin' });
+                logger.info(`[roll-late-fee:live] unit=${u.id} added rollin line amount=${_rollInCandidate.total} cents from ${_rollInCandidate.id}`);
+              } catch (rollErr) {
+                logger.error(`[roll-late-fee:live] unit=${u.id} invoiceItems.create FAILED, skipping roll-in (standalone stays): ${rollErr.message}`);
+                _rollInCandidate = null;
+              }
+            }
+
+            // --- F. FINALIZE явно (зеркало @1509) — недостающий вызов ---
+            const finalized = await stripe.invoices.finalizeInvoice(inv.id);
+
+            // --- G. SEND только для send_invoice, на finalized.id, обёрнуто (@1518-1524) ---
             if (acMethod === 'send_invoice') {
-              await stripe.invoices.sendInvoice(inv.id);
+              try { await stripe.invoices.sendInvoice(finalized.id); }
+              catch (e) { logger.warn(`[auto-invoice] ${u.id}: sendInvoice failed — ${e.message}`); }
             } else {
-              logger.info(`[auto-invoice] ${u.id}: auto-charging saved card (charge_automatically)`);
+              logger.info(`[auto-invoice] ${u.id}: charge_automatically — card debited on finalize`);
             }
 
             // Phase 5 LIVE: void standalone late-fee после успешной отправки
@@ -4151,7 +4171,7 @@ const _runAutoInvoicesHandler = async (opts) => {
                 try {
                   await stripe.invoices.update(_rollInCandidate.id, {
                     metadata: {
-                      rolledIntoInvoiceId: inv.id,
+                      rolledIntoInvoiceId: finalized.id,
                       rolledIntoYm: nextYm,
                       rolledIntoAt: new Date().toISOString(),
                       rolledInBy: 'auto-billing-cron',
@@ -4169,7 +4189,7 @@ const _runAutoInvoicesHandler = async (opts) => {
             // Stamp u.stripe so next run skips
             u.stripe = u.stripe || {};
             u.stripe.autoSentYm = nextYm;
-            u.stripe.lastInvoiceId = inv.id;
+            u.stripe.lastInvoiceId = finalized.id;
             u.stripe.lastInvoiceYm = nextYm;
             _stripePatch[b.id + '|' + f.id + '|' + u.id] = u.stripe;
             sent++;
