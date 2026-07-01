@@ -21844,6 +21844,7 @@
           <div class="field"><label>Current Rent $</label><input type="number" id="auContractRent" min="0" step="1" placeholder="0" title="In-place contract rent (from signed lease)"></div>
           <div class="field"><label>Security Deposit $</label><input type="number" id="auDeposit" min="0" step="1" placeholder="0"></div>
           <div class="field"><label>Lease Signed</label><input type="date" id="auSigned" onchange="onAuTermChange()"></div>
+          <div class="field"><label>Lease Start <span style="color:var(--muted); font-weight:400;">(commencement)</span></label><input type="date" id="auLeaseStart" onchange="onAuTermChange()"></div>
           <div class="field"><label>Term</label>
             <select id="auTerm" onchange="onAuTermChange()">
               <option value="">—</option>
@@ -21857,7 +21858,7 @@
             </select>
           </div>
           <div class="field" style="grid-column: 1 / -1;">
-            <label>Lease End <span style="color:var(--muted); font-weight:400;">(auto from Signed + Term)</span></label>
+            <label>Lease End <span style="color:var(--muted); font-weight:400;">(auto from Start + Term)</span></label>
             <input type="date" id="auUntil">
           </div>
           <div class="field" style="grid-column: 1 / -1;">
@@ -67148,7 +67149,7 @@ function openAddUnitModal() {
   [
     'auSuite','auSqft','auRent','auContractRent',
     'auTenant','auCompany','auEmail','auPhone',
-    'auDeposit','auSigned','auTerm','auUntil','auNote'
+    'auDeposit','auSigned','auLeaseStart','auTerm','auUntil','auNote'
   ].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.value = '';
@@ -67214,21 +67215,23 @@ function bindAutoOccupyListeners() {
   });
 }
 
-// Auto-compute lease-end when Signed + Term are both set. Uses the
-// SAME end-of-month convention as the right-panel onTermChange and
-// the Add Lease modal so all three surfaces compute identical end
-// dates. E.g. 11/01/2025 + 18mo → 05/31/2027.
+// Auto-compute lease-end from Lease START (commencement) + Term. Anchors on
+// auLeaseStart, falling back to auSigned when start is empty (backward-compat)
+// — mirrors the right-panel onTermChange (fLeaseStart||fSigned). Дата подписания
+// может предшествовать началу лизы, поэтому якорь на signed давал неверный until
+// (кейс suite 319). SAME end-of-month convention as onTermChange / Add Lease modal.
 function onAuTermChange() {
-  const signed = document.getElementById('auSigned')?.value;
+  const start  = document.getElementById('auLeaseStart')?.value
+              || document.getElementById('auSigned')?.value;
   const term   = document.getElementById('auTerm')?.value;
   const endEl  = document.getElementById('auUntil');
-  if (!signed || !term || term === 'mtm' || !endEl) {
+  if (!start || !term || term === 'mtm' || !endEl) {
     if (term === 'mtm' && endEl) endEl.value = '';
     return;
   }
   const n = parseInt(term);
   if (isNaN(n)) return;
-  const d = new Date(signed + 'T00:00:00');
+  const d = new Date(start + 'T00:00:00');
   if (isNaN(d.getTime())) return;
   d.setMonth(d.getMonth() + n);
   d.setDate(new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate());
@@ -67316,18 +67319,23 @@ function saveAddUnitModal(opts) {
   const phone = document.getElementById('auPhone').value.trim();
   const deposit = +document.getElementById('auDeposit').value || 0;
   const signed = document.getElementById('auSigned').value;
+  // Lease START (commencement) — отдельно от даты подписания. Пусто → падаем
+  // на signed (старое поведение), чтобы существующий поток не сломать.
+  const leaseStart = document.getElementById('auLeaseStart').value || signed;
   const leaseTerm = document.getElementById('auTerm').value;
   const note = document.getElementById('auNote').value.trim();
   // Prefer the user-entered Lease End (from the auto-calc field) if present;
-  // otherwise derive from Signed + Term.
+  // otherwise derive from Lease START + Term (NOT signed — signing date can
+  // precede commencement; anchoring end on signed produced a wrong until,
+  // кейс suite 319). Mirrors right-panel onTermChange (fLeaseStart||fSigned).
   let until = document.getElementById('auUntil').value || '';
-  if (!until && signed && leaseTerm && leaseTerm !== 'mtm') {
+  if (!until && leaseStart && leaseTerm && leaseTerm !== 'mtm') {
     const n = parseInt(leaseTerm);
     if (!isNaN(n)) {
       // End-of-month convention — match onTermChange / onAuTermChange /
       // _addLeaseDocRecalcEnd so every surface produces the same end
       // date for the same (start, term) input.
-      const d = new Date(signed + 'T00:00:00');
+      const d = new Date(leaseStart + 'T00:00:00');
       if (!isNaN(d.getTime())) {
         d.setMonth(d.getMonth() + n);
         d.setDate(new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate());
@@ -67347,7 +67355,7 @@ function saveAddUnitModal(opts) {
     rate: sqft ? +(rent * 12 / sqft).toFixed(2) : 0,
     tenant, company, tel: phone, email,
     deposit,
-    leaseStart: signed, signed,
+    leaseStart, signed,
     leaseTerm,
     until,
     note,
