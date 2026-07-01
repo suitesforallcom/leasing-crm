@@ -3594,6 +3594,11 @@ exports.runAutoInvoices = onSchedule(
     const snap = await stateRef.get();
     if (!snap.exists) { logger.info('[auto-invoice] no state doc, skipping'); return; }
     const state = snap.data().state || {};
+    // Strip-aware: под settings.syncBuildingsStrip монолит несёт buildings:[] —
+    // реальные здания живут в коллекции. Без гидрации цикл ниже идёт по НУЛЮ
+    // юнитов и счёт не выставляется НИКОМУ (регресс миграции buildings-strip).
+    // No-op при strip off — поведение прежнее.
+    await _rehydrateStateForStripCF(state);
     const cfg = (state.settings && state.settings.autoInvoice) || {};
     // Каскадный gate: workspace ← building ← floor ← unit. Если ни на
     // одном уровне auto-invoice НЕ включён — выходим (быстрый путь
@@ -3742,6 +3747,10 @@ exports.runAutoInvoices = onSchedule(
     }
 
     let sent = 0, skipped = 0, failed = 0;
+    // b|f|u → итоговый u.stripe отправленных юнитов. Пишем strip-aware через
+    // mutateWorkspaceState в конце (прямой stateRef.set(гидрированного state)
+    // под strip раздул бы монолит зданиями обратно).
+    const _stripePatch = {};
     const stripe = getStripe();
 
     for (const b of state.buildings || []) {
@@ -4148,6 +4157,7 @@ exports.runAutoInvoices = onSchedule(
             u.stripe.autoSentYm = nextYm;
             u.stripe.lastInvoiceId = inv.id;
             u.stripe.lastInvoiceYm = nextYm;
+            _stripePatch[b.id + '|' + f.id + '|' + u.id] = u.stripe;
             sent++;
             logger.info(`[auto-invoice] sent to ${u.email} (${u.id}) · $${rent} · ${nextYm}`);
             // Audit (Tony 2026-05-23 Phase 2): per-invoice trail so the Unit
@@ -4186,10 +4196,22 @@ exports.runAutoInvoices = onSchedule(
       }
     }
 
-    // Persist updated state (u.stripe stamps)
+    // Persist u.stripe stamps — strip-aware. mutateWorkspaceState ре-стрипит
+    // монолит и зеркалит ИЗМЕНЁННЫЕ здания в под-доки (при strip off — обычная
+    // запись монолита). Прямой stateRef.set(гидрированного state) здесь НЕЛЬЗЯ:
+    // под strip он записал бы buildings обратно в монолит (раздув до ~925КБ) и
+    // разъехался бы с коллекцией зданий.
     if (sent > 0) {
-      state._rev = (state._rev || 0) + 1;
-      await stateRef.set({ state, _rev: state._rev, _updatedAt: admin.firestore.FieldValue.serverTimestamp(), _updatedBy: 'auto-invoice' }, { merge: true });
+      await mutateWorkspaceState((s) => {
+        for (const b of (s.buildings || [])) {
+          for (const f of (b.floors || [])) {
+            for (const u of (f.units || [])) {
+              const _p = _stripePatch[b.id + '|' + f.id + '|' + u.id];
+              if (_p) u.stripe = _p;
+            }
+          }
+        }
+      });
     }
     // Persist checkpoint — even if we ran the full set this time, the
     // record of which units we processed in the last 24h means a manual
@@ -4389,6 +4411,9 @@ async function _runAutoLateFeesHandler(opts) {
     return { sent: 0, skipped: 0, failed: 0, dryRun: 0, mode: 'no-state' };
   }
   const state = snap.data().state || {};
+  // Strip-aware: подтянуть реальные здания+платежи из коллекций, иначе цикл
+  // идёт по НУЛЮ юнитов и авто-пеня не начисляется НИКОМУ. No-op при strip off.
+  await _rehydrateStateForStripCF(state);
   const wsLfCfg = (state.settings && state.settings.lateFee) || {};
 
   // Workspace-wide live gate. Default false → cron логирует но не вызывает
@@ -4440,6 +4465,8 @@ async function _runAutoLateFeesHandler(opts) {
   }
 
   let sent = 0, skipped = 0, failed = 0, dryRunCount = 0;
+  // b|f|u → итоговый u.stripe (lateFeeSent). Пишем strip-aware через mutateWorkspaceState.
+  const _lfStripePatch = {};
   const stripe = liveMode ? getStripe() : null;
   const dryRunActions = []; // [{unitId, ym, fee, base, customerId}]
 
@@ -4535,6 +4562,7 @@ async function _runAutoLateFeesHandler(opts) {
                 u.stripe = u.stripe || {};
                 u.stripe.lateFeeSent = u.stripe.lateFeeSent || {};
                 u.stripe.lateFeeSent[o.ym] = liveDup.id;
+                _lfStripePatch[unitKey] = u.stripe;
                 skipped++;
                 continue;
               }
@@ -4635,6 +4663,7 @@ async function _runAutoLateFeesHandler(opts) {
             u.stripe = u.stripe || {};
             u.stripe.lateFeeSent = u.stripe.lateFeeSent || {};
             u.stripe.lateFeeSent[o.ym] = inv.id;
+            _lfStripePatch[unitKey] = u.stripe;
             sent++;
             logger.info(`[auto-late-fee] sent to ${u.email} (${u.id}/${o.ym}) · $${o.fee.toFixed(2)} · ${inv.id}`);
             // Audit per-fee assessed (Tony Phase 2). Unit Activity tab will
@@ -4663,17 +4692,21 @@ async function _runAutoLateFeesHandler(opts) {
     }
   }
 
-  // Persist updated state if anything was actually invoiced.
+  // Persist lateFeeSent stamps — strip-aware. mutateWorkspaceState ре-стрипит
+  // монолит и зеркалит изменённые здания в под-доки (при strip off — обычная
+  // запись). Прямой stateRef.set(гидрированного state) под strip раздул бы
+  // монолит зданиями обратно.
   if (sent > 0) {
-    state._rev = (state._rev || 0) + 1;
-    await stateRef.set(
-      {
-        state, _rev: state._rev,
-        _updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        _updatedBy: 'auto-late-fee',
-      },
-      { merge: true }
-    );
+    await mutateWorkspaceState((s) => {
+      for (const b of (s.buildings || [])) {
+        for (const f of (b.floors || [])) {
+          for (const u of (f.units || [])) {
+            const _p = _lfStripePatch[`${b.id}|${f.id}|${u.id}`];
+            if (_p) u.stripe = _p;
+          }
+        }
+      }
+    });
   }
 
   // Persist checkpoint + dry-run summary (capped at 50 actions so the
