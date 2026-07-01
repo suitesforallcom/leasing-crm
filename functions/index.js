@@ -3901,7 +3901,12 @@ const _runAutoInvoicesHandler = async (opts) => {
           // marked Free for a referral but the cron sent an invoice
           // anyway).
           if (u.payments && u.payments[nextYm]
-              && ['paid', 'free', 'waived'].includes(u.payments[nextYm].status)) {
+              && ['paid', 'free', 'waived'].includes(u.payments[nextYm].status)
+              // $0-escape (backfill-баг 2026-07): 'paid' с amount===0 — артефакт
+              // пустого $0-инвойса (webhook записал status:paid, amount:0). Месяц
+              // НЕ закрыт → перевыставляем. free/waived (реальные компы) и paid с
+              // суммой>0 по-прежнему блокируют.
+              && !(u.payments[nextYm].status === 'paid' && Number(u.payments[nextYm].amount) === 0)) {
             skipped++; continue;
           }
           // Multi-month advance prepayment (FIXES_LOG Entry 30) — оператор
@@ -4292,6 +4297,149 @@ exports.triggerAutoInvoicesNow = onCall(
       throw new HttpsError('invalid-argument', 'ym required as "YYYY-MM"');
     }
     return await _runAutoInvoicesHandler({ ym, forceDryRun });
+  }
+);
+
+// ===========================================================================
+// ===== Recovery: чистка $0-артефактов backfill-бага =======================
+// Editor-gated onCall. Для указанного ym: (1) находит в Stripe пустые $0/PAID
+// авто-rent-инвойсы (артефакты, когда rent-item не прицеплялся); (2) удаляет
+// болтающиеся pending invoice_items (реальные суммы, не привязанные к инвойсу);
+// (3) снимает штампы u.stripe.autoSentYm/lastInvoiceYm/lastInvoiceId; (4) удаляет
+// $0-платёжки из коллекции payments (их записал webhook на $0-инвойс). ПО
+// УМОЛЧАНИЮ DRY-RUN — мутирует ТОЛЬКО при явном forceDryRun:false.
+// $0/PAID-инвойсы в Stripe НЕ трогаем (void/delete им нельзя; безвредны).
+//   req.data = { ym:'YYYY-MM', forceDryRun?:bool (default true) }
+// ===========================================================================
+exports.recoverAutoZeroInvoices = onCall(
+  { secrets: [STRIPE_SECRET_KEY], timeoutSeconds: 540, memory: '512MiB' },
+  async (req) => {
+    await requireEditor(req.auth);
+    const ym = req.data && req.data.ym ? String(req.data.ym) : null;
+    const forceDryRun = !(req.data && req.data.forceDryRun === false);   // default: dry-run
+    if (!ym || !/^\d{4}-\d{2}$/.test(ym)) {
+      throw new HttpsError('invalid-argument', 'ym required as "YYYY-MM"');
+    }
+    const stripe = getStripe();
+
+    // 1. Пустые $0/PAID авто-rent-инвойсы за ym.
+    const q = `metadata["purpose"]:"rent" AND metadata["ym"]:"${ym}" AND metadata["source"]:"auto"`;
+    const zeros = []; const zeroIds = new Set();
+    let page = null;
+    for (let guard = 0; guard < 50; guard++) {
+      const res = await stripe.invoices.search(page ? { query: q, limit: 100, page } : { query: q, limit: 100 });
+      for (const inv of (res.data || [])) {
+        const total = Number(inv.total ?? 0);
+        const lc = inv.lines?.total_count ?? (inv.lines?.data?.length ?? 0);
+        if (total === 0 && inv.status === 'paid' && lc === 0) {
+          zeros.push({ invoiceId: inv.id, unitId: inv.metadata?.unitId || '', customerId: inv.customer });
+          zeroIds.add(inv.id);
+        }
+      }
+      if (!res.has_more) break;
+      page = res.next_page;
+    }
+
+    // 2. Болтающиеся pending invoice_items у затронутых клиентов.
+    const customers = [...new Set(zeros.map(z => z.customerId).filter(Boolean))];
+    const pendingItems = [];
+    for (const cust of customers) {
+      try {
+        const il = await stripe.invoiceItems.list({ customer: cust, pending: true, limit: 100 });
+        for (const it of (il.data || [])) {
+          const m = it.metadata || {};
+          if (m.ym === ym && m.source === 'auto'
+              && ['rent', 'service', 'late_fee_rollin'].includes(m.purpose) && !it.invoice) {
+            pendingItems.push({ id: it.id, customer: cust, amount: it.amount, unitId: m.unitId || '', purpose: m.purpose });
+          }
+        }
+      } catch (e) { logger.warn(`[recover-zero] pending-list ${cust} failed: ${e.message}`); }
+    }
+
+    // 3. Штампы к очистке (u.stripe.autoSentYm → $0-инвойс).
+    const state = await readWorkspaceState();
+    const stampKeys = new Set(); const stampUnits = [];
+    for (const b of (state.buildings || [])) {
+      for (const f of (b.floors || [])) {
+        for (const u of (f.units || [])) {
+          const st = u.stripe || {};
+          if (st.autoSentYm === ym && st.lastInvoiceId && zeroIds.has(st.lastInvoiceId)) {
+            stampKeys.add(`${b.id}|${f.id}|${u.id}`); stampUnits.push(u.id);
+          }
+        }
+      }
+    }
+
+    // 4. $0-платёжки в коллекции payments (webhook записал status:paid, amount:0).
+    const payDocs = [];
+    try {
+      const psnap = await db.collection(`workspaces/${WORKSPACE_ID}/payments`).get();
+      psnap.forEach((docSnap) => {
+        const x = docSnap.data();
+        if (!x || x.ym !== ym) return;
+        const rec = x.rec || {};
+        if (rec.status === 'paid' && Number(rec.amount) === 0 && rec.stripe && zeroIds.has(rec.stripe.invoiceId)) {
+          payDocs.push({ ref: docSnap.ref, unitId: x.unitId || '' });
+        }
+      });
+    } catch (e) { logger.warn(`[recover-zero] payments-scan failed: ${e.message}`); }
+
+    const plan = {
+      ym, zeroInvoices: zeros.length, danglingPendingItems: pendingItems.length,
+      stampClears: stampUnits.length, payRowClears: payDocs.length,
+      sampleZeroInvoices: zeros.slice(0, 12), samplePendingItems: pendingItems.slice(0, 12),
+      stampUnits: stampUnits.slice(0, 60),
+    };
+
+    if (forceDryRun) {
+      logger.info(`[recover-zero] DRY-RUN ${ym}: zeros=${zeros.length} pending=${pendingItems.length} stamps=${stampUnits.length} payRows=${payDocs.length}`);
+      return { dryRun: true, ...plan };
+    }
+
+    // LIVE (a): удалить болтающиеся pending items.
+    let itemsDeleted = 0;
+    for (const it of pendingItems) {
+      try {
+        await stripe.invoiceItems.del(it.id); itemsDeleted++;
+        try {
+          await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+            action: 'invoice-item.deleted', ts: Date.now(), unitId: it.unitId, itemId: it.id,
+            amount: (it.amount || 0) / 100, actor: 'system:recover-auto-zero',
+            note: `Deleted dangling $0-backfill pending ${it.purpose} item for ${ym}`,
+          });
+        } catch {}
+      } catch (e) { logger.warn(`[recover-zero] del item ${it.id} failed: ${e.message}`); }
+    }
+
+    // LIVE (b): снять штампы (strip-aware; зеркалит здания). Monolith-копия
+    // платёжки чистится тоже (актуально при strip off).
+    if (stampKeys.size || payDocs.length) {
+      await mutateWorkspaceState((s) => {
+        for (const b of (s.buildings || [])) {
+          for (const f of (b.floors || [])) {
+            for (const u of (f.units || [])) {
+              if (stampKeys.has(`${b.id}|${f.id}|${u.id}`) && u.stripe && u.stripe.autoSentYm === ym) {
+                delete u.stripe.autoSentYm; delete u.stripe.lastInvoiceYm; delete u.stripe.lastInvoiceId;
+              }
+              const p = u.payments && u.payments[ym];
+              if (p && p.status === 'paid' && Number(p.amount) === 0 && p.stripe && zeroIds.has(p.stripe.invoiceId)) {
+                delete u.payments[ym];
+              }
+            }
+          }
+        }
+      });
+    }
+
+    // LIVE (c): удалить $0-платёжки из коллекции payments (под strip — источник истины).
+    let payRowsDeleted = 0;
+    for (const pd of payDocs) {
+      try { await pd.ref.delete(); payRowsDeleted++; }
+      catch (e) { logger.warn(`[recover-zero] payment-doc del failed ${pd.unitId}: ${e.message}`); }
+    }
+
+    logger.info(`[recover-zero] LIVE ${ym}: itemsDeleted=${itemsDeleted} stampsCleared=${stampUnits.length} payRowsDeleted=${payRowsDeleted}`);
+    return { dryRun: false, ...plan, itemsDeleted, stampsCleared: stampUnits.length, payRowsDeleted };
   }
 );
 
