@@ -3581,15 +3581,11 @@ async function inferPaymentMethod(invoice) {
 // =========================================================================
 const {onSchedule} = require('firebase-functions/v2/scheduler');
 
-exports.runAutoInvoices = onSchedule(
-  {
-    schedule: '0 9 * * *',         // 09:00 UTC daily (~5am ET, ~2am PT)
-    timeZone: 'UTC',
-    secrets: [STRIPE_SECRET_KEY],
-    memory: '512MiB',
-    timeoutSeconds: 540,           // 9 min — we could have hundreds of units
-  },
-  async () => {
+const _runAutoInvoicesHandler = async (opts) => {
+    opts = opts || {};
+    const _targetYm = opts.ym || null;        // ручной backfill за конкретный ym
+    const _forceDryRun = !!opts.forceDryRun;  // не звать Stripe на создание — только собрать список
+    const _ignoreSendDay = !!opts.ym;         // при явном ym игнорируем send-day gate
     const stateRef = db.doc(`workspaces/${WORKSPACE_ID}/data/state`);
     const snap = await stateRef.get();
     if (!snap.exists) { logger.info('[auto-invoice] no state doc, skipping'); return; }
@@ -3746,7 +3742,16 @@ exports.runAutoInvoices = onSchedule(
       nextYm = `${nm.getUTCFullYear()}-${String(nm.getUTCMonth()+1).padStart(2,'0')}`;
     }
 
-    let sent = 0, skipped = 0, failed = 0;
+    // Ручной backfill override: целимся в конкретный ym (1-е число месяца),
+    // ниже send-day gate игнорируется. Пустой opts (плановый крон) сюда не входит.
+    if (_targetYm && /^\d{4}-\d{2}$/.test(_targetYm)) {
+      const [_by, _bm] = _targetYm.split('-').map(Number);
+      nm = new Date(Date.UTC(_by, _bm - 1, 1));
+      nextYm = _targetYm;
+      logger.info(`[auto-invoice] BACKFILL override → targetYm=${nextYm} ignoreSendDay=${_ignoreSendDay} dryRun=${_forceDryRun}`);
+    }
+    let sent = 0, skipped = 0, failed = 0, dryRunCount = 0;
+    const dryRunActions = [];
     // b|f|u → итоговый u.stripe отправленных юнитов. Пишем strip-aware через
     // mutateWorkspaceState в конце (прямой stateRef.set(гидрированного state)
     // под strip раздул бы монолит зданиями обратно).
@@ -3824,9 +3829,9 @@ exports.runAutoInvoices = onSchedule(
             if (v) dueDays = v;
           }
           const unitSendDate = new Date(nm.getTime() - beforeDays * 86400_000);
-          if (today.getUTCFullYear() !== unitSendDate.getUTCFullYear()
+          if (!_ignoreSendDay && (today.getUTCFullYear() !== unitSendDate.getUTCFullYear()
            || today.getUTCMonth()    !== unitSendDate.getUTCMonth()
-           || today.getUTCDate()     !== unitSendDate.getUTCDate()) {
+           || today.getUTCDate()     !== unitSendDate.getUTCDate())) {
             skipped++; continue;
           }
           // Already invoiced this cycle? autoSentYm normally short-
@@ -3929,6 +3934,15 @@ exports.runAutoInvoices = onSchedule(
               // proceed. Stripe-level idempotency key still guards
               // against same-day re-fires from cron itself.
               logger.warn(`[auto-invoice] ${u.id}: dup-search failed (${searchErr.message}); proceeding without cross-flow dedupe`);
+            }
+
+            // DRY-RUN: юнит прошёл все гейты и cross-flow dedupe — фиксируем
+            // «что бы отправили» и НЕ создаём инвойс в Stripe.
+            if (_forceDryRun) {
+              dryRunCount++;
+              dryRunActions.push({ unitId: u.id, ym: nextYm, amount: rent, email: u.email });
+              logger.info(`[auto-invoice:dry-run] WOULD send ${nextYm} · $${rent} · ${u.email} (${u.id})`);
+              continue;
             }
 
             // === Phase 5 LIVE: roll-late-fee-into-next-rent (Tony 2026-05-28) ===
@@ -4229,7 +4243,35 @@ exports.runAutoInvoices = onSchedule(
     if (typeof globalThis.__autoInvShouldProcess === 'function') {
       // Nothing more to do — checkpoint persisted above.
     }
-    logger.info(`[auto-invoice] done · sent=${sent} skipped=${skipped} failed=${failed}`);
+    logger.info(`[auto-invoice] done · sent=${sent} skipped=${skipped} failed=${failed} dryRun=${dryRunCount}`);
+    return { sent, skipped, failed, dryRun: dryRunCount, targetYm: nextYm, sampleActions: dryRunActions.slice(0, 50) };
+};
+
+exports.runAutoInvoices = onSchedule(
+  {
+    schedule: '0 9 * * *',         // 09:00 UTC daily (~5am ET, ~2am PT)
+    timeZone: 'UTC',
+    secrets: [STRIPE_SECRET_KEY],
+    memory: '512MiB',
+    timeoutSeconds: 540,           // 9 min — we could have hundreds of units
+  },
+  async () => { await _runAutoInvoicesHandler({}); }
+);
+
+// Manual trigger / backfill — editor-gated onCall, зеркалит triggerAutoLateFeesNow.
+// Позволяет разослать rent-счета за КОНКРЕТНЫЙ ym (напр. пропущенный, пока
+// strip-крон был сломан) точно той же логикой, что и плановый крон, с dry-run
+// превью. req.data = { ym: 'YYYY-MM', forceDryRun?: bool }.
+exports.triggerAutoInvoicesNow = onCall(
+  { secrets: [STRIPE_SECRET_KEY], timeoutSeconds: 540, memory: '512MiB' },
+  async (req) => {
+    await requireEditor(req.auth);
+    const ym = req.data && req.data.ym ? String(req.data.ym) : null;
+    const forceDryRun = !!(req.data && req.data.forceDryRun);
+    if (!ym || !/^\d{4}-\d{2}$/.test(ym)) {
+      throw new HttpsError('invalid-argument', 'ym required as "YYYY-MM"');
+    }
+    return await _runAutoInvoicesHandler({ ym, forceDryRun });
   }
 );
 
