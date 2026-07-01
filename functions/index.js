@@ -1781,7 +1781,17 @@ exports.listStripeInvoices = onCall(
     const rows = page.data
       // Авто-счета (source:'auto') — тоже наши. Без 'auto' в фильтре список
       // и история юнита их не показывают (инцидент 2026-07: авто-счета невидимы).
-      .filter(inv => !inv.metadata || !inv.metadata.source || inv.metadata.source === 'suitesforall' || inv.metadata.source === 'auto')
+      // ПЛЮС прячем пустые $0-артефакты backfill-бага (total===0 && 0 строк):
+      // это не настоящие счета (Stripe их не даёт void/delete), они захламляют
+      // список/историю и ложно красят месяц «paid».
+      .filter(inv => {
+        const src = inv.metadata && inv.metadata.source;
+        if (!(!inv.metadata || !src || src === 'suitesforall' || src === 'auto')) return false;
+        const total = Number(inv.total ?? inv.amount_due ?? 0);
+        const lineCount = inv.lines?.total_count ?? (inv.lines?.data?.length ?? 0);
+        if (total === 0 && lineCount === 0) return false;
+        return true;
+      })
       .map(inv => {
         const customer = (typeof inv.customer === 'object') ? inv.customer : null;
         // Derive "past due" client-friendly bucket
