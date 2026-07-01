@@ -4106,8 +4106,24 @@ const _runAutoInvoicesHandler = async (opts) => {
               description,
               footer: _autoFooter,
             }, { idempotencyKey });
-            try { await stripe.invoices.update(inv.id, { number: autoNumber }); }
-            catch (e) { logger.warn(`[auto-invoice] ${u.id}: couldn't set number ${autoNumber} — ${e.message}`); }
+            try {
+              await stripe.invoices.update(inv.id, { number: autoNumber });
+            } catch (e) {
+              // Коллизия номера: $0-двойник из backfill-бага держит тот же
+              // детерминированный RA-номер (удалить/void его нельзя). Ретраим с
+              // суффиксом версии — уникально vs двойник (как ретрай в ручном пути).
+              if (e.code === 'resource_already_exists' || /already.*(exist|set)/i.test(e.message || '')) {
+                const retryNum = `${autoNumber}-${AUTO_INV_KEY_VER}`;
+                try {
+                  await stripe.invoices.update(inv.id, { number: retryNum });
+                  logger.info(`[auto-invoice] ${u.id}: number ${autoNumber} collided; used ${retryNum}`);
+                } catch (e2) {
+                  logger.warn(`[auto-invoice] ${u.id}: number retry ${retryNum} failed — ${e2.message}`);
+                }
+              } else {
+                logger.warn(`[auto-invoice] ${u.id}: couldn't set number ${autoNumber} — ${e.message}`);
+              }
+            }
 
             // --- C. RENT строка по invoice:inv.id (зеркало @1346-1348) ---
             await stripe.invoiceItems.create({
