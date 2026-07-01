@@ -3602,6 +3602,22 @@ const {onSchedule} = require('firebase-functions/v2/scheduler');
 // новый инвойс, дубля нет. bump v2→v3 = рычаг оператора для форс-перевыставления
 // в 24ч; он ОТКЛЮЧАЕТ защиту идемпотентности → применять ТОЛЬКО с подтверждённо-
 // пустым Stripe Search и очищенными штампами (см. runbook).
+// Month-to-month / открытая лиза (Tony 2026-07-01). ЗЕРКАЛО клиентского
+// _isMonthToMonth в floor-map-editor.html — правь ОБЕ копии синхронно. Такая
+// лиза НЕ «истекает»: не гейтим биллинг/aging по u.until. Признаки: leaseTerm
+// ∈ {mtm, m2m, 1} ('1'-мес термин катится помесячно; '1' в выпадашке нет —
+// импорт/легаси) ИЛИ конец раньше начала (битые данные). Прод-даты ISO →
+// сравниваем строки YYYY-MM-DD; не-ISO → clause no-op (fail-safe).
+function _isMonthToMonth(u) {
+  if (!u) return false;
+  const t = String(u.leaseTerm || '').trim().toLowerCase();
+  if (t === 'mtm' || t === 'm2m' || t === '1') return true;
+  const s = String(u.leaseStart || u.signed || '').slice(0, 10);
+  const e = String(u.until || u.leaseEnd || '').slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s) && /^\d{4}-\d{2}-\d{2}$/.test(e) && e < s) return true;
+  return false;
+}
+
 const AUTO_INV_KEY_VER = 'v2';
 
 const _runAutoInvoicesHandler = async (opts) => {
@@ -3944,8 +3960,9 @@ const _runAutoInvoicesHandler = async (opts) => {
             logger.info(`[auto-invoice] ${u.id}: ${nextYm} covered by advance invoice ${u.payments[nextYm].stripeInvoiceId}; skipping`);
             skipped++; continue;
           }
-          // Lease must be active — don't invoice past leaseEnd
-          if (u.until) {
+          // Lease must be active — don't invoice past leaseEnd. M2M/открытая
+          // лиза не «истекает» → не гейтим по until (иначе битый until 319 скипал июль).
+          if (u.until && !_isMonthToMonth(u)) {
             const until = new Date(u.until + 'T00:00:00Z');
             if (!isNaN(until.getTime()) && until.getTime() < nm.getTime()) { skipped++; continue; }
           }
@@ -4745,7 +4762,8 @@ async function _runAutoLateFeesHandler(opts) {
 
         // Lease must still be active(ish) to bill late fees. Ended >30 days
         // ago → skip; collections logic handles old debt elsewhere.
-        if (u.until) {
+        // M2M/открытая лиза не «истекает» → пропускаем гейт (не путать с битым until).
+        if (u.until && !_isMonthToMonth(u)) {
           const until = new Date(u.until + 'T00:00:00Z');
           const todayUtc = new Date(Date.UTC(
             todayInZoneParts.year, todayInZoneParts.month - 1, todayInZoneParts.day
@@ -6875,7 +6893,7 @@ function _unitUnpaidInvoices(u, asOfYm) {
   const startYm = _ymForDate(startD);
   if (!startYm || startYm > asOfYm) return out;
   let endYm = asOfYm;
-  if (u.until) {
+  if (u.until && !_isMonthToMonth(u)) {   // M2M/открытая лиза — не капим по until
     const untilYm = _ymForDate(new Date(u.until));
     if (untilYm && untilYm < endYm) endYm = untilYm;
   }
@@ -7295,7 +7313,7 @@ function _findOldestUnpaidYm(u, txn) {
   // Чаще всего рент платится в текущем или предыдущем месяце.
   const leaseStartIso = u.leaseStart || u.signed || null;
   const leaseStart = leaseStartIso ? new Date(leaseStartIso + 'T00:00:00') : null;
-  const leaseEnd = u.until ? new Date(u.until + 'T00:00:00') : null;
+  const leaseEnd = (u.until && !_isMonthToMonth(u)) ? new Date(u.until + 'T00:00:00') : null;  // M2M — без потолка
   // Сначала смотрим txn-month, потом предыдущий, потом дальше назад.
   // Сходим с того что bank-txn пришла за тот же или прошлый месяц.
   const candidates = [];
