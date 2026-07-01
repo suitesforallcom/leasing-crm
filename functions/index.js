@@ -3597,6 +3597,9 @@ const _runAutoInvoicesHandler = async (opts) => {
     const _targetYm = opts.ym || null;        // ручной backfill за конкретный ym
     const _forceDryRun = !!opts.forceDryRun;  // не звать Stripe на создание — только собрать список
     const _ignoreSendDay = !!opts.ym;         // при явном ym игнорируем send-day gate
+    // Частичная отправка: не более N eligible-юнитов за прогон (0 = без лимита).
+    // Уже выставленные пропускаются дедупом → следующий прогон шлёт следующие N.
+    const _limit = (opts.limit != null && +opts.limit > 0) ? Math.floor(+opts.limit) : 0;
     const stateRef = db.doc(`workspaces/${WORKSPACE_ID}/data/state`);
     const snap = await stateRef.get();
     if (!snap.exists) { logger.info('[auto-invoice] no state doc, skipping'); return; }
@@ -3772,6 +3775,9 @@ const _runAutoInvoicesHandler = async (opts) => {
     for (const b of state.buildings || []) {
       for (const f of b.floors || []) {
         for (const u of f.units || []) {
+          // Частичная отправка: батч заполнен (sent+dryRun достигли лимита) —
+          // пропускаем остаток дёшево (подхватится следующим прогоном).
+          if (_limit && (sent + dryRunCount) >= _limit) { skipped++; continue; }
           // Grouped multi-suite lease = ОДИН lease (project memory «Grouped
           // suites = one lease»). Биллит только head (groupRole==='primary');
           // не-head участники НЕ получают собственный rent-инвойс. Зеркалит
@@ -4268,8 +4274,8 @@ const _runAutoInvoicesHandler = async (opts) => {
     if (typeof globalThis.__autoInvShouldProcess === 'function') {
       // Nothing more to do — checkpoint persisted above.
     }
-    logger.info(`[auto-invoice] done · sent=${sent} skipped=${skipped} failed=${failed} dryRun=${dryRunCount}`);
-    return { sent, skipped, failed, dryRun: dryRunCount, targetYm: nextYm, sampleActions: dryRunActions.slice(0, 50) };
+    logger.info(`[auto-invoice] done · sent=${sent} skipped=${skipped} failed=${failed} dryRun=${dryRunCount}${_limit ? ' limit=' + _limit : ''}`);
+    return { sent, skipped, failed, dryRun: dryRunCount, limit: _limit, targetYm: nextYm, sampleActions: dryRunActions.slice(0, 50) };
 };
 
 exports.runAutoInvoices = onSchedule(
@@ -4293,10 +4299,11 @@ exports.triggerAutoInvoicesNow = onCall(
     await requireEditor(req.auth);
     const ym = req.data && req.data.ym ? String(req.data.ym) : null;
     const forceDryRun = !!(req.data && req.data.forceDryRun);
+    const limit = (req.data && req.data.limit != null) ? +req.data.limit : 0;
     if (!ym || !/^\d{4}-\d{2}$/.test(ym)) {
       throw new HttpsError('invalid-argument', 'ym required as "YYYY-MM"');
     }
-    return await _runAutoInvoicesHandler({ ym, forceDryRun });
+    return await _runAutoInvoicesHandler({ ym, forceDryRun, limit });
   }
 );
 
