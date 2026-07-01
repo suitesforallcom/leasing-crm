@@ -1779,7 +1779,9 @@ exports.listStripeInvoices = onCall(
     const page = await stripe.invoices.list(args);
     const now = Math.floor(Date.now() / 1000);
     const rows = page.data
-      .filter(inv => !inv.metadata || inv.metadata.source === 'suitesforall' || !inv.metadata.source)
+      // Авто-счета (source:'auto') — тоже наши. Без 'auto' в фильтре список
+      // и история юнита их не показывают (инцидент 2026-07: авто-счета невидимы).
+      .filter(inv => !inv.metadata || !inv.metadata.source || inv.metadata.source === 'suitesforall' || inv.metadata.source === 'auto')
       .map(inv => {
         const customer = (typeof inv.customer === 'object') ? inv.customer : null;
         // Derive "past due" client-friendly bucket
@@ -3312,7 +3314,7 @@ async function handleInvoicePaid(invoice) {
 
 async function handleInvoiceFailed(invoice) {
   const meta = invoice.metadata || {};
-  if (meta.source !== 'suitesforall') return;
+  if (meta.source !== 'suitesforall' && meta.source !== 'auto') return;
   const {buildingId, floorId, unitId, ym} = meta;
   if (!buildingId || !floorId || !unitId || !ym) return;
 
@@ -3435,7 +3437,7 @@ async function handleInvoiceFailed(invoice) {
 
 async function handleSubscriptionUpdate(sub) {
   const meta = sub.metadata || {};
-  if (meta.source !== 'suitesforall') return;
+  if (meta.source !== 'suitesforall' && meta.source !== 'auto') return;
   const {buildingId, floorId, unitId} = meta;
   if (!buildingId || !floorId || !unitId) return;
 
@@ -3502,7 +3504,7 @@ async function handleCustomerDeleted(customer) {
 
 async function handleSubscriptionDelete(sub) {
   const meta = sub.metadata || {};
-  if (meta.source !== 'suitesforall') return;
+  if (meta.source !== 'suitesforall' && meta.source !== 'auto') return;
   const {buildingId, floorId, unitId} = meta;
   if (!buildingId || !floorId || !unitId) return;
 
@@ -4090,7 +4092,7 @@ const _runAutoInvoicesHandler = async (opts) => {
               ..._acDueClause,
               ...(acPaymentSettings ? { payment_settings: acPaymentSettings } : {}),
               pending_invoice_items_behavior: 'exclude',
-              metadata: { unitId: u.id, buildingId: b.id, floorId: f.id, ym: nextYm, purpose: 'rent', source: 'auto' },
+              metadata: { unitId: u.id, buildingId: b.id, floorId: f.id, ym: nextYm, purpose: 'rent', source: 'auto', workspaceId: WORKSPACE_ID, auto: '1', suite: String(u.id), billingMonth: nextYm },
               description,
               footer: _autoFooter,
             }, { idempotencyKey });
@@ -4104,7 +4106,7 @@ const _runAutoInvoicesHandler = async (opts) => {
               amount: Math.round(rent * 100),
               currency: 'usd',
               description,
-              metadata: { unitId: u.id, buildingId: b.id, floorId: f.id, ym: nextYm, purpose: 'rent', source: 'auto' },
+              metadata: { unitId: u.id, buildingId: b.id, floorId: f.id, ym: nextYm, purpose: 'rent', source: 'auto', workspaceId: WORKSPACE_ID, auto: '1', suite: String(u.id), billingMonth: nextYm },
             }, { idempotencyKey: idempotencyKey + '-item' });
 
             // --- D. SERVICES loop, каждая по invoice:inv.id (@1378-1380) ---
@@ -4122,7 +4124,7 @@ const _runAutoInvoicesHandler = async (opts) => {
                     amount: Math.round(amt * 100),
                     currency: 'usd',
                     description: String(svc.name || 'Additional service').slice(0, 250),
-                    metadata: { unitId: u.id, buildingId: b.id, floorId: f.id, ym: nextYm, purpose: 'service', serviceId: String(svc.id || ''), source: 'auto' },
+                    metadata: { unitId: u.id, buildingId: b.id, floorId: f.id, ym: nextYm, purpose: 'service', serviceId: String(svc.id || ''), source: 'auto', workspaceId: WORKSPACE_ID, auto: '1', suite: String(u.id), billingMonth: nextYm },
                   }, { idempotencyKey: idempotencyKey + '-svc-' + (svc.id || svc.name || '').slice(0, 30) });
                 } catch (svcErr) {
                   logger.warn(`[runAutoInvoices] service line "${svc.name}" for ${u.id} failed: ${svcErr.message}`);
@@ -4147,7 +4149,7 @@ const _runAutoInvoicesHandler = async (opts) => {
                   description: `Late fee carry-over from ${_rollInLabel}`,
                   metadata: {
                     unitId: u.id, buildingId: b.id, floorId: f.id,
-                    ym: nextYm, purpose: 'late_fee_rollin', source: 'auto',
+                    ym: nextYm, purpose: 'late_fee_rollin', source: 'auto', workspaceId: WORKSPACE_ID, auto: '1',
                     originalInvoiceId: _rollInCandidate.id, originalYm: _rollInPrevYm,
                   },
                 }, { idempotencyKey: idempotencyKey + '-rollin' });
@@ -4799,7 +4801,7 @@ async function _runAutoLateFeesHandler(opts) {
               description,
               metadata: {
                 unitId: u.id, buildingId: b.id, floorId: f.id,
-                ym: o.ym, purpose: 'late_fee', source: 'auto',
+                ym: o.ym, purpose: 'late_fee', source: 'auto', workspaceId: WORKSPACE_ID, auto: '1',
                 baseAmount: String(o.base),
                 feeType: cfg.type, feeAmount: String(cfg.amount),
               },
@@ -4854,7 +4856,7 @@ async function _runAutoLateFeesHandler(opts) {
               ...(acPaymentSettings ? { payment_settings: acPaymentSettings } : {}),
               metadata: {
                 unitId: u.id, buildingId: b.id, floorId: f.id,
-                ym: o.ym, purpose: 'late_fee', source: 'auto',
+                ym: o.ym, purpose: 'late_fee', source: 'auto', workspaceId: WORKSPACE_ID, auto: '1',
               },
               description,
               footer: _autoFooter,
