@@ -85951,12 +85951,22 @@ function _renderUnitPaymentHealth(u) {
       // оранжевый «awaiting invoice» (сигнал оператору выставить).
       const _invoiceSentThisYm = _hasAliveInv
         || !!(u.stripe && u.stripe.lastInvoiceYm === ym && u.stripe.lastInvoiceId);
+      // Лиза закончилась ДО начала этого месяца → аренда за него НЕ due, счёт
+      // не нужен → нейтрально-серый «Lease ended», не оранжевый/красный.
+      // (endDate/curDate посчитаны выше.) Tony 2026-07-01: 325/423 until=
+      // 2026-06-30, июль показывался «awaiting invoice», хотя лиза истекла.
+      const _leaseEnded = !!(endDate && !isNaN(endDate.getTime()) && endDate < curDate);
       const _left = Math.max(0, Math.ceil((overdueDate - today) / 86400000));
       const _graceAnchor = (ym === startYm && startDate) ? 'lease start' : '1st of month';
       const _rentLine = _mb.isProratedMonth
         ? `Prorated rent: $${_monthRent.toLocaleString(undefined, { maximumFractionDigits: 2 })} (${_mb.proration.daysRemaining}/${_mb.proration.daysInMonth} days)`
         : `Rent: $${rent.toLocaleString()}`;
-      if (today > overdueDate && !_invoiceSentThisYm) {
+      if (_leaseEnded && !_invoiceSentThisYm) {
+        cls = 'future';
+        label = monthLabel[0];
+        const _endLabel = endDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        tooltip = `${monthFull} ${fullYear}\nLease ended ${_endLabel} — no rent due for this month`;
+      } else if (today > overdueDate && !_invoiceSentThisYm) {
         const daysPast = Math.max(1, Math.floor((today - overdueDate) / 86400000));
         cls = 'overdue';
         label = monthLabel[0];
