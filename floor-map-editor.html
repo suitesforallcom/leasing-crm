@@ -77025,6 +77025,7 @@ function _rdIc(name, size, cls) {
 // эмодзи → спрайт; логика показа и onclick не менялись.
 function _renderRenewalAlert(u) {
   if (!u || !(u.tenant || u.company)) return '';
+  if (_isMonthToMonth(u)) return '';   // M2M/открытая лиза не «истекает» → нет renewal-плашки
   const endRaw = u.until || u.leaseEnd || '';
   const endIso = (typeof toIsoDate === 'function') ? toIsoDate(endRaw) : endRaw;
   if (!endIso) return '';
@@ -79274,8 +79275,8 @@ function _renderUnitOverviewAlerts(u) {
     // waive buttons) renders directly on Overview now — no need to
     // duplicate the policy text as a separate banner here.
   }
-  // Lease ending soon
-  if (u.until) {
+  // Lease ending soon — M2M/открытая лиза не «истекает», алерт не показываем.
+  if (u.until && !_isMonthToMonth(u)) {
     const end = new Date(u.until + 'T00:00:00');
     if (!isNaN(end.getTime())) {
       const days = Math.round((end.getTime() - now.getTime()) / 86400000);
@@ -80224,7 +80225,7 @@ function _renderLeaseCriticalDates(u) {
 
   // Renewal notice deadline — computed from end - notice months
   const noticeMo = +u.renewalNoticeMonths || 0;
-  if (u.until && noticeMo > 0) {
+  if (u.until && noticeMo > 0 && !_isMonthToMonth(u)) {
     const end = new Date(u.until + 'T00:00:00');
     const deadline = new Date(end);
     deadline.setMonth(deadline.getMonth() - noticeMo);
@@ -80232,8 +80233,8 @@ function _renderLeaseCriticalDates(u) {
     // Шаг 6 редизайна: имена спрайт-иконок вместо эмодзи (рендер в чипе ниже).
     pushDate(deadIso, 'Renewal notice deadline', `Tenant must notify ${noticeMo}mo before lease end`, 'mail');
   }
-  // Lease end
-  if (u.until) pushDate(u.until, 'Lease ends', 'Current term expires', 'calendar');
+  // Lease end — M2M/открытая лиза не «истекает», предупреждение не показываем.
+  if (u.until && !_isMonthToMonth(u)) pushDate(u.until, 'Lease ends', 'Current term expires', 'calendar');
   // Insurance expiry
   const insExp = u.insurance?.expiresAt;
   if (insExp) pushDate(insExp, 'Insurance certificate expires', u.insurance?.carrier || 'Renewal required', 'shield');
@@ -85632,7 +85633,8 @@ function _renderUnitPaymentHealth(u) {
   } else {
     rangeStart = new Date(curY, curM - 6, 1);
   }
-  const endStr = u.until || '';
+  // M2M/открытая лиза — не ограничиваем диапазон по until (падаем на curM+6).
+  const endStr = _isMonthToMonth(u) ? '' : (u.until || '');
   const endDate = endStr ? new Date(endStr + 'T00:00:00') : null;
   if (endDate && !isNaN(endDate.getTime())) {
     rangeEnd = new Date(endDate.getFullYear(), endDate.getMonth(), 1);
@@ -85955,7 +85957,7 @@ function _renderUnitPaymentHealth(u) {
       // не нужен → нейтрально-серый «Lease ended», не оранжевый/красный.
       // (endDate/curDate посчитаны выше.) Tony 2026-07-01: 325/423 until=
       // 2026-06-30, июль показывался «awaiting invoice», хотя лиза истекла.
-      const _leaseEnded = !!(endDate && !isNaN(endDate.getTime()) && endDate < curDate);
+      const _leaseEnded = !!(endDate && !isNaN(endDate.getTime()) && endDate < curDate && !_isMonthToMonth(u));
       const _left = Math.max(0, Math.ceil((overdueDate - today) / 86400000));
       const _graceAnchor = (ym === startYm && startDate) ? 'lease start' : '1st of month';
       const _rentLine = _mb.isProratedMonth
@@ -129032,7 +129034,10 @@ function buildLeasesRows() {
             if (d && (d.pdfStoragePath || d.pdfUrl)) { extractableDocId = d.id; break; }
           }
         }
-        const endIso   = toIsoDate(u.until || u.leaseEnd || '');
+        // M2M/открытая лиза → endIso=null → daysLeft=null → status='active' (не
+        // 'expired', не в счётчике expiring). Хаб — каскадит в таблицу/пилл/тайм­лайн.
+        const _m2m = _isMonthToMonth(u);
+        const endIso   = _m2m ? '' : toIsoDate(u.until || u.leaseEnd || '');
         const endMs    = endIso ? new Date(endIso + 'T00:00:00').getTime() : null;
         const daysLeft = endMs != null ? Math.round((endMs - Date.now()) / 86400000) : null;
         let status = 'vacant';
@@ -129041,7 +129046,7 @@ function buildLeasesRows() {
           else if (daysLeft < 0)      status = 'expired';
           else if (daysLeft < 60)     status = 'pending';
           else                         status = 'active';
-        } else if (daysLeft != null && daysLeft < 0) {
+        } else if (daysLeft != null && daysLeft < 0 && !_m2m) {
           status = 'expired';
         }
         const term = (startIso && endIso)
@@ -133645,6 +133650,22 @@ function formatDisplayDate(s) {
   const d = new Date(iso + 'T00:00:00');
   if (isNaN(d.getTime())) return s;
   return d.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' });
+}
+
+// Month-to-month / открытая лиза (Tony 2026-07-01). Такая лиза НЕ «истекает»:
+// не показываем expiry-предупреждение, не гейтим биллинг, не красим «Lease
+// ended». Признаки: leaseTerm ∈ {mtm, m2m, 1} ('1'-мес термин катится
+// помесячно; '1' в выпадашке нет — это импорт/легаси) ИЛИ конец раньше начала
+// (битые данные → трактуем как открытую). ЗЕРКАЛО в functions/index.js —
+// правь ОБЕ копии синхронно.
+function _isMonthToMonth(u) {
+  if (!u) return false;
+  const t = String(u.leaseTerm || '').trim().toLowerCase();
+  if (t === 'mtm' || t === 'm2m' || t === '1') return true;
+  const s = toIsoDate(u.leaseStart || u.signed || '');
+  const e = toIsoDate(u.until || u.leaseEnd || '');
+  if (s && e && e < s) return true;   // конец раньше начала = не фикс-срок → открытая
+  return false;
 }
 
 // Normalize any loose date string (MM/DD/YYYY, "Apr 08, 2026", etc.) to YYYY-MM-DD
