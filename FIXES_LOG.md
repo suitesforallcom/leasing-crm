@@ -60,6 +60,21 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 70. invoice.paid webhook silently dropped card payments → $25,674 missing from ledger; hardened reconcile recovered 42 payments (finance/data-integrity, 2026-07-02)
+
+- **Status:** active (recovery COMPLETE; webhook hardening = Этап 4, pending)
+- **Branch / commit:** main @ `01f46ce` (reconcile crash fix) + `3737dc5` (hardened apply + RECONCILE_PLAN_2026-07-02.md). Deployed: `functions:reconcileStripeInvoices`.
+- **Area:** functions/index.js — stripeWebhook/handleInvoicePaid (~2910), reconcileStripeInvoices (~2300); ledger `workspaces/default/payments/*`
+- **Bug it fixed:** two bugs. (A) `handleInvoicePaid` FAIL-CLOSES (returns 200, Stripe never retries) on any transient verify error (~2968-2972) → June (bulk-billed May 28) and July (backfill Jul 1) card payments were paid on Stripe but NEVER recorded in the ledger: **42 payments / $25,674.16** (18×Jul $12,125 + 23×Jun $12,849.16 + 315-May $700). Symptom chain: «Last payment: June», phantom aging owed (Suite 433 case), grid blue-while-header-green split-brain (Suite 452). (B) `reconcileStripeInvoices` — the recovery tool itself — was UNUSABLE: metadata-match returned `{building,floor,unit}` where downstream reads `{b,f,u}` → 500 crash on every auto-invoice; and its apply-path was a TRAP: wrote every paid invoice as rent (deposits/fees/$0/re-issues), amount=whole invoice, and under buildings-strip the write never persisted (monolith re-strips :316, building mirror deletes u.payments :233, `_writePaymentV2` never called) while still reporting appliedCount>0.
+- **Fix:** multi-agent workflow (5 analysis lenses + live Firestore spot-check + adversarial review = NO-GO on naive apply) → staged plan (RECONCILE_PLAN_2026-07-02.md). Hardened apply: (1) post-txn `_writePaymentV2` mirror per applied month (handleInvoicePaid pattern ~3306); (2) amount = rent-purpose line items only; (3) per-row gates — $0-artifact, non-rent, month-already-settled (free/waived/paid&amount>0; paid+$0 shell counts NOT settled), group-member, advance-anchor, before-lease-start, purpose-unknown, ym-not-explicit (created-date fallback never auto-writes); (4) `onlyInvoiceIds` whitelist — apply writes only operator-confirmed ids, whitelist overrides ONLY soft gates; (5) txn-retry-safe counters; prior non-settled record preserved into `history` (354/417 late→paid upgrades). Recovery executed with verified pre-write backup (backups/pre-reconcile-2026-07-02/) in batches (452 reference → 17 July → 24 June/May), every doc GET-verified after write: **42/42 paid, correct amounts, zero dupes** (concurrent double-run converged — writes are absolute-value idempotent).
+- **Invariant — DO NOT BREAK:** (1) reconcile apply MUST mirror every applied month via `_writePaymentV2` — a `u.payments` write inside `mutateWorkspaceState` alone does NOT persist under strip; (2) apply MUST derive rent amount from rent-line-items, never invoice `amount_paid`; (3) `month-already-settled` MUST treat `paid && amount===0` as NOT settled; (4) never bulk-apply without the whitelist on live data; (5) the 72 $0-shell invoices, deposits (D-), late fees (L-/X-) stay OUT of the rent ledger.
+- **Verification:** live GETs on all 42 payment docs post-write (paid, exact rent amounts, linkedVia reconcile:metadata, 354/417 history=1 prior:late). Gates live-tested: 72 $0 + 32 non-rent + 28 settled + 74 tracked + 42 purpose-unknown correctly skipped.
+- **Regression test:** none (recovery operation; gates exercised on live dry-run)
+- **Related PR / issue:** RECONCILE_PLAN_2026-07-02.md (full staged plan + adversarial appendix). Root-cause hardening of the webhook itself (throw-for-retry on transient errors + dead-letter) = Этап 4, NOT yet shipped — until then dropped events remain possible; re-run reconcile dry-run after each billing cycle as a stopgap.
+- **Porting note:** deployed to prod us-central1 2026-07-02. Excluded pending operator decision: 437-May $2 (test junk), 414-May $400 (ambiguous, equals its deposit).
+
+---
+
 ### 69. Invoices table right-edge clip — silent-refresh wiped table-prefs every 30s (UI/recurring-regression, 2026-06-10)
 
 - **Status:** active
