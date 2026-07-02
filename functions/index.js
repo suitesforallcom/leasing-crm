@@ -2306,7 +2306,12 @@ exports.reconcileStripeInvoices = onCall(
       logger.error('[reconcile] auth failed:', err.message);
       throw err;
     }
-    const {sinceDays, apply} = req.data || {};
+    const {sinceDays, apply, onlyInvoiceIds} = req.data || {};
+    // Whitelist-режим (Этап 3 плана RECONCILE_PLAN_2026-07-02): apply пишет
+    // ТОЛЬКО явно перечисленные invoice-id — оператор поимённо подтвердил
+    // каждую строку по Stripe-чеку. Без whitelist apply = только hard-гейты.
+    const whitelist = (Array.isArray(onlyInvoiceIds) && onlyInvoiceIds.length)
+      ? new Set(onlyInvoiceIds.map(String)) : null;
     const stripe = getStripe();
     let state;
     try {
@@ -2426,16 +2431,61 @@ exports.reconcileStripeInvoices = onCall(
         }
 
         // Derive the target month (ym). Prefer metadata, then invoice period,
-        // then invoice creation month.
+        // then invoice creation month. ymSource фиксируем: created-fallback
+        // мис-датирует депозиты/штрафы на «месяц создания» — такие строки
+        // apply НЕ пишет автоматически (гейт ym-not-explicit ниже).
         let ym = md.billingMonth || md.ym;
+        let ymSource = ym ? 'metadata' : null;
         if (!ym && inv.period_start) {
           const d = new Date(inv.period_start * 1000);
           ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+          ymSource = 'period';
         }
         if (!ym) {
           const d = new Date(inv.created * 1000);
           ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+          ymSource = 'created';
         }
+
+        // ── Hardened-гейты (RECONCILE_PLAN_2026-07-02 Этап 2, adversarial-ревью) ──
+        // Сумма РЕНТЫ = сумма rent-line-item'ов, НЕ amount_paid целиком:
+        // на одном инвойсе рента может ехать вместе с late-fee/service/advance.
+        const _rentLineCents = (inv.lines?.data || [])
+          .filter((ln) => ln?.metadata?.purpose === 'rent')
+          .reduce((s, ln) => s + (+ln.amount || 0), 0);
+        const _cur = match.u.payments?.[ym];
+        // «Месяц уже закрыт»: free/waived ИЛИ paid с РЕАЛЬНОЙ суммой.
+        // paid+$0 (артефакт $0-бага) — НЕ закрыт, иначе настоящий -v2 не запишется.
+        const _monthSettled = !!(_cur && (_cur.status === 'free' || _cur.status === 'waived'
+          || (_cur.status === 'paid' && (+_cur.amount || 0) > 0)));
+        // Advance-якорь: какой-то месяц юнита застампован этим же инвойсом как
+        // stripe-advance → писать нельзя (нужен sibling-sweep, путь webhook-replay).
+        let _advanceAnchor = false;
+        for (const _sy of Object.keys(match.u.payments || {})) {
+          const _sp = match.u.payments[_sy];
+          if (_sp && _sp.paidVia === 'stripe-advance'
+              && (_sp.stripeInvoiceId === inv.id || _sp.stripe?.invoiceId === inv.id)) { _advanceAnchor = true; break; }
+        }
+        const _groupMember = !!(match.u.groupId && match.u.groupRole !== 'primary');
+        const _lsYm = String(match.u.leaseStart || '').slice(0, 7);
+        const _beforeLease = !!(/^\d{4}-\d{2}$/.test(_lsYm) && ym < _lsYm);
+        const _purpose = md.purpose || null;
+        const _amountPaidUsd = (inv.amount_paid || 0) / 100;
+        const _alreadyTracked = !!(_cur?.status === 'paid' && _cur?.stripe?.invoiceId === inv.id);
+        // skipReason: hard-гейты блокируют ВСЕГДА; soft-гейты ('purpose-unknown',
+        // 'ym-not-explicit') может переопределить ТОЛЬКО whitelist (= оператор
+        // поимённо подтвердил строку по чеку).
+        let _skip = null;
+        if (inv.status !== 'paid') _skip = 'not-paid';
+        else if (_alreadyTracked) _skip = 'already-tracked';
+        else if (!(_amountPaidUsd > 0)) _skip = '$0-artifact';
+        else if (_purpose && _purpose !== 'rent') _skip = 'non-rent';
+        else if (_monthSettled) _skip = 'month-already-settled';
+        else if (_groupMember) _skip = 'group-member';
+        else if (_advanceAnchor) _skip = 'advance-anchor';
+        else if (_beforeLease) _skip = 'before-lease-start';
+        else if (!_purpose) _skip = 'purpose-unknown';
+        else if (ymSource !== 'metadata') _skip = 'ym-not-explicit';
 
         matched.push({
           invoiceId: inv.id,
@@ -2443,14 +2493,22 @@ exports.reconcileStripeInvoices = onCall(
           buildingId: match.b.id, floorId: match.f.id, unitId: match.u.id,
           tenantName: match.u.tenant || match.u.company || '',
           ym,
+          ymSource,
+          purpose: _purpose,
           status: inv.status,
           total: (inv.total || 0) / 100,
-          amountPaid: (inv.amount_paid || 0) / 100,
+          amountPaid: _amountPaidUsd,
+          rentLineAmount: _rentLineCents / 100,
+          monthSettled: _monthSettled,
+          groupMember: _groupMember,
+          advanceAnchor: _advanceAnchor,
           paidAt: inv.status_transitions?.paid_at ? inv.status_transitions.paid_at * 1000 : null,
           chargeId: inv.charge || null,
           hostedUrl: inv.hosted_invoice_url || null,
           via,
-          alreadyTracked: !!(match.u.payments?.[ym]?.status === 'paid' && match.u.payments[ym]?.stripe?.invoiceId === inv.id),
+          alreadyTracked: _alreadyTracked,
+          wouldApply: !_skip,
+          skipReason: _skip,
         });
       }
       // Safe pagination + budget guards. With the server-side
@@ -2474,41 +2532,101 @@ exports.reconcileStripeInvoices = onCall(
     }
     logger.info(`[reconcile] scanned ${processed} invoices, matched=${matched.length}, unmatched=${unmatched.length}`);
 
-    // Apply mode: actually write the matched paid invoices into state.
-    // Only "paid" invoices get written — drafts/open/void are informational.
+    // Apply mode — HARDENED (RECONCILE_PLAN_2026-07-02 Этап 2). Пишем только
+    // строки, прошедшие гейты (wouldApply); soft-гейты ('purpose-unknown',
+    // 'ym-not-explicit') переопределяет ТОЛЬКО whitelist. Hard-гейты
+    // ($0 / non-rent / settled / group / advance / before-lease) — никогда.
     let applied = 0;
+    let appliedRows = [];
+    const SOFT_SKIPS = ['purpose-unknown', 'ym-not-explicit'];
     if (apply) {
-      const toApply = matched.filter(m => m.status === 'paid' && !m.alreadyTracked);
+      const toApply = matched.filter((m) => {
+        if (whitelist && !whitelist.has(String(m.invoiceId))) return false;
+        if (m.wouldApply) return true;
+        // whitelist = оператор поимённо подтвердил строку по Stripe-чеку →
+        // разрешаем только soft-причины; hard-гейты не переопределяются.
+        return !!(whitelist && SOFT_SKIPS.includes(m.skipReason));
+      });
+      // Whitelist-ID, которые ни во что не превратились — отдаём явно (не тихо).
+      const whitelistUnresolved = whitelist
+        ? [...whitelist].filter((id) => !toApply.some((m) => String(m.invoiceId) === id))
+        : [];
       if (toApply.length) {
         try {
           await mutateWorkspaceState((s) => {
+            // Сброс на входе: транзакция может ретраиться — иначе двойной счёт.
+            applied = 0;
+            appliedRows = [];
             for (const m of toApply) {
               const f = findUnit(s, {buildingId: m.buildingId, floorId: m.floorId, unitId: m.unitId});
-              if (!f) continue;
+              if (!f) { logger.warn(`[reconcile] apply: unit ${m.unitId} (${m.buildingId}/${m.floorId}) not found — skipped`); continue; }
               f.unit.payments = f.unit.payments || {};
+              // Сумма = rent-line-item'ы; amount_paid — только если line-меток
+              // нет (dashboard-инвойс, подтверждён whitelist'ом).
+              const _amt = (m.rentLineAmount > 0) ? m.rentLineAmount : m.amountPaid;
+              // Прежнюю НЕ-settled запись ($0-shell / open / late) сохраняем в history.
+              const prior = f.unit.payments[m.ym];
+              const priorHistory = Array.isArray(prior?.history) ? prior.history.slice() : [];
+              if (prior && prior.status) {
+                priorHistory.push({
+                  ts: new Date().toISOString(),
+                  status: prior.status, amount: prior.amount || 0,
+                  paidVia: prior.paidVia || null,
+                  invoiceId: prior.stripe?.invoiceId || prior.stripeInvoiceId || null,
+                  replacedBy: m.invoiceId, replacedReason: 'reconcile-apply',
+                });
+                while (priorHistory.length > 10) priorHistory.shift();
+              }
               f.unit.payments[m.ym] = {
                 status: 'paid',
-                amount: m.amountPaid || m.total,
+                amount: _amt,
                 date: m.paidAt ? new Date(m.paidAt).toISOString().slice(0, 10) : null,
+                ...(priorHistory.length ? { history: priorHistory } : {}),
                 stripe: {
                   invoiceId: m.invoiceId,
                   chargeId: m.chargeId,
                   hostedInvoiceUrl: m.hostedUrl,
                   paidAt: m.paidAt,
-                  linkedVia: m.via,
+                  linkedVia: 'reconcile:' + m.via,
                 },
               };
               f.unit.stripe = f.unit.stripe || {};
               f.unit.stripe.lastInvoiceId = m.invoiceId;
               f.unit.stripe.lastInvoiceYm = m.ym;
               applied++;
+              appliedRows.push({ buildingId: m.buildingId, floorId: m.floorId, unitId: m.unitId, ym: m.ym, amount: _amt, invoiceId: m.invoiceId, rec: f.unit.payments[m.ym] });
+              logger.info(`[reconcile] APPLIED ${m.unitId}/${m.ym} $${_amt} invoice=${m.invoiceId}`);
             }
           });
         } catch (err) {
           logger.error('[reconcile] apply write failed:', err.message, err.stack);
           throw new HttpsError('internal', `Failed to persist links: ${err.message}`);
         }
+        // ── КРИТИЧНО (BLOCKER 1 adversarial-ревью): под buildings-strip монолит
+        // ре-стрипится и building-зеркало выкидывает u.payments → единственная
+        // живучая запись = payments-коллекция. Зеркалим каждый применённый месяц
+        // через _writePaymentV2, как handleInvoicePaid (~:3306-3318).
+        try {
+          const syncState = await _stateIfSyncV2();
+          if (syncState) {
+            for (const a of appliedRows) {
+              await _writePaymentV2(a.buildingId, a.floorId, a.unitId, a.ym, a.rec);
+            }
+            logger.info(`[reconcile] mirror-v2: ${appliedRows.length} payment doc(s) written`);
+          }
+        } catch (e) {
+          logger.error(`[reconcile] mirror-v2 FAILED (payments collection NOT updated — writes may not persist under strip!): ${e.message}`);
+        }
       }
+      if (whitelistUnresolved.length) {
+        logger.warn(`[reconcile] whitelist ids not applied: ${whitelistUnresolved.join(', ')}`);
+      }
+    }
+
+    // Сводка skip-причин — чтобы dry-run сразу показывал, что и почему не пишется.
+    const skippedSummary = {};
+    for (const m of matched) {
+      if (m.skipReason) skippedSummary[m.skipReason] = (skippedSummary[m.skipReason] || 0) + 1;
     }
 
     return {
@@ -2516,6 +2634,9 @@ exports.reconcileStripeInvoices = onCall(
       matched: matched.length,
       unmatched: unmatched.length,
       appliedCount: applied,
+      appliedRows: appliedRows.map(({rec, ...a}) => a),
+      wouldApplyCount: matched.filter((m) => m.wouldApply).length,
+      skippedSummary,
       matchedRows: matched,
       unmatchedRows: unmatched,
     };
