@@ -82272,10 +82272,24 @@ function _renderUnitInvoiceHistory(u) {
 function _groupInvoicesByTenant(u, rows) {
   if (!Array.isArray(rows) || rows.length === 0) return [];
   const currentEmail = (u.email || '').toLowerCase().trim();
+  // У арендатора легально НЕСКОЛЬКО email (u.email + u.emailCc) и может быть
+  // несколько Stripe-customer'ов (пере-создание при смене email — кейс 452:
+  // icloud + yahoo). Узнаём «своих» по trust-set: любой инвойс, чей customerId
+  // = привязанный клиент юнита ИЛИ email ∈ {email, emailCc}, идёт в ОДНУ
+  // CURRENT-группу — а не рисуется как «второй арендатор».
+  const _curEmails = new Set([u.email, u.emailCc]
+    .map((e) => String(e || '').toLowerCase().trim()).filter((e) => e.includes('@')));
+  const _curCustId = u.stripe?.customerId || null;
+  const _isCurrentRow = (r) => {
+    if (_curCustId && r.customerId && r.customerId === _curCustId) return true;
+    const em = (r.customerEmail || '').toLowerCase().trim();
+    return !!(em && _curEmails.has(em));
+  };
   const buckets = new Map();
   for (const r of rows) {
     const email = (r.customerEmail || '').toLowerCase().trim();
-    const key = email || `__no_email_${r.customerId || 'unknown'}`;
+    const key = _isCurrentRow(r) ? '__current__'
+      : (email || `__no_email_${r.customerId || 'unknown'}`);
     if (!buckets.has(key)) {
       buckets.set(key, {
         email,
@@ -82296,10 +82310,15 @@ function _groupInvoicesByTenant(u, rows) {
   }
   // For the current-tenant group, also try to use u.tenant/u.company name
   // when the cache hasn't synced the latest customer name update.
-  if (currentEmail && buckets.has(currentEmail)) {
-    const cur = buckets.get(currentEmail);
+  // Merged-ключ '__current__' покрывает и старый точный email-матч.
+  const _curKey = buckets.has('__current__') ? '__current__'
+    : (currentEmail && buckets.has(currentEmail) ? currentEmail : null);
+  if (_curKey) {
+    const cur = buckets.get(_curKey);
     if (u.tenant || u.company) cur.name = u.tenant || u.company || cur.name;
     cur.isCurrent = true;
+    // В merged-группе email'ов может быть несколько — показываем основной.
+    if (!cur.email && currentEmail) cur.email = currentEmail;
   }
   // Also enrich names from u.tenantHistory by matching email
   for (const h of (u.tenantHistory || [])) {
@@ -85553,9 +85572,14 @@ function _renderUnitPaymentHealth(u) {
     // Tenant identity check — same logic the rent-invoice cache lookup
     // uses. metadata.unitId only identifies the SUITE, not the current
     // occupant; a previous tenant's paid invoice would otherwise mark
-    // months as paid for the new tenant. Email + tenancy window are
+    // months as paid for the new tenant. Identity + tenancy window are
     // the two signals that scope to the current tenant.
-    const curEmail = (u.email || '').toLowerCase().trim();
+    // Trust-set вместо одного email: у арендатора легально u.email + u.emailCc
+    // И несколько Stripe-customer'ов (кейс 452 icloud/yahoo — оплаченный July
+    // отвергался по email-неравенству). Свой = customerId юнита ИЛИ email из набора.
+    const _gridCurEmails = new Set([u.email, u.emailCc]
+      .map((e) => String(e || '').toLowerCase().trim()).filter((e) => e.includes('@')));
+    const _gridCurCustId = u.stripe?.customerId || null;
     const tenancyStartMs = (typeof _tenantTenureStartMs === 'function')
       ? _tenantTenureStartMs(u)
       : null;
@@ -85566,9 +85590,11 @@ function _renderUnitPaymentHealth(u) {
       if (r.bucket !== 'paid') continue;
       const ym = r.metadata?.ym;
       if (!ym) continue;
-      // Reject invoices from a different tenant (different email).
+      // Reject invoices from a different tenant (unknown customer AND email).
       const invEmail = (r.customerEmail || '').toLowerCase().trim();
-      if (curEmail && invEmail && invEmail !== curEmail) continue;
+      const _rowIsOurs = (_gridCurCustId && r.customerId === _gridCurCustId)
+        || !invEmail || _gridCurEmails.size === 0 || _gridCurEmails.has(invEmail);
+      if (!_rowIsOurs) continue;
       // Reject invoices created before this tenant's tenure started
       // (with the standard 7-day pre-move-in grace inside the helper).
       if (tenancyStartMs && r.created) {
