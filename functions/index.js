@@ -2807,18 +2807,44 @@ exports.stripeWebhook = onRequest(
     try {
       await db.runTransaction(async (tx) => {
         const snap = await tx.get(seenEventRef);
-        if (snap.exists) {
+        const prev = snap.exists ? (snap.data() || {}) : null;
+        // H3 (Этап 4): дубликатом считаем ТОЛЬКО успешно обработанное событие.
+        // Раньше маркер писался ДО обработки: упавший handler → 500 → Stripe
+        // retry → skip как «duplicate» → платёж терялся навсегда (retry был
+        // бесполезен). Статусы: 'processing' (до обработки, retry разрешён) /
+        // 'done' / 'permanent-failure' (оба финальные — skip).
+        if (prev && (prev.status === 'done' || prev.status === 'permanent-failure')) {
           throw new Error('[duplicate-event]');
+        }
+        // Cap на retry: системная persistent-ошибка (Firestore NOT_FOUND,
+        // TypeError в verify, Stripe 401) иначе 500-ит вечно → Stripe в
+        // live-режиме может авто-отключить endpoint (хуже Entry 70).
+        if (prev && ((prev.attempts || 0) >= 6)) {
+          tx.set(seenEventRef, {
+            status: 'permanent-failure',
+            doneAt: admin.firestore.FieldValue.serverTimestamp(),
+          }, {merge: true});
+          throw new Error('[retries-exhausted]');
         }
         tx.set(seenEventRef, {
           eventType: event.type,
-          firstSeenAt: admin.firestore.FieldValue.serverTimestamp(),
+          status: 'processing',
+          attempts: ((prev && prev.attempts) || 0) + 1,
+          firstSeenAt: (prev && prev.firstSeenAt) || admin.firestore.FieldValue.serverTimestamp(),
           // Auto-cleanup hint — Firestore TTL field. Configure TTL on
           // `webhookEvents._ttl` in Firebase console for free pruning.
           _ttl: admin.firestore.Timestamp.fromMillis(Date.now() + 7 * 24 * 60 * 60 * 1000),
         });
       });
     } catch (dupErr) {
+      if (/\[retries-exhausted\]/.test(dupErr.message || '')) {
+        await _webhookDeadLetter(event.id, {
+          eventId: event.id, eventType: event.type, invoiceId: null,
+          unitId: null, ym: null, customerId: null, reason: 'retries-exhausted',
+        });
+        res.status(200).json({received: true, retriesExhausted: true});
+        return;
+      }
       if (/duplicate-event/.test(dupErr.message)) {
         logger.info(`[stripe] event ${event.id} (${event.type}) already processed — skipping`);
         res.json({received: true, duplicate: true});
@@ -2831,7 +2857,7 @@ exports.stripeWebhook = onRequest(
     try {
       switch (event.type) {
         case 'invoice.payment_succeeded':
-          await handleInvoicePaid(event.data.object);
+          await handleInvoicePaid(event.data.object, event.id);
           break;
         case 'invoice.payment_failed':
           await handleInvoiceFailed(event.data.object);
@@ -2863,6 +2889,17 @@ exports.stripeWebhook = onRequest(
         default:
           logger.info(`[stripe] ignored event type ${event.type}`);
       }
+      // H3: маркер «обработано» пишем ПОСЛЕ успешной обработки — только
+      // теперь retry этого event.id можно скипать как duplicate.
+      try {
+        await seenEventRef.set({
+          status: 'done', eventType: event.type,
+          doneAt: admin.firestore.FieldValue.serverTimestamp(),
+          _ttl: admin.firestore.Timestamp.fromMillis(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        }, {merge: true});
+      } catch (e) {
+        logger.warn(`[stripe] done-stamp write failed for ${event.id}: ${e.message}`);
+      }
       res.json({received: true});
     } catch (err) {
       logger.error(`[stripe] ${event.type} handler failed:`, err);
@@ -2892,6 +2929,13 @@ exports.stripeWebhook = onRequest(
             source: 'stripeWebhook',
             note: `${event.type} ${event.id}: ${err.message}`.slice(0, 500),
           });
+        } catch {}
+        try {
+          await seenEventRef.set({
+            status: 'permanent-failure', eventType: event.type,
+            doneAt: admin.firestore.FieldValue.serverTimestamp(),
+            _ttl: admin.firestore.Timestamp.fromMillis(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          }, {merge: true});
         } catch {}
         res.status(200).json({received: true, permanentFailure: true});
         return;
@@ -3013,7 +3057,16 @@ async function handleChargeRefunded(charge) {
   const stripe = getStripe();
   let inv;
   try { inv = await stripe.invoices.retrieve(invoiceId); }
-  catch (e) { logger.warn(`[stripe] charge.refunded: cannot fetch invoice ${invoiceId}: ${e.message}`); return; }
+  catch (e) {
+    // H1: invoice доказуемо не существует → 200; transient сбой Stripe API →
+    // пробрасываем, внешний catch вернёт 500 → Smart Retry (иначе refund
+    // молча не отражался бы в ledger).
+    if (e && (e.code === 'resource_missing' || e.statusCode === 404)) {
+      logger.warn(`[stripe] charge.refunded: invoice ${invoiceId} does not exist: ${e.message}`);
+      return;
+    }
+    throw e;
+  }
   const meta = inv.metadata || {};
   if (meta.source !== 'suitesforall' && meta.source !== 'auto') return;
   const {buildingId, floorId, unitId, ym, purpose} = meta;
@@ -3103,15 +3156,44 @@ async function handleChargeDisputed(charge) {
 
 // ---- Webhook handlers ---------------------------------------------------
 
-async function handleInvoicePaid(invoice) {
+// H2 (Этап 4): dead-letter для webhook-платежей. Каждый молчаливый
+// early-return в handleInvoicePaid обязан оставить след — иначе платёж
+// исчезает без диагностики (Entry 70: 42 потерянных платежа, $25,674).
+// try/catch внутри: сбой записи DL никогда не ломает сам webhook.
+async function _webhookDeadLetter(docKey, payload) {
+  try {
+    await db.doc(`workspaces/${WORKSPACE_ID}/webhookDeadLetter/${docKey}`).set({
+      ...payload,
+      at: admin.firestore.FieldValue.serverTimestamp(),
+      _ttl: admin.firestore.Timestamp.fromMillis(Date.now() + 90 * 24 * 60 * 60 * 1000),
+    }, {merge: true});
+  } catch (e) {
+    logger.warn(`[stripe] dead-letter write failed for ${docKey}: ${e.message}`);
+  }
+}
+
+async function handleInvoicePaid(invoice, eventId) {
   const meta = invoice.metadata || {};
+  // Нормализованный customer id — нужен и для dead-letter до verify-блока.
+  const _dlCustomerId = typeof invoice.customer === 'string'
+    ? invoice.customer
+    : (invoice.customer && invoice.customer.id) || null;
+  const _dlKey = eventId || invoice.id;
   if (meta.source !== 'suitesforall' && meta.source !== 'auto') {
     logger.info(`[stripe] invoice ${invoice.id} not ours (source="${meta.source}"); ignored`);
+    await _webhookDeadLetter(_dlKey, {
+      invoiceId: invoice.id, unitId: meta.unitId || null, ym: meta.ym || null,
+      customerId: _dlCustomerId, eventId: eventId || null, reason: 'not-ours-source',
+    });
     return;
   }
   const {buildingId, floorId, unitId, ym, purpose} = meta;
   if (!buildingId || !floorId || !unitId) {
     logger.warn(`[stripe] invoice ${invoice.id} missing metadata; cannot route`);
+    await _webhookDeadLetter(_dlKey, {
+      invoiceId: invoice.id, unitId: unitId || null, ym: ym || null,
+      customerId: _dlCustomerId, eventId: eventId || null, reason: 'missing-metadata',
+    });
     return;
   }
   // CUSTOMER VERIFICATION — defense against payment hijack via crafted
@@ -3127,6 +3209,10 @@ async function handleInvoicePaid(invoice) {
       : invoice.customer?.id;
     if (!customerId) {
       logger.warn(`[stripe] invoice ${invoice.id} has no customer; refusing to route`);
+      await _webhookDeadLetter(_dlKey, {
+        invoiceId: invoice.id, unitId, ym: ym || null,
+        customerId: null, eventId: eventId || null, reason: 'no-customer',
+      });
       return;
     }
     const state = await readWorkspaceState();
@@ -3154,17 +3240,38 @@ async function handleInvoicePaid(invoice) {
           trusted = true;
         }
       } catch (custErr) {
-        logger.warn(`[stripe] customer fetch failed for ${customerId}: ${custErr.message}`);
+        // H1: различаем «customer доказуемо не существует» (positive reject —
+        // trusted остаётся false, идём в REJECTED-ветку) и transient-сбой
+        // Stripe API (сеть/5xx/rate-limit) — его НЕЛЬЗЯ глотать: раньше он
+        // маскировался под hijack-reject и платёж молча терялся. Пробрасываем
+        // → внешний catch → 500 → Stripe Smart Retry.
+        if (custErr && (custErr.code === 'resource_missing' || custErr.statusCode === 404)) {
+          logger.warn(`[stripe] customer ${customerId} does not exist in Stripe: ${custErr.message}`);
+        } else {
+          throw custErr;
+        }
       }
     }
     if (!trusted) {
       logger.error(`[stripe] REJECTED invoice ${invoice.id} for ${unitId}/${ym}: customer ${customerId} not in workspace state or tagged metadata. Possible payment hijack attempt — investigate Stripe Dashboard for unauthorized invoice creation.`);
+      // Positive reject (hijack-защита) — сознательно 200 (retry бессмыслен),
+      // но dead-letter обязателен: отказ должен быть виден оператору.
+      await _webhookDeadLetter(_dlKey, {
+        invoiceId: invoice.id, unitId, ym: ym || null,
+        customerId, eventId: eventId || null, reason: 'customer-rejected',
+      });
       return;
     }
   } catch (verifyErr) {
-    logger.error(`[stripe] customer verification failed for invoice ${invoice.id}: ${verifyErr.message}`);
-    // Fail closed — refuse to apply if we can't verify.
-    return;
+    // H1 — КОРЕНЬ Entry 70. Раньше: молчаливый return → 200 → платёж терялся.
+    // Сюда попадают сбои verify-инфраструктуры (readWorkspaceState, Firestore
+    // unavailable, проброшенный transient custErr). ВАЖНО: strip-сбои сюда НЕ
+    // доходят — _rehydrateStateForStripCF, mutate-peek и _mirrorBuildingV2CF
+    // глотают внутри себя; при strip=ON сбой зеркала по-прежнему теряет
+    // платёж с 200+done (см. residual risk в Entry 72). Positive reject
+    // выходит через return выше. Пробрасываем → 500 → Stripe Smart Retry.
+    logger.error(`[stripe] customer verification failed for invoice ${invoice.id} — rethrowing for Stripe retry: ${verifyErr.message}`);
+    throw verifyErr;
   }
 
   // Non-rent invoices — for deposit, flip the stamp status + release
@@ -3174,10 +3281,13 @@ async function handleInvoicePaid(invoice) {
   if (purpose && purpose !== 'rent') {
     let shouldAuditNonRent = false;
     let depositFlipped = false;
+    let nonRentUnitFound = false; // H2: 8-й молчаливый return (депозитный путь)
     const nonRentAmount = (invoice.amount_paid || invoice.total || 0) / 100;
     await mutateWorkspaceState((s) => {
+      nonRentUnitFound = false; // сброс на transaction-retry мутатора
       const f = findUnit(s, {buildingId, floorId, unitId});
       if (!f) return;
+      nonRentUnitFound = true;
       const u = f.unit;
       u.stripe = u.stripe || {};
       // Match deposit by invoice id OR by /deposit/ in description
@@ -3234,6 +3344,14 @@ async function handleInvoicePaid(invoice) {
         at: Date.now(),
       };
     });
+    // H2: unit не найден — non-rent платёж НЕ применён; dead-letter + выход.
+    if (!nonRentUnitFound) {
+      await _webhookDeadLetter(_dlKey, {
+        invoiceId: invoice.id, unitId, ym: 'deposit',
+        customerId: _dlCustomerId, eventId: eventId || null, reason: 'unit-not-found',
+      });
+      return;
+    }
     // Audit write — same pattern as rent path, fires только после commit.
     if (shouldAuditNonRent) {
       try {
@@ -3263,6 +3381,10 @@ async function handleInvoicePaid(invoice) {
   }
   if (!ym) {
     logger.warn(`[stripe] rent invoice ${invoice.id} missing ym; cannot apply to matrix`);
+    await _webhookDeadLetter(_dlKey, {
+      invoiceId: invoice.id, unitId, ym: null,
+      customerId: _dlCustomerId, eventId: eventId || null, reason: 'missing-ym',
+    });
     return;
   }
   // Paid amount in cents → dollars. Use amount_paid not total because of discounts.
@@ -3280,13 +3402,16 @@ async function handleInvoicePaid(invoice) {
   // флагом `shouldAuditPayment`.
   let shouldAuditPayment = false;
   let priorStatusForAudit = null;
+  let unitFoundInMutate = false; // H2: false после mutate = unit-not-found → dead-letter
 
   await mutateWorkspaceState((s) => {
+    unitFoundInMutate = false; // сброс на каждый transaction-retry мутатора
     const f = findUnit(s, {buildingId, floorId, unitId});
     if (!f) {
       logger.warn(`[stripe] invoice ${invoice.id}: unit ${unitId} not found`);
       return;
     }
+    unitFoundInMutate = true;
     f.unit.payments = f.unit.payments || {};
     const prior = f.unit.payments[ym] || {};
     if (prior.status === 'paid' && prior.stripe?.invoiceId === invoice.id) {
@@ -3470,6 +3595,15 @@ async function handleInvoicePaid(invoice) {
       at: Date.now(),
     };
   });
+  // H2: unit не найден — платёж НЕ применён (txn закоммитился без изменений).
+  // Dead-letter + выход: audit/mirror-v2 без unit'а не имеют смысла.
+  if (!unitFoundInMutate) {
+    await _webhookDeadLetter(_dlKey, {
+      invoiceId: invoice.id, unitId, ym,
+      customerId: _dlCustomerId, eventId: eventId || null, reason: 'unit-not-found',
+    });
+    return;
+  }
   // Audit write — fires только после успешного commit'а txn и только
   // если outreach push был выполнен (shouldAuditPayment=true). Pattern
   // зеркалит client'ский recordAuditClient('payment.mark-paid', …)
@@ -4170,6 +4304,13 @@ const _runAutoInvoicesHandler = async (opts) => {
           if (u.until && !_isMonthToMonth(u)) {
             const until = new Date(u.until + 'T00:00:00Z');
             if (!isNaN(until.getTime()) && until.getTime() < nm.getTime()) { skipped++; continue; }
+          }
+          // Lease must have STARTED (кейс 224/Ruth Tipton: аренда с 1 сентября,
+          // а крон выставил июль — будущим арендаторам счета до месяца
+          // leaseStart не выставляем; первый месяц биллится обычным путём).
+          {
+            const _lsYmGate = String(u.leaseStart || '').slice(0, 7);
+            if (/^\d{4}-\d{2}$/.test(_lsYmGate) && nextYm < _lsYmGate) { skipped++; continue; }
           }
 
           // Create the invoice via Stripe
