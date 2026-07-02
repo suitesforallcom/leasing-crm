@@ -2306,7 +2306,7 @@ exports.reconcileStripeInvoices = onCall(
       logger.error('[reconcile] auth failed:', err.message);
       throw err;
     }
-    const {sinceDays, apply, onlyInvoiceIds} = req.data || {};
+    const {sinceDays, apply, onlyInvoiceIds, healStamps} = req.data || {};
     // Whitelist-режим (Этап 3 плана RECONCILE_PLAN_2026-07-02): apply пишет
     // ТОЛЬКО явно перечисленные invoice-id — оператор поимённо подтвердил
     // каждую строку по Stripe-чеку. Без whitelist apply = только hard-гейты.
@@ -2503,6 +2503,7 @@ exports.reconcileStripeInvoices = onCall(
           groupMember: _groupMember,
           advanceAnchor: _advanceAnchor,
           paidAt: inv.status_transitions?.paid_at ? inv.status_transitions.paid_at * 1000 : null,
+          created: inv.created ? inv.created * 1000 : 0,   // tie-break для healStamps
           chargeId: inv.charge || null,
           hostedUrl: inv.hosted_invoice_url || null,
           via,
@@ -2531,6 +2532,62 @@ exports.reconcileStripeInvoices = onCall(
       throw new HttpsError('internal', `Stripe list failed: ${err.message}`);
     }
     logger.info(`[reconcile] scanned ${processed} invoices, matched=${matched.length}, unmatched=${unmatched.length}`);
+
+    // ── healStamps-режим (регрессия lastInvoiceYm, spec wf_63898b05) ──────
+    // ТОЛЬКО штампы, ноль записей в u.payments. Кандидат на юнит = последний
+    // по metadata-ym (tie-break created) НАСТОЯЩИЙ rent-инвойс: $0-двойники
+    // ОТСЕКАЮТСЯ (у них status='paid'!), депозиты/void/draft/группы — мимо.
+    // Без apply — report-only (healPlan), запись только при apply:true.
+    if (healStamps) {
+      const healCand = {};   // "buildingId|floorId|unitId" → лучшая строка
+      for (const m of matched) {
+        if (m.ymSource !== 'metadata') continue;
+        if (!/^\d{4}-\d{2}$/.test(m.ym)) continue;
+        if (m.purpose !== 'rent') continue;
+        if (['void', 'draft', 'uncollectible'].includes(m.status)) continue;
+        if (!((m.rentLineAmount > 0) || (m.total > 0))) continue;   // $0-shell
+        if (m.groupMember) continue;
+        if (!String(m.via).startsWith('metadata')) continue;
+        const k = `${m.buildingId}|${m.floorId}|${m.unitId}`;
+        const cur = healCand[k];
+        if (!cur || m.ym > cur.ym || (m.ym === cur.ym && (m.created || 0) > (cur.created || 0))) healCand[k] = m;
+      }
+      let healedRows = [];
+      const healPlan = [];
+      // dry-план: сравниваем с ТЕКУЩИМ штампом (из state list-pass'а)
+      for (const k of Object.keys(healCand)) {
+        const m = healCand[k];
+        const f0 = findUnit(state, {buildingId: m.buildingId, floorId: m.floorId, unitId: m.unitId});
+        const curYm = String(f0?.unit?.stripe?.lastInvoiceYm || '');
+        if (!/^\d{4}-\d{2}$/.test(curYm) || m.ym > curYm) {   // строго '>': не понижаем, равные не трогаем
+          healPlan.push({unitId: m.unitId, buildingId: m.buildingId, from: curYm || null, to: m.ym,
+            invoiceId: m.invoiceId, invoiceNumber: m.invoiceNumber, invStatus: m.status});
+        }
+      }
+      if (apply && healPlan.length) {
+        await mutateWorkspaceState((s) => {
+          healedRows = [];   // сброс на входе — транзакция ретраится
+          for (const k of Object.keys(healCand)) {
+            const m = healCand[k];
+            const f = findUnit(s, {buildingId: m.buildingId, floorId: m.floorId, unitId: m.unitId});
+            if (!f) continue;
+            f.unit.stripe = f.unit.stripe || {};
+            const curYm = String(f.unit.stripe.lastInvoiceYm || '');
+            if (!/^\d{4}-\d{2}$/.test(curYm) || m.ym > curYm) {
+              healedRows.push({unitId: m.unitId, from: curYm || null, to: m.ym, invoiceId: m.invoiceId});
+              f.unit.stripe.lastInvoiceId = m.invoiceId;
+              f.unit.stripe.lastInvoiceYm = m.ym;
+              logger.info(`[reconcile:heal] ${m.unitId}: lastInvoiceYm ${curYm || '(none)'} → ${m.ym} (${m.invoiceId})`);
+            }
+          }
+        });
+      }
+      return {
+        processed, matched: matched.length, unmatched: unmatched.length,
+        healMode: true, healPlan, healedCount: healedRows.length, healedRows,
+        appliedCount: 0,
+      };
+    }
 
     // Apply mode — HARDENED (RECONCILE_PLAN_2026-07-02 Этап 2). Пишем только
     // строки, прошедшие гейты (wouldApply); soft-гейты ('purpose-unknown',
@@ -2591,8 +2648,16 @@ exports.reconcileStripeInvoices = onCall(
                 },
               };
               f.unit.stripe = f.unit.stripe || {};
-              f.unit.stripe.lastInvoiceId = m.invoiceId;
-              f.unit.stripe.lastInvoiceYm = m.ym;
+              // Штамп только ВПЕРЁД (регрессия 412): запись СТАРОГО месяца
+              // (июньский backfill при живом июльском счёте) не откатывает
+              // lastInvoiceYm. '>=': same-month — перештамповать можно.
+              {
+                const _curStampYm = String(f.unit.stripe.lastInvoiceYm || '');
+                if (/^\d{4}-\d{2}$/.test(m.ym) && (!/^\d{4}-\d{2}$/.test(_curStampYm) || m.ym >= _curStampYm)) {
+                  f.unit.stripe.lastInvoiceId = m.invoiceId;
+                  f.unit.stripe.lastInvoiceYm = m.ym;
+                }
+              }
               applied++;
               appliedRows.push({ buildingId: m.buildingId, floorId: m.floorId, unitId: m.unitId, ym: m.ym, amount: _amt, invoiceId: m.invoiceId, rec: f.unit.payments[m.ym] });
               logger.info(`[reconcile] APPLIED ${m.unitId}/${m.ym} $${_amt} invoice=${m.invoiceId}`);
@@ -3329,8 +3394,17 @@ async function handleInvoicePaid(invoice) {
     }
     f.unit.stripe = f.unit.stripe || {};
     f.unit.stripe.customerId = invoice.customer || f.unit.stripe.customerId;
-    f.unit.stripe.lastInvoiceId = invoice.id;
-    f.unit.stripe.lastInvoiceYm = ym;
+    // Штамп только ВПЕРЁД (регрессия 412, 2026-07-02): оплата СТАРОГО открытого
+    // инвойса (напр. июньского при уже отправленном июльском) не должна
+    // откатывать lastInvoiceYm — иначе статус-пилл/карта теряют текущий месяц.
+    // '>=': same-month перештамповка на реально закрывший месяц инвойс — ок.
+    {
+      const _curStampYm = String(f.unit.stripe.lastInvoiceYm || '');
+      if (/^\d{4}-\d{2}$/.test(ym) && (!/^\d{4}-\d{2}$/.test(_curStampYm) || ym >= _curStampYm)) {
+        f.unit.stripe.lastInvoiceId = invoice.id;
+        f.unit.stripe.lastInvoiceYm = ym;
+      }
+    }
     // Clear any dead send-lock — the invoice is paid, the send clearly
     // finished. Prevents the ⏳ spinner from lingering on paid rows.
     delete f.unit.stripe._sendingRentAt;
