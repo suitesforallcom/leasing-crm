@@ -2369,7 +2369,10 @@ exports.reconcileStripeInvoices = onCall(
 
         if (md.unitId && md.buildingId && md.floorId) {
           const f = findUnit(state, {buildingId: md.buildingId, floorId: md.floorId, unitId: md.unitId});
-          if (f) { match = f; via = 'metadata'; }
+          // findUnit → {building, floor, unit}; нормализуем в {b,f,u}, как во
+          // всех остальных match-ветках (иначе match.b/f/u.id ниже = undefined
+          // → краш «reading 'id'» на auto-счетах с полной metadata).
+          if (f) { match = { b: f.building, f: f.floor, u: f.unit }; via = 'metadata'; }
         }
         const cust = (typeof inv.customer === 'object') ? inv.customer : null;
         const custEmail = cust?.email || inv.customer_email || '';
