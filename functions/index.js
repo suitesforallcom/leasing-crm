@@ -2539,10 +2539,17 @@ exports.reconcileStripeInvoices = onCall(
     // ОТСЕКАЮТСЯ (у них status='paid'!), депозиты/void/draft/группы — мимо.
     // Без apply — report-only (healPlan), запись только при apply:true.
     if (healStamps) {
+      // Кэп: кандидат не дальше ТЕКУЩЕГО месяца. Будущий (advance) счёт
+      // (кейс 337: июль+август оба open) не должен захватить штамп —
+      // иначе текущий месяц «исчезает» из дисплея (та же болезнь 412).
+      const _healNow = new Date();
+      const _healCapYm = `${_healNow.getUTCFullYear()}-${String(_healNow.getUTCMonth() + 1).padStart(2, '0')}`;
       const healCand = {};   // "buildingId|floorId|unitId" → лучшая строка
       for (const m of matched) {
         if (m.ymSource !== 'metadata') continue;
         if (!/^\d{4}-\d{2}$/.test(m.ym)) continue;
+        if (m.ym > _healCapYm) continue;                            // future-cap
+        if (whitelist && !whitelist.has(String(m.invoiceId))) continue;  // поимённый apply
         if (m.purpose !== 'rent') continue;
         if (['void', 'draft', 'uncollectible'].includes(m.status)) continue;
         if (!((m.rentLineAmount > 0) || (m.total > 0))) continue;   // $0-shell
