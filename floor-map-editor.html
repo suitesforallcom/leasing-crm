@@ -31335,6 +31335,9 @@ function setPaymentViewYm(ym) {
   try { writePref(PAYMENT_VIEW_YM_KEY, ym); } catch {}
   if (typeof renderUnits === 'function') renderUnits();
   if (typeof _renderPaymentMonthPicker === 'function') _renderPaymentMonthPicker();
+  // Легенда динамическая (future↔current вариант) — обязана перерисоваться
+  // вместе с месяцем, иначе показывает не тот набор свотчей.
+  if (typeof renderMapLegendBar === 'function') renderMapLegendBar();
 }
 // Build the 5-month window: [now-3, now-2, now-1, now, now+1].
 function _paymentViewMonths() {
@@ -31448,16 +31451,31 @@ function renderMapLegendBar() {
       ];
     }
     if (mode === 'payment') {
-      // Three-state legend, kept in sync with _computeUnitFillImpl:
-      //   - SETTLED_GREEN (#A7F3D0): paid OR free/waived month — both
-      //     mean "no money owed for this month"; free/waived also gets
-      //     the FREE MONTH text overlay.
-      //   - Sky blue (#0EA5E9): invoice sent, not yet paid.
-      //   - Lease green (#10B981): occupied, no payment activity yet.
+      // Динамическая легенда, синхронизирована с _computeUnitFillImpl
+      // (2026-07-02): для БУДУЩЕГО месяца — свой набор (Upcoming вместо
+      // lease-fallback), для текущего/прошлого — реальная fallback-палитра
+      // (раньше легенда врала: #10B981 заливка никогда не возвращала).
+      const _futYm = (typeof getPaymentViewYm === 'function' && typeof _todayYm === 'function')
+        && getPaymentViewYm() > _todayYm();
+      if (_futYm) {
+        return [
+          { color: '#A7F3D0', label: 'Paid / Free month' },
+          { color: '#0EA5E9', label: 'Invoice sent · unpaid' },
+          { color: '#DFE5EF', label: 'Upcoming · not billed yet' },
+          { color: '#FFFFFF', label: 'Vacant / lease ends before', dashed: true },
+          { color: '#FED7AA', label: 'Prospect' },
+          { color: '#EFEBFD', label: 'Reserved' },
+        ];
+      }
       return [
         { color: '#A7F3D0', label: 'Paid / Free month' },
+        { color: '#E3F6EE', label: 'Paid (lease status)' },
         { color: '#0EA5E9', label: 'Invoice sent · unpaid' },
-        { color: '#10B981', label: 'Occupied · no invoice yet' },
+        { color: '#FDF3E0', label: 'Due' },
+        { color: '#FDE7EC', label: 'Overdue' },
+        { color: '#F4F2EE', label: 'Occupied · no invoice yet' },
+        { color: '#FED7AA', label: 'Prospect' },
+        { color: '#EFEBFD', label: 'Reserved' },
         { color: '#FFFFFF', label: 'Vacant', dashed: true },
       ];
     }
@@ -31516,14 +31534,18 @@ function _computeUnitFillCached(u, mode) {
   // a per-render cache key. Also includes the selected ym for the
   // Payment view so switching months invalidates the cached fill.
   const pKey = (() => {
-    const p = u?.payments;
-    if (!p) return '';
     const ymThis = (() => {
       const d = new Date();
       return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
     })();
     const selectedYm = (mode === 'payment' && typeof getPaymentViewYm === 'function')
       ? getPaymentViewYm() : ymThis;
+    const p = u?.payments;
+    // ВАЖНО: '@'+selectedYm — для ВСЕХ юнитов, включая без u.payments
+    // (never-billed). Раньше bail до суффикса давал одинаковый ключ для
+    // июля и августа → stale цвет после переключения месяца (mustFix-1
+    // future-month заливки: именно never-billed и красятся в Upcoming).
+    if (!p) return '@' + selectedYm;
     return (p[ymThis]?.status || '') + ':' + (p.deposit?.status || '')
          + ':' + (p[selectedYm]?.status || '') + '@' + selectedYm;
   })();
@@ -31538,7 +31560,10 @@ function _computeUnitFillCached(u, mode) {
   // appears/disappears so the cell repaints (red border on, then off
   // after the next successful send).
   const errKey = (u?.stripe?.lastAutoInvoiceError?.ts) ? '|err:' + u.stripe.lastAutoInvoiceError.ts : '';
-  const key = (u?.id || '?') + '|' + pKey + '|' + (u?.status || '') + '|' + (u?.rent || 0) + invCacheKey + errKey;
+  // Lease-поля в ключе: future-ветка payment-заливки читает leaseStart/until/
+  // leaseTerm — страховка на случай мутации без _rev-бампа (дёшево).
+  const leaseKey = '|ls:' + (u?.leaseStart || '') + '|ue:' + (u?.until || u?.leaseEnd || '') + '|lt:' + (u?.leaseTerm || '');
+  const key = (u?.id || '?') + '|' + pKey + '|' + (u?.status || '') + '|' + (u?.rent || 0) + invCacheKey + errKey + leaseKey;
   if (_unitFillMemoCache.has(key)) return _unitFillMemoCache.get(key);
   const fill = _computeUnitFillImpl(u, mode);
   _unitFillMemoCache.set(key, fill);
@@ -31661,7 +31686,29 @@ function _computeUnitFillImpl(u, mode) {
       return false;
     })();
     if (isPaymentBlue) return '#0EA5E9';
-    // Fall through: render the unit with normal Lease-status colors so
+    // —— БУДУЩИЙ месяц (Tony 2026-07-02): показываем реальное состояние
+    // ВЫБРАННОГО месяца, а не lease-палитру текущего (оператор путал
+    // август с июлем). ПОРЯДОК КРИТИЧЕН: ветка строго ПОСЛЕ isPaymentBlue —
+    // advance-предоплата (FIXES_LOG Entry 30: sibling-месяцы застампованы
+    // 'open'+stripe-advance) должна оставаться СИНЕЙ, не «Upcoming».
+    // Не поднимать выше blue-проверки!
+    const _ymSel = (typeof getPaymentViewYm === 'function') ? getPaymentViewYm() : _todayYm();
+    if (_ymSel > _todayYm() && u.status === 'occupied') {
+      // typeof-гарды: toIsoDate/_isMonthToMonth живут в другом script-блоке.
+      // При недоступности — fallback в Upcoming (никогда в white: покрасить
+      // реального арендатора «будет-vacant» — дороже, чем нейтрально).
+      const _hasHelpers = (typeof toIsoDate === 'function') && (typeof _isMonthToMonth === 'function');
+      if (_hasHelpers) {
+        const _sYm = toIsoDate(u.leaseStart || u.signed || '').slice(0, 7);
+        if (_sYm && _sYm > _ymSel) return '#FFFFFF';           // лиза начнётся позже → будет-vacant
+        if (!_isMonthToMonth(u)) {
+          const _eYm = toIsoDate(u.until || u.leaseEnd || '').slice(0, 7);
+          if (_eYm && _eYm < _ymSel) return '#FFFFFF';         // лиза кончится раньше → будет-vacant
+        }
+      }
+      return '#DFE5EF';                                        // Upcoming · not billed yet
+    }
+    // Fall through (текущий/прошлый месяц): normal Lease-status colors so
     // the map keeps its familiar look — only blue cells stand out.
     return _computeUnitFillImpl(u, 'lease');
   }
