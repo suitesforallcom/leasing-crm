@@ -60,6 +60,21 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 71. lastInvoiceYm stamp regressed by back-month writes → paid-green units with OPEN invoices (display/data-integrity, 2026-07-02)
+
+- **Status:** active (healed + guarded, deployed)
+- **Branch / commit:** main @ `f26329e` (F1/F1b/F2) + `572945d` (heal cap+whitelist). Deployed: `functions:reconcileStripeInvoices` + `functions:stripeWebhook`.
+- **Area:** functions/index.js — reconcile apply stamp write, handleInvoicePaid stamp write (~3330), healStamps mode; client readers of `u.stripe.lastInvoiceYm` (_unitRentCurrentStatus, grid _invoiceSentThisYm, reminder buttons)
+- **Bug it fixed:** BOTH reconcile apply AND `handleInvoicePaid` stamped `lastInvoiceId/lastInvoiceYm` UNCONDITIONALLY. The Entry-70 June batch therefore regressed 21 units' stamps `2026-07→2026-06` (each had a live July `-v2` invoice). Symptom (suite 412): map tile/header pill GREEN «Deposit paid · Jul» while the July $800 invoice is OPEN — `_unitRentCurrentStatus` misses the current-month branch and falls to the deposit-paid fallback; Reminder buttons re-targeted the paid June invoice; client catch-up dedupe gate disarmed. Same hole fires webhook-side whenever a tenant pays an OLD open invoice after a newer one is issued. Discovered via adversarial workflow wf_63898b05 (also found: $0-twins are status='paid' and would win a naive max-ym heal; future advance invoices — 337 Jul+Aug — would capture the stamp and manufacture the same bug).
+- **Fix:** (F1) reconcile apply + (F1b) handleInvoicePaid: stamp writes only when `ym >= current stamp ym` (validated YYYY-MM; '>=' keeps same-month restamp; invalid/empty current → allow). (F2) `healStamps` mode in reconcileStripeInvoices: stamps-only repair, zero u.payments writes — candidate per unit = latest metadata-ym REAL rent invoice, **capped at the current UTC month** (future advance invoices never win), $0-shells excluded (`rentLineAmount>0 || total>0`), groups/void/draft excluded, `onlyInvoiceIds` whitelist honored, strict `>` on write, txn-retry-safe. Healed 2026-07-02 with 21-id whitelist: 20×(06→07) + 246; **337/224 + 11 null→old-month rows deliberately NOT applied**. Verified in building docs post-heal.
+- **Invariant — DO NOT BREAK:** `u.stripe.lastInvoiceYm` NEVER moves backwards from any writer (webhook, reconcile, future tools); heal candidates NEVER exceed the current month; $0 'paid' shells NEVER become the stamp. Remaining unguarded writers (createStripeInvoice ~1567, client stamp writers 144767/91823/92155/93810) are operator-initiated — port the guard when touched.
+- **Verification:** pre-check healPlan 21/21 rows `06→07`; post-heal GETs on b1/BayVista docs: 412/433/431/341/246 all lastInvoiceYm=2026-07 with July invoice ids, autoSentYm untouched.
+- **Regression test:** none (live-verified)
+- **Related PR / issue:** Entry 70 (the batch that triggered it); RECONCILE_PLAN_2026-07-02.md.
+- **Porting note:** deployed us-central1 2026-07-02. Pre-heal backup: backups/pre-healstamps-2026-07-02/.
+
+---
+
 ### 70. invoice.paid webhook silently dropped card payments → $25,674 missing from ledger; hardened reconcile recovered 42 payments (finance/data-integrity, 2026-07-02)
 
 - **Status:** active (recovery COMPLETE; webhook hardening = Этап 4, pending)
