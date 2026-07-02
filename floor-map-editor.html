@@ -27822,6 +27822,10 @@ function loadState() {
   // дальше, мусор уже убран и localStorage квота свободна. Idempotent:
   // если бэкапов нет — мгновенный no-op.
   try { _purgeAdHocBackups(); } catch (e) { /* never block load */ }
+  // Boot-GC lbk-снапшотов + трейсов bulk-рассылки (квота-инцидент 99%,
+  // 2026-07-02). ДО load-checkpoint — чтобы чекпоинту было куда писаться.
+  try { _localBackupBootGC(); } catch (e) { /* never block load */ }
+  try { _purgeBulkTraces(); } catch (e) { /* never block load */ }
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
@@ -28699,7 +28703,17 @@ function saveLocalOnly() {
   try {
     const replacer = (typeof _tplStripReplacer === 'function') ? _tplStripReplacer : null;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state, replacer));
-  } catch {}
+  } catch (e) {
+    // Молчаливый провал = stale локальная база → авто-rebase после релоада
+    // может принять устаревший state за актуальный (класс Suite 344).
+    // Шумим, но toast — не чаще раза в минуту.
+    console.warn('[saveLocalOnly] localStorage write failed (quota?):', e && e.message);
+    const _now = Date.now();
+    if (!window.__slofWarnTs || _now - window.__slofWarnTs > 60_000) {
+      window.__slofWarnTs = _now;
+      if (typeof toast === 'function') toast('Local storage is full — state not cached locally. Free space in Settings → Local backups.', 'error');
+    }
+  }
 }
 
 // =========================================================================
@@ -28761,6 +28775,107 @@ function _purgeAdHocBackups() {
   }
 }
 
+// ── Boot-GC lbk-снапшотов (2026-07-02, квота 99%) ────────────────────────
+// Дыра: эвикция жила ТОЛЬКО внутри _localBackupCreate, а при state >1MB
+// создание скипается → эвикция никогда не бежит → stale-снапшоты до-1MB
+// эпохи лежат вечно (глубина отката при этом и так ноль). Чистим на старте:
+// (1) orphan-sweep sfa_lbk_* вне индекса (упавшая запись индекса стрэндит
+// блобы невидимо); (2) авто-снапшоты сверх 2 новейших; (3) добив до бюджета;
+// (4) headroom: если всему localStorage тесно — оставляем 1 новейший авто.
+// manual НЕ трогаем никогда (только warn, если сами превышают бюджет).
+function _localBackupBootGC() {
+  try {
+    const idx = _localBackupReadIndex();
+    // (1) orphan-sweep — ключи sfa_lbk_* без записи в индексе
+    const known = new Set(idx.map(e => e.key));
+    const orphans = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(LBK_PREFIX) && k !== LBK_INDEX_KEY && !known.has(k)) orphans.push(k);
+    }
+    let orphanBytes = 0;
+    for (const k of orphans) {
+      orphanBytes += (localStorage.getItem(k) || '').length;
+      try { localStorage.removeItem(k); } catch {}
+    }
+    if (orphans.length) console.info(`[lbk-gc] removed ${orphans.length} orphan snapshot(s) (freed ${(orphanBytes/1024).toFixed(0)} KB)`);
+    // (2) retention: авто-снапшоты сверх 2 новейших — вон
+    const autos = idx.filter(e => e.source !== 'manual')
+                     .sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));  // новые первыми
+    const stale = autos.slice(2);
+    let staleBytes = 0;
+    for (const e of stale) {
+      staleBytes += (localStorage.getItem(e.key) || '').length;
+      try { localStorage.removeItem(e.key); } catch {}
+    }
+    if (stale.length) {
+      _localBackupWriteIndex(idx.filter(x => !stale.some(d => d.key === x.key)));
+      console.info(`[lbk-gc] evicted ${stale.length} auto snapshot(s) beyond newest 2 (freed ${(staleBytes/1024).toFixed(0)} KB)`);
+    }
+    // (3) добив до общего бюджета
+    const freed = _localBackupEvictUntilUnder(LBK_TOTAL_BUDGET_BYTES);
+    if (freed) console.info(`[lbk-gc] evicted ${freed} more to fit ${(LBK_TOTAL_BUDGET_BYTES/1024).toFixed(0)} KB budget`);
+    // (4) headroom: суммарная занятость localStorage vs ~5MB квота
+    let totalLS = 0;
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k) totalLS += k.length + (localStorage.getItem(k) || '').length;
+    }
+    if (totalLS + LBK_MIN_FREE_HEADROOM > 4_800_000) {
+      const idx2 = _localBackupReadIndex();
+      const autos2 = idx2.filter(e => e.source !== 'manual')
+                         .sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
+      const drop = autos2.slice(1);   // оставляем 1 новейший
+      for (const e of drop) { try { localStorage.removeItem(e.key); } catch {} }
+      if (drop.length) {
+        _localBackupWriteIndex(idx2.filter(x => !drop.some(d => d.key === x.key)));
+        console.info(`[lbk-gc] headroom squeeze — kept only newest auto (dropped ${drop.length})`);
+      }
+    }
+    // manual-предупреждение: не трогаем, но оператор должен видеть
+    const manualBytes = _localBackupReadIndex()
+      .filter(e => e.source === 'manual')
+      .reduce((s, e) => s + (localStorage.getItem(e.key) || '').length, 0);
+    if (manualBytes > LBK_TOTAL_BUDGET_BYTES) {
+      console.warn(`[lbk-gc] manual snapshots alone use ${(manualBytes/1024).toFixed(0)} KB (> budget). Not touching them — review Settings → Local backups.`);
+      if (typeof toast === 'function') setTimeout(() => toast('Manual local backups exceed the storage budget — review Settings → Local backups', 'warn'), 3000);
+    }
+  } catch (e) {
+    console.warn('[lbk-gc] failed:', e);
+  }
+}
+
+// ── GC трейсов bulk-рассылки (2026-07-02) ────────────────────────────────
+// sfa_bulk_trace_* писались на каждую массовую отправку и НИКОГДА не
+// удалялись (unbounded; Entry 70 recovery нагенерил их пачку). Держим
+// LATEST + 3 новейших; всё старше 7 дней или сверх трёх — вон.
+function _purgeBulkTraces() {
+  try {
+    const PFX = 'sfa_bulk_trace_';
+    const entries = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith(PFX) || k === PFX + 'LATEST') continue;
+      const m = /^sfa_bulk_trace_bulk_([0-9a-z]+)$/.exec(k);
+      entries.push({ k, ts: m ? parseInt(m[1], 36) : 0 });
+    }
+    if (!entries.length) return;
+    entries.sort((a, b) => b.ts - a.ts);   // новые первыми
+    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    let freed = 0, bytes = 0;
+    entries.forEach((e, i) => {
+      const tooOld = !e.ts || e.ts < cutoff;
+      if (i < 3 && !tooOld) return;        // держим 3 свежих не старше недели
+      bytes += (localStorage.getItem(e.k) || '').length;
+      freed++;
+      try { localStorage.removeItem(e.k); } catch {}
+    });
+    if (freed) console.info(`[bulk-trace-purge] dropped ${freed} trace(s), freed ${(bytes/1024).toFixed(0)} KB`);
+  } catch (e) {
+    console.warn('[bulk-trace-purge] failed:', e);
+  }
+}
+
 // Compact summary so the operator (and the Settings panel) can spot
 // anomalies at a glance — yesterday's bug would have shown a tenant
 // count of 0 next to the snapshot taken right after the bug ran.
@@ -28809,9 +28924,12 @@ function _localBackupWriteIndex(idx) {
 // count-based cap (12 backups), 1.2 MB × 12 = 14.4 MB → instant quota
 // crash. Sizing by TOTAL bytes adapts: with a 1.2 MB state and a 2 MB
 // cap, we keep 1 auto + 1 manual; with a 200 KB state, we keep 10.
-const LBK_TOTAL_BUDGET_BYTES   = 2_000_000;   // 2 MB combined cap for ALL backups
+// 2026-07-02 (квота 99%): бюджет 2MB → 700KB. При state >1MB авто-снапшоты
+// всё равно скипаются (кап ниже), так что большой бюджет лишь удерживал
+// stale-снапшоты до-1MB эпохи мёртвым грузом (см. _localBackupBootGC).
+const LBK_TOTAL_BUDGET_BYTES   = 700_000;     // combined cap for ALL backups
 const LBK_AUTO_MAX_STATE_BYTES = 1_000_000;   // skip auto/pre-mutation snapshots when state ≥ 1 MB
-const LBK_MIN_FREE_HEADROOM    = 1_500_000;   // try to leave 1.5 MB free in localStorage at all times
+const LBK_MIN_FREE_HEADROOM    = 1_500_000;   // оставлять ≥1.5MB свободными (см. _localBackupBootGC)
 
 // Sum the byte size of every existing backup snapshot. Used to decide
 // whether a new snapshot fits in the total budget; if not, we evict
@@ -28990,8 +29108,20 @@ function _localBackupRestore(key) {
     if (typeof toast === 'function') toast('Backup data missing — index out of sync', 'error');
     return false;
   }
-  // Pre-restore safety snapshot (always keep one of these for undo).
-  _localBackupCreate('pre-restore', `Auto-snapshot before restoring ${entry.ts}`);
+  // Pre-restore safety snapshot for undo. ЧЕСТНОСТЬ (2026-07-02): при
+  // state >1MB _localBackupCreate молча возвращает null → restore был бы
+  // one-way door под обещание «можно откатить». Спрашиваем второй раз.
+  const _preSnap = _localBackupCreate('pre-restore', `Auto-snapshot before restoring ${entry.ts}`);
+  if (!_preSnap) {
+    const _ageDays = Math.max(0, Math.floor((Date.now() - new Date(entry.ts).getTime()) / 86400000));
+    const _oneWayMsg =
+`WARNING: the pre-restore UNDO snapshot could NOT be saved (state too large for local backups).
+
+Restoring this ${_ageDays}-day-old snapshot is ONE-WAY locally — your current state will only be recoverable from cloud backups / PITR.
+
+Continue anyway?`;
+    if (!confirm(_oneWayMsg)) return false;
+  }
   // Bump _rev high enough to win against any Firestore-side state. The
   // Firestore listener compares incoming _rev to current; if our restored
   // state has a higher rev than the (possibly corrupted) remote, our
@@ -59402,8 +59532,8 @@ function _lbkUiRestore(key) {
   ${summary.units || 0} units · ${summary.tenants || 0} tenants · $${(+summary.rentRoll||0).toLocaleString()}/mo
 
 This REPLACES your current state with the snapshot.
-A safety "pre-restore" snapshot of your current state is taken first
-so you can undo this if it was the wrong choice.
+A safety "pre-restore" snapshot of your current state is ATTEMPTED first;
+if it cannot be saved (state too large) you will be asked to confirm again.
 
 After restore, the new state syncs to Firestore (overwriting the remote).
 Continue?`;
