@@ -69449,6 +69449,63 @@ function renderUnits() {
     });
   }
 
+  // === PASS 3.6: "EXPIRING <дата>" для лиз, истекающих в ТЕКУЩЕМ месяце ===
+  // (Tony 2026-07-03). Красная двухстрочная плашка по центру клетки:
+  // "EXPIRING" / "10 Mar". Условие: occupied, НЕ M2M (_isMonthToMonth —
+  // открытые лизы не истекают), until в текущем календарном месяце.
+  // Рисуем в Payment и Lease видах; клетки-малютки пропускаем.
+  if (mapViewMode === 'payment' || mapViewMode === 'lease') {
+    const _nowExp = new Date();
+    const _curYmExp = `${_nowExp.getFullYear()}-${String(_nowExp.getMonth() + 1).padStart(2, '0')}`;
+    const _selYmExp = (mapViewMode === 'payment' && typeof getPaymentViewYm === 'function') ? getPaymentViewYm() : null;
+    units.forEach(u => {
+      if (!u || u.status !== 'occupied') return;
+      if (typeof _isMonthToMonth === 'function' && _isMonthToMonth(u)) return;
+      const _endIso = (typeof toIsoDate === 'function') ? toIsoDate(u.until || u.leaseEnd || '') : String(u.until || '');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(_endIso) || _endIso.slice(0, 7) !== _curYmExp) return;
+      // Не накладываемся на "FREE MONTH"-плашку (обе центрированы).
+      if (_selYmExp) {
+        const _st = u.payments?.[_selYmExp]?.status;
+        if (_st === 'free' || _st === 'waived') return;
+      }
+      if (u.w < 46 || u.h < 40) return;
+      const _endD = new Date(_endIso + 'T00:00:00');
+      const _dateLabel = `${_endD.getDate()} ${_endD.toLocaleString('en-US', { month: 'short' })}`;
+      const cx = u.x + u.w / 2;
+      const cy = u.y + u.h / 2;
+      // Ширина по длинному слову "EXPIRING" (8 симв.), высота — 2 строки.
+      const widthBudget = Math.max(7, Math.floor((u.w - 8) / 5.6));
+      const heightBudget = Math.floor((u.h - 8) / 2.2);
+      const fontPx = Math.max(9, Math.min(16, widthBudget, heightBudget));
+      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      text.setAttribute('x', cx);
+      text.setAttribute('y', cy);
+      text.setAttribute('text-anchor', 'middle');
+      text.setAttribute('dominant-baseline', 'middle');
+      text.setAttribute('font-family', '"Inter Tight", Inter, system-ui, sans-serif');
+      text.setAttribute('font-weight', '900');
+      text.setAttribute('font-size', String(fontPx));
+      text.setAttribute('letter-spacing', '0.06em');
+      text.setAttribute('fill', '#DC2626');
+      text.style.pointerEvents = 'none';
+      text.style.userSelect = 'none';
+      if (u.rotation) {
+        text.setAttribute('transform', `rotate(${u.rotation} ${cx} ${cy})`);
+      }
+      const _t1 = document.createElementNS('http://www.w3.org/2000/svg', 'tspan');
+      _t1.setAttribute('x', cx);
+      _t1.setAttribute('dy', '-0.55em');
+      _t1.textContent = 'EXPIRING';
+      const _t2 = document.createElementNS('http://www.w3.org/2000/svg', 'tspan');
+      _t2.setAttribute('x', cx);
+      _t2.setAttribute('dy', '1.1em');
+      _t2.textContent = _dateLabel;
+      text.appendChild(_t1);
+      text.appendChild(_t2);
+      unitsG.appendChild(text);
+    });
+  }
+
   // === PASS 4: selection overlays (drawn on top of fills + edges) ===
   // Industry-standard паттерн (Figma / Lucidchart / Concept3D / OfficeRnD):
   // не тонкая линия по edge юнита (которая теряется среди соседних strokes),
