@@ -33,6 +33,17 @@ A latent bug (`fixFloorAssignments` deleting units, FIXES_LOG Entry 44) + a back
 - **Destructive auto-repairs must never run on page load** (`dedupeAllFloors` / `dedupeUnitsEverywhere` / `fixFloorAssignments` auto-run is frozen on init — keep frozen until the workspace is demonstrably stable).
 - **Suspected data loss → FREEZE mutations + secure a verified copy FIRST, then diagnose.** No iterating destructive console scripts. Plan: preserve → ground-truth → instrument → isolate → confirm-with-evidence → fix.
 
+## § 0.2 Invariant rules (after 2026-07-03 audit — close CLASSES, not single bugs)
+
+These six close the recurring incident classes behind Entry 70/71/72/73/74/75 and Suite 344/417/428. Each is a review gate: a diff that violates one does not ship.
+
+1. **Capture-inside-mutate for every v2 mirror.** Any CF that mirrors a write into a v2 collection (`_writePaymentV2` etc.) MUST take the rec from a closure variable assigned INSIDE the `mutateWorkspaceState` callback, and reset that variable at the callback top (txn-retry safety). A post-mutate re-read (`_stateIfSyncV2` / `findUnit` on rehydrated state) as the mirror's data source is FORBIDDEN — under strip it rehydrates from the not-yet-updated collection = silent write loss. Closes Entry 70/74. (`_stateIfSyncV2` stays valid as a GATE only.)
+2. **Settled state only through `_isMonthSettled`.** Any money/settled surface (client AND server: KPI, table, export, cron, drawer, badge, map fill) MUST decide "is this month paid" via the canonical predicate; a bare `p.status==='paid'` on a money path is a defect by definition. Same-family canonical conventions are mandatory on those surfaces: tenant presence = `(u.tenant||u.company)`, "has a lease" = status (not tenant name), effective rent = `contractRent` first (EQ-1), grace = `getLateFeeConfig`, expiry = `_isMonthToMonth`. Closes Entry 55 drift, Suite 417/421.
+3. **State is written only when the act completes.** A modal / wizard / render MUST NOT write `u.*` + `saveState()` until the act is finished (envelope sent, document signed, Submit clicked). Intermediate input lives in draft variables; opening a window or visiting a page never mutates persisted state. Every deferred stash (`_slPendingRenewal`) is cleared on EVERY early-return/error path. Closes Entry 73, Suite 428.
+4. **Every `onSnapshot` has a heal chain.** A listener without `error → unsub → once-per-episode toast → backoff re-attach → reset-episode-on-first-snapshot` does not pass review. Reference: `_v2BuildingsOnListenerError`. Closes the Suite 344 / stale-tab class.
+5. **A money event never dies silently.** Every silent `return` in a webhook/cron handler (missing metadata, unit-not-found, empty cache, mirror failure) MUST leave a dead-letter record or rethrow for Stripe Smart Retry; a client money write MUST confirm a durable write or surface an error — "✓ recorded" before durable confirmation is FORBIDDEN. Closes Entry 70 sequels, fire-and-forget mirrors.
+6. **Stripe invoices are invoice-first.** Every `invoices.create` follows `create` (with `pending_invoice_items_behavior:'exclude'`) → items with `invoice: id` → `finalize` → `send`; the sent-stamp is written only after confirmed success and NEVER moves backwards (Entry 71 only-advance). Closes $0 invoices, orphan `autoSentYm`.
+
 ## § 1. Safety + Main Rule
 
 - Always check `git status` before editing. If the working tree has uncommitted changes you didn't make, **stop and ask**.
@@ -225,3 +236,24 @@ This is the single most powerful pattern for improving Claude's behavior over ti
 Don't just fix bugs — fix the rules that allowed the bug. Every mistake is a missing rule.
 
 **If RuleCatch is installed:** also add the rule as a custom RuleCatch rule so it's monitored automatically across all future sessions. CLAUDE.md rules are suggestions — RuleCatch enforces them.
+
+<!-- reporecall -->
+## Reporecall
+
+Codebase context is injected automatically via hooks on each message (marked "Relevant codebase context"). Follow this priority chain:
+
+1. **Answer from injected context first.** It contains files, symbols, and call graphs for the query — do not re-fetch files listed in the injected context header.
+2. **Fill gaps with any tool.** Reporecall MCP tools (search_code, explain_flow, find_callers, get_symbol) search a pre-built index. Grep/Read/Glob work for exact matches and raw lookups. Pick whichever fits the query.
+3. **Avoid redundant searches.** Do not re-search for symbols or files already present in the injected context.
+
+If the injected context is marked "low confidence", steps 2 and 3 are appropriate immediately.
+
+### Memory
+
+Reporecall maintains persistent project memory across sessions. Use these MCP tools:
+- **store_memory** — Save important project context, decisions, or patterns for future sessions.
+- **recall_memory** — Retrieve previously stored memories relevant to the current task.
+- **forget_memory** — Remove outdated or incorrect memories.
+
+Memories are automatically injected alongside code context when relevant to the query.
+<!-- reporecall -->
