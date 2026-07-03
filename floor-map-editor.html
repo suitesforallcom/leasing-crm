@@ -31553,8 +31553,16 @@ function _computeUnitFillCached(u, mode) {
   // when u.payments is empty for the selected ym). Include a coarse cache
   // fingerprint so a freshly-fetched invoice for this unit invalidates
   // the cached fill and the cell can recolour without a hard reload.
+  // Отпечаток ВКЛЮЧАЕТ bucket'ы строк юнита, не только их число: void/paid
+  // меняет bucket БЕЗ изменения количества (кейс 337: Void августовского
+  // счёта не перекрашивал синюю плитку — ключ не менялся, мемо отдавал stale).
   const invCacheKey = (mode === 'payment' && typeof _invoicesCache !== 'undefined' && Array.isArray(_invoicesCache))
-    ? '|inv:' + _invoicesCache.length + ':' + (_invoicesCache.filter(r => String(r?.unitId || r?.metadata?.unitId || '') === String(u?.id || '')).length)
+    ? (() => {
+        const _rows = _invoicesCache.filter(r => String(r?.unitId || r?.metadata?.unitId || '') === String(u?.id || ''));
+        let _fp = '';
+        for (const r of _rows) _fp += (r?.bucket || '_')[0];
+        return '|inv:' + _invoicesCache.length + ':' + _rows.length + ':' + _fp;
+      })()
     : '';
   // Auto-invoice error fingerprint — different value when the error
   // appears/disappears so the cell repaints (red border on, then off
@@ -84216,6 +84224,8 @@ function _applyInvoiceBusSignal(bus) {
       if (typeof renderDetail === 'function' && selectedIds && selectedIds.length) {
         try { renderDetail(); } catch {}
       }
+      // Карта тоже зависит от _invoicesCache (payment-заливка) — перерисовать.
+      if (typeof renderUnits === 'function') { try { renderUnits(); } catch {} }
     }).catch(err => console.warn('[invoice-bus] refresh failed:', err));
   } else {
     // Cache patched — re-render affected views.
@@ -84225,6 +84235,8 @@ function _applyInvoiceBusSignal(bus) {
     if (typeof renderDetail === 'function' && selectedIds && selectedIds.length) {
       try { renderDetail(); } catch {}
     }
+    // Bucket флипнулся (paid/failed/void) — плитка карты обязана перекраситься.
+    if (typeof renderUnits === 'function') { try { renderUnits(); } catch {} }
   }
 
   // Surface a small toast so the operator knows the update came through
