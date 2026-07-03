@@ -60,6 +60,10 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 76. Audit batch-4 CF hygiene: rate-limits on money callables, PII masking, dead-checkpoint removal (robustness/security, 2026-07-03)
+
+**From audit 2026-07-03 P2 (§2 GO Tony). Deployed 3b8935a → 9 function targets.** Rate-limits (reuse createStripeInvoice counter pattern, fail-closed BEFORE Stripe call): stripeDiscountInvoice 40/ws-hr·5/unit-day, markInvoicePaidOutOfBand 40·5, voidOrDeleteStripeInvoice 40/ws-hr (no unitId in req.data). `_maskEmail` on 7 logger.* Cloud-Logging sites (audit docs untouched). Dead checkpoint in runAutoInvoices REMOVED (never called; resume relies on durable autoSentYm stamp) — the WORKING checkpoint in runAutoLateFees is untouched. No money-math change; §0.2 invariants intact.
+
 ### 75. Audit batch-1 server: late-fee Stripe-blind, $0 late-fee invoices, webhook coverage gaps, null-leaseStart phantom fees (finance/robustness, 2026-07-03)
 
 **From audit 2026-07-03 (AUDIT_REPORT_2026-07-03.md, §2 GO Tony). Deployed a779c05 → stripeWebhook,runAutoInvoices,triggerAutoInvoicesNow,runAutoLateFees,triggerAutoLateFeesNow.**
