@@ -253,8 +253,11 @@ function _buildingForV2CF(b) {
 // гонку с конкурентной клиентской записью: при конфликте tx ретраится и
 // перечитывает свежий _savedRev. Док с отсутствующим _savedRev (наследие
 // старых CF-записей) лечится: 0 → 1.
+// Возвращает true при успехе / false при проглоченной ошибке — money-вебхуки
+// (аудит 2026-07-03, правило №5) через opts.rethrowMirrorFailure в
+// mutateWorkspaceState превращают false в throw → 500 → Stripe Smart Retry.
 async function _mirrorBuildingV2CF(b) {
-  if (!b || !b.id) return;
+  if (!b || !b.id) return true;   // нечего зеркалить — не провал
   try {
     const ref = db.doc(`workspaces/${WORKSPACE_ID}/buildings/${b.id}`);
     await db.runTransaction(async (tx) => {
@@ -270,8 +273,10 @@ async function _mirrorBuildingV2CF(b) {
         _savedRev: curRev + 1,      // монотонно: сохранить и продвинуть гард-пол
       });
     });
+    return true;
   } catch (e) {
     logger.warn(`[strip-cf:mirror] ${b.id}: ${(e && e.message) || e}`);
+    return false;
   }
 }
 
@@ -284,7 +289,13 @@ async function readWorkspaceState() {
 // Write — runs a transactional mutation of the `state` sub-object. `mutate`
 // receives the current state and may modify it in place. We bump _rev so
 // the client's onSnapshot picks up our change and does not echo it back.
-async function mutateWorkspaceState(mutate) {
+// opts.rethrowMirrorFailure (аудит 2026-07-03, правило №5): для money-вебхуков
+// провал building-зеркала НЕ должен завершаться 200+done — кидаем transient-
+// ошибку → внешний catch вебхука вернёт 500 → Stripe Smart Retry. При retry
+// mutate-peek читает СТАРОЕ здание из коллекции → мутация и зеркало повторяются
+// целиком (хендлеры идемпотентны). Дефолт (без opts) — прежнее поведение
+// warn-only для кронов/callable'ов.
+async function mutateWorkspaceState(mutate, opts) {
   // Под strip предзагружаем здания+платежи ВНЕ транзакции (коллекция — источник
   // истины; _rev-лок монолита защищает settings/ui/прочее). null когда strip off.
   let stripBuildings = null;
@@ -331,7 +342,16 @@ async function mutateWorkspaceState(mutate) {
   });
   // После транзакции — зеркалим только реально изменившиеся здания в коллекцию.
   if (toMirror && toMirror.length) {
-    for (const b of toMirror) await _mirrorBuildingV2CF(b);
+    const failedMirrors = [];
+    for (const b of toMirror) {
+      const ok = await _mirrorBuildingV2CF(b);
+      if (!ok) failedMirrors.push(b.id);
+    }
+    if (failedMirrors.length && opts && opts.rethrowMirrorFailure) {
+      // «[mirror-failed]» сознательно НЕ матчится под permanent-паттерны
+      // вебхука → классифицируется как transient → 500 → Smart Retry.
+      throw new Error(`[mirror-failed] building mirror failed for: ${failedMirrors.join(', ')}`);
+    }
   }
 }
 
@@ -3252,6 +3272,14 @@ exports.stripeWebhook = onRequest(
     try {
       switch (event.type) {
         case 'invoice.payment_succeeded':
+        // invoice.paid (аудит P1 2026-07-03): mark-paid из Stripe Dashboard /
+        // out-of-band оплата шлёт invoice.paid БЕЗ payment_succeeded — без
+        // этого case платёж не доходил до леджера. Двойная доставка обоих
+        // событий безвредна: у них разные event.id (event-dedupe их не
+        // склеивает), но handleInvoicePaid идемпотентен по
+        // prior.status==='paid' && prior.stripe.invoiceId===invoice.id —
+        // второй проход лишь ре-зеркалит тот же rec (Smart-Retry re-heal).
+        case 'invoice.paid':
           await handleInvoicePaid(event.data.object, event.id);
           break;
         case 'invoice.payment_failed':
@@ -3270,6 +3298,11 @@ exports.stripeWebhook = onRequest(
           break;
         case 'charge.dispute.created':
           await handleChargeDisputed(event.data.object);
+          break;
+        case 'charge.dispute.closed':
+          // Проигранный chargeback (аудит P1 2026-07-03): деньги ушли обратно
+          // банку — месяц не должен оставаться «paid» в леджере.
+          await handleChargeDisputeClosed(event.data.object, event.id);
           break;
         case 'customer.subscription.created':
         case 'customer.subscription.updated':
@@ -3355,6 +3388,12 @@ async function handleInvoiceVoided(invoice, eventType) {
   const {buildingId, floorId, unitId, ym, purpose} = meta;
   if (!buildingId || !floorId || !unitId) {
     logger.warn(`[stripe] ${eventType} ${invoice.id} missing metadata`);
+    // Аудит P1 2026-07-03 (правило №5): денежное событие не умирает молча.
+    await _webhookDeadLetter(`${invoice.id}-voided-missing-metadata`, {
+      invoiceId: invoice.id, unitId: unitId || null, ym: ym || null,
+      customerId: (typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id) || null,
+      eventId: null, reason: 'missing-metadata', handler: eventType,
+    });
     return;
   }
   const newStatus = eventType === 'invoice.marked_uncollectible' ? 'uncollectible' : 'void';
@@ -3362,10 +3401,13 @@ async function handleInvoiceVoided(invoice, eventType) {
   // mutate — post-mutate re-read (_stateIfSyncV2) под strip рехидрируется из
   // ЕЩЁ НЕ обновлённой коллекции и не видит свежую мутацию (silent no-op).
   let voidedRecForMirror = null;
+  let voidedUnitFound = false; // аудит P1: unit-not-found → dead-letter, не молчание
   await mutateWorkspaceState((s) => {
     voidedRecForMirror = null; // сброс на transaction-retry мутатора
+    voidedUnitFound = false;   // сброс на transaction-retry мутатора
     const f = findUnit(s, {buildingId, floorId, unitId});
     if (!f) return;
+    voidedUnitFound = true;
     const u = f.unit;
     u.stripe = u.stripe || {};
     // Clear deposit stamp if this invoice was the deposit.
@@ -3430,7 +3472,16 @@ async function handleInvoiceVoided(invoice, eventType) {
       unitId, buildingId, floorId,
       at: Date.now(),
     };
-  });
+  }, { rethrowMirrorFailure: true }); // правило №5: провал зеркала → 500 → Smart Retry
+  // Аудит P1 2026-07-03: unit не найден — void НЕ применён; dead-letter вместо молчания.
+  if (!voidedUnitFound) {
+    await _webhookDeadLetter(`${invoice.id}-voided-unit-not-found`, {
+      invoiceId: invoice.id, unitId, ym: ym || null,
+      customerId: (typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id) || null,
+      eventId: null, reason: 'unit-not-found', handler: eventType,
+    });
+    return;
+  }
   // Phase 1 dual-write — зеркалим обновлённый u.payments[ym] в v2-коллекцию.
   // Только rent-purpose (deposit/move-in лежат в u.stripe.*, не в payments).
   // Entry 70 / audit P0 2026-07-03: НЕ re-read'им state (под strip рехидрация
@@ -3470,19 +3521,34 @@ async function handleChargeRefunded(charge) {
     throw e;
   }
   const meta = inv.metadata || {};
-  if (meta.source !== 'suitesforall' && meta.source !== 'auto') return;
+  if (meta.source !== 'suitesforall' && meta.source !== 'auto') {
+    logger.info(`[stripe] charge.refunded ${charge.id}: invoice ${invoiceId} not ours; ignored`);
+    return;
+  }
   const {buildingId, floorId, unitId, ym, purpose} = meta;
-  if (!buildingId || !floorId || !unitId) return;
+  if (!buildingId || !floorId || !unitId) {
+    // Аудит P1 2026-07-03 (правило №5): раньше — полностью молчаливый return.
+    logger.warn(`[stripe] charge.refunded ${charge.id}: invoice ${invoiceId} missing metadata`);
+    await _webhookDeadLetter(`${charge.id}-refund-missing-metadata`, {
+      invoiceId, unitId: unitId || null, ym: ym || null,
+      customerId: (typeof charge.customer === 'string' ? charge.customer : charge.customer?.id) || null,
+      eventId: null, reason: 'missing-metadata', handler: 'charge.refunded',
+    });
+    return;
+  }
   const refundedAmt = (charge.amount_refunded || 0) / 100;
   const totalAmt = (charge.amount || 0) / 100;
   const fullyRefunded = refundedAmt >= totalAmt - 0.01;
   // Entry 70 / audit P0 2026-07-03: rec для v2-зеркала захватываем ВНУТРИ
   // mutate — post-mutate re-read под strip не видит свежую мутацию.
   let refundRecForMirror = null;
+  let refundUnitFound = false; // аудит P1: unit-not-found → dead-letter, не молчание
   await mutateWorkspaceState((s) => {
     refundRecForMirror = null; // сброс на transaction-retry мутатора
+    refundUnitFound = false;   // сброс на transaction-retry мутатора
     const f = findUnit(s, {buildingId, floorId, unitId});
     if (!f) return;
+    refundUnitFound = true;
     const u = f.unit;
     u.payments = u.payments || {};
     if (purpose === 'rent' && ym && u.payments[ym]) {
@@ -3512,7 +3578,16 @@ async function handleChargeRefunded(charge) {
       amountPaid: Math.max(0, totalAmt - refundedAmt),
       at: Date.now(),
     };
-  });
+  }, { rethrowMirrorFailure: true }); // правило №5: провал зеркала → 500 → Smart Retry
+  // Аудит P1 2026-07-03: unit не найден — рефанд НЕ отражён; dead-letter вместо молчания.
+  if (!refundUnitFound) {
+    await _webhookDeadLetter(`${charge.id}-refund-unit-not-found`, {
+      invoiceId, unitId, ym: ym || null,
+      customerId: (typeof charge.customer === 'string' ? charge.customer : charge.customer?.id) || null,
+      eventId: null, reason: 'unit-not-found', handler: 'charge.refunded',
+    });
+    return;
+  }
   // Phase 1 dual-write — зеркалим refunded/partial-record в v2-коллекцию.
   // Entry 70 / audit P0 2026-07-03: rec захвачен внутри mutate, re-read убран
   // (под strip он терял свежую мутацию); _stateIfSyncV2 остаётся только gate.
@@ -3560,6 +3635,225 @@ async function handleChargeDisputed(charge) {
     });
   } catch {}
   logger.error(`[stripe] DISPUTE OPENED: charge ${charge.id}, invoice ${invoiceId}, reason ${charge.dispute?.reason || 'unknown'}`);
+}
+
+// Handle charge.dispute.closed (аудит P1 2026-07-03). ВАЖНО: data.object у
+// charge.dispute.* — объект Dispute (dp_…), НЕ Charge: invoice достаём через
+// dispute.charge → charges.retrieve → charge.invoice. Проигранный спор
+// (status='lost') = деньги ушли обратно банку: покрывающая строка леджера
+// НЕ может оставаться 'paid' — флипаем в 'bounced' с history-записью
+// (append-only trail, FINANCIAL_INVARIANTS §I), спрэдом discount-полей
+// (Entry 72) и захватом rec ВНУТРИ mutate для v2-зеркала (Entry 74).
+// won / warning_closed — только audit-запись, state не трогаем.
+async function handleChargeDisputeClosed(dispute, eventId) {
+  const disputeStatus = dispute && dispute.status;
+  const chargeId = typeof dispute?.charge === 'string' ? dispute.charge : dispute?.charge?.id;
+  const _dlKey = eventId || (dispute && dispute.id) || `dispute-${chargeId || 'unknown'}`;
+  if (disputeStatus !== 'lost') {
+    // Спор закрыт в нашу пользу — деньги остаются, леджер верен. Audit-след.
+    logger.info(`[stripe] dispute ${dispute?.id || '-'} closed as '${disputeStatus}' (charge ${chargeId || '-'}) — no ledger change`);
+    try {
+      await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+        ts: admin.firestore.FieldValue.serverTimestamp(),
+        actor: 'stripe-webhook',
+        action: 'charge.dispute.closed',
+        source: 'stripeWebhook',
+        disputeId: dispute?.id || '',
+        chargeId: chargeId || '',
+        amount: ((dispute?.amount || 0) / 100),
+        note: `Dispute closed: ${disputeStatus || 'unknown'} — funds retained, no ledger change.`,
+      });
+    } catch {}
+    return;
+  }
+  if (!chargeId) {
+    logger.warn(`[stripe] dispute ${dispute?.id || '-'} LOST but has no charge id`);
+    await _webhookDeadLetter(_dlKey, {
+      invoiceId: null, unitId: null, ym: null, customerId: null,
+      eventId: eventId || null, reason: 'dispute-no-charge', handler: 'charge.dispute.closed',
+    });
+    return;
+  }
+  const stripe = getStripe();
+  let charge;
+  try { charge = await stripe.charges.retrieve(chargeId); }
+  catch (e) {
+    // Charge доказуемо не существует → dead-letter; transient → 500 → Smart Retry.
+    if (e && (e.code === 'resource_missing' || e.statusCode === 404)) {
+      logger.warn(`[stripe] dispute.closed: charge ${chargeId} does not exist: ${e.message}`);
+      await _webhookDeadLetter(_dlKey, {
+        invoiceId: null, unitId: null, ym: null, customerId: null,
+        eventId: eventId || null, reason: 'charge-not-found', handler: 'charge.dispute.closed',
+      });
+      return;
+    }
+    throw e;
+  }
+  const invoiceId = typeof charge.invoice === 'string' ? charge.invoice : charge.invoice?.id;
+  if (!invoiceId) {
+    // Charge без инвойса (payment link / ручной charge) — маршрутизировать некуда.
+    logger.warn(`[stripe] dispute.closed LOST: charge ${chargeId} has no invoice — cannot route to ledger`);
+    await _webhookDeadLetter(_dlKey, {
+      invoiceId: null, unitId: null, ym: null,
+      customerId: (typeof charge.customer === 'string' ? charge.customer : charge.customer?.id) || null,
+      eventId: eventId || null, reason: 'no-invoice-on-charge', handler: 'charge.dispute.closed',
+    });
+    return;
+  }
+  let inv;
+  try { inv = await stripe.invoices.retrieve(invoiceId); }
+  catch (e) {
+    if (e && (e.code === 'resource_missing' || e.statusCode === 404)) {
+      logger.warn(`[stripe] dispute.closed: invoice ${invoiceId} does not exist: ${e.message}`);
+      await _webhookDeadLetter(_dlKey, {
+        invoiceId, unitId: null, ym: null, customerId: null,
+        eventId: eventId || null, reason: 'invoice-not-found', handler: 'charge.dispute.closed',
+      });
+      return;
+    }
+    throw e;
+  }
+  const meta = inv.metadata || {};
+  if (meta.source !== 'suitesforall' && meta.source !== 'auto') {
+    logger.info(`[stripe] dispute.closed LOST: invoice ${invoiceId} not ours; ignored`);
+    await _webhookDeadLetter(_dlKey, {
+      invoiceId, unitId: meta.unitId || null, ym: meta.ym || null,
+      customerId: (typeof charge.customer === 'string' ? charge.customer : charge.customer?.id) || null,
+      eventId: eventId || null, reason: 'not-ours-source', handler: 'charge.dispute.closed',
+    });
+    return;
+  }
+  const {buildingId, floorId, unitId, ym, purpose} = meta;
+  if (!buildingId || !floorId || !unitId) {
+    logger.warn(`[stripe] dispute.closed LOST: invoice ${invoiceId} missing metadata`);
+    await _webhookDeadLetter(_dlKey, {
+      invoiceId, unitId: unitId || null, ym: ym || null,
+      customerId: (typeof charge.customer === 'string' ? charge.customer : charge.customer?.id) || null,
+      eventId: eventId || null, reason: 'missing-metadata', handler: 'charge.dispute.closed',
+    });
+    return;
+  }
+  const disputedAmt = (dispute.amount || charge.amount || 0) / 100;
+  // Entry 74: rec для v2-зеркала захватываем ВНУТРИ mutate (post-mutate
+  // re-read под strip рехидрируется из ещё-не-обновлённой коллекции).
+  let bouncedRecForMirror = null;
+  let disputeUnitFound = false;
+  let recWasFlipped = false;
+  await mutateWorkspaceState((s) => {
+    bouncedRecForMirror = null; // сброс на transaction-retry мутатора
+    disputeUnitFound = false;
+    recWasFlipped = false;
+    const f = findUnit(s, {buildingId, floorId, unitId});
+    if (!f) return;
+    disputeUnitFound = true;
+    const u = f.unit;
+    u.payments = u.payments || {};
+    if (purpose === 'rent' && ym && u.payments[ym]) {
+      const cur = u.payments[ym];
+      // Покрывающая строка — та, что ссылается на этот invoice/charge.
+      const covers = (cur.stripe?.invoiceId === invoiceId)
+        || (cur.stripe?.chargeId && cur.stripe.chargeId === chargeId)
+        || (cur.stripeInvoiceId === invoiceId);
+      // Идемпотентность Smart-Retry: уже bounced этим же спором — только re-mirror.
+      if (cur.status === 'bounced' && cur.disputeId === dispute.id) {
+        bouncedRecForMirror = cur;
+        return;
+      }
+      if (covers) {
+        const history = Array.isArray(cur.history) ? cur.history.slice() : [];
+        history.push({
+          ts: new Date().toISOString(),
+          status: cur.status,
+          amount: cur.amount || 0,
+          invoiceId,
+          chargeId,
+          disputeId: dispute.id || null,
+          disputedAmount: disputedAmt,
+          replacedReason: 'dispute-lost',
+        });
+        while (history.length > 10) history.shift();
+        u.payments[ym] = {
+          // Спрэд discount-полей (Entry 72) — пересборка rec не стирает след скидки.
+          ..._discountFieldsOf(cur),
+          status: 'bounced',
+          amount: 0,
+          history,
+          disputeId: dispute.id || null,
+          disputeLostAt: new Date().toISOString(),
+          stripe: {
+            invoiceId,
+            chargeId,
+            disputeId: dispute.id || null,
+            hostedInvoiceUrl: inv.hosted_invoice_url || null,
+          },
+        };
+        // Entry 74: захват свежезаписанного rec для зеркала после commit'а.
+        bouncedRecForMirror = u.payments[ym];
+        recWasFlipped = true;
+      }
+    }
+    s._invoiceBus = {
+      invoiceId, status: 'dispute-lost',
+      ym: ym || null, purpose: purpose || 'custom',
+      unitId, buildingId, floorId,
+      amountPaid: 0,
+      at: Date.now(),
+    };
+  }, { rethrowMirrorFailure: true }); // правило №5: провал зеркала → 500 → Smart Retry
+  if (!disputeUnitFound) {
+    await _webhookDeadLetter(_dlKey, {
+      invoiceId, unitId, ym: ym || null,
+      customerId: (typeof charge.customer === 'string' ? charge.customer : charge.customer?.id) || null,
+      eventId: eventId || null, reason: 'unit-not-found', handler: 'charge.dispute.closed',
+    });
+    return;
+  }
+  // Rent-строка не найдена / не покрыта этим инвойсом — не молчим (правило №5):
+  // оператор должен вручную атрибутировать проигранный спор (деньги уже ушли).
+  if (purpose === 'rent' && ym && !bouncedRecForMirror) {
+    await _webhookDeadLetter(_dlKey, {
+      invoiceId, unitId, ym,
+      customerId: (typeof charge.customer === 'string' ? charge.customer : charge.customer?.id) || null,
+      eventId: eventId || null, reason: 'no-covering-rec', handler: 'charge.dispute.closed',
+    });
+  }
+  // Non-rent (deposit/late_fee/custom): леджер-строки per-month нет — только
+  // audit ниже; ручная атрибуция оператором (депозитный штамп не трогаем).
+  // Entry 74: зеркалим захваченный rec (только rent-purpose).
+  if (purpose === 'rent' && ym && bouncedRecForMirror) {
+    try {
+      const syncState = await _stateIfSyncV2();
+      if (syncState) {
+        await _writePaymentV2(buildingId, floorId, unitId, ym, bouncedRecForMirror);
+      }
+    } catch (e) {
+      logger.warn(`[mirror-v2:dispute-lost] ${dispute.id || chargeId}: ${e.message}`);
+    }
+  }
+  // Audit — проигранный chargeback это громкое денежное событие.
+  try {
+    await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+      ts: admin.firestore.FieldValue.serverTimestamp(),
+      actor: 'stripe-webhook',
+      action: 'charge.dispute.lost',
+      source: 'stripeWebhook',
+      buildingId, floorId, unitId,
+      ym: ym || '',
+      invoiceId,
+      chargeId,
+      disputeId: dispute.id || '',
+      amount: disputedAmt,
+      before: recWasFlipped ? { status: 'paid', amount: disputedAmt } : null,
+      after: recWasFlipped ? { status: 'bounced', amount: 0 } : null,
+      note: `DISPUTE LOST: charge ${chargeId} ($${disputedAmt}) — funds reversed by bank. ` +
+        (recWasFlipped
+          ? `Ledger ${unitId}/${ym} flipped to 'bounced'.`
+          : `No covering ledger row flipped (purpose=${purpose || 'rent'}) — manual attribution needed.`),
+    });
+  } catch (e) {
+    logger.warn(`[stripe] dispute-lost audit write failed: ${e.message}`);
+  }
+  logger.error(`[stripe] DISPUTE LOST: charge ${chargeId} ($${disputedAmt}), invoice ${invoiceId}, unit ${unitId}/${ym || '-'} — ledger ${recWasFlipped ? "flipped to 'bounced'" : 'NOT flipped (manual attribution needed)'}`);
 }
 
 // ---- Webhook handlers ---------------------------------------------------
@@ -3751,7 +4045,7 @@ async function handleInvoicePaid(invoice, eventId) {
         amountRemaining: 0,
         at: Date.now(),
       };
-    });
+    }, { rethrowMirrorFailure: true }); // правило №5: провал зеркала → 500 → Smart Retry
     // H2: unit не найден — non-rent платёж НЕ применён; dead-letter + выход.
     if (!nonRentUnitFound) {
       await _webhookDeadLetter(_dlKey, {
@@ -4040,7 +4334,7 @@ async function handleInvoicePaid(invoice, eventId) {
       amountRemaining: 0,
       at: Date.now(),
     };
-  });
+  }, { rethrowMirrorFailure: true }); // правило №5: провал зеркала → 500 → Smart Retry
   // H2: unit не найден — платёж НЕ применён (txn закоммитился без изменений).
   // Dead-letter + выход: audit/mirror-v2 без unit'а не имеют смысла.
   if (!unitFoundInMutate) {
@@ -4106,11 +4400,23 @@ async function handleInvoiceFailed(invoice) {
   const meta = invoice.metadata || {};
   if (meta.source !== 'suitesforall' && meta.source !== 'auto') return;
   const {buildingId, floorId, unitId, ym} = meta;
-  if (!buildingId || !floorId || !unitId || !ym) return;
+  if (!buildingId || !floorId || !unitId || !ym) {
+    // Аудит P1 2026-07-03 (правило №5): раньше — полностью молчаливый return.
+    logger.warn(`[stripe] invoice.payment_failed ${invoice.id} missing metadata`);
+    await _webhookDeadLetter(`${invoice.id}-failed-missing-metadata`, {
+      invoiceId: invoice.id, unitId: unitId || null, ym: ym || null,
+      customerId: (typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id) || null,
+      eventId: null, reason: 'missing-metadata', handler: 'invoice.payment_failed',
+    });
+    return;
+  }
 
+  let failedUnitFound = false; // аудит P1: unit-not-found → dead-letter, не молчание
   await mutateWorkspaceState((s) => {
+    failedUnitFound = false;   // сброс на transaction-retry мутатора
     const f = findUnit(s, {buildingId, floorId, unitId});
     if (!f) return;
+    failedUnitFound = true;
     f.unit.payments = f.unit.payments || {};
     if (f.unit.payments[ym]?.status === 'paid') return;
     f.unit.payments[ym] = {
@@ -4203,7 +4509,16 @@ async function handleInvoiceFailed(invoice) {
       code: invoice.last_finalization_error?.code || 'charge_failed',
       at: Date.now(),
     };
-  });
+  }, { rethrowMirrorFailure: true }); // правило №5: провал зеркала → 500 → Smart Retry
+  // Аудит P1 2026-07-03: unit не найден — fail-статус НЕ записан; dead-letter.
+  if (!failedUnitFound) {
+    await _webhookDeadLetter(`${invoice.id}-failed-unit-not-found`, {
+      invoiceId: invoice.id, unitId, ym,
+      customerId: (typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id) || null,
+      eventId: null, reason: 'unit-not-found', handler: 'invoice.payment_failed',
+    });
+    return;
+  }
   logger.warn(`[stripe] ✗ failed: ${unitId}/${ym} on invoice ${invoice.id} (attempt ${invoice.attempt_count || 1})`);
 
   // Audit — payment failure is a money operation; operator needs a
@@ -4754,7 +5069,28 @@ const _runAutoInvoicesHandler = async (opts) => {
           // leaseStart не выставляем; первый месяц биллится обычным путём).
           {
             const _lsYmGate = String(u.leaseStart || '').slice(0, 7);
-            if (/^\d{4}-\d{2}$/.test(_lsYmGate) && nextYm < _lsYmGate) { skipped++; continue; }
+            // Null-leaseStart гейт (аудит P2 2026-07-03): occupied-юнит БЕЗ
+            // валидного ISO leaseStart не биллим вслепую — log + dead-letter,
+            // чтобы после clobber/restore/import (класс Suite 344/414) оператор
+            // увидел причину, а арендатор не получил phantom-счёт.
+            if (!/^\d{4}-\d{2}$/.test(_lsYmGate)) {
+              logger.warn(`[auto-invoice] ${u.id}: missing/non-ISO leaseStart ("${String(u.leaseStart || '')}") — NOT billing ${nextYm}${_forceDryRun ? ' (dry-run: dead-letter suppressed)' : '; dead-letter written'}`);
+              // Dry-run остаётся write-free (аудит-заметка 2026-07-03):
+              // dead-letter пишем только в LIVE — иначе Run-now-предпросмотр
+              // мутирует webhookDeadLetter-коллекцию.
+              if (!_forceDryRun) {
+                await _webhookDeadLetter(`auto-invoice-null-leasestart-${b.id}-${u.id}-${nextYm}`, {
+                  invoiceId: null, unitId: u.id, ym: nextYm,
+                  customerId: (u.stripe && u.stripe.customerId) || null,
+                  eventId: null, reason: 'null-leasestart',
+                  buildingId: b.id, floorId: f.id,
+                  leaseStartRaw: String(u.leaseStart || ''),
+                  handler: 'runAutoInvoices',
+                });
+              }
+              skipped++; continue;
+            }
+            if (nextYm < _lsYmGate) { skipped++; continue; }
           }
 
           // Create the invoice via Stripe
@@ -5409,6 +5745,12 @@ function _computeOverdueMonths(u, cfg, todayInZoneParts) {
   ));
   const curY = todayInZoneParts.year, curM = todayInZoneParts.month;  // 1-indexed
   const firstYm = _firstTenancyYmServer(u);
+  // Null-leaseStart гейт (аудит P2 2026-07-03; серверное зеркало клиентского
+  // lease-start gate / FIXES_LOG Entry 1): ни валидного leaseStart, ни
+  // _tenantAddedAt → якоря начала аренды НЕТ, просрочку не считаем ВООБЩЕ.
+  // Иначе первый же clobber/restore/import, стёрший даты, дал бы юниту
+  // до 12 месяцев phantom late fees за «месяцы до начала аренды».
+  if (!firstYm) return [];
   const overdueList = [];
   let monthsOwed = 0;
   // Walk oldest → newest in 12-mo window.
@@ -5564,6 +5906,20 @@ async function _runAutoLateFeesHandler(opts) {
           }
         }
 
+        // Зеркало null-leaseStart гейта rent-крона (адверсариальный аудит
+        // 2026-07-03, asymmetry-фикс): рент-крон отказывается биллить юнит
+        // без валидного ISO leaseStart (dead-letter в runAutoInvoices), а
+        // _computeOverdueMonths якорится на leaseStart ИЛИ _tenantAddedAt —
+        // без этого гейта юнит с живым _tenantAddedAt, но битым leaseStart
+        // (класс Suite 344/414 после clobber/restore) получал бы пени за
+        // месяцы, которые мы сами отказались выставить. Единый предикат с
+        // рент-кроном: не биллим → не штрафуем.
+        if (!/^\d{4}-\d{2}$/.test(String(u.leaseStart || '').slice(0, 7))) {
+          logger.warn(`[auto-late-fee] ${u.id}: missing/non-ISO leaseStart ("${String(u.leaseStart || '')}") — skipping late fees (mirror of rent-cron null-leaseStart gate)`);
+          skipped++;
+          continue;
+        }
+
         // Compute overdue months
         const overdues = _computeOverdueMonths(u, cfg, todayInZoneParts);
         if (overdues.length === 0) { skipped++; continue; }
@@ -5599,6 +5955,164 @@ async function _runAutoLateFeesHandler(opts) {
 
         for (const o of todoMonths) {
           try {
+            // ── Settled-предикат ЗА пределами леджера (аудит P1 2026-07-03,
+            // класс Suite 417 / Entry 55 server-side). _computeOverdueMonths
+            // видит только u.payments[ym].status; месяц, оплаченный через
+            // Stripe но не дошедший до леджера (webhook-drop, класс Entry 70),
+            // выглядит «просроченным» и получил бы РЕАЛЬНЫЙ штраф уже
+            // заплатившему арендатору. Перед начислением ищем в Stripe сам
+            // rent-инвойс этого ym (паттерн cross-flow dedupe runAutoInvoices:
+            // metadata.ym + purpose=rent): status='paid' с реальной суммой →
+            // SKIP + опортунистический heal леджера (Entry 74: захват rec
+            // ВНУТРИ mutate + _writePaymentV2). Ошибка поиска = fail-closed:
+            // месяц НЕ штрафуем (следующий крон повторит). graceDays/config
+            // логика не тронута — гейт стоит ПОСЛЕ расчёта overdue.
+            {
+              const _mRec = u.payments && u.payments[o.ym];
+              const _mSettledLocal = !!(_mRec && ['paid', 'free', 'waived'].includes(_mRec.status));
+              // Dissent-гейт (адверсариальный аудит 2026-07-03, P1): Stripe
+              // НИКОГДА не откатывает invoice.status='paid' после полного
+              // рефанда или проигранного спора (amount_paid тоже замерзает).
+              // Леджер-статусы 'refunded' (handleChargeRefunded), 'bounced'
+              // (handleChargeDisputeClosed) и 'partial' — авторитетное
+              // НЕСОГЛАСИЕ с замороженным Stripe-'paid': деньги ушли обратно.
+              // Без этого гейта settled-check нашёл бы paid-инвойс → SKIP +
+              // heal перезаписал бы refunded/bounced обратно в 'paid' —
+              // реально неоплаченный месяц навсегда освобождён от пени, а
+              // FINANCIAL_INVARIANTS нарушен (chargeback показан собранным).
+              // Dissent → Stripe не спрашиваем вовсе, месяц идёт в штраф
+              // (= поведение ДО этого диффа).
+              const _mDissent = !!(_mRec && ['refunded', 'bounced', 'partial'].includes(_mRec.status));
+              if (!_mSettledLocal && !_mDissent) {
+                let _paidRent = null;
+                try {
+                  const rentQ = `customer:"${customerId}" AND metadata["unitId"]:"${u.id}" `
+                              + `AND metadata["purpose"]:"rent" AND metadata["ym"]:"${o.ym}" `
+                              + `AND status:"paid"`;
+                  const rentRes = await stripe.invoices.search({ query: rentQ, limit: 5 });
+                  // $0-shell (Entry 70 инвариант 3): paid с amount_paid=0 —
+                  // артефакт, НЕ оплата; месяц им не закрывается.
+                  _paidRent = (rentRes.data || []).find(inv =>
+                    inv.status === 'paid' && Number(inv.amount_paid ?? 0) > 0);
+                } catch (settledErr) {
+                  logger.warn(`[auto-late-fee] ${u.id}/${o.ym}: rent-settled check failed (${settledErr.message}) — fail-closed, NOT fining this month`);
+                  skipped++;
+                  continue;
+                }
+                if (_paidRent) {
+                  logger.warn(`[auto-late-fee] ${u.id}/${o.ym}: rent invoice ${_paidRent.id} is PAID on Stripe but ledger row is '${(_mRec && _mRec.status) || '(none)'}' — SKIP fee + healing ledger (класс Suite 417)`);
+                  // ── Опортунистический heal леджера (Entry 74 паттерн).
+                  // Провал heal'а НЕ отменяет SKIP — штраф не шлём в любом случае.
+                  try {
+                    const invFull = await stripe.invoices.retrieve(_paidRent.id);
+                    // Entry 70 инвариант 2: сумма ренты = ТОЛЬКО rent-line-item'ы
+                    // (на инвойсе может ехать service/late-fee) — не amount_paid.
+                    const rentLineCents = (invFull.lines?.data || [])
+                      .filter((ln) => ln?.metadata?.purpose === 'rent')
+                      .reduce((sum, ln) => sum + (+ln.amount || 0), 0);
+                    if (rentLineCents > 0) {
+                      const healPaidAt = (invFull.status_transitions?.paid_at || Math.floor(Date.now() / 1000)) * 1000;
+                      let healRecForMirror = null;   // Entry 74: захват ВНУТРИ mutate
+                      await mutateWorkspaceState((s) => {
+                        healRecForMirror = null;     // сброс на transaction-retry мутатора
+                        const fh = findUnit(s, {buildingId: b.id, floorId: f.id, unitId: u.id});
+                        if (!fh) return;
+                        fh.unit.payments = fh.unit.payments || {};
+                        const prior = fh.unit.payments[o.ym] || {};
+                        // Гонка с вебхуком: уже settled реальной суммой — не трогаем.
+                        if (prior.status === 'paid' && (+prior.amount || 0) > 0) return;
+                        // Гонка с refund/dispute-вебхуком (P1 2026-07-03): строка
+                        // могла флипнуться в refunded/bounced/partial МЕЖДУ нашим
+                        // внешним чтением и этой транзакцией — heal НЕ воскрешает
+                        // возвращённые деньги обратно в 'paid'.
+                        if (['refunded', 'bounced', 'partial'].includes(prior.status)) return;
+                        const priorHistory = Array.isArray(prior.history) ? prior.history.slice() : [];
+                        if (prior.status) {
+                          priorHistory.push({
+                            ts: new Date().toISOString(),
+                            status: prior.status, amount: prior.amount || 0,
+                            paidVia: prior.paidVia || null,
+                            invoiceId: prior.stripe?.invoiceId || prior.stripeInvoiceId || null,
+                            replacedBy: invFull.id, replacedReason: 'late-fee-cron-heal',
+                          });
+                          while (priorHistory.length > 10) priorHistory.shift();
+                        }
+                        fh.unit.payments[o.ym] = {
+                          status: 'paid',
+                          amount: rentLineCents / 100,
+                          date: new Date(healPaidAt).toISOString().slice(0, 10),
+                          // Спрэд discount-полей (Entry 72) — heal не стирает след скидки.
+                          ..._discountFieldsOf(prior),
+                          ...(priorHistory.length ? { history: priorHistory } : {}),
+                          stripe: {
+                            invoiceId: invFull.id,
+                            chargeId: invFull.charge || null,
+                            hostedInvoiceUrl: invFull.hosted_invoice_url || null,
+                            paidAt: healPaidAt,
+                            linkedVia: 'late-fee-cron-heal',
+                          },
+                        };
+                        // Entry 71: lastInvoiceYm только ВПЕРЁД, назад — никогда.
+                        fh.unit.stripe = fh.unit.stripe || {};
+                        {
+                          const _curStampYm = String(fh.unit.stripe.lastInvoiceYm || '');
+                          if (/^\d{4}-\d{2}$/.test(o.ym) && (!/^\d{4}-\d{2}$/.test(_curStampYm) || o.ym >= _curStampYm)) {
+                            fh.unit.stripe.lastInvoiceId = invFull.id;
+                            fh.unit.stripe.lastInvoiceYm = o.ym;
+                          }
+                        }
+                        healRecForMirror = fh.unit.payments[o.ym];
+                      });
+                      if (healRecForMirror) {
+                        // Entry 70/74: под strip единственная живучая запись —
+                        // payments-коллекция; зеркалим захваченный rec.
+                        try {
+                          const syncState = await _stateIfSyncV2();
+                          if (syncState) {
+                            await _writePaymentV2(b.id, f.id, u.id, o.ym, healRecForMirror);
+                          }
+                        } catch (mirrErr) {
+                          logger.warn(`[auto-late-fee] ${u.id}/${o.ym}: heal mirror-v2 failed: ${mirrErr.message}`);
+                        }
+                        // Синхронизируем in-loop копию юнита: финальный
+                        // _lfStripePatch делает ПОЛНЫЙ replace u.stripe — без
+                        // этого heal-штамп откатился бы назад (Entry 71).
+                        u.payments = u.payments || {};
+                        u.payments[o.ym] = healRecForMirror;
+                        u.stripe = u.stripe || {};
+                        {
+                          const _loopStampYm = String(u.stripe.lastInvoiceYm || '');
+                          if (!/^\d{4}-\d{2}$/.test(_loopStampYm) || o.ym >= _loopStampYm) {
+                            u.stripe.lastInvoiceId = invFull.id;
+                            u.stripe.lastInvoiceYm = o.ym;
+                          }
+                        }
+                        try {
+                          await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+                            ts: admin.firestore.FieldValue.serverTimestamp(),
+                            actor: 'system:auto-late-fee-cron',
+                            action: 'payment.mark-paid',
+                            source: 'cron-heal',
+                            buildingId: b.id, floorId: f.id, unitId: u.id,
+                            ym: o.ym,
+                            amount: healRecForMirror.amount,
+                            invoiceId: invFull.id,
+                            note: `Late-fee cron heal: rent invoice ${invFull.id} PAID on Stripe but ledger was '${(_mRec && _mRec.status) || '(none)'}' — ledger healed, late fee skipped`,
+                          });
+                        } catch {}
+                      }
+                    } else {
+                      logger.warn(`[auto-late-fee] ${u.id}/${o.ym}: paid rent invoice ${_paidRent.id} has no rent-purpose lines — fee skipped, ledger NOT healed (manual attribution)`);
+                    }
+                  } catch (healErr) {
+                    logger.warn(`[auto-late-fee] ${u.id}/${o.ym}: ledger heal failed (fee still skipped): ${healErr.message}`);
+                  }
+                  skipped++;
+                  continue;
+                }
+              }
+            }
+
             // Cross-flow dedupe vs MANUAL sends. createStripeInvoice can
             // also emit purpose='late_fee' invoices (operator clicks
             // "Send late fee" in the unit drawer); without this guard
@@ -5608,9 +6122,44 @@ async function _runAutoLateFeesHandler(opts) {
               const dupQ = `customer:"${customerId}" AND metadata["unitId"]:"${u.id}" `
                          + `AND metadata["purpose"]:"late_fee" AND metadata["ym"]:"${o.ym}"`;
               const dupRes = await stripe.invoices.search({ query: dupQ, limit: 5 });
-              const liveDup = (dupRes.data || []).find(inv =>
-                !['void', 'uncollectible', 'deleted'].includes(inv.status));
+              const liveDup = (dupRes.data || []).find(inv => {
+                if (['void', 'uncollectible', 'deleted'].includes(inv.status)) return false;
+                // $0-пустой артефакт (класс backfill-бага 2026-07, зеркало
+                // rent-cron): Stripe авто-помечает $0-инвойс PAID на finalize —
+                // он НЕ считается выставленным late fee и НЕ должен штамповать
+                // lateFeeSent (иначе ребиллинг заблокирован навсегда).
+                const total = Number(inv.total ?? inv.amount_due ?? 0);
+                const amtPaid = Number(inv.amount_paid ?? 0);
+                const lineCount = inv.lines?.total_count ?? (inv.lines?.data?.length ?? 0);
+                if (total === 0 && amtPaid === 0 && lineCount === 0) return false;
+                return true;
+              });
               if (liveDup) {
+                // Stuck-DRAFT resume (адверсариальный аудит 2026-07-03): с
+                // auto_advance:false transient-провал finalize прошлого прогона
+                // оставляет ДРАФТ с реальной строкой (>$0 — $0-shell отсеян
+                // выше); Stripe сам его НЕ финализирует. Штамповать драфт
+                // нельзя — пеня «выставлена» не была бы никогда, тихо.
+                // Возобновляем: finalize (+send) → штамп финализованного id.
+                // Ошибка resume = fail-closed: без штампа, retry следующим кроном.
+                if (liveDup.status === 'draft') {
+                  try {
+                    const resumed = await stripe.invoices.finalizeInvoice(liveDup.id);
+                    if (resumed.collection_method === 'send_invoice') {
+                      await stripe.invoices.sendInvoice(resumed.id);
+                    }
+                    logger.info(`[auto-late-fee] ${u.id}/${o.ym}: resumed stuck DRAFT ${liveDup.id} → finalized${resumed.collection_method === 'send_invoice' ? '+sent' : ' (auto-charge)'}; stamping`);
+                    u.stripe = u.stripe || {};
+                    u.stripe.lateFeeSent = u.stripe.lateFeeSent || {};
+                    u.stripe.lateFeeSent[o.ym] = resumed.id;
+                    _lfStripePatch[unitKey] = u.stripe;
+                    sent++;
+                  } catch (resumeErr) {
+                    logger.warn(`[auto-late-fee] ${u.id}/${o.ym}: stuck draft ${liveDup.id} resume failed (${resumeErr.message}) — NO stamp, retry next run`);
+                    skipped++;
+                  }
+                  continue;
+                }
                 logger.info(`[auto-late-fee] ${u.id}: late-fee for ${o.ym} already exists (${liveDup.id}, ${liveDup.status}); stamping + skipping`);
                 u.stripe = u.stripe || {};
                 u.stripe.lateFeeSent = u.stripe.lateFeeSent || {};
@@ -5625,21 +6174,10 @@ async function _runAutoLateFeesHandler(opts) {
 
             const description = `Late fee — ${o.monthLabel} unpaid · Suite ${u.id}`;
             const dueDays = 0;  // late fees due IMMEDIATELY — penalty за rent, без дополнительного grace
-            const idempotencyKey = `auto-lf-${u.id}-${o.ym}`;
-
-            // Invoice item line
-            await stripe.invoiceItems.create({
-              customer: customerId,
-              amount: Math.round(o.fee * 100),
-              currency: 'usd',
-              description,
-              metadata: {
-                unitId: u.id, buildingId: b.id, floorId: f.id,
-                ym: o.ym, purpose: 'late_fee', source: 'auto', workspaceId: WORKSPACE_ID, auto: '1',
-                baseAmount: String(o.base),
-                feeType: cfg.type, feeAmount: String(cfg.amount),
-              },
-            }, { idempotencyKey: idempotencyKey + '-item' });
+            // Ключ версионирован (AUTO_INV_KEY_VER, как в rent-cron): invoice-first
+            // меняет параметры invoices.create — старый ключ `auto-lf-…` в
+            // 24ч-кэше Stripe дал бы param-mismatch ошибку при перевыставлении.
+            const idempotencyKey = `auto-lf-${AUTO_INV_KEY_VER}-${u.id}-${o.ym}`;
 
             // Auto-charge routing — same logic as runAutoInvoices. If
             // workspace+unit auto-charge is on AND tenant has a saved
@@ -5682,12 +6220,20 @@ async function _runAutoLateFeesHandler(opts) {
               `Landlord: ${_autoLandlordName}${_autoLandlordEmail ? ' · ' + _autoLandlordEmail : ''}`,
             ].join(' · ');
 
+            // === Invoice-first (аудит P1 2026-07-03, правило №6; зеркало
+            // rent-cron фикса $0-инцидента 2026-07): (B) invoice ПЕРВЫМ с
+            // pending_invoice_items_behavior:'exclude' + auto_advance:false;
+            // (C) строка по invoice:inv.id; (F) явный finalize; (G) send.
+            // Старый порядок (pending item БЕЗ invoice:id → invoices.create с
+            // auto_advance:true) — тот же паттерн, что дал $0-инвойсы в июле:
+            // pending item не подметается текущим Stripe API. ===
             const inv = await stripe.invoices.create({
               customer: customerId,
-              auto_advance: true,
+              auto_advance: false,
               collection_method: acMethod,
               ...(acMethod === 'send_invoice' ? { days_until_due: dueDays } : {}),
               ...(acPaymentSettings ? { payment_settings: acPaymentSettings } : {}),
+              pending_invoice_items_behavior: 'exclude',
               metadata: {
                 unitId: u.id, buildingId: b.id, floorId: f.id,
                 ym: o.ym, purpose: 'late_fee', source: 'auto', workspaceId: WORKSPACE_ID, auto: '1',
@@ -5697,6 +6243,7 @@ async function _runAutoLateFeesHandler(opts) {
             }, { idempotencyKey });
 
             // Custom invoice number — "L-" prefix per PURPOSE_CODE.late_fee
+            // (номер ставится на драфте, ДО finalize — после нельзя).
             const lfNumber = buildCustomInvoiceNumber({
               purpose: 'late_fee', unitId: u.id, ym: o.ym, auto: false, code: buildingInvoiceCode(b),
             });
@@ -5706,19 +6253,44 @@ async function _runAutoLateFeesHandler(opts) {
               logger.warn(`[auto-late-fee] ${u.id}/${o.ym}: couldn't set number ${lfNumber} — ${e.message}`);
             }
 
+            // Late-fee строка ЯВНО по invoice:inv.id (не pending).
+            await stripe.invoiceItems.create({
+              customer: customerId,
+              invoice: inv.id,
+              amount: Math.round(o.fee * 100),
+              currency: 'usd',
+              description,
+              metadata: {
+                unitId: u.id, buildingId: b.id, floorId: f.id,
+                ym: o.ym, purpose: 'late_fee', source: 'auto', workspaceId: WORKSPACE_ID, auto: '1',
+                baseAmount: String(o.base),
+                feeType: cfg.type, feeAmount: String(cfg.amount),
+              },
+            }, { idempotencyKey: idempotencyKey + '-item' });
+
+            // Явный finalize (auto_advance:false) — для charge_automatically
+            // карта дебетуется на finalize, как в rent-cron.
+            const finalized = await stripe.invoices.finalizeInvoice(inv.id);
+
             if (acMethod === 'send_invoice') {
-              await stripe.invoices.sendInvoice(inv.id);
+              // Ошибку send НЕ глотаем: штамп lateFeeSent пишется ТОЛЬКО после
+              // подтверждённого успеха (инвариант «штамп никогда не движется
+              // назад/вперёд без факта», Entry 71 spirit). При провале send
+              // финализованный инвойс подхватит dup-search следующего прогона
+              // (застампит + skip — дубля не будет).
+              await stripe.invoices.sendInvoice(finalized.id);
             } else {
               logger.info(`[auto-late-fee] ${u.id}/${o.ym}: auto-charging saved card (charge_automatically)`);
             }
 
-            // Stamp — preventing re-billing on next cron tick.
+            // Stamp — ТОЛЬКО после подтверждённого успеха finalize(+send);
+            // per-ym map, назад не движется. Preventing re-billing on next tick.
             u.stripe = u.stripe || {};
             u.stripe.lateFeeSent = u.stripe.lateFeeSent || {};
-            u.stripe.lateFeeSent[o.ym] = inv.id;
+            u.stripe.lateFeeSent[o.ym] = finalized.id;
             _lfStripePatch[unitKey] = u.stripe;
             sent++;
-            logger.info(`[auto-late-fee] sent to ${u.email} (${u.id}/${o.ym}) · $${o.fee.toFixed(2)} · ${inv.id}`);
+            logger.info(`[auto-late-fee] sent to ${u.email} (${u.id}/${o.ym}) · $${o.fee.toFixed(2)} · ${finalized.id}`);
             // Audit per-fee assessed (Tony Phase 2). Unit Activity tab will
             // show «Late fee assessed» events with amount + ym + invoiceId.
             try {
