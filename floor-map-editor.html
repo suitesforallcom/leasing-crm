@@ -83950,22 +83950,28 @@ async function _sfaDiscApply() {
   if (cancelBtn) { cancelBtn.disabled = false; cancelBtn.textContent = 'Close'; }
 
   // Refresh поверхностей — леджер обновит sync-листенер (rec пишет CF);
-  // здесь только UI-кэши и перерисовки.
+  // здесь только UI-кэши и перерисовки. ОТЛОЖЕНО setTimeout'ом: сразу после
+  // ответа CF прилетают эхо синка (монолит + building-док + payment-док) с
+  // их собственными рендерами — наш refresh не должен вставать с ними в один
+  // main-thread таск (зависание 2026-07-03, Page Unresponsive).
   const src = _sfaDiscCtx.source;
-  try {
-    if (src === 'unit') {
-      const u = (typeof currentUnits === 'function' && Array.isArray(selectedIds) && selectedIds.length)
-        ? currentUnits().find(x => x.id === selectedIds[0]) : null;
-      if (u && typeof _fetchUnitInvoicesFromStripe === 'function') {
-        try { await _fetchUnitInvoicesFromStripe(u, { force: true }); } catch (e) { console.warn('[discount] refresh', e); }
+  setTimeout(async () => {
+    try {
+      if (src === 'unit') {
+        const u = (typeof currentUnits === 'function' && Array.isArray(selectedIds) && selectedIds.length)
+          ? currentUnits().find(x => x.id === selectedIds[0]) : null;
+        if (u && typeof _fetchUnitInvoicesFromStripe === 'function') {
+          try { await _fetchUnitInvoicesFromStripe(u, { force: true }); } catch (e) { console.warn('[discount] refresh', e); }
+        }
+        if (typeof renderDetail === 'function') renderDetail();
+      } else {
+        if (typeof clearInvoiceSelection === 'function') clearInvoiceSelection();
+        if (typeof renderInvoicesPage === 'function') renderInvoicesPage(true); // свежий amount_remaining из Stripe
       }
-      if (typeof renderDetail === 'function') renderDetail();
-    } else {
-      if (typeof clearInvoiceSelection === 'function') clearInvoiceSelection();
-      if (typeof renderInvoicesPage === 'function') renderInvoicesPage(true); // свежий amount_remaining из Stripe
-    }
-    if (typeof renderCollectionsBridge === 'function') renderCollectionsBridge();
-  } catch (e) { console.warn('[discount] post-apply refresh', e); }
+      // renderCollectionsBridge сам no-op, когда Billing скрыт (guard по offsetParent)
+      if (typeof renderCollectionsBridge === 'function') renderCollectionsBridge();
+    } catch (e) { console.warn('[discount] post-apply refresh', e); }
+  }, 250);
 }
 
 // ---------- Billing → Invoices: right-click + bulk ----------
@@ -137568,6 +137574,11 @@ window.cbrGoToAging = cbrGoToAging;
 function renderCollectionsBridge() {
   const section = document.getElementById('cbrSection');
   if (!section || typeof state === 'undefined' || !state) return;
+  // Billing скрыт (другой view) — движок не гоняем вообще: пересчёт всё равно
+  // случится через обёртку renderBillingKpiStrip при входе в Billing.
+  // Фикс зависания 2026-07-03: полный прогон движка на карте + эхо-рендеры
+  // синка складывались в один длинный main-thread таск → Page Unresponsive.
+  if (section.offsetParent === null) return;
   const collapsed = !!window._cbrCollapsed;
   const btn = document.getElementById('cbrToggleBtn');
   if (btn) btn.textContent = (collapsed ? '▸' : '▾') + ' Collections bridge';
@@ -137579,7 +137590,9 @@ function renderCollectionsBridge() {
   if (colsHost) colsHost.style.display = collapsed ? 'none' : 'contents';
 
   // Период — новейший месяц первым, текущий включён.
-  const n = Math.max(1, +(sel && sel.value || 12) || 12);
+  // В свёрнутом виде нужна только сводка текущего месяца — считаем 1 месяц,
+  // а не весь период (экономия ~92% работы движка на каждом входе в Billing).
+  const n = collapsed ? 1 : Math.max(1, +(sel && sel.value || 12) || 12);
   const now = new Date();
   const yms = [];
   for (let i = 0; i < n; i++) {
