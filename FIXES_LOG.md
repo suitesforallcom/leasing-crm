@@ -60,6 +60,16 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 74. All 4 payment mirrors used post-mutate re-read → silent write loss under strip (finance/data-integrity, 2026-07-03)
+
+**Symptom class (аудит P0):** handleInvoicePaid/handleInvoiceVoided/handleChargeRefunded/confirmBankMatch зеркалили rec в v2-коллекцию из POST-mutate re-read (`_stateIfSyncV2` → findUnit), который под syncBuildingsStrip рехидрируется из ЕЩЁ НЕ обновлённой коллекции → свежая запись терялась (та же механика, что Entry 70). Именно поэтому reconcile dry-run находил расхождения после каждого биллинг-цикла.
+
+**Fix (e27b966, deployed stripeWebhook+confirmBankMatch):** захват rec + routing-ключей в closure-переменные ВНУТРИ колбэка mutateWorkspaceState в момент записи; сброс captures в начале колбэка (txn-retry-safe); в paid — anchor + advance-сиблинги из того же снапшота, включая idempotent already-applied ветку (Smart-Retry re-heal); `_stateIfSyncV2` остался только гейтом.
+
+**Invariant (правило №1 аудита — порти во все будущие CF-зеркала):** любой CF, зеркалирующий запись в v2-коллекцию, обязан брать rec из closure-переменной, заполненной ВНУТРИ mutateWorkspaceState. Post-mutate re-read как источник данных для зеркала ЗАПРЕЩЁН.
+
+**Acceptance:** первый reconcile dry-run после следующего биллинг-цикла должен показать ноль расхождений.
+
 ### 73. Renewal via DocuSign rewrote the ACTIVE lease before any envelope was sent (lease/data-integrity, 2026-07-03)
 
 **Symptom:** оператор нажал [Renew…] → в Add-Document модале (kind=renewal, source=docusign) кликнул главную кнопку → посмотрел lease preview → закрыл, НИЧЕГО не отправив. Действующая лиза уже переписана: Suite 428 until Jul31→Oct31, leaseTerm 6→3, документов 0, конвертов 0.
