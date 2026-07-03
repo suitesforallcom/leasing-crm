@@ -60,6 +60,16 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 73. Renewal via DocuSign rewrote the ACTIVE lease before any envelope was sent (lease/data-integrity, 2026-07-03)
+
+**Symptom:** оператор нажал [Renew…] → в Add-Document модале (kind=renewal, source=docusign) кликнул главную кнопку → посмотрел lease preview → закрыл, НИЧЕГО не отправив. Действующая лиза уже переписана: Suite 428 until Jul31→Oct31, leaseTerm 6→3, документов 0, конвертов 0.
+
+**Root cause:** DocuSign-ветка `_saveAddLeaseDocModal` (осознанное решение Entry 21 «не терять ввод, даже если не отправил» — правильное для НОВОЙ лизы на пустом юните) писала unit-поля и saveState() ДО создания конверта, а док не создавала вовсе. Для renewal на занятом юните это молчаливая перезапись действующего договора.
+
+**Fix (36c41b0):** для kind='renewal'+source='docusign' поля идут в `window._slPendingRenewal` и применяются в `_slDoSend` ТОЛЬКО после успешной отправки (до снапшота u.leaseEnvelopes); документ несёт новые term/lease_end/rent через overlay в `_slBuildPayloadFromForm`; закрытие send-модала без отправки сбрасывает pending (тост «Renewal NOT applied»); чужой pending гасится при открытии модала другого юнита.
+
+**Invariant:** операция над ДЕЙСТВУЮЩЕЙ лизой (renewal/amendment) не должна мутировать unit-поля раньше завершения акта (отправка конверта / загрузка подписанного файла). kind='lease' на пустом юните — Entry 21 остаётся в силе.
+
 ### 72. Rec-rebuild writers wiped payment metadata + falsy amount fallback in invoice.paid (finance/data-integrity, 2026-07-03)
 
 **Symptom class (latent, caught pre-incident):** четыре серверных писателя пересобирали `u.payments[ym]` с нуля (handleInvoicePaid, handleInvoiceFailed, reconcile apply, full-refund writer) — любые метаданные на строке (с 2026-07-03: discount-поля `wasDiscounted/discountAmount/discountReason/…`) молча исчезали при следующем событии оплаты/фейла/рефанда. Плюс `(invoice.amount_paid || invoice.total || 0)` в invoice.paid: falsy-fallback записал бы ПОЛНУЮ сумму как собранную для счёта с amount_paid=0.
