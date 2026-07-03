@@ -3358,7 +3358,12 @@ async function handleInvoiceVoided(invoice, eventType) {
     return;
   }
   const newStatus = eventType === 'invoice.marked_uncollectible' ? 'uncollectible' : 'void';
+  // Entry 70 / audit P0 2026-07-03: rec для v2-зеркала захватываем ВНУТРИ
+  // mutate — post-mutate re-read (_stateIfSyncV2) под strip рехидрируется из
+  // ЕЩЁ НЕ обновлённой коллекции и не видит свежую мутацию (silent no-op).
+  let voidedRecForMirror = null;
   await mutateWorkspaceState((s) => {
+    voidedRecForMirror = null; // сброс на transaction-retry мутатора
     const f = findUnit(s, {buildingId, floorId, unitId});
     if (!f) return;
     const u = f.unit;
@@ -3413,6 +3418,8 @@ async function handleInvoiceVoided(invoice, eventType) {
           ...(cur.paidVia ? { paidVia: cur.paidVia, paidBy: cur.paidBy, memo: cur.memo } : {}),
           history,
         };
+        // Entry 70: захват свежезаписанного rec для зеркала после commit'а.
+        voidedRecForMirror = u.payments[ym];
       }
     }
     s._invoiceBus = {
@@ -3426,14 +3433,14 @@ async function handleInvoiceVoided(invoice, eventType) {
   });
   // Phase 1 dual-write — зеркалим обновлённый u.payments[ym] в v2-коллекцию.
   // Только rent-purpose (deposit/move-in лежат в u.stripe.*, не в payments).
-  if (purpose === 'rent' && ym) {
+  // Entry 70 / audit P0 2026-07-03: НЕ re-read'им state (под strip рехидрация
+  // из ещё-не-обновлённой коллекции теряла свежий rec) — берём захваченный
+  // внутри mutate rec; _stateIfSyncV2 остаётся только как gate.
+  if (purpose === 'rent' && ym && voidedRecForMirror) {
     try {
       const syncState = await _stateIfSyncV2();
       if (syncState) {
-        const f = findUnit(syncState, {buildingId, floorId, unitId});
-        if (f && f.unit.payments && f.unit.payments[ym]) {
-          await _writePaymentV2(buildingId, floorId, unitId, ym, f.unit.payments[ym]);
-        }
+        await _writePaymentV2(buildingId, floorId, unitId, ym, voidedRecForMirror);
       }
     } catch (e) {
       logger.warn(`[mirror-v2:invoice-voided] ${invoice.id}: ${e.message}`);
@@ -3469,7 +3476,11 @@ async function handleChargeRefunded(charge) {
   const refundedAmt = (charge.amount_refunded || 0) / 100;
   const totalAmt = (charge.amount || 0) / 100;
   const fullyRefunded = refundedAmt >= totalAmt - 0.01;
+  // Entry 70 / audit P0 2026-07-03: rec для v2-зеркала захватываем ВНУТРИ
+  // mutate — post-mutate re-read под strip не видит свежую мутацию.
+  let refundRecForMirror = null;
   await mutateWorkspaceState((s) => {
+    refundRecForMirror = null; // сброс на transaction-retry мутатора
     const f = findUnit(s, {buildingId, floorId, unitId});
     if (!f) return;
     const u = f.unit;
@@ -3491,6 +3502,8 @@ async function handleChargeRefunded(charge) {
         // сохраняем discount-метаданные при полном рефанде (инвариант _discountFieldsOf — как в handleInvoicePaid/reconcile)
         ? { ..._discountFieldsOf(cur), status: 'refunded', amount: 0, history, refundedAt: new Date().toISOString() }
         : { ...cur, status: 'partial', amount: Math.max(0, (cur.amount || 0) - refundedAmt), history };
+      // Entry 70: захват свежезаписанного rec для зеркала после commit'а.
+      refundRecForMirror = u.payments[ym];
     }
     s._invoiceBus = {
       invoiceId, status: fullyRefunded ? 'refunded' : 'partial-refund',
@@ -3501,14 +3514,13 @@ async function handleChargeRefunded(charge) {
     };
   });
   // Phase 1 dual-write — зеркалим refunded/partial-record в v2-коллекцию.
-  if (purpose === 'rent' && ym) {
+  // Entry 70 / audit P0 2026-07-03: rec захвачен внутри mutate, re-read убран
+  // (под strip он терял свежую мутацию); _stateIfSyncV2 остаётся только gate.
+  if (purpose === 'rent' && ym && refundRecForMirror) {
     try {
       const syncState = await _stateIfSyncV2();
       if (syncState) {
-        const f = findUnit(syncState, {buildingId, floorId, unitId});
-        if (f && f.unit.payments && f.unit.payments[ym]) {
-          await _writePaymentV2(buildingId, floorId, unitId, ym, f.unit.payments[ym]);
-        }
+        await _writePaymentV2(buildingId, floorId, unitId, ym, refundRecForMirror);
       }
     } catch (e) {
       logger.warn(`[mirror-v2:charge-refunded] ${charge.id}: ${e.message}`);
@@ -3802,9 +3814,17 @@ async function handleInvoicePaid(invoice, eventId) {
   let shouldAuditPayment = false;
   let priorStatusForAudit = null;
   let unitFoundInMutate = false; // H2: false после mutate = unit-not-found → dead-letter
+  // Entry 70 / audit P0 2026-07-03: rec'и для v2-зеркала захватываем ВНУТРИ
+  // mutate — post-mutate re-read (_stateIfSyncV2) под strip рехидрируется из
+  // ЕЩЁ НЕ обновлённой коллекции → свежая мутация отсутствует и зеркало
+  // молча писало СТАРЫЙ rec (или ничего) — та же механика, что Entry 70.
+  let paidRecForMirror = null;             // anchor u.payments[ym]
+  let paidSiblingsForMirror = [];          // advance-prepay siblings: {ym, rec}
 
   await mutateWorkspaceState((s) => {
     unitFoundInMutate = false; // сброс на каждый transaction-retry мутатора
+    paidRecForMirror = null;           // сброс захвата на transaction-retry
+    paidSiblingsForMirror = [];        // (иначе retry утёк бы stale-захват)
     const f = findUnit(s, {buildingId, floorId, unitId});
     if (!f) {
       logger.warn(`[stripe] invoice ${invoice.id}: unit ${unitId} not found`);
@@ -3815,6 +3835,23 @@ async function handleInvoicePaid(invoice, eventId) {
     const prior = f.unit.payments[ym] || {};
     if (prior.status === 'paid' && prior.stripe?.invoiceId === invoice.id) {
       logger.info(`[stripe] invoice ${invoice.id} already applied to ${unitId}/${ym}`);
+      // Идемпотентный retry вебхука: rec уже в монолите — захватываем его,
+      // чтобы retry чинил зеркало, если первый mirror-write не прошёл
+      // (прежнее поведение re-read'а, но из txn-снапшота, не из рехидрации).
+      paidRecForMirror = f.unit.payments[ym];
+      // Паритет со старым post-mutate rescan'ом: siblings advance-prepay,
+      // уже flip'нутые прошлой доставкой (paidVia='stripe-advance' +
+      // stripe.invoiceId === invoice.id), тоже re-mirror'им на retry —
+      // иначе crash между anchor- и sibling-mirror оставил бы v2-доки
+      // siblings навсегда stale (audit 2026-07-03 Finding A).
+      for (const sibYm of Object.keys(f.unit.payments)) {
+        if (sibYm === ym || sibYm === 'deposit') continue;
+        const sib = f.unit.payments[sibYm];
+        if (sib && typeof sib === 'object' && sib.paidVia === 'stripe-advance' &&
+            sib.stripe && sib.stripe.invoiceId === invoice.id) {
+          paidSiblingsForMirror.push({ ym: sibYm, rec: sib });
+        }
+      }
       return;
     }
     // PRESERVE PRIOR PAYMENT — if a prior record exists (manual payment,
@@ -3867,6 +3904,8 @@ async function handleInvoicePaid(invoice, eventId) {
         paidAt,
       },
     };
+    // Entry 70: захват свежезаписанного anchor-rec для зеркала после commit'а.
+    paidRecForMirror = f.unit.payments[ym];
     // Multi-month advance prepayment (FIXES_LOG Entry 30) — frontend
     // застампил несколько месяцев с одним и тем же stripeInvoiceId +
     // paidVia='stripe-advance'. Сейчас, когда tenant заплатил по invoice,
@@ -3918,6 +3957,11 @@ async function handleInvoicePaid(invoice, eventId) {
             advance: true,
           },
         };
+        // Entry 70: захват sibling-rec для зеркала ('deposit' в v2 не зеркалим —
+        // паритет с прежним post-mutate фильтром sibYm !== 'deposit').
+        if (sibYm !== 'deposit') {
+          paidSiblingsForMirror.push({ ym: sibYm, rec: pmap[sibYm] });
+        }
         coveredCount++;
       }
       if (coveredCount > 0) {
@@ -4036,25 +4080,20 @@ async function handleInvoicePaid(invoice, eventId) {
     }
   }
   // Phase 1 dual-write — зеркалим anchor + advance-prepay siblings в v2.
-  // Sibling-сигнатура: paidVia='stripe-advance' + stripe.invoiceId совпадает
-  // с invoice.id, что мы только что выставили внутри mutate (см. строки выше).
-  // Sibling-deposit намеренно исключаем — он лежит в u.stripe.depositInvoice,
-  // не в payments коллекции (v2 zerкало только per-month rent).
+  // Entry 70 / audit P0 2026-07-03: rec'и захвачены ВНУТРИ mutate в момент
+  // записи (paidRecForMirror / paidSiblingsForMirror) — post-mutate re-read
+  // убран, под strip он рехидрировался из ещё-не-обновлённой коллекции и
+  // зеркалил старый rec (silent loss). _stateIfSyncV2 остаётся только gate.
+  // Sibling-deposit по-прежнему исключён на захвате — он лежит в
+  // u.stripe.depositInvoice, не в payments (v2 зеркало только per-month rent).
   try {
     const syncState = await _stateIfSyncV2();
     if (syncState) {
-      const f = findUnit(syncState, {buildingId, floorId, unitId});
-      if (f && f.unit.payments) {
-        if (f.unit.payments[ym]) {
-          await _writePaymentV2(buildingId, floorId, unitId, ym, f.unit.payments[ym]);
-        }
-        for (const sibYm of Object.keys(f.unit.payments)) {
-          if (sibYm === ym || sibYm === 'deposit') continue;
-          const sib = f.unit.payments[sibYm];
-          if (sib && sib.paidVia === 'stripe-advance' && sib.stripe && sib.stripe.invoiceId === invoice.id) {
-            await _writePaymentV2(buildingId, floorId, unitId, sibYm, sib);
-          }
-        }
+      if (paidRecForMirror) {
+        await _writePaymentV2(buildingId, floorId, unitId, ym, paidRecForMirror);
+      }
+      for (const sib of paidSiblingsForMirror) {
+        await _writePaymentV2(buildingId, floorId, unitId, sib.ym, sib.rec);
       }
     }
   } catch (e) {
@@ -8998,11 +9037,15 @@ exports.confirmBankMatch = onCall(
     // (исходный цикл искал юнит ТОЛЬКО по unitId — building/floor не были в
     // области видимости снаружи). Сбрасываем в начале каждой попытки txn —
     // Firestore транзакции могут повториться при contention.
+    // Entry 70 / audit P0 2026-07-03: сам rec тоже захватываем внутри mutate —
+    // post-mutate re-read под strip рехидрировался из ещё-не-обновлённой
+    // коллекции и молча зеркалил старый rec (или пропускал зеркало).
     let capturedB = null;
     let capturedF = null;
+    let capturedRec = null;
     if (recordPayment) {
       await mutateWorkspaceState((s) => {
-        capturedB = null; capturedF = null;
+        capturedB = null; capturedF = null; capturedRec = null;
         outer: for (const b of s.buildings || []) {
           for (const f of b.floors || []) {
             for (const u of f.units || []) {
@@ -9020,6 +9063,8 @@ exports.confirmBankMatch = onCall(
                 bankTxnId: txnId,
                 confirmedBy: operatorEmail,
               };
+              // Entry 70: захват свежезаписанного rec для зеркала после commit'а.
+              capturedRec = u.payments[ym];
               break outer;
             }
           }
@@ -9037,14 +9082,13 @@ exports.confirmBankMatch = onCall(
     }, { merge: true });
 
     // Phase 1 dual-write — зеркалим bank-confirmed payment в v2-коллекцию.
-    if (recordPayment && capturedB) {
+    // Entry 70 / audit P0 2026-07-03: rec захвачен внутри mutate (capturedRec),
+    // re-read убран — под strip он терял свежую мутацию; gate остаётся.
+    if (recordPayment && capturedB && capturedRec) {
       try {
         const syncState = await _stateIfSyncV2();
         if (syncState) {
-          const f = findUnit(syncState, {buildingId: capturedB, floorId: capturedF, unitId});
-          if (f && f.unit.payments && f.unit.payments[ym]) {
-            await _writePaymentV2(capturedB, capturedF, unitId, ym, f.unit.payments[ym]);
-          }
+          await _writePaymentV2(capturedB, capturedF, unitId, ym, capturedRec);
         }
       } catch (e) {
         logger.warn(`[mirror-v2:bank-feed] ${unitId}/${ym}: ${e.message}`);
