@@ -60,6 +60,14 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 75. Audit batch-1 server: late-fee Stripe-blind, $0 late-fee invoices, webhook coverage gaps, null-leaseStart phantom fees (finance/robustness, 2026-07-03)
+
+**From audit 2026-07-03 (AUDIT_REPORT_2026-07-03.md, §2 GO Tony). Deployed a779c05 → stripeWebhook,runAutoInvoices,triggerAutoInvoicesNow,runAutoLateFees,triggerAutoLateFeesNow.**
+
+Fixes: (1) runAutoLateFees/_computeOverdueMonths dup-search rent-invoice before fining; paid → skip + opportunistic ledger heal (capture-inside-mutate Entry 74, rent-line amount Entry 70, Entry 72 spread, Entry 71 only-advance); refund/bounced/partial rows guarded (dissent + in-mutate race guard) — real unpaid still fined; LIVE-only. (2) null-leaseStart gate: _computeOverdueMonths→[] + runAutoInvoices logs+dead-letter (no phantom fees after clobber/restore). (3) invoice-first late-fee cron (exclude→items→finalize→send, stamp after success never backwards; $0-shell excluded; stuck-draft resumed not re-stamped). (4) webhook: case invoice.paid (idempotent), case charge.dispute.closed (reads Dispute→charge→invoice; lost→bounced+audit); dead-letter on all silent returns (voided/refunded/failed); building-mirror failure → rethrow → Stripe Smart Retry (opts.rethrowMirrorFailure on 6 money sites; crons/callables keep warn-only default).
+
+**OPEN (Tony action):** enable `invoice.paid` + `charge.dispute.closed` in the Stripe Dashboard webhook subscription — until then those two cases are dead (no harm; rest is live). 414/Fyffe after restore MUST get a valid ISO leaseStart or the null-leaseStart gate dead-letters it instead of billing.
+
 ### 74. All 4 payment mirrors used post-mutate re-read → silent write loss under strip (finance/data-integrity, 2026-07-03)
 
 **Symptom class (аудит P0):** handleInvoicePaid/handleInvoiceVoided/handleChargeRefunded/confirmBankMatch зеркалили rec в v2-коллекцию из POST-mutate re-read (`_stateIfSyncV2` → findUnit), который под syncBuildingsStrip рехидрируется из ЕЩЁ НЕ обновлённой коллекции → свежая запись терялась (та же механика, что Entry 70). Именно поэтому reconcile dry-run находил расхождения после каждого биллинг-цикла.
