@@ -83746,6 +83746,8 @@ function openDiscountModal(items, opts) {
   host.innerHTML = html;
   document.body.appendChild(host);
   _sfaDiscPreview();
+  // курсор сразу в поле суммы — оператор начинает ввод без лишнего клика
+  try { document.getElementById('sfaDiscValue')?.focus(); } catch (e) {}
 }
 
 function closeDiscountModal() {
@@ -83825,7 +83827,17 @@ function _sfaDiscPreview() {
   if (ok && !reason.length) text += ' · Enter a reason to enable Apply.';
   if (line) { line.textContent = text; line.style.color = color; }
   // Apply активен только при валидной сумме И непустом reason.
-  if (applyBtn) applyBtn.disabled = !(ok && reason.length > 0);
+  if (applyBtn) {
+    const off = !(ok && reason.length > 0);
+    applyBtn.disabled = off;
+    // inline-фон кнопки перебивает :disabled-стиль — дизейбл обязан быть ВИДЕН
+    // (баг «кнопка выглядит активной, но клик молчит», Tony 2026-07-03)
+    applyBtn.style.opacity = off ? '.45' : '1';
+    applyBtn.style.cursor = off ? 'not-allowed' : 'pointer';
+    applyBtn.title = off
+      ? (ok ? 'Enter a reason below to enable Apply' : 'Enter a valid discount amount first')
+      : '';
+  }
 }
 
 // Последовательный прогон callable по каждому счёту (bulk «лифт» = один
