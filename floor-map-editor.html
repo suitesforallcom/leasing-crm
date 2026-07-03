@@ -38625,10 +38625,12 @@ function _renderExpPop(list) {
     <div class="exp-head"><span style="background:none;color:inherit;padding:0;font-size:13px;">Leases expiring within ${RENEWAL_WINDOW_DAYS} days</span><span>${list.length}</span></div>
     <div>${list.map(r => {
       const note = (r._u && r._u.renewalNote) || '';
+      // Подтверждённое окончание — юнит остаётся в счётчике, но помечен ✓.
+      const cfm = !!(r._u && r._u.renewal && r._u.renewal.decision === 'ending');
       const urgency = r.daysLeft <= 15 ? '#dc2626' : r.daysLeft <= 30 ? '#d97706' : '#65803a';
       return `<div class="exp-row">
         <div class="exp-main" onclick="_expGoUnit('${esc(r.buildingId)}','${esc(r.floorId)}','${esc(r.unitId)}')" title="Open ${esc(r.suite)} on the floor plan">
-          <div class="exp-line1"><b>${esc(r.suite)}</b> · ${esc(r.tenant || r.company || '—')}</div>
+          <div class="exp-line1"><b>${esc(r.suite)}</b> · ${esc(r.tenant || r.company || '—')}${cfm ? ' <span title="Ending confirmed" style="color:#64748b;font-weight:800;">✓</span>' : ''}</div>
           <div class="exp-line2"><span style="color:${urgency};font-weight:700;">${r.daysLeft}d left</span> · ends ${esc(formatDisplayDate(r.leaseEndIso))}</div>
           ${note ? `<div class="exp-note">📝 ${esc(note)}</div>` : ''}
         </div>
@@ -38672,6 +38674,153 @@ function editRenewalNote(buildingId, floorId, unitId) {
 }
 window.editRenewalNote = editRenewalNote;
 window._expGoUnit = _expGoUnit;
+
+// =========================================================================
+// Renewal-решение из pink-алерта юнит-панели (Tony 2026-07-03).
+// «Renew…» → существующий Add-document flow (kind='renewal'), префилл +
+// ряд quick-pick'ов срока. «Ends — confirm» → аддитивный маркер
+// u.renewal = {decision:'ending', decidedAt, by} через стандартный
+// saveState() (strip-mirror сам подхватит). НИКАКИХ статус/биллинг-правок.
+// =========================================================================
+function openRenewalFlow(buildingId, floorId, unitId) {
+  const unit = _findUnitByRef(buildingId, floorId, unitId);
+  if (!unit) { toast('Unit not found', 'error'); return; }
+  if (typeof _openAddLeaseDocModal !== 'function') { toast('Renewal flow unavailable', 'error'); return; }
+  // Единственный писатель лизы — существующий модал; мы только префиллим DOM.
+  _openAddLeaseDocModal(buildingId, floorId, unitId, 'renewal');
+  try {
+    // Старт продления = день после текущего конца лизы.
+    const endIso = (typeof toIsoDate === 'function') ? toIsoDate(unit.until || unit.leaseEnd || '') : String(unit.until || '');
+    if (/^\d{4}-\d{2}-\d{2}$/.test(endIso)) {
+      const d = new Date(endIso + 'T00:00:00');
+      if (!isNaN(d.getTime())) {
+        d.setDate(d.getDate() + 1);
+        const effEl = document.getElementById('addLeaseDocEffective');
+        if (effEl) effEl.value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      }
+    }
+    // Срок НЕ предвыбран (решение Tony): дропдаун → Custom, дата конца пустая,
+    // оператор выбирает quick-pick'ом или руками. Рента уже засеяна модалом
+    // из contractRent (editable) — не трогаем.
+    const selEl = document.getElementById('addLeaseDocTermSelect');
+    if (selEl) {
+      // Убираем динамическую опцию «N months» от auto-detect модала —
+      // иначе она застревает в списке после сброса на Custom (fix review).
+      Array.from(selEl.options).forEach(o => { if (o.dataset.dynamic === '1') selEl.removeChild(o); });
+      selEl.value = '';
+    }
+    const expEl = document.getElementById('addLeaseDocExpires');
+    if (expEl) expEl.value = '';
+    // Чистим и числовое renewal-поле Term (засеяно старым u.leaseTerm||12) —
+    // оно побеждает при записи doc.termMonths; quick-pick заполнит заново.
+    const termNumEl = document.getElementById('addLeaseDocTerm');
+    if (termNumEl) termNumEl.value = '';
+    _rnwInjectQuickPicks();
+  } catch (e) { console.warn('openRenewalFlow prefill failed', e); }
+}
+
+// Ряд quick-pick'ов срока [3][6][12][24][Custom] — вставляется НАД полем
+// Lease end только для renewal-открытия; убирается при закрытии модала,
+// чтобы не светиться в других kind (модал общий, его код не правим).
+function _rnwInjectQuickPicks() {
+  document.getElementById('rnwQuickPicks')?.remove();
+  const anchor = document.getElementById('addLeaseDocExpiresWrap');
+  if (!anchor || !anchor.parentNode) return;
+  const row = document.createElement('div');
+  row.id = 'rnwQuickPicks';
+  row.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:2px 0 10px;';
+  row.innerHTML = '<span style="font-size:11px;color:var(--muted,#8f887c);font-weight:600;">Quick term:</span>'
+    + [3, 6, 12, 24].map(m =>
+        `<button type="button" class="rr-btn" style="padding:4px 10px;font-size:12px;" onclick="_rnwPickTerm(${m})">${m} mo</button>`
+      ).join('')
+    + '<button type="button" class="rr-btn" style="padding:4px 10px;font-size:12px;" onclick="_rnwPickTerm(\'custom\')">Custom end date</button>';
+  anchor.parentNode.insertBefore(row, anchor);
+  // Авто-уборка ряда при закрытии модала (класс active снимается).
+  const modal = document.getElementById('addLeaseDocModal');
+  if (modal && typeof MutationObserver === 'function') {
+    const mo = new MutationObserver(() => {
+      if (!modal.classList.contains('active')) {
+        document.getElementById('rnwQuickPicks')?.remove();
+        mo.disconnect();
+      }
+    });
+    mo.observe(modal, { attributes: true, attributeFilter: ['class'] });
+  }
+}
+
+// Клик по quick-pick'у: считаем конец так, чтобы ОБРАТНАЯ конвенция
+// _addLeaseDocMonthsBetween дала ровно N. Для старта 1-го числа
+// (типовое продление: старт = день после конца-месяца старой лизы)
+// N месяцев = месяцы start..start+N-1 включительно → конец = последний
+// день месяца (start + N - 1); для старта середины месяца — последний
+// день месяца (start + N), как в _addLeaseDocRecalcEnd. Без поправки
+// день-1 давал N+1 («12 mo» → term '13') — fix review 2026-07-03.
+function _rnwPickTerm(m) {
+  const effEl = document.getElementById('addLeaseDocEffective');
+  const expEl = document.getElementById('addLeaseDocExpires');
+  if (m === 'custom') {
+    if (expEl) { expEl.focus(); try { expEl.showPicker?.(); } catch {} }
+    return;
+  }
+  const months = +m;
+  if (!Number.isFinite(months) || months <= 0) return;
+  const start = effEl && effEl.value;
+  if (!start) { toast('Set the effective date first', 'error'); return; }
+  const d0 = new Date(start + 'T00:00:00');
+  if (isNaN(d0.getTime())) return;
+  const _day1 = d0.getDate() === 1;
+  // Целевой месяц считаем арифметикой (не setMonth на дате 29-31 числа —
+  // JS перекатывает Jan 31 + 3mo в May); конец = последний день месяца.
+  const d = new Date(d0.getFullYear(), d0.getMonth() + months - (_day1 ? 1 : 0) + 1, 0);
+  if (expEl) expEl.value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  if (typeof _addLeaseDocAutoDetectTerm === 'function') _addLeaseDocAutoDetectTerm();
+  // Синкаем renewal-only числовое поле Term — оно ПОБЕЖДАЕТ при записи
+  // doc.termMonths и иначе унесёт в документ старый срок (fix review).
+  const termNumEl = document.getElementById('addLeaseDocTerm');
+  if (termNumEl) termNumEl.value = months;
+}
+
+// «Ends — confirm»: аддитивный маркер решения. Без смены статуса, без
+// move-out, без биллинга — только u.renewal + outreach-запись + saveState.
+function confirmLeaseEnding(buildingId, floorId, unitId) {
+  if (typeof canEdit === 'function' && !canEdit()) { toast('Your role cannot change lease decisions', 'error'); return; }
+  const unit = _findUnitByRef(buildingId, floorId, unitId);
+  if (!unit) { toast('Unit not found', 'error'); return; }
+  const endIso = (typeof toIsoDate === 'function') ? toIsoDate(unit.until || unit.leaseEnd || '') : String(unit.until || '');
+  const endLbl = (endIso && typeof formatDisplayDate === 'function') ? formatDisplayDate(endIso) : (endIso || 'lease end');
+  if (!confirm(`Confirm: this lease ENDS ${endLbl} and will NOT be renewed?\n\nBilling continues as normal until ${endLbl}. Unit status does not change. You can undo this.`)) return;
+  const by = (typeof fbSync === 'object' && fbSync)
+    ? (fbSync.user?.email || fbSync.auth?.currentUser?.email || 'admin')
+    : 'admin';
+  unit.renewal = { decision: 'ending', decidedAt: new Date().toISOString(), by };
+  try { if (typeof recordOutreach === 'function') recordOutreach(unit, 'status', `Ending confirmed — lease ends ${endLbl}, no renewal`); } catch (e) { console.warn('confirmLeaseEnding: recordOutreach failed', e); }
+  try { saveState(); } catch (e) { console.warn('confirmLeaseEnding: saveState failed', e); }
+  _rnwRefreshAfterDecision();
+  toast('Ending confirmed', 'success');
+}
+
+// Undo решения — удаляем маркер, красный алерт/красная плашка возвращаются.
+function undoLeaseEnding(buildingId, floorId, unitId) {
+  if (typeof canEdit === 'function' && !canEdit()) { toast('Your role cannot change lease decisions', 'error'); return; }
+  const unit = _findUnitByRef(buildingId, floorId, unitId);
+  if (!unit) { toast('Unit not found', 'error'); return; }
+  delete unit.renewal;
+  try { if (typeof recordOutreach === 'function') recordOutreach(unit, 'status', 'Ending decision undone — renewal outreach reopened'); } catch (e) { console.warn('undoLeaseEnding: recordOutreach failed', e); }
+  try { saveState(); } catch (e) { console.warn('undoLeaseEnding: saveState failed', e); }
+  _rnwRefreshAfterDecision();
+  toast('Ending decision undone', 'success');
+}
+
+// Общий рефреш всех поверхностей после решения: панель, карта, pill+popover.
+function _rnwRefreshAfterDecision() {
+  try { if (typeof renderDetail === 'function') renderDetail(); } catch {}
+  try { if (typeof renderUnits === 'function') renderUnits(); } catch {}
+  try { if (typeof renderExpiringPill === 'function') renderExpiringPill(); } catch {}
+}
+window.openRenewalFlow = openRenewalFlow;
+window._rnwPickTerm = _rnwPickTerm;
+window.confirmLeaseEnding = confirmLeaseEnding;
+window.undoLeaseEnding = undoLeaseEnding;
 
 // Auto-refresh the pill every couple of minutes in case webhook-driven
 // state updates arrive silently.
@@ -69497,26 +69646,36 @@ function renderUnits() {
     });
   }
 
-  // === PASS 3.6: "EXPIRING <дата>" для лиз, истекающих в ТЕКУЩЕМ месяце ===
-  // (Tony 2026-07-03). Красная двухстрочная плашка по центру клетки:
-  // "EXPIRING" / "10 Mar". Условие: occupied, НЕ M2M (_isMonthToMonth —
-  // открытые лизы не истекают), until в текущем календарном месяце.
+  // === PASS 3.6: "EXPIRING <дата>" для лиз, истекающих в ТЕКУЩЕМ или ===
+  // === СЛЕДУЮЩЕМ месяце (горизонт расширен, Tony 2026-07-03) ===========
+  // Красная двухстрочная плашка по центру клетки: "EXPIRING" / "10 Mar".
+  // Условие: occupied, НЕ M2M (_isMonthToMonth — открытые лизы не
+  // истекают), until в текущем ИЛИ следующем календарном месяце.
+  // Если оператор подтвердил окончание (u.renewal.decision === 'ending'),
+  // рисуем спокойную СЕРУЮ плашку "ENDS <дата>" вместо красной.
   // Рисуем в Payment и Lease видах; клетки-малютки пропускаем.
   if (mapViewMode === 'payment' || mapViewMode === 'lease') {
     const _nowExp = new Date();
     const _curYmExp = `${_nowExp.getFullYear()}-${String(_nowExp.getMonth() + 1).padStart(2, '0')}`;
+    // Следующий календарный месяц (Date нормализует перекат декабря).
+    const _nxtExpD = new Date(_nowExp.getFullYear(), _nowExp.getMonth() + 1, 1);
+    const _nxtYmExp = `${_nxtExpD.getFullYear()}-${String(_nxtExpD.getMonth() + 1).padStart(2, '0')}`;
     const _selYmExp = (mapViewMode === 'payment' && typeof getPaymentViewYm === 'function') ? getPaymentViewYm() : null;
     units.forEach(u => {
       if (!u || u.status !== 'occupied') return;
       if (typeof _isMonthToMonth === 'function' && _isMonthToMonth(u)) return;
       const _endIso = (typeof toIsoDate === 'function') ? toIsoDate(u.until || u.leaseEnd || '') : String(u.until || '');
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(_endIso) || _endIso.slice(0, 7) !== _curYmExp) return;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(_endIso)) return;
+      const _endYmExp = _endIso.slice(0, 7);
+      if (_endYmExp !== _curYmExp && _endYmExp !== _nxtYmExp) return;
       // Не накладываемся на "FREE MONTH"-плашку (обе центрированы).
       if (_selYmExp) {
         const _st = u.payments?.[_selYmExp]?.status;
         if (_st === 'free' || _st === 'waived') return;
       }
       if (u.w < 46 || u.h < 40) return;
+      // Подтверждённое окончание → спокойный серый "ENDS", не красная тревога.
+      const _endConfirmed = !!(u.renewal && u.renewal.decision === 'ending');
       const _endD = new Date(_endIso + 'T00:00:00');
       const _dateLabel = `${_endD.getDate()} ${_endD.toLocaleString('en-US', { month: 'short' })}`;
       const cx = u.x + u.w / 2;
@@ -69534,7 +69693,14 @@ function renderUnits() {
       text.setAttribute('font-weight', '900');
       text.setAttribute('font-size', String(fontPx));
       text.setAttribute('letter-spacing', '0.06em');
-      text.setAttribute('fill', '#DC2626');
+      text.setAttribute('fill', _endConfirmed ? '#64748b' : '#DC2626');
+      // Белый halo под буквами: и серый, и красный текст нечитаемы на
+      // насыщенных заливках (#0EA5E9 «invoice sent» ≈ 1.7:1 контраст) —
+      // fix review 2026-07-03; paint-order рисует stroke ПОД fill.
+      text.setAttribute('paint-order', 'stroke');
+      text.setAttribute('stroke', '#ffffff');
+      text.setAttribute('stroke-width', '2.5');
+      text.setAttribute('stroke-linejoin', 'round');
       text.style.pointerEvents = 'none';
       text.style.userSelect = 'none';
       if (u.rotation) {
@@ -69543,7 +69709,7 @@ function renderUnits() {
       const _t1 = document.createElementNS('http://www.w3.org/2000/svg', 'tspan');
       _t1.setAttribute('x', cx);
       _t1.setAttribute('dy', '-0.55em');
-      _t1.textContent = 'EXPIRING';
+      _t1.textContent = _endConfirmed ? 'ENDS' : 'EXPIRING';
       const _t2 = document.createElementNS('http://www.w3.org/2000/svg', 'tspan');
       _t2.setAttribute('x', cx);
       _t2.setAttribute('dy', '1.1em');
@@ -77346,12 +77512,28 @@ function _renderRenewalAlert(u) {
   const fId = (typeof currentFloor === 'function' && currentFloor()?.id) || '';
   const urgent = daysLeft <= 30;
   const note = u.renewalNote || '';
+  const endLbl = esc((typeof formatDisplayDate === 'function') ? formatDisplayDate(endIso) : endIso);
+  // Подтверждённое окончание (u.renewal.decision==='ending') — одна
+  // спокойная серая строка вместо красной тревоги; Undo возвращает алерт.
+  if (u.renewal && u.renewal.decision === 'ending') {
+    return `<div class="upv2-renewal" style="border-color:#d7dce3;background:#f4f6f8;">
+      <div class="upv2-renewal-top">
+        <div class="upv2-renewal-title" style="color:#64748b;">${_rdIc('clock', 14)}Ending confirmed · ${endLbl}</div>
+        <button class="rd-btn2" onclick="undoLeaseEnding('${esc(bId)}','${esc(fId)}','${esc(u.id)}')" title="Undo — reopen renewal outreach" style="flex-shrink:0;white-space:nowrap;">Undo</button>
+      </div>
+      ${note ? `<div class="upv2-renewal-note">${_rdIc('note', 13)}<span>${esc(note)}</span></div>` : ''}
+    </div>`;
+  }
   return `<div class="upv2-renewal${urgent ? ' urgent' : ''}">
     <div class="upv2-renewal-top">
       <div class="upv2-renewal-title">${_rdIc('clock', 14)}Lease expires in ${daysLeft} day${daysLeft === 1 ? '' : 's'} — start renewal outreach</div>
-      <button class="rd-btn2" onclick="editRenewalNote('${esc(bId)}','${esc(fId)}','${esc(u.id)}')" title="Add / edit renewal note" style="flex-shrink:0;white-space:nowrap;">${_rdIc('pencil', 12)}Note</button>
+      <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;">
+        <button class="rd-btn2" onclick="openRenewalFlow('${esc(bId)}','${esc(fId)}','${esc(u.id)}')" title="Open the renewal document flow (prefilled)" style="white-space:nowrap;">Renew…</button>
+        <button class="rd-btn2" onclick="confirmLeaseEnding('${esc(bId)}','${esc(fId)}','${esc(u.id)}')" title="Tenant is leaving — confirm the lease ends (no billing/status change)" style="white-space:nowrap;">Ends — confirm</button>
+        <button class="rd-btn2" onclick="editRenewalNote('${esc(bId)}','${esc(fId)}','${esc(u.id)}')" title="Add / edit renewal note" style="white-space:nowrap;">${_rdIc('pencil', 12)}Note</button>
+      </div>
     </div>
-    <div class="upv2-renewal-sub">Ends ${esc((typeof formatDisplayDate === 'function') ? formatDisplayDate(endIso) : endIso)}.</div>
+    <div class="upv2-renewal-sub">Ends ${endLbl}.</div>
     ${note ? `<div class="upv2-renewal-note">${_rdIc('note', 13)}<span>${esc(note)}</span></div>` : ''}
   </div>`;
 }
@@ -97363,6 +97545,9 @@ function moveOutCurrentTenant(u) {
   u.payments = {};
   u.collectionStatus = '';
   delete u.promise;
+  delete u.renewal;           // решение «Ending confirmed» принадлежит ушедшей лизе —
+                              // иначе следующий арендатор унаследует серый «ENDS»
+                              // вместо красного renewal-алерта (fix review 2026-07-03)
   delete u._onboardingShown;  // reset so the next tenant gets a fresh onboarding nudge
   u.status = 'vacant';
   // Keep Stripe customerId (tenant's email might come back someday) —
@@ -124145,6 +124330,14 @@ async function _saveAddLeaseDocModal() {
 
   if (!title) { if (typeof toast === 'function') toast('Title is required', 'error'); return; }
   if (!effDate) { if (typeof toast === 'function') toast('Effective date is required', 'error'); return; }
+  // Гейт renewal-сейва (fix review 2026-07-03): пустая дата конца при
+  // не-M2M сроке оставляла u.until < u.leaseStart → юнит становился
+  // скрытым M2M (_isMonthToMonth true) и ВСЕ expiry-алерты гасли.
+  // Явный M2M (дропдаун 'mtm') остаётся легальным без даты конца.
+  if (kind === 'renewal' && termSelVal !== 'mtm') {
+    if (!expDate) { if (typeof toast === 'function') toast('Lease end date is required for a renewal (or pick Month-to-month)', 'error'); return; }
+    if (expDate <= effDate) { if (typeof toast === 'function') toast('Lease end must be after the effective date', 'error'); return; }
+  }
 
   // For kind='lease' the rentFrom field is REPURPOSED as proforma rent
   // (asking) — there's no "previous rent" on a brand-new lease. So we
@@ -124165,8 +124358,20 @@ async function _saveAddLeaseDocModal() {
     if (termSelVal) {
       u.leaseTerm = termSelVal; // 'mtm' | '6' | '12' | ... | ''
     }
-    if (effDate) u.leaseStart = effDate;
+    // Renewal НЕ двигает leaseStart (решение Tony 2026-07-03, §3):
+    // leaseStart = дата заезда арендатора; раннее продление с будущим
+    // effDate прятало неоплаченные месяцы текущего срока из
+    // _computeUnitMoney (гейт lastDay < startDate) до старта продления.
+    // Дата начала продления живёт в самом doc.effectiveDate.
+    // Fallback: пустой/битый leaseStart всё же заполняем.
+    if (effDate && (kind === 'lease' || !/^\d{4}-\d{2}-\d{2}$/.test(u.leaseStart || ''))) {
+      u.leaseStart = effDate;
+    }
     if (expDate) u.until      = expDate;
+    // Новая лиза/продление состоялись → маркер «Ending confirmed»
+    // устарел; без очистки следующий цикл истечения показал бы серый
+    // «ENDS» вместо красного renewal-алерта (fix review 2026-07-03).
+    delete u.renewal;
   }
 
   // Resolve termMonths for the doc record. Prefer the explicit numeric
