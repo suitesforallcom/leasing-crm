@@ -28685,6 +28685,10 @@ function saveState(opts) {
   if (window._brCtxCache && typeof window._brCtxCache.clear === 'function') {
     window._brCtxCache.clear();
   }
+  // FIX-perf 1: сбрасываем per-task мемо _computeUnitMoney — мутация могла
+  // изменить платежи/ренту, и рендер в ЭТОМ ЖЕ таске не должен прочитать
+  // устаревший результат (микротаск-сброс сработал бы только после таска).
+  try { if (typeof _umMemoClear === 'function') _umMemoClear(); } catch {}
   try {
     // Используем _tplStripReplacer чтобы тяжёлые HTML шаблонов с
     // htmlStorageRef не попадали в localStorage (они в Firebase Storage).
@@ -31606,7 +31610,11 @@ function _computeUnitFillCached(u, mode) {
   // счёта не перекрашивал синюю плитку — ключ не менялся, мемо отдавал stale).
   const invCacheKey = (mode === 'payment' && typeof _invoicesCache !== 'undefined' && Array.isArray(_invoicesCache))
     ? (() => {
-        const _rows = _invoicesCache.filter(r => String(r?.unitId || r?.metadata?.unitId || '') === String(u?.id || ''));
+        // FIX-perf 2: per-unit подындекс вместо O(680)-фильтра на каждый юнит.
+        // Порядок строк в подындексе = порядок массива → отпечаток идентичен.
+        const _rows = (typeof _invRowsForUnit === 'function')
+          ? (_invRowsForUnit(u?.id) || [])
+          : _invoicesCache.filter(r => String(r?.unitId || r?.metadata?.unitId || '') === String(u?.id || ''));
         let _fp = '';
         for (const r of _rows) _fp += (r?.bucket || '_')[0];
         return '|inv:' + _invoicesCache.length + ':' + _rows.length + ':' + _fp;
@@ -31669,11 +31677,17 @@ function _computeUnitFillImpl(u, mode) {
       // Stripe-side check via _invoicesCache for paid status (covers
       // freshly-paid invoices that haven't flowed back to local state).
       if (typeof _invoicesCache !== 'undefined' && Array.isArray(_invoicesCache)) {
-        const matching = _invoicesCache.filter(r => {
+        // FIX-perf 2: строки юнита из подындекса (O(1)); unit-предикат уже
+        // применён внутри _invRowsForUnit — здесь остаётся только ym-тест.
+        // Fallback на старый полный скан, если хелпер недоступен.
+        const _unitRows = (typeof _invRowsForUnit === 'function') ? _invRowsForUnit(u.id) : null;
+        const matching = (_unitRows || _invoicesCache).filter(r => {
           if (!r) return false;
-          const metaUnit = r.unitId || r.metadata?.unitId;
-          const metaYm   = r.ym     || r.metadata?.ym;
-          if (String(metaUnit || '') !== String(u.id || '')) return false;
+          if (!_unitRows) {
+            const metaUnit = r.unitId || r.metadata?.unitId;
+            if (String(metaUnit || '') !== String(u.id || '')) return false;
+          }
+          const metaYm = r.ym || r.metadata?.ym;
           if (metaYm) return metaYm === ym;
           if (r.created) {
             const d = new Date(r.created);
@@ -31710,11 +31724,15 @@ function _computeUnitFillImpl(u, mode) {
       // exist on Stripe but haven't flowed back into u.payments yet
       // (a freshly-sent auto-invoice, etc.).
       if (typeof _invoicesCache !== 'undefined' && Array.isArray(_invoicesCache)) {
-        const matching = _invoicesCache.filter(r => {
+        // FIX-perf 2: как в _paymentExplicitFill выше — подындекс + ym-тест.
+        const _unitRows = (typeof _invRowsForUnit === 'function') ? _invRowsForUnit(u.id) : null;
+        const matching = (_unitRows || _invoicesCache).filter(r => {
           if (!r) return false;
-          const metaUnit = r.unitId || r.metadata?.unitId;
-          const metaYm   = r.ym     || r.metadata?.ym;
-          if (String(metaUnit || '') !== String(u.id || '')) return false;
+          if (!_unitRows) {
+            const metaUnit = r.unitId || r.metadata?.unitId;
+            if (String(metaUnit || '') !== String(u.id || '')) return false;
+          }
+          const metaYm = r.ym || r.metadata?.ym;
           if (metaYm) return metaYm === ym;
           if (r.created) {
             const d = new Date(r.created);
@@ -34270,7 +34288,8 @@ function _v2PaymentsAttachListener() {
             try {
               if (state?.ui?.activeView === 'payments' && typeof renderPayments === 'function') renderPayments();
             } catch {}
-            try { if (typeof updateTopbarOutstandingPill === 'function') updateTopbarOutstandingPill(); } catch {}
+            // FIX-perf 5: coalesced — один прогон пилюли на кадр.
+            try { if (typeof _scheduleTopbarPill === 'function') _scheduleTopbarPill(); else if (typeof updateTopbarOutstandingPill === 'function') updateTopbarOutstandingPill(); } catch {}
           }, 100);
         }
       },
@@ -35238,7 +35257,8 @@ function _v2BuildingsAttachListener() {
             _v2BuildingsRerenderTimer = null;
             try { if (typeof renderBuildingSelector === 'function') renderBuildingSelector(); } catch {}
             try { if (typeof _ensureValidUiBuilding === 'function') _ensureValidUiBuilding('v2-buildings-read'); } catch {}
-            try { if (typeof updateTopbarOutstandingPill === 'function') updateTopbarOutstandingPill(); } catch {}
+            // FIX-perf 5: coalesced — один прогон пилюли на кадр.
+            try { if (typeof _scheduleTopbarPill === 'function') _scheduleTopbarPill(); else if (typeof updateTopbarOutstandingPill === 'function') updateTopbarOutstandingPill(); } catch {}
             try { if (typeof renderUnits === 'function') renderUnits(); } catch {}
             try { if (typeof renderDetail === 'function') renderDetail(); } catch {}
             // Здания пришли через watch-стрим → подтянуть инвойсы для payment-раскраски
@@ -38357,6 +38377,27 @@ function _pillDropdownAttach(pillEl, opts) {
     if (isOpen) close();
     else open();
   };
+}
+
+// ── FIX-perf 5 (2026-07-03): single-flight планировщик пилюли Outstanding.
+// Горячие пути (renderBilling + renderUserBadge + v2-листенеры) в одном
+// таске звали полный money-свип пилюли по 2+ раза. Планировщик схлопывает
+// все вызовы одного кадра в ОДИН реальный прогон через requestAnimationFrame
+// (rAF срабатывает до отрисовки кадра → визуально задержки нет). Сама
+// updateTopbarOutstandingPill и её 120-секундный интервал НЕ изменены;
+// разовые call-sites (payment-запись, void и т.п.) тоже остаются прямыми.
+var _topbarPillScheduled = false;
+function _scheduleTopbarPill() {
+  if (_topbarPillScheduled) return;
+  _topbarPillScheduled = true;
+  const run = () => {
+    _topbarPillScheduled = false;
+    try {
+      if (typeof updateTopbarOutstandingPill === 'function') updateTopbarOutstandingPill();
+    } catch (e) { console.warn('[pill-sched]', e); }
+  };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+  else setTimeout(run, 16);
 }
 
 function updateTopbarOutstandingPill() {
@@ -57792,7 +57833,10 @@ function renderUserBadge() {
   renderQuickAddButton();
   // Outstanding pill shows current month's unpaid total — refreshed on
   // every badge render (so every auth change + state push triggers it).
-  updateTopbarOutstandingPill();
+  // FIX-perf 5: через single-flight планировщик (rAF — до отрисовки кадра,
+  // визуально синхронно; схлопывает дубль с renderBilling в том же таске).
+  if (typeof _scheduleTopbarPill === 'function') _scheduleTopbarPill();
+  else updateTopbarOutstandingPill();
   try { updateTopbarLeasePill(); } catch {}
   try { updateTopbarContractPill(); } catch {}
   // 30-day leasing activity pill — same cadence as the others.
@@ -79591,7 +79635,45 @@ window.sfaEscalationBillingPreview = function () {
   return rows;
 };
 
+// ── FIX-perf 1 (2026-07-03): кэш результатов _computeUnitMoney на ОДИН
+// синхронный таск. При переключении здания каждый юнит считался ~7 раз
+// (карта, пилюля, aging, KPI, мост…) — мемо схлопывает это до 1 раза.
+// Живёт только до конца текущего таска (queueMicrotask сбрасывает Map),
+// плюс явный сброс в начале saveState() — чтобы mutate→render внутри
+// одного таска не прочитал устаревшие деньги. Математика НЕ тронута:
+// та же функция, тот же результат, считается один раз вместо семи.
+// Entry 55 (_isMonthSettled paid-wins) остаётся ВНУТРИ вычисления —
+// мемо оборачивает результат ЦЕЛИКОМ и никогда не обходит settled-тест.
+// var (не let) — hoisting страхует от TDZ при раннем вызове в load-order.
+var _umFrameMemo = null;
+function _umMemoGet(uid) { return _umFrameMemo ? _umFrameMemo.get(uid) : undefined; }
+function _umMemoSet(uid, v) {
+  if (!_umFrameMemo) { _umFrameMemo = new Map(); queueMicrotask(() => { _umFrameMemo = null; }); }
+  _umFrameMemo.set(uid, v);
+}
+function _umMemoClear() { _umFrameMemo = null; }
+
+// Мемо-обёртка: редиректим на голову группового лиза ДО ключа, чтобы
+// member и head делили одну запись (иначе member-ключ дал бы дубль).
+// Ключ — САМ объект юнита (идентичность), не u.id: suite-номера уникальны
+// только per-floor (дубли исторически реальны, dedupe заморожен §0.1), и
+// голый id склеил бы деньги двух разных юнитов в одном свипе. Все свипы
+// одного таска читают одни и те же объекты из state → hit-rate тот же;
+// промах лишь безвредно пересчитывает. Map живёт до конца таска — утечек
+// от object-ключей нет. Результат замороженный — читать read-only.
 function _computeUnitMoney(u) {
+  if (typeof _unitLeaseHead === 'function') u = _unitLeaseHead(u);
+  const _key = (u && typeof u === 'object') ? u : null;
+  if (_key) {
+    const hit = _umMemoGet(_key);
+    if (hit !== undefined) return hit;
+  }
+  const res = _computeUnitMoneyImpl(u);
+  if (_key && res) _umMemoSet(_key, res);
+  return res;
+}
+
+function _computeUnitMoneyImpl(u) {
   // Multi-suite lease: financial state (rent, payments, late-fee config)
   // lives on the head. Redirect so any caller using a member sees the
   // same overdue / outstanding / paidYtd numbers as the head — this is
@@ -84963,6 +85045,15 @@ function _mirrorNewInvoiceToCache(res, meta) {
   const idx = _invoicesCache.findIndex(r => r.id === row.id);
   if (idx >= 0) _invoicesCache[idx] = row;
   else _invoicesCache.unshift(row);
+  // FIX-perf 2 фолоу-ап (2026-07-03): этот писатель мутирует массив
+  // IN-PLACE (unshift / замена элемента), ссылка НЕ меняется — проверка
+  // идентичности в _invIndexEnsure его не видит. Без явного сброса свежий
+  // инвойс невидим для _lookupInvoiceBucket/_lookupInvoiceRow/_invRowsForUnit
+  // (плитка не перекрашивается, split-brain с таблицей Invoices), а ветка
+  // замены оставляет в индексе СТАРЫЙ объект строки. Сброс ленивый — индекс
+  // перестроится при следующем обращении, эпоха бампнется, fill-отпечаток
+  // юнита изменится.
+  if (typeof _invoicesCacheByIdSrc !== 'undefined') _invoicesCacheByIdSrc = null;
   // Re-render right panel so Invoice History picks it up now.
   if (typeof renderDetail === 'function' && selectedIds && selectedIds.length) {
     try { renderDetail(); } catch (e) { console.warn('[mirror-invoice] renderDetail', e); }
@@ -93885,6 +93976,56 @@ function _isMonthSettled(u, ym) {
   return null;
 }
 
+// ── FIX-perf 2 (2026-07-03): hash-индексы над _invoicesCache ────────────
+// _lookupInvoiceBucket/_lookupInvoiceRow сканировали массив (~680 строк)
+// линейно на КАЖДЫЙ вызов — при переключении здания это миллионы сравнений.
+// Индекс ленивый: перестраивается когда ссылка на массив сменилась —
+// писатели-ПЕРЕПРИСВАИВАТЕЛИ (merge, удаления, init) ловятся идентичностью
+// ссылки автоматически. ВНИМАНИЕ: писатели, мутирующие массив IN-PLACE
+// (unshift / arr[i]=…), обязаны сбрасывать _invoicesCacheByIdSrc = null
+// вручную — сейчас такой один: _mirrorNewInvoiceToCache. Писатели,
+// мутирующие ПОЛЯ существующих строк (_applyInvoiceBusSignal, discount-
+// patch), безопасны — Map держит те же объекты. Чистый индекс над теми же
+// данными — никакой финансовой логики. Эпоха _invoicesCacheEpoch растёт
+// монотонно при каждой перестройке; её потребляет _invByUnitEpoch (и через
+// перестройку подындекса — fill-отпечаток юнита).
+var _invoicesCacheById = null;     // Map(invoiceId → row)
+var _invoicesCacheByIdSrc = null;  // ссылка на массив, для которого построен индекс
+var _invoicesCacheEpoch = 0;       // монотонный счётчик перестроек индекса
+var _invByUnitIndex = null;        // Map(String(unitId) → rows[]) — per-unit подындекс
+var _invByUnitEpoch = -1;
+function _invIndexEnsure() {
+  if (typeof _invoicesCache === 'undefined' || !Array.isArray(_invoicesCache)) return null;
+  if (_invoicesCacheByIdSrc === _invoicesCache && _invoicesCacheById) return _invoicesCacheById;
+  const m = new Map();
+  for (const r of _invoicesCache) { if (r && r.id) m.set(r.id, r); }
+  _invoicesCacheById = m;
+  _invoicesCacheByIdSrc = _invoicesCache;
+  _invoicesCacheEpoch++;
+  return m;
+}
+// Строки инвойсов юнита — тот же предикат, что был в трёх .filter'ах
+// (String(r.unitId || r.metadata.unitId || '')). Пустой ключ '' сохранён
+// нарочно: исходный filter матчил строки без unitId на юниты без id.
+// null → индекса нет (кэш не массив) — вызывающий падает на старый скан.
+function _invRowsForUnit(unitId) {
+  if (typeof _invoicesCache === 'undefined' || !Array.isArray(_invoicesCache)) return null;
+  _invIndexEnsure();
+  if (!_invByUnitIndex || _invByUnitEpoch !== _invoicesCacheEpoch) {
+    const m = new Map();
+    for (const r of _invoicesCache) {
+      if (!r) continue;
+      const k = String(r.unitId || (r.metadata && r.metadata.unitId) || '');
+      let arr = m.get(k);
+      if (!arr) { arr = []; m.set(k, arr); }
+      arr.push(r);
+    }
+    _invByUnitIndex = m;
+    _invByUnitEpoch = _invoicesCacheEpoch;
+  }
+  return _invByUnitIndex.get(String(unitId || '')) || [];
+}
+
 // Look up a Stripe invoice's real bucket in the cache. Returns one of:
 // 'draft' | 'open' | 'past_due' | 'paid' | 'void' | 'uncollectible',
 // or null if the cache isn't populated or the id isn't present.
@@ -93892,7 +94033,10 @@ function _lookupInvoiceBucket(invoiceId) {
   if (!invoiceId) return null;
   // Memory cache first — authoritative when present.
   if (Array.isArray(_invoicesCache) && _invoicesCache.length > 0) {
-    const row = _invoicesCache.find(r => r.id === invoiceId);
+    // FIX-perf 2: O(1) через индекс; fallback на старый скан если индекс
+    // недоступен (деградируемо, данные те же).
+    const idx = (typeof _invIndexEnsure === 'function') ? _invIndexEnsure() : null;
+    const row = idx ? idx.get(invoiceId) : _invoicesCache.find(r => r.id === invoiceId);
     if (row) return row.bucket || row.status || null;
   }
   // Fallback: last-known bucket persisted to localStorage from a
@@ -93909,6 +94053,9 @@ function _lookupInvoiceBucket(invoiceId) {
 // (e.g. the actual invoice amount for mismatch detection).
 function _lookupInvoiceRow(invoiceId) {
   if (!invoiceId || typeof _invoicesCache === 'undefined' || !_invoicesCache) return null;
+  // FIX-perf 2: O(1) через индекс; fallback на линейный скан (деградируемо).
+  const idx = (typeof _invIndexEnsure === 'function') ? _invIndexEnsure() : null;
+  if (idx) return idx.get(invoiceId) || null;
   return _invoicesCache.find(r => r.id === invoiceId) || null;
 }
 
@@ -129548,6 +129695,13 @@ function renderAutoBillingKpi(rows) {
 function renderAutoBillingTable() {
   const tbl = document.getElementById('autoBillingTable');
   if (!tbl) return;
+  // FIX-perf 3: скрытый auto-billing view → dirty + skip (см. renderAgingPanel).
+  // showAutoBilling вызывает рендер после показа view → dirty потребляется.
+  {
+    const _pd = (window._panelDirty = window._panelDirty || {});
+    if (tbl.offsetParent === null) { _pd.autobilling = true; return; }
+    _pd.autobilling = false;
+  }
   const all = buildAutoBillingRows();
   const filtered = applyAutoBillingFilters(all);
   renderAutoBillingKpi(filtered);
@@ -137803,7 +137957,18 @@ function cbrGoToAging() {
 }
 window.cbrGoToAging = cbrGoToAging;
 
+// FIX-perf 4b: staged-движок моста. Токен инвалидирует отложенные чанки
+// когда рендер перезапущен (переключение здания / range / echo-pass) —
+// устаревший staging просто гаснет. _cbrIdle — rIC с fallback на setTimeout.
+var _cbrStageToken = 0;
+function _cbrIdle(fn) {
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(fn, { timeout: 500 });
+  else setTimeout(fn, 0);
+}
+
 function renderCollectionsBridge() {
+  // Любой новый рендер отменяет незавершённый staging предыдущего.
+  _cbrStageToken++;
   const section = document.getElementById('cbrSection');
   if (!section || typeof state === 'undefined' || !state) return;
   // Billing скрыт (другой view) — движок не гоняем вообще: пересчёт всё равно
@@ -137831,8 +137996,13 @@ function renderCollectionsBridge() {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
     yms.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
   }
+  // FIX-perf 4b: staged-режим. Синхронно считаем ТОЛЬКО текущий месяц —
+  // сводка и первая строка встают в первом же кадре после переключения
+  // здания; остальные месяцы движок догоняет чанками в idle-времени
+  // (математика _collectionsBridgeRows НЕ изменена — те же строки, частями).
+  // Свёрнутый режим (n=1) остаётся полностью синхронным, как раньше.
   let rows;
-  try { rows = _collectionsBridgeRows(yms); } catch (e) { console.warn('[cbridge] engine', e); return; }
+  try { rows = _collectionsBridgeRows(yms.slice(0, 1)); } catch (e) { console.warn('[cbridge] engine', e); return; }
 
   // Сводка текущего месяца — видна и в свёрнутом состоянии.
   const cur = rows[0];
@@ -137852,9 +138022,47 @@ function renderCollectionsBridge() {
 
   const colsByKey = _cbrColumnsByKey();
   const sortState = (typeof readTableSort === 'function') ? readTableSort('sfa_inv_cbr') : null;
+  // Выравнивание свежесобранного tbody с thead для ПРОМЕЖУТОЧНЫХ чанков:
+  // переставляем ячейки строк в физический порядок thead и копируем
+  // видимость (display) с TH. Порядок ключей Object.keys(_cbrColumnsByKey())
+  // === натуральному порядку колонок в шаблоне строки. Строки с colspan
+  // (detail / empty-state) пропускаем — та же логика, что в mountTablePrefs.
+  // Дефолтный thead (без prefs) → ранний return, ноль работы.
+  const _cbrAlignBodyToHead = () => {
+    const headTr = tbl.querySelector('thead tr:last-of-type') || tbl.querySelector('thead tr');
+    if (!headTr) return;
+    const ths = Array.from(headTr.children);
+    const naturalKeys = Object.keys(colsByKey);
+    if (ths.length !== naturalKeys.length) return;
+    const order = ths.map((th, i) => {
+      const k = th.dataset.colKey;
+      const idx = k ? naturalKeys.indexOf(k) : -1;
+      return idx >= 0 ? idx : i;
+    });
+    const permuted = !order.every((v, k) => v === k);
+    const anyHidden = ths.some(th => th.style.display === 'none');
+    if (!permuted && !anyHidden) return;
+    tbody.querySelectorAll('tr').forEach(row => {
+      const kids = Array.from(row.children);
+      if (kids.length !== naturalKeys.length) return;   // colspan-строки — skip
+      if (permuted) {
+        row.innerHTML = '';
+        order.forEach(i => { if (kids[i]) row.appendChild(kids[i]); });
+      }
+      Array.from(row.children).forEach((td, i) => {
+        td.style.display = (ths[i] && ths[i].style.display === 'none') ? 'none' : '';
+      });
+    });
+  };
+  // FIX-perf 4b: paint вынесен в замыкание — вызывается после каждого чанка
+  // с ПОЛНЫМ накопленным списком (пересборка ≤12 строк innerHTML дёшева;
+  // дорог только движок). Сортировка применяется на каждом paint'е, поэтому
+  // промежуточные состояния уже отсортированы. mountTablePrefs /
+  // attachTableSort — один раз, после финального чанка (keyBase не менялся).
+  const _paintCbr = (list, final) => {
   const display = (sortState && typeof applyTableSort === 'function')
-    ? applyTableSort(rows, sortState, colsByKey)
-    : rows.slice();   // дефолт: новейший месяц сверху (порядок yms)
+    ? applyTableSort(list, sortState, colsByKey)
+    : list.slice();   // дефолт: новейший месяц сверху (порядок yms)
 
   tbody.innerHTML = display.map(r => {
     const unpaidSum = r.unpaid.reduce((s, x) => s + x.amount, 0);
@@ -137891,6 +138099,13 @@ function renderCollectionsBridge() {
   }).join('') || `<tr><td colspan="12" style="padding:24px; text-align:center; color:var(--muted);">No data for the selected period.</td></tr>`;
 
   // Стандарт таблиц проекта (§14 / память): prefs + Columns-кнопка + sort.
+  // FIX-perf 4b: только на финальном чанке — один mount на рендер.
+  // Промежуточные чанки: tbody собран в НАТУРАЛЬНОМ порядке колонок, а thead
+  // после предыдущего mountTablePrefs может быть физически переставлен и/или
+  // иметь скрытые колонки — без выравнивания деньги встают под чужие
+  // заголовки на время staging'а. Дешёвое выравнивание (без mount'а —
+  // повторный mount копил бы drag/sort-листенеры на персистентном thead).
+  if (!final) { try { _cbrAlignBodyToHead(); } catch (e) { console.warn('[cbridge] align', e); } return; }
   try {
     if (typeof mountTablePrefs === 'function') {
       mountTablePrefs(tbl, 'sfa_inv_cbr', {
@@ -137905,17 +138120,54 @@ function renderCollectionsBridge() {
       attachTableSort(tbl, 'sfa_inv_cbr', colsByKey, () => renderCollectionsBridge());
     }
   } catch (e) { console.warn('[cbridge] table prefs', e); }
+  };  // конец _paintCbr
+
+  // Первый кадр: текущий месяц синхронно (final сразу, если месяц один).
+  _paintCbr(rows, yms.length <= 1);
+  // Остальные месяцы — чанками по 4 в idle-времени. Токен-гард гасит
+  // устаревший staging, если рендер перезапущен (здание/период/echo-pass).
+  if (yms.length > 1) {
+    const token = _cbrStageToken;
+    const rest = yms.slice(1);
+    const CHUNK = 4;
+    let idx = 0;
+    // Дыра token-гарда: _ensureValidUiBuilding может молча сменить активное
+    // здание из v2-листенера БЕЗ нового renderBilling (его view-диспетчер не
+    // знает про billing) — токен не бампается, а _matchesActiveBuilding внутри
+    // движка уже считает по НОВОМУ зданию → смешанные строки. Фиксируем
+    // здание на входе и гасим staging при смене.
+    const bldAtStart = state?.ui?.currentBuildingId || null;
+    const step = () => {
+      if (token !== _cbrStageToken) return;             // перезапущено — гасим
+      if ((state?.ui?.currentBuildingId || null) !== bldAtStart) {
+        // Здание сменилось молча — не досчитываем смесь, перезапускаем
+        // рендер целиком по новому зданию (бампнет токен сам).
+        try { renderCollectionsBridge(); } catch (e) { console.warn('[cbridge] bld-swap restart', e); }
+        return;
+      }
+      if (section.offsetParent === null) return;        // Billing скрыли — не жжём idle; re-show перерисует всё
+      const part = rest.slice(idx, idx + CHUNK);
+      idx += CHUNK;
+      let more;
+      try { more = _collectionsBridgeRows(part); } catch (e) { console.warn('[cbridge] engine', e); return; }
+      rows = rows.concat(more);
+      const fin = idx >= rest.length;
+      _paintCbr(rows, fin);
+      if (!fin) _cbrIdle(step);
+    };
+    _cbrIdle(step);
+  }
 }
 window.renderCollectionsBridge = renderCollectionsBridge;
 
 // Хук на «то же событие, что и KPI strip»: добавочная обёртка вокруг
 // renderBillingKpiStrip (сам код KPI-strip НЕ изменён). Любой его вызов —
-// сегодня это только showBilling() (вход/повторный вход в Billing) плюс
-// будущие call-sites — перерисовывает и Collections bridge.
-// ВАЖНО: переключение здания при УЖЕ открытом Billing и сам KPI-strip
-// не перерисовывает (renderBilling — ранний return); мост сознательно
-// разделяет эту staleness, чтобы его цифры всегда совпадали с карточкой
-// «Collected» прямо над ним — отдельный refresh дал бы расхождение.
+// showBilling() (вход/повторный вход в Billing) И, с FIX-perf 4a
+// (2026-07-03), renderBilling() при видимом Billing (то есть КАЖДОЕ
+// переключение здания / renderAll) — перерисовывает и Collections bridge.
+// Контракт «strip и мост обновляются строго вместе» сохранён: оба идут
+// через эту обёртку, поэтому карточка «Collected» и мост не расходятся.
+// Прежняя сознательная staleness на переключении здания УСТРАНЕНА 4a.
 // Идемпотентно (_cbrWrapped-гард).
 (function _cbrHookKpiStrip() {
   try {
@@ -138474,7 +138726,36 @@ function renderBilling() {
   // tenants panel is re-rendered. Cheap — pure math over state.
   updateBillingOutstandingWidget();
   // Keep the topbar pill in sync too
-  try { updateTopbarOutstandingPill(); } catch {}
+  // FIX-perf 5: coalesced — один прогон пилюли на кадр.
+  try { if (typeof _scheduleTopbarPill === 'function') _scheduleTopbarPill(); else updateTopbarOutstandingPill(); } catch {}
+  // FIX-perf 4a/4c (2026-07-03): renderBilling — единственный хук, который
+  // renderAll дёргает при открытом Billing (в т.ч. при переключении здания,
+  // см. :30378). Раньше KPI-strip / мост / счётчики Invoices обновлялись
+  // ТОЛЬКО при входе в Billing (showBilling) — переключение здания оставляло
+  // цифры прошлого дома до ручного пере-входа (та самая «10-секундная»
+  // задержка). Теперь: strip+мост (через обёртку _cbrHookKpiStrip) и
+  // счётчики Invoices перерисовываются сразу из локального леджера +
+  // уже закэшированных Stripe-строк (паттерн Entry 38: paint local first,
+  // refine later). С FIX 1+2 это ~200 memo-hit вычислений — десятки мс.
+  try {
+    const _bv = document.getElementById('billingView');
+    if (_bv && _bv.classList.contains('active')) {
+      // 4a — KPI strip (новый ZIP-layout; legacy-DOM без bvTitleMonth — скип).
+      if (document.getElementById('bvTitleMonth') && typeof renderBillingKpiStrip === 'function') {
+        try { renderBillingKpiStrip(); } catch (e) { console.warn('[bv-kpi:switch]', e); }
+      }
+      // 4c — счётчики бакетов Invoices: с force=false и живым кэшем
+      // renderInvoicesPage сеть НЕ трогает (:гейт force||cache===null),
+      // счётчики пере-скоупятся через _matchesActiveBuilding мгновенно;
+      // silent:true бережёт thead/ширины, sig-гард не даёт churn tbody.
+      const _invPanel = document.getElementById('billingInvoicesPanel');
+      if (_invPanel && _invPanel.offsetParent !== null
+          && typeof _invoicesCache !== 'undefined' && Array.isArray(_invoicesCache)
+          && typeof renderInvoicesPage === 'function') {
+        try { renderInvoicesPage(false, { silent: true }); } catch (e) { console.warn('[bv-inv:switch]', e); }
+      }
+    }
+  } catch (e) { console.warn('[bv-switch-refresh]', e); }
   // Legacy single-table UI was replaced by the ZIP-style panels (Tenants,
   // Invoices, Aging, etc.). The DOM nodes below — billingKpis, billingTable,
   // billingSearch, billingBuildingMS, billingStatusMS — no longer exist.
@@ -138796,6 +139077,10 @@ function _mergeIntoInvoicesCache(rows, opts = {}) {
   if (!Array.isArray(rows)) rows = [];
   if (!Array.isArray(_invoicesCache)) {
     _invoicesCache = rows.slice();
+    // FIX-perf 2: прогреваем индекс + бампаем эпоху сразу в точке слияния
+    // (ленивая перестройка по ссылке всё равно сработала бы при первом
+    // чтении — явный вызов делает эпоху свежей для производных мемо).
+    try { if (typeof _invIndexEnsure === 'function') _invIndexEnsure(); } catch {}
     return _invoicesCache;
   }
   const incomingIds = new Set();
@@ -138817,6 +139102,8 @@ function _mergeIntoInvoicesCache(rows, opts = {}) {
     }
   }
   _invoicesCache = Array.from(byId.values());
+  // FIX-perf 2: см. комментарий выше — та же точка слияния, вторая ветка.
+  try { if (typeof _invIndexEnsure === 'function') _invIndexEnsure(); } catch {}
   return _invoicesCache;
 }
 
@@ -138910,6 +139197,12 @@ function setBillingTab(tab) {
   if (pnlPanel) pnlPanel.style.display = tab === 'pnl' ? '' : 'none';
   const baPanel = document.getElementById('billingBankActivityPanel');
   if (baPanel) baPanel.style.display = tab === 'bankActivity' ? '' : 'none';
+  // FIX-perf 3 контракт: рендереры скрытых панелей (aging/recovery/vacancy/
+  // calendar/autobilling) при вызове на невидимой панели помечают
+  // window._panelDirty[name]=true и выходят. Показ вкладки здесь ВСЕГДА
+  // вызывает рендер заново (superset «if dirty → render») — панель к моменту
+  // вызова уже видима (display выставлен выше), поэтому dirty потребляется
+  // и сбрасывается внутри самого рендерера. Не убирать безусловные вызовы.
   if (tab === 'tenants')   renderTenantsPanelZip();  // ZIP-style — paints bvTenantsTable from state
   if (tab === 'invoices')  renderInvoicesPage();
   if (tab === 'aging')     renderAgingPanel();
@@ -139141,6 +139434,13 @@ function _vacancyPopulateBuildingSelect() {
 
 function renderVacancyPanel() {
   if (typeof canSeeFinance === 'function' && !canSeeFinance()) return;
+  // FIX-perf 3: скрытая панель → dirty + skip (см. renderAgingPanel).
+  {
+    const _host = document.getElementById('billingVacancyPanel');
+    const _pd = (window._panelDirty = window._panelDirty || {});
+    if (_host && _host.offsetParent === null) { _pd.vacancy = true; return; }
+    _pd.vacancy = false;
+  }
   _vacancyPopulateBuildingSelect();
   const all = _vacancyCollect();
   const rows = _vacancyApplyFilters(all);
@@ -139312,6 +139612,13 @@ function _calendarPopulateBuildingSelect() {
 
 function renderCalendarPanel() {
   if (typeof canSeeFinance === 'function' && !canSeeFinance()) return;
+  // FIX-perf 3: скрытая панель → dirty + skip (см. renderAgingPanel).
+  {
+    const _host = document.getElementById('billingCalendarPanel');
+    const _pd = (window._panelDirty = window._panelDirty || {});
+    if (_host && _host.offsetParent === null) { _pd.calendar = true; return; }
+    _pd.calendar = false;
+  }
   _calendarPopulateBuildingSelect();
   const all = _calendarCollect();
   const events = _calendarApplyFilters(all);
@@ -139967,6 +140274,13 @@ function setRecoveryStatus(status) {
 }
 
 function renderRecoveryPanel() {
+  // FIX-perf 3: скрытая панель → dirty + skip (см. renderAgingPanel).
+  {
+    const _host = document.getElementById('billingRecoveryPanel');
+    const _pd = (window._panelDirty = window._panelDirty || {});
+    if (_host && _host.offsetParent === null) { _pd.recovery = true; return; }
+    _pd.recovery = false;
+  }
   const cases = Array.isArray(state.recoveryCases) ? state.recoveryCases : [];
   const search       = (document.getElementById('recoverySearch')?.value || '').trim().toLowerCase();
   const statusFilter = document.getElementById('recoveryStatus')?.value || 'all';
@@ -144607,6 +144921,15 @@ function _agingFmtLastPaid(r) {
 }
 
 function renderAgingPanel() {
+  // FIX-perf 3: панель скрыта (другая вкладка/view) — не рендерим, только
+  // помечаем dirty (шаблон-гард renderCollectionsBridge :137813). Каждый
+  // show-путь (setBillingTab) вызывает рендер заново → dirty потребляется.
+  {
+    const _host = document.getElementById('billingAgingPanel');
+    const _pd = (window._panelDirty = window._panelDirty || {});
+    if (_host && _host.offsetParent === null) { _pd.aging = true; return; }
+    _pd.aging = false;
+  }
   // First time the A/R panel shows this session → hydrate with the
   // user's saved Default (if any). Subsequent renders don't touch the
   // filter DOM so user changes stick until reload.
