@@ -60,6 +60,18 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 72. Rec-rebuild writers wiped payment metadata + falsy amount fallback in invoice.paid (finance/data-integrity, 2026-07-03)
+
+**Symptom class (latent, caught pre-incident):** четыре серверных писателя пересобирали `u.payments[ym]` с нуля (handleInvoicePaid, handleInvoiceFailed, reconcile apply, full-refund writer) — любые метаданные на строке (с 2026-07-03: discount-поля `wasDiscounted/discountAmount/discountReason/…`) молча исчезали при следующем событии оплаты/фейла/рефанда. Плюс `(invoice.amount_paid || invoice.total || 0)` в invoice.paid: falsy-fallback записал бы ПОЛНУЮ сумму как собранную для счёта с amount_paid=0.
+
+**Fix (3fd1b0c):** хелпер `_discountFieldsOf(rec)` (functions/index.js ~:404) — единственный источник discount-полей; все четыре писателя spread-сохраняют их из prior-rec; fallback заменён на явный null-check (`amount_paid != null ? amount_paid : total`).
+
+**Invariant (порти в новые писатели):** ЛЮБОЙ писатель, пересобирающий `u.payments[ym]` объектом-литералом, ОБЯЗАН spread-сохранить `_discountFieldsOf(prior)` (и любые будущие метаданные-семейства). Не использовать falsy-fallback на денежных полях Stripe-событий — только явный null-check.
+
+**Context:** родился из фичи скидок (stripeDiscountInvoice, credit note на открытый счёт — docs/invoice-discount-design-2026-07-03.md). Скидка пишется callable-ом синхронно (mutateWorkspaceState + _writePaymentV2 mirror под strip-гейтом — Entry 70 паттерн, rec захватывается ВНУТРИ txn-замыкания, не re-read). Идемпотентность: creditNotes.list fingerprint + Stripe idempotencyKey. v1-запреты: 100% (→ waiver), paid-счета (→ refund-флоу), advance-якоря.
+
+**Known v1 edge (accepted):** void скидочного счёта оставляет discount-поля на rec (фантомная строка в bridge Discounts до ручной чистки) — display-only.
+
 ### 71. lastInvoiceYm stamp regressed by back-month writes → paid-green units with OPEN invoices (display/data-integrity, 2026-07-02)
 
 - **Status:** active (healed + guarded, deployed)
