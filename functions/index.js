@@ -401,6 +401,27 @@ async function _deletePaymentV2(buildingId, unitId, ym) {
   }
 }
 
+// ─── Discount-метаданные на строке леджера u.payments[ym] ────────────────
+// (docs/invoice-discount-design-2026-07-03.md §2). Единый список полей:
+// пишет их stripeDiscountInvoice, а КАЖДЫЙ писатель, который пересобирает
+// rec целиком (handleInvoicePaid, reconcile-apply, handleInvoiceFailed),
+// ОБЯЗАН spread-сохранить их из prior-записи — иначе оплата/фейл счёта
+// стирает запись скидки. Возвращает объект только с реально
+// присутствующими полями, чтобы spread не сеял undefined в Firestore-док.
+const DISCOUNT_REC_FIELDS = [
+  'wasDiscounted', 'discountAmount', 'discountPct', 'originalAmount',
+  'discountReason', 'discountBy', 'discountAt',
+  'discountCreditNoteId', 'discountInvoiceId',
+];
+function _discountFieldsOf(rec) {
+  const out = {};
+  if (!rec || typeof rec !== 'object') return out;
+  for (const k of DISCOUNT_REC_FIELDS) {
+    if (rec[k] !== undefined) out[k] = rec[k];
+  }
+  return out;
+}
+
 // Pull rent amount to invoice. Contract rent (signed) wins over asking rent.
 // ─── Waiver pro-rate helpers (KNOWN_ISSUES #1, FINANCIAL_MODEL_REFERENCE §EQ-5) ───
 // Server-side mirror of floor-map-editor.html's `_unitProrationCredit` +
@@ -2099,6 +2120,377 @@ exports.markInvoicePaidOutOfBand = onCall(
 );
 
 // =========================================================================
+// ===== Stripe — Discount an open invoice (credit note) ==================
+// Сценарий «сломался лифт» (docs/invoice-discount-design-2026-07-03.md §1/§4):
+// скидка на УЖЕ выставленный ОТКРЫТЫЙ счёт БЕЗ void + перевыставления.
+// Механика — Stripe credit note: уменьшает amount_due, номер счёта и
+// hosted-ссылка арендатора живут дальше, штампы lastInvoiceId/lastInvoiceYm
+// не трогаются вовсе (инвариант Entry 71 даже не задействуется).
+//
+// v1-границы (утверждены Tony 2026-07-03):
+//   - только status='open' (paid → отказ: post-payment кредит = реальный
+//     возврат денег, отдельный флоу с отдельным одобрением);
+//   - строго < 100% (счёт с amount_due=0 переходит в paid через
+//     НЕслушаемый invoice.paid — леджер завис бы open навсегда;
+//     полный comp месяца = существующий waiver-флоу «free month»);
+//   - только одномесячные rent-счета: metadata.ym есть, advance-маркеров
+//     нет (кредит на advance-якорь ломает экономику всех покрытых месяцев).
+//
+// Идемпотентность: перед create — creditNotes.list по инвойсу; своя
+// не-void кредит-нота (metadata-отпечаток source+unitId+ym) уже есть →
+// возвращаем её и дописываем леджер, если запись скидки потерялась.
+// Повторный клик / сетевой ретрай клиента безопасен.
+//
+// Запись в леджер — СИНХРОННО здесь же, не через вебхук (credit_note.created
+// не слушается — и не должен, событие уходит в default→ignored). Строго
+// strip-aware: mutateWorkspaceState + _writePaymentV2-зеркало под
+// _stateIfSyncV2-гейтом (Entry 70: запись в u.payments внутри mutate БЕЗ
+// зеркала под strip = тихий no-op). Плюс audit-док + u.outreach[].
+// =========================================================================
+exports.stripeDiscountInvoice = onCall(
+  {secrets: [STRIPE_SECRET_KEY], timeoutSeconds: 60},
+  async (req) => {
+    const authInfo = await requireEditor(req.auth);
+    const {invoiceId, unitId, ym, mode, value, reason, emailTenant = true} = req.data || {};
+
+    // ── Валидация параметров (до любого Stripe-вызова) ──────────────────
+    if (!invoiceId || !unitId || !ym) {
+      throw new HttpsError('invalid-argument', 'invoiceId, unitId and ym are required');
+    }
+    if (!/^\d{4}-\d{2}$/.test(String(ym))) {
+      throw new HttpsError('invalid-argument', 'ym must be YYYY-MM');
+    }
+    if (mode !== 'percent' && mode !== 'fixed') {
+      throw new HttpsError('invalid-argument', "mode must be 'percent' or 'fixed'");
+    }
+    const numValue = +value;
+    if (!Number.isFinite(numValue) || numValue <= 0) {
+      throw new HttpsError('invalid-argument', 'value must be a positive number');
+    }
+    if (mode === 'percent' && numValue >= 100) {
+      // 100%-запрет (v1): полный comp месяца — через waiver-флоу.
+      throw new HttpsError('invalid-argument',
+        '100% discount is not allowed — use the Waive (free month) flow instead');
+    }
+    const reasonText = String(reason || '').trim();
+    if (!reasonText) {
+      throw new HttpsError('invalid-argument', 'reason is required (non-empty)');
+    }
+
+    const stripe = getStripe();
+    const actor = authInfo.email || req.auth?.uid || 'unknown';
+
+    // Audit-хелпер — best-effort, как в voidOrDeleteStripeInvoice: сбой
+    // записи аудита никогда не блокирует сам флоу.
+    const writeAudit = async (action, payload) => {
+      try {
+        await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+          ts: admin.firestore.FieldValue.serverTimestamp(),
+          actor,
+          actorUid: req.auth?.uid || null,
+          actorRole: authInfo.role || null,
+          action: 'invoice.' + action,
+          source: 'stripeDiscountInvoice',
+          invoiceId,
+          unitId: String(unitId),
+          ym: String(ym),
+          ...payload,
+        });
+      } catch (e) {
+        logger.warn('[discount] audit write failed: ' + e.message);
+      }
+    };
+
+    try {
+      // ── Инвойс наш? Одномесячный rent? ─────────────────────────────────
+      const inv = await stripe.invoices.retrieve(invoiceId);
+      const meta = inv.metadata || {};
+      if (meta.source !== 'suitesforall' && meta.source !== 'auto') {
+        throw new HttpsError('failed-precondition',
+          `Invoice ${invoiceId} is not a SuitesForAll invoice (source="${meta.source || ''}")`);
+      }
+      if (String(meta.unitId || '') !== String(unitId)) {
+        throw new HttpsError('failed-precondition',
+          `Invoice ${invoiceId} belongs to unit "${meta.unitId || '?'}", not "${unitId}"`);
+      }
+      if (String(meta.ym || '') !== String(ym)) {
+        // metadata.ym обязан присутствовать и совпадать — иначе это не
+        // одномесячный rent-счёт за запрошенный месяц.
+        throw new HttpsError('failed-precondition',
+          `Invoice ${invoiceId} is not a single-month rent invoice for ${ym} (metadata.ym="${meta.ym || ''}")`);
+      }
+      if ((meta.purpose || '') !== 'rent') {
+        throw new HttpsError('failed-precondition',
+          `Only rent invoices can be discounted in v1 (purpose="${meta.purpose || ''}")`);
+      }
+      const buildingId = meta.buildingId || '';
+      const floorId = meta.floorId || '';
+      if (!buildingId || !floorId) {
+        throw new HttpsError('failed-precondition',
+          `Invoice ${invoiceId} metadata missing buildingId/floorId — cannot route the ledger write`);
+      }
+      // ВАЖНО: status-гейт стоит НИЖЕ idempotency-проверки (после блока
+      // prior) — иначе replay/backfill после crash-after-CN недостижим для
+      // уже оплаченного счёта (adversarial-ревью, finding 4b).
+
+      // ── Advance-маркеры (Entry 30): строки rent_advance → отказ ────────
+      // Строки инвойса пейджируем полностью (у advance-пакетов их > 10).
+      {
+        let after = null;
+        for (let page = 0; page < 10; page++) {
+          const res = await stripe.invoices.listLineItems(invoiceId,
+            {limit: 100, ...(after ? {starting_after: after} : {})});
+          for (const ln of (res.data || [])) {
+            if (ln?.metadata?.purpose === 'rent_advance') {
+              throw new HttpsError('failed-precondition',
+                `Invoice ${invoiceId} is a multi-month advance invoice — discounting advance anchors is not supported in v1`);
+            }
+          }
+          const last = res.data && res.data[res.data.length - 1];
+          after = (res.has_more && last?.id) ? last.id : null;
+          if (!after) break;
+        }
+      }
+
+      // ── State: юнит существует + advance-штампы (paidVia='stripe-advance')
+      // на любом месяце, указывающие на ЭТОТ инвойс → тоже advance-якорь.
+      const state = await readWorkspaceState();
+      const found = findUnit(state, {buildingId, floorId, unitId});
+      if (!found) {
+        throw new HttpsError('not-found',
+          `Unit ${unitId} (${buildingId}/${floorId}) not found in workspace state`);
+      }
+      for (const sy of Object.keys(found.unit.payments || {})) {
+        const sp = found.unit.payments[sy];
+        if (sp && sp.paidVia === 'stripe-advance'
+            && (sp.stripeInvoiceId === invoiceId || sp.stripe?.invoiceId === invoiceId)) {
+          throw new HttpsError('failed-precondition',
+            `Invoice ${invoiceId} anchors a multi-month advance prepayment (${sy}) — not supported in v1`);
+        }
+      }
+
+      // ── Запись в леджер (общая для create-пути и idempotent-backfill) ──
+      // Синхронно, strip-aware. u.payments[ym] НЕ пересобирается — discount-
+      // поля spread'ятся ПОВЕРХ существующего rec (все прежние поля живут).
+      const applyLedger = async (creditNote, ctx) => {
+        let unitFoundInMutate = false;
+        let recForMirror = null; // rec, захваченный ВНУТРИ mutate (паттерн reconcile appliedRows)
+        await mutateWorkspaceState((s) => {
+          unitFoundInMutate = false; // сброс на transaction-retry мутатора
+          recForMirror = null;
+          const f = findUnit(s, {buildingId, floorId, unitId});
+          if (!f) return;
+          unitFoundInMutate = true;
+          const u = f.unit;
+          u.payments = u.payments || {};
+          const rec = (u.payments[ym] && typeof u.payments[ym] === 'object') ? u.payments[ym] : {};
+          u.payments[ym] = {
+            ...rec,
+            wasDiscounted: true,
+            discountAmount: ctx.discountAmount,
+            discountPct: ctx.discountPct,
+            originalAmount: ctx.originalAmount,
+            discountReason: reasonText,
+            discountBy: actor,
+            discountAt: ctx.atIso,
+            discountCreditNoteId: creditNote.id,
+            discountInvoiceId: invoiceId,
+          };
+          recForMirror = u.payments[ym];
+          // Activity-trail — как у webhook'а: idempotency через scan по
+          // creditNoteId (повторный вызов / backfill не дублирует запись).
+          u.outreach = u.outreach || [];
+          const hasPriorOutreach = u.outreach.some(
+            (e) => e && e.kind === 'discount' && e.creditNoteId === creditNote.id
+          );
+          if (!hasPriorOutreach) {
+            u.outreach.push({
+              ts: ctx.atIso,
+              kind: 'discount',
+              note: `Discount $${ctx.discountAmount.toLocaleString()}` +
+                (ctx.discountPct != null ? ` (${ctx.discountPct}%)` : '') +
+                ` applied to ${ym} — ${reasonText} — by ${actor}`,
+              by: actor,
+              byEmail: actor,
+              ym,
+              amount: ctx.discountAmount,
+              invoiceId,
+              creditNoteId: creditNote.id,
+            });
+            while (u.outreach.length > 100) u.outreach.shift();
+          }
+        });
+        if (!unitFoundInMutate) {
+          // Кредит-нота уже в Stripe, а юнит исчез между проверкой и txn —
+          // теоретический случай; фиксируем в audit, не глотаем молча.
+          await writeAudit('discount-ledger-miss', {
+            creditNoteId: creditNote.id,
+            note: `Credit note ${creditNote.id} created but unit ${unitId} not found for ledger write — backfill via repeat call`,
+          });
+          return false;
+        }
+        // Entry 70: зеркало per-payment дока ОБЯЗАТЕЛЬНО — под strip монолит
+        // ре-стрипится и building-зеркало выкидывает u.payments, поэтому
+        // зеркалим rec, ЗАХВАЧЕННЫЙ внутри mutate (свежее re-read его уже
+        // не увидит — тот же silent-no-op класс, что Entry 70). Паттерн
+        // reconcileStripeInvoices appliedRows[].rec.
+        try {
+          const syncState = await _stateIfSyncV2();
+          if (syncState && recForMirror) {
+            await _writePaymentV2(buildingId, floorId, unitId, ym, recForMirror);
+          }
+        } catch (e) {
+          logger.warn(`[discount] mirror-v2 failed for ${unitId}/${ym}: ${e.message}`);
+        }
+        return true;
+      };
+
+      // ── Идемпотентность: наша кредит-нота уже существует? ──────────────
+      const existing = await stripe.creditNotes.list({invoice: invoiceId, limit: 100});
+      const prior = (existing.data || []).find((cn) => cn && cn.status !== 'void'
+        && cn.metadata && cn.metadata.source === 'suitesforall'
+        && String(cn.metadata.unitId || '') === String(unitId)
+        && String(cn.metadata.ym || '') === String(ym));
+      if (prior) {
+        const priorAmount = (prior.total || 0) / 100;
+        const priorPct = prior.metadata.discountPct !== undefined && prior.metadata.discountPct !== ''
+          ? +prior.metadata.discountPct : null;
+        // Backfill state, если запись скидки в леджере потерялась/не дописалась.
+        const curRec = found.unit.payments?.[ym];
+        let ledgerBackfilled = false;
+        if (!curRec || curRec.discountCreditNoteId !== prior.id) {
+          // originalAmount восстанавливаем из текущего инвойса: open →
+          // remaining+credit; paid → amount_paid+credit (что было бы к оплате).
+          const backOriginal = inv.status === 'open'
+            ? ((inv.amount_remaining || 0) + (prior.total || 0)) / 100
+            : ((inv.amount_paid != null ? inv.amount_paid : 0) + (prior.total || 0)) / 100;
+          ledgerBackfilled = await applyLedger(prior, {
+            discountAmount: priorAmount,
+            discountPct: Number.isFinite(priorPct) ? priorPct : null,
+            originalAmount: backOriginal,
+            atIso: prior.created ? new Date(prior.created * 1000).toISOString() : new Date().toISOString(),
+          });
+          if (ledgerBackfilled) {
+            await writeAudit('discounted', {
+              creditNoteId: prior.id,
+              amount: priorAmount,
+              reason: reasonText,
+              note: `Idempotent replay: existing credit note ${prior.id} returned, ledger backfilled`,
+            });
+          }
+        }
+        logger.info(`[discount] ${invoiceId}: existing credit note ${prior.id} returned (idempotent), backfilled=${ledgerBackfilled}`);
+        return {
+          invoiceId,
+          creditNoteId: prior.id,
+          action: 'noop-existing',
+          alreadyDiscounted: true,
+          discountAmount: priorAmount,
+          discountPct: Number.isFinite(priorPct) ? priorPct : null,
+          ledgerBackfilled,
+        };
+      }
+
+      // ── Status-гейт (после idempotency: replay на paid-счёте легален) ──
+      if (inv.status !== 'open') {
+        throw new HttpsError('failed-precondition',
+          `Only open invoices can be discounted (status="${inv.status}")` +
+          (inv.status === 'paid' ? ' — post-payment credit is a refund flow, not supported in v1' : ''));
+      }
+
+      // ── Повторное чтение статуса ПРЯМО перед create (гонка с autoPay) ──
+      const fresh = await stripe.invoices.retrieve(invoiceId);
+      if (fresh.status !== 'open') {
+        throw new HttpsError('failed-precondition',
+          `Invoice ${invoiceId} is no longer open (status="${fresh.status}") — likely just paid; discount aborted`);
+      }
+      const remainingCents = fresh.amount_remaining != null ? +fresh.amount_remaining : 0;
+      const computedCents = mode === 'percent'
+        ? Math.round(remainingCents * numValue / 100)
+        : Math.round(numValue * 100);
+      if (!(computedCents > 0)) {
+        throw new HttpsError('invalid-argument',
+          `Computed discount is $0 (value=${numValue}, mode=${mode})`);
+      }
+      if (computedCents >= remainingCents) {
+        // Покрывает и fixed=полная сумма, и percent→округление до 100%.
+        throw new HttpsError('invalid-argument',
+          `Discount ($${(computedCents / 100).toFixed(2)}) must be strictly below the amount remaining ` +
+          `($${(remainingCents / 100).toFixed(2)}) — full comp goes through the Waive (free month) flow`);
+      }
+      const discountPct = mode === 'percent' ? numValue : null;
+      const discountAmount = computedCents / 100;
+      const originalAmount = remainingCents / 100;
+      const atIso = new Date().toISOString();
+
+      // ── Кредит-нота. reason у Stripe — закрытый enum (duplicate/fraudulent/
+      // order_change/product_unsatisfactory); свободный текст — memo+metadata.
+      const cn = await stripe.creditNotes.create({
+        invoice: invoiceId,
+        lines: [{
+          type: 'custom_line_item',
+          description: `Discount — ${reasonText}`.slice(0, 250),
+          quantity: 1,
+          unit_amount: computedCents,
+        }],
+        memo: reasonText.slice(0, 500),
+        reason: 'order_change',
+        // email_type: 'credit_note' → Stripe сам шлёт арендатору PDF с memo.
+        email_type: emailTenant === false ? 'none' : 'credit_note',
+        metadata: {
+          source: 'suitesforall',
+          workspaceId: WORKSPACE_ID,
+          unitId: String(unitId),
+          ym: String(ym),
+          discountPct: discountPct == null ? '' : String(discountPct),
+          discountAmount: String(discountAmount),
+          by: actor,
+        },
+      }, {
+        // Конкурентный double-click: Stripe-side дедуп (паттерн :1314) —
+        // два overlapping-вызова не создадут две кредит-ноты. Sequential
+        // повтор ловится fingerprint-проверкой выше.
+        idempotencyKey: `sfa-discount-${invoiceId}-${unitId}-${ym}`,
+      });
+      logger.info(`[discount] ${invoiceId}: credit note ${cn.id} created ` +
+        `($${discountAmount}${discountPct != null ? ` = ${discountPct}%` : ''} of $${originalAmount}) by ${actor}`);
+
+      // ── Леджер + зеркало + audit + outreach — синхронно ────────────────
+      const ledgerApplied = await applyLedger(cn, {discountAmount, discountPct, originalAmount, atIso});
+      if (ledgerApplied) {
+        await writeAudit('discounted', {
+          creditNoteId: cn.id,
+          amount: discountAmount,
+          reason: reasonText,
+          before: {amountDue: originalAmount},
+          after: {amountDue: (remainingCents - computedCents) / 100},
+          note: `Discount $${discountAmount}` +
+            (discountPct != null ? ` (${discountPct}%)` : '') +
+            ` on ${invoiceId} (${ym}) — ${reasonText}`,
+        });
+      }
+
+      return {
+        invoiceId,
+        creditNoteId: cn.id,
+        action: 'discounted',
+        discountAmount,
+        discountPct,
+        originalAmount,
+        newAmountDue: (remainingCents - computedCents) / 100,
+        emailSent: emailTenant !== false,
+        ledgerApplied,
+      };
+    } catch (err) {
+      if (err.httpErrorCode) throw err;
+      logger.error('[discount] failed:', err.message, err.stack);
+      await writeAudit('discount-failed', {note: 'Failure: ' + err.message});
+      throw new HttpsError('internal', `Discount failed: ${err.message || err}`);
+    }
+  }
+);
+
+// =========================================================================
 // ===== Stripe — Bulk auto-connect customers =============================
 // Walks every occupied unit that has an email, tries to find a matching
 // Stripe Customer by email, and links it. One button in the UI adopts all
@@ -2645,6 +3037,9 @@ exports.reconcileStripeInvoices = onCall(
                 status: 'paid',
                 amount: _amt,
                 date: m.paidAt ? new Date(m.paidAt).toISOString().slice(0, 10) : null,
+                // Discount-метаданные (stripeDiscountInvoice) обязаны пережить
+                // пересборку rec — иначе оплата скидочного месяца стирает след.
+                ..._discountFieldsOf(prior),
                 ...(priorHistory.length ? { history: priorHistory } : {}),
                 stripe: {
                   invoiceId: m.invoiceId,
@@ -3093,7 +3488,8 @@ async function handleChargeRefunded(charge) {
       });
       while (history.length > 10) history.shift();
       u.payments[ym] = fullyRefunded
-        ? { status: 'refunded', amount: 0, history, refundedAt: new Date().toISOString() }
+        // сохраняем discount-метаданные при полном рефанде (инвариант _discountFieldsOf — как в handleInvoicePaid/reconcile)
+        ? { ..._discountFieldsOf(cur), status: 'refunded', amount: 0, history, refundedAt: new Date().toISOString() }
         : { ...cur, status: 'partial', amount: Math.max(0, (cur.amount || 0) - refundedAmt), history };
     }
     s._invoiceBus = {
@@ -3388,7 +3784,10 @@ async function handleInvoicePaid(invoice, eventId) {
     return;
   }
   // Paid amount in cents → dollars. Use amount_paid not total because of discounts.
-  const amount = (invoice.amount_paid || invoice.total || 0) / 100;
+  // Явный null-check вместо falsy-fallback: amount_paid=0 (легитимный ноль,
+  // напр. полностью закрытый кредит-нотой счёт) НЕ должен фолбэчить на
+  // ПОЛНЫЙ total — иначе леджер записал бы несобранные деньги как собранные.
+  const amount = (invoice.amount_paid != null ? invoice.amount_paid : (invoice.total || 0)) / 100;
   const chargeId = invoice.charge || null;
   const paidAt = (invoice.status_transitions?.paid_at || Math.floor(Date.now() / 1000)) * 1000;
   const paymentMethod = await inferPaymentMethod(invoice);
@@ -3456,6 +3855,9 @@ async function handleInvoicePaid(invoice, eventId) {
       ...(prior.paidBy ? { paidBy: prior.paidBy } : {}),
       ...(prior.memo ? { memo: prior.memo } : {}),
       ...(prior.receiptUrl ? { receiptUrl: prior.receiptUrl, receiptPath: prior.receiptPath } : {}),
+      // Discount-метаданные (stripeDiscountInvoice) обязаны пережить
+      // пересборку rec — иначе оплата скидочного счёта стирает запись скидки.
+      ..._discountFieldsOf(prior),
       ...(priorHistory.length ? { history: priorHistory } : {}),
       stripe: {
         invoiceId: invoice.id,
@@ -3675,6 +4077,9 @@ async function handleInvoiceFailed(invoice) {
     f.unit.payments[ym] = {
       status: 'late',
       amount: (invoice.amount_due || 0) / 100,
+      // Discount-метаданные обязаны пережить и failed-пересборку rec
+      // (autoPay-счёт со скидкой может зафейлиться — след скидки не стираем).
+      ..._discountFieldsOf(f.unit.payments[ym]),
       stripe: {
         invoiceId: invoice.id,
         hostedInvoiceUrl: invoice.hosted_invoice_url || null,
