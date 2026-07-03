@@ -72445,8 +72445,10 @@ function onUnitPointerDown(e, u) {
   // нужной вкладке и не было видно мигания.
   const _newSingleSelectedId = (selectedIds.length === 1) ? selectedIds[0] : null;
   if (_newSingleSelectedId && _newSingleSelectedId !== _prevSingleSelectedId) {
-    _unitActiveTab = 'overview';
-    try { sessionStorage.setItem('sfa_unit_tab', 'overview'); } catch {}
+    // Дефолт при смене юнита — Finance (Tony 2026-07-03), с учётом роли.
+    const _defTab = (typeof _unitDefaultTab === 'function') ? _unitDefaultTab() : 'overview';
+    _unitActiveTab = _defTab;
+    try { sessionStorage.setItem('sfa_unit_tab', _defTab); } catch {}
   }
   renderUnits();
   renderDetail();
@@ -76383,8 +76385,10 @@ function renderDetail() {
   // of the same unit (edit/save cycle, background webhook) preserve
   // the active tab — only a new selection lands on Overview.
   if (el.dataset.lastRenderedUnit !== u.id) {
-    _unitActiveTab = 'overview';
-    try { sessionStorage.setItem('sfa_unit_tab', 'overview'); } catch {}
+    // Дефолт при смене юнита — Finance (Tony 2026-07-03), с учётом роли.
+    const _defTab = (typeof _unitDefaultTab === 'function') ? _unitDefaultTab() : 'overview';
+    _unitActiveTab = _defTab;
+    try { sessionStorage.setItem('sfa_unit_tab', _defTab); } catch {}
     el.dataset.lastRenderedUnit = u.id;
   }
   // Sanitize active tab against role permissions — if a teamviewer
@@ -76395,7 +76399,7 @@ function renderDetail() {
     _unitActiveTab = 'overview';
     try { sessionStorage.setItem('sfa_unit_tab', 'overview'); } catch {}
   }
-  const activeTab = _unitActiveTab || 'overview';
+  const activeTab = _unitActiveTab || ((typeof _unitDefaultTab === 'function') ? _unitDefaultTab() : 'overview');
   const v2Header = _renderUnitV2Header(u, editOn);
   const v2Tabs   = _renderUnitV2Tabs(u, activeTab);
   const panes = {
@@ -77133,7 +77137,14 @@ function _parseDateUTC(yyyymmdd) {
 // =============================================================
 // Unit panel v2 — tabbed layout
 // =============================================================
-let _unitActiveTab = (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('sfa_unit_tab')) || 'overview';
+// Дефолтная вкладка юнит-панели (Tony 2026-07-03): Finance вместо Overview —
+// оператор живёт в платежах. Роли без Finance (teamviewer/mapeditor) падают
+// на Overview; рендер дополнительно санитизирует (см. canSeeFinance-гейт).
+function _unitDefaultTab() {
+  const _sees = (typeof canSeeFinance === 'function') ? canSeeFinance() : true;
+  return _sees ? 'finance' : 'overview';
+}
+let _unitActiveTab = (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('sfa_unit_tab')) || null;
 function setUnitTab(name) {
   _unitActiveTab = name;
   try { sessionStorage.setItem('sfa_unit_tab', name); } catch {}
