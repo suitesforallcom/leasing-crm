@@ -442,6 +442,73 @@ function _discountFieldsOf(rec) {
   return out;
 }
 
+// ─── PII-маскирование email в Cloud Logging (аудит P2 2026-07-03) ────────
+// Cloud Logging retains логи 30д и доступен всем с ролью Logs Viewer —
+// email арендатора/оператора в открытом виде = утечка PII. Маскируем:
+// оставляем первый символ local-part + домен целиком (для форензики
+// достаточно: видно провайдера и первую букву, но не полный адрес).
+//   'john.doe@example.com' → 'j***@example.com'
+//   'a@x.com'              → 'a***@x.com'
+// НЕ-email / пустое / uid → возвращаем как есть (uid тоже иногда попадает
+// в actor-fallback; он не PII-email, маскировать смысла нет).
+// ВАЖНО: применять ТОЛЬКО к logger.* (Cloud Logging). Audit-доки в
+// Firestore (writeAudit / u.outreach) — internal, их НЕ трогаем.
+function _maskEmail(v) {
+  const s = String(v == null ? '' : v);
+  const at = s.indexOf('@');
+  if (at <= 0 || at === s.length - 1) return s; // не email-подобное — как есть
+  return s[0] + '***' + s.slice(at);
+}
+
+// ─── Rate-limit для денежных callable (аудит P2 2026-07-03) ──────────────
+// Переиспользует ТОЧНО тот же счётчик-паттерн, что createStripeInvoice
+// (:748): Firestore-счётчики /workspaces/{ws}/rateLimits/{key}, два яруса —
+//   1. per-workspace HOUR bucket: широкий runaway (скомпрометированная
+//      сессия крутит credit notes / void'ы по многим юнитам);
+//   2. per-unit DAY bucket: ботнутый ретрай-луп по одному юниту.
+// Инкремент внутри транзакции (как в оригинале). Бросает
+// HttpsError('resource-exhausted') при превышении — вызов не доходит до
+// Stripe. Ключи неймспейснуты префиксом `ns` чтобы не пересекаться со
+// счётчиками createStripeInvoice (ws_/u_) и takeManualBackup.
+//   ns   — короткий тег операции ('disc' | 'void' | 'oob')
+//   unitId — для per-unit-яруса ('' → только per-workspace ярус)
+//   perWsHour / perUnitDay — капы (см. вызовы ниже, задокументированы там)
+async function _rateLimitMoneyCallable(ns, unitId, perWsHour, perUnitDay) {
+  const d = new Date();
+  const dayKey = `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}`;
+  const hourKey = dayKey + String(d.getUTCHours()).padStart(2, '0');
+  // Ярус 1 — per-workspace/hour.
+  const wsRef = db.doc(`workspaces/${WORKSPACE_ID}/rateLimits/ns_${ns}_ws_${hourKey}`);
+  const wsCount = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(wsRef);
+    const cur = snap.exists ? (snap.data().count || 0) : 0;
+    const next = cur + 1;
+    if (next > perWsHour) return next;
+    tx.set(wsRef, { count: next, hourKey, _exp: Date.now() + 2 * 60 * 60 * 1000 });
+    return next;
+  });
+  if (wsCount > perWsHour) {
+    throw new HttpsError('resource-exhausted',
+      `Workspace rate limit reached (${perWsHour}/hr for this operation). Wait until the next hour or contact support if this is unexpected.`);
+  }
+  // Ярус 2 — per-unit/day (только если unitId задан).
+  if (unitId) {
+    const uRef = db.doc(`workspaces/${WORKSPACE_ID}/rateLimits/ns_${ns}_u_${String(unitId).replace(/[^A-Za-z0-9_-]/g, '')}_${dayKey}`);
+    const uCount = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(uRef);
+      const cur = snap.exists ? (snap.data().count || 0) : 0;
+      const next = cur + 1;
+      if (next > perUnitDay) return next;
+      tx.set(uRef, { count: next, unitId: String(unitId), dayKey, _exp: Date.now() + 48 * 60 * 60 * 1000 });
+      return next;
+    });
+    if (uCount > perUnitDay) {
+      throw new HttpsError('resource-exhausted',
+        `Suite ${unitId} has reached the daily limit (${perUnitDay}/day) for this operation. Wait until tomorrow UTC or contact support.`);
+    }
+  }
+}
+
 // Pull rent amount to invoice. Contract rent (signed) wins over asking rent.
 // ─── Waiver pro-rate helpers (KNOWN_ISSUES #1, FINANCIAL_MODEL_REFERENCE §EQ-5) ───
 // Server-side mirror of floor-map-editor.html's `_unitProrationCredit` +
@@ -691,7 +758,7 @@ exports.ensureStripeCustomer = onCall(
       && c.metadata?.workspaceId
       && c.metadata.workspaceId !== WORKSPACE_ID);
     if (conflictMatch && !customer) {
-      logger.warn(`[stripe] email ${emailLower} has Stripe customer ${conflictMatch.id} tagged for workspace "${conflictMatch.metadata.workspaceId}" — creating a NEW customer for ours instead of adopting`);
+      logger.warn(`[stripe] email ${_maskEmail(emailLower)} has Stripe customer ${conflictMatch.id} tagged for workspace "${conflictMatch.metadata.workspaceId}" — creating a NEW customer for ours instead of adopting`); // PII-маск (аудит P2)
     }
 
     if (customer) {
@@ -713,7 +780,7 @@ exports.ensureStripeCustomer = onCall(
           logger.warn(`[stripe] could not tag adopted customer ${customer.id}: ${err.message}`);
         }
       }
-      logger.info(`[stripe] linked existing customer ${customer.id} for ${emailLower} (adopted=${needsTag})`);
+      logger.info(`[stripe] linked existing customer ${customer.id} for ${_maskEmail(emailLower)} (adopted=${needsTag})`); // PII-маск (аудит P2)
     } else {
       customer = await stripe.customers.create({
         email, name,
@@ -724,7 +791,7 @@ exports.ensureStripeCustomer = onCall(
           source: 'suitesforall',
         },
       });
-      logger.info(`[stripe] created customer ${customer.id} for ${emailLower}`);
+      logger.info(`[stripe] created customer ${customer.id} for ${_maskEmail(emailLower)}`); // PII-маск (аудит P2)
     }
 
     await mutateWorkspaceState((s) => {
@@ -1945,6 +2012,12 @@ exports.voidOrDeleteStripeInvoice = onCall(
     if (!invoiceId) {
       throw new HttpsError('invalid-argument', 'invoiceId is required');
     }
+    // RATE LIMIT (аудит P2 2026-07-03) — void/delete уничтожает Stripe-счёт
+    // (open→void, draft→delete); runaway при компрометации = массовое
+    // обнуление выставленных счетов. unitId в req.data НЕТ (только после
+    // retrieve из metadata) → ограничиваем ТОЛЬКО per-workspace ярусом,
+    // 40/hr. До Stripe-вызова.
+    await _rateLimitMoneyCallable('void', '', 40, 0);
     const stripe = getStripe();
     const actor = req.auth?.token?.email || req.auth?.uid || 'unknown';
     // Helper to log every void/delete to the workspace audit collection.
@@ -2044,6 +2117,12 @@ exports.markInvoicePaidOutOfBand = onCall(
     if (!invoiceId) {
       throw new HttpsError('invalid-argument', 'invoiceId is required');
     }
+    // RATE LIMIT (аудит P2 2026-07-03) — OOB-mark-paid переводит счёт в
+    // paid без движения денег через Stripe (пишет леджер + Stripe-статус);
+    // runaway = массовое ложное «оплачено». Капы как у скидки: 40/hr на
+    // workspace, 5/сутки на юнит (suiteId — best-effort, может быть пустым
+    // для legacy-вызовов → тогда только per-workspace ярус). До Stripe.
+    await _rateLimitMoneyCallable('oob', suiteId, 40, 5);
     const stripe = getStripe();
     const actor = req.auth?.token?.email || req.auth?.uid || 'unknown';
 
@@ -2196,6 +2275,18 @@ exports.stripeDiscountInvoice = onCall(
     if (!reasonText) {
       throw new HttpsError('invalid-argument', 'reason is required (non-empty)');
     }
+
+    // RATE LIMIT (аудит P2 2026-07-03) — credit note = вывод денег со счёта;
+    // runaway при скомпрометированной сессии = бесконтрольные скидки. Капы
+    // чуть НИЖЕ invoice-капа (createStripeInvoice: 100/hr, 5/unit/day),
+    // потому что скидка — редкая ручная операция «сломался лифт», а не
+    // массовая рассылка: 40/hr на workspace, 5/сутки на юнит. Инкремент
+    // ДО Stripe-вызова (ловим ретрай-луп до создания кредит-нот).
+    // NB: лимит стоит ПЕРЕД идемпотентной проверкой (:2456), поэтому
+    // повторный вызов по уже-заскидированному инвойсу ТОЖЕ расходует
+    // токен (вернёт 'noop-existing', денег не двигает — безопасно; при
+    // ретрай-цикле упрётся в 5/сутки и отдаст resource-exhausted).
+    await _rateLimitMoneyCallable('disc', unitId, 40, 5);
 
     const stripe = getStripe();
     const actor = authInfo.email || req.auth?.uid || 'unknown';
@@ -4594,7 +4685,7 @@ async function handleCustomerDeleted(customer) {
       at: Date.now(),
     };
   });
-  logger.warn(`[stripe] customer ${customerId} (${customerEmail}) deleted in Stripe — workspace state unlinked`);
+  logger.warn(`[stripe] customer ${customerId} (${_maskEmail(customerEmail)}) deleted in Stripe — workspace state unlinked`); // PII-маск (аудит P2)
   // Audit — high-impact (future invoices for this tenant will require
   // creating a new customer). Operator needs to know.
   try {
@@ -4768,63 +4859,28 @@ const _runAutoInvoicesHandler = async (opts) => {
       logger.info('[auto-invoice] workspace toggle off — walking cascade for per-building/floor/unit overrides');
     }
 
-    // CHECKPOINT — track progress in /workspaces/{ws}/cronProgress/auto-invoice
-    // so a mid-run timeout (540s cap) doesn't leave half the units invoiced
-    // and half not. Each unit gets stamped after success; on next invocation
-    // (whether by cron or operator manual rerun via "Run now"), we skip
-    // anything stamped within the last 24h.
+    // МЁРТВЫЙ CHECKPOINT УДАЛЁН (аудит P2 2026-07-03). Здесь раньше жил
+    // per-unit checkpoint (_shouldProcessUnit / _markUnitProcessed +
+    // globals __autoInv*), задуманный как resume после mid-run timeout.
+    // Он был НЕДОСТИЖИМ: помощники экспонировались в globalThis, но
+    // per-unit цикл ниже их НИКОГДА не вызывал (grep подтверждал только
+    // определения + экспозицию), поэтому newCheckpoint не пополнялся, а
+    // единственная запись шла в самом конце — которую SIGKILL на 540s
+    // теряет ДО срабатывания. Инкрементальные mid-run-штампы завести
+    // аддитивно нельзя без нового Firestore-write на каждый юнит внутри
+    // денежного цикла (лишний failure-surface + затрагивает P0/batch-1
+    // путь), поэтому — удаляем.
+    //
+    // Resume-безопасность УЖЕ обеспечена без чекпоинта: перед выпуском
+    // каждый юнит проверяет durable-штамп `u.stripe.autoSentYm === nextYm`
+    // (см. ~:5078 и mutate-запись ~:5460), который живёт в самом state.
+    // Свежий cron-тик (или ручной Run-now) просто пропускает уже
+    // выставленные юниты по этому штампу — half-run никогда не
+    // дублирует. TIME_BUDGET-abort тоже не нужен: batch уже bounded
+    // (autoSentYm + Stripe-idempotencyKey), недосланные юниты добьёт
+    // следующий тик. Телеметрия последнего запуска пишется в конце
+    // (см. persist ниже, best-effort, не влияет на корректность).
     const checkpointRef = db.doc(`workspaces/${WORKSPACE_ID}/cronProgress/auto-invoice`);
-    let checkpoint;
-    try {
-      const ckSnap = await checkpointRef.get();
-      checkpoint = ckSnap.exists ? (ckSnap.data() || {}) : {};
-    } catch (e) {
-      checkpoint = {};
-    }
-    const stampedRecently = new Set(
-      Object.entries(checkpoint.processed || {})
-        .filter(([, ms]) => Number(ms) > Date.now() - 24 * 60 * 60 * 1000)
-        .map(([id]) => id)
-    );
-    const startTimeMs = Date.now();
-    const TIME_BUDGET_MS = 480 * 1000;   // leave 60s headroom in 540s timeout
-    const newCheckpoint = Object.assign({}, checkpoint.processed || {});
-    let abortedEarly = false;
-
-    // Helper called per-unit. Caller passes `unitKey` (b|f|u format).
-    // Returns true if the unit was processed (or skipped intentionally),
-    // false if the cron should bail out for time / quota reasons.
-    function _shouldProcessUnit(unitKey) {
-      if (stampedRecently.has(unitKey)) {
-        return 'skip-recent';
-      }
-      if (Date.now() - startTimeMs > TIME_BUDGET_MS) {
-        abortedEarly = true;
-        return 'abort-budget';
-      }
-      return 'process';
-    }
-    function _markUnitProcessed(unitKey) {
-      newCheckpoint[unitKey] = Date.now();
-    }
-    // Persisted at the very end so a crash mid-run still leaves progress
-    // in newCheckpoint that we'll write on next successful completion.
-    async function _persistCheckpoint(extra) {
-      try {
-        await checkpointRef.set(Object.assign({
-          processed: newCheckpoint,
-          lastRunAt: admin.firestore.FieldValue.serverTimestamp(),
-          lastRunAbortedEarly: abortedEarly,
-        }, extra || {}));
-      } catch (e) {
-        logger.warn('[auto-invoice] checkpoint write failed: ' + e.message);
-      }
-    }
-    // Expose helpers to the rest of the function via globals so the
-    // existing per-unit loop body (further below) can opt in.
-    globalThis.__autoInvShouldProcess = _shouldProcessUnit;
-    globalThis.__autoInvMarkProcessed = _markUnitProcessed;
-    globalThis.__autoInvPersistCheckpoint = _persistCheckpoint;
 
     const today = new Date();
     // New config: sendBeforeDays = N days BEFORE the 1st of next month.
@@ -5141,7 +5197,7 @@ const _runAutoInvoicesHandler = async (opts) => {
             if (_forceDryRun) {
               dryRunCount++;
               dryRunActions.push({ unitId: u.id, ym: nextYm, amount: rent, email: u.email });
-              logger.info(`[auto-invoice:dry-run] WOULD send ${nextYm} · $${rent} · ${u.email} (${u.id})`);
+              logger.info(`[auto-invoice:dry-run] WOULD send ${nextYm} · $${rent} · ${_maskEmail(u.email)} (${u.id})`); // PII-маск (аудит P2)
               continue;
             }
 
@@ -5375,7 +5431,7 @@ const _runAutoInvoicesHandler = async (opts) => {
             u.stripe.lastInvoiceYm = nextYm;
             _stripePatch[b.id + '|' + f.id + '|' + u.id] = u.stripe;
             sent++;
-            logger.info(`[auto-invoice] sent to ${u.email} (${u.id}) · $${rent} · ${nextYm}`);
+            logger.info(`[auto-invoice] sent to ${_maskEmail(u.email)} (${u.id}) · $${rent} · ${nextYm}`); // PII-маск (аудит P2)
             // Audit (Tony 2026-05-23 Phase 2): per-invoice trail so the Unit
             // Activity tab shows «Auto-invoice sent» events alongside manual
             // sends. Fire-and-forget — never block the cron if audit fails.
@@ -5429,21 +5485,17 @@ const _runAutoInvoicesHandler = async (opts) => {
         }
       });
     }
-    // Persist checkpoint — even if we ran the full set this time, the
-    // record of which units we processed in the last 24h means a manual
-    // re-trigger today won't double-fire on units we already invoiced.
+    // Телеметрия последнего запуска (best-effort; НЕ идемпотентность —
+    // ту обеспечивает durable-штамп u.stripe.autoSentYm, см. коммент у
+    // checkpointRef выше). Пишем только сводку для дашборда/алертов; поле
+    // `processed` больше не ведём (мёртвый per-unit checkpoint удалён).
     try {
-      if (typeof __autoInvPersistCheckpoint === 'function') {
-        await __autoInvPersistCheckpoint({
-          totalSent: sent, totalSkipped: skipped, totalFailed: failed,
-        });
-      }
-    } catch {}
-    // If we aborted early due to time budget, log loud so an alert can fire.
-    // The next cron tick (or operator-triggered re-run via a Run Now button)
-    // will pick up where we left off via the checkpoint.
-    if (typeof globalThis.__autoInvShouldProcess === 'function') {
-      // Nothing more to do — checkpoint persisted above.
+      await checkpointRef.set({
+        lastRunAt: admin.firestore.FieldValue.serverTimestamp(),
+        totalSent: sent, totalSkipped: skipped, totalFailed: failed,
+      }, { merge: true });
+    } catch (e) {
+      logger.warn('[auto-invoice] run-telemetry write failed: ' + e.message);
     }
     logger.info(`[auto-invoice] done · sent=${sent} skipped=${skipped} failed=${failed} dryRun=${dryRunCount}${_limit ? ' limit=' + _limit : ''}`);
     return { sent, skipped, failed, dryRun: dryRunCount, limit: _limit, targetYm: nextYm, sampleActions: dryRunActions.slice(0, 50) };
@@ -6290,7 +6342,7 @@ async function _runAutoLateFeesHandler(opts) {
             u.stripe.lateFeeSent[o.ym] = finalized.id;
             _lfStripePatch[unitKey] = u.stripe;
             sent++;
-            logger.info(`[auto-late-fee] sent to ${u.email} (${u.id}/${o.ym}) · $${o.fee.toFixed(2)} · ${finalized.id}`);
+            logger.info(`[auto-late-fee] sent to ${_maskEmail(u.email)} (${u.id}/${o.ym}) · $${o.fee.toFixed(2)} · ${finalized.id}`); // PII-маск (аудит P2)
             // Audit per-fee assessed (Tony Phase 2). Unit Activity tab will
             // show «Late fee assessed» events with amount + ym + invoiceId.
             try {
