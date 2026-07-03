@@ -19409,6 +19409,7 @@
                     <th data-col-key="inMonth" data-col-sortable="true" style="text-align:right;" title="Portion of Collected FOR that arrived DURING the billing month itself">Paid in month</th>
                     <th data-col-key="later" data-col-sortable="true" style="text-align:right;" title="Portion of Collected FOR that arrived AFTER the billing month (late / catch-up payments)">Paid later</th>
                     <th data-col-key="waived" data-col-sortable="true" style="text-align:right;" title="Rent forgiven for this month — fully waived months plus partial waiver credits. Stays inside Expected; this column explains the difference and is NOT counted as a collection gap">Waived</th>
+                    <th data-col-key="discounts" data-col-sortable="true" style="text-align:right;" title="Discounts recorded on the month's ledger row — Stripe credit notes issued post-billing (elevator outage etc.) plus create-time discounts. Stays inside Expected; explains part of the Expected vs Collected difference and is NOT counted as a collection gap. Expand the row for the per-unit list with reasons">Discounts</th>
                     <th data-col-key="prorated" data-col-sortable="true" style="text-align:right;" title="Reduction vs full contract rent from mid-month lease starts (and scheduled mid-month move-outs) — the day-fraction discount already excluded from Expected">Prorated</th>
                     <th data-col-key="unpaid" data-col-sortable="true" style="text-align:right;" title="Expected, not collected and not waived, where an invoice or payment record EXISTS for the month. Click the cell to open the Aging tab with the debtor list">Unpaid</th>
                     <th data-col-key="notBilled" data-col-sortable="true" style="text-align:right;" title="Expected but NO invoice evidence at all for the month — no payment row and no Stripe invoice stamp (billing rule off, building paused, missed cron)">Not billed</th>
@@ -19524,6 +19525,7 @@
             <span class="bulk-hint" id="invBulkHint"></span>
             <span class="bulk-spacer"></span>
             <button class="ghost" onclick="clearInvoiceSelection()">Cancel</button>
+            <button class="ghost" onclick="openInvoiceBulkDiscount()" title="Issue a credit-note discount on every selected open/past-due single-month rent invoice — one reason, one percent or fixed amount for all">− Discount selected…</button>
             <button class="danger" onclick="openInvoiceBulkVoidConfirm()">🗑 Void / Delete</button>
           </div>
           <!-- Persistent hint — tells the operator how bulk delete works
@@ -82518,12 +82520,33 @@ function _renderUnitInvoiceHistory(u) {
     // data-* attrs feed the right-click context menu (_invHistoryRowMenu)
     // и Link-модалку (через _invMonthLinkOpenFromRow). data-inv-created-ms
     // нужен, чтобы модалка по умолчанию открылась на году инвойса.
-    const rowData = `data-inv-id="${esc(r.id)}" data-inv-bucket="${esc(r.bucket||'')}" data-inv-num="${esc(r.number||r.id)}" data-inv-amount="${esc(String(+r.total||0))}" data-inv-label="${esc(r.shortDesc || r.purposeLabel || '')}" data-inv-created-ms="${esc(String(+r.created||0))}" data-inv-pdf-url="${esc(r.pdfUrl||'')}" data-inv-hosted-url="${esc(r.hostedUrl||'')}"`;
+    // data-inv-ym / purpose / advance питают гейт «Give discount…» в
+    // _invHistoryRowMenu (скидка только для одномесячных rent-счетов).
+    const rowData = `data-inv-id="${esc(r.id)}" data-inv-bucket="${esc(r.bucket||'')}" data-inv-num="${esc(r.number||r.id)}" data-inv-amount="${esc(String(+r.total||0))}" data-inv-label="${esc(r.shortDesc || r.purposeLabel || '')}" data-inv-created-ms="${esc(String(+r.created||0))}" data-inv-pdf-url="${esc(r.pdfUrl||'')}" data-inv-hosted-url="${esc(r.hostedUrl||'')}" data-inv-ym="${esc(billingYm)}" data-inv-purpose="${esc(r?.metadata?.purpose || r?.purpose || '')}" data-inv-advance="${(Array.isArray(r?._coveredYms) && r._coveredYms.length > 1) ? '1' : '0'}"`;
+    // Бейдж «−$60 discount» — rec леджера пишет ТОЛЬКО CF (stripeDiscountInvoice);
+    // клиент лишь читает. Привязка к строке (по убыванию точности):
+    // 1) discountInvoiceId === r.id; 2) stripeInvoiceId === r.id (create-time
+    // скидки штампуют его на rec); 3) любая rent-строка месяца (легаси-fallback,
+    // иначе voided-then-reissued месяц бейджился бы на обеих строках).
+    let discBadge = '';
+    {
+      const discRec = (u && u.payments && /^\d{4}-\d{2}$/.test(billingYm)) ? u.payments[billingYm] : null;
+      const discOk = discRec && discRec.wasDiscounted && +discRec.discountAmount > 0
+        && (discRec.discountInvoiceId ? discRec.discountInvoiceId === r.id
+            : discRec.stripeInvoiceId ? discRec.stripeInvoiceId === r.id
+            : ((r?.metadata?.purpose || r?.purpose || '') === 'rent'));
+      if (discOk) {
+        const discTip = 'Discount ' + fmtAmount(+discRec.discountAmount)
+          + (discRec.discountPct != null && discRec.discountPct !== '' ? ` (${+discRec.discountPct}%)` : '')
+          + (discRec.discountReason ? ` — ${discRec.discountReason}` : '');
+        discBadge = `<span title="${esc(discTip)}" style="display:inline-block; margin-left:5px; padding:1px 5px; border-radius:5px; background:#fef3c7; border:1px solid #fcd34d; color:#92400e; font-size:9.5px; font-weight:700; white-space:nowrap; vertical-align:1px;">−${esc(fmtAmount(+discRec.discountAmount))} discount</span>`;
+      }
+    }
     return `
     <div class="upv2-inv-row${voidCls}" data-tt-portal="${esc(tipText)}" ${rowData} oncontextmenu="_invHistoryRowMenu(event, this); return false;" ${r.hostedUrl ? `onclick="window.open('${esc(_safeHttpUrl(r.hostedUrl))}', '_blank')"` : ''} ${r.hostedUrl ? 'style="cursor: pointer;"' : ''}>
       <div class="upv2-inv-cell upv2-inv-date">${esc(fmtDate(r.created))}${r.hostedUrl ? `<span class="upv2-inv-extic" aria-hidden="true">${_rdIc('ext', 11)}</span>` : ''}</div>
       <div class="upv2-inv-cell upv2-inv-period" style="font-variant-numeric: tabular-nums; color: var(--muted);">${billingHtml}</div>
-      <div class="upv2-inv-cell upv2-inv-amt">${esc(fmtAmount(r.total))}</div>
+      <div class="upv2-inv-cell upv2-inv-amt">${esc(fmtAmount(r.total))}${discBadge}</div>
       <div class="upv2-inv-cell upv2-inv-status">
         <span class="inv-status-badge ${esc(r.bucket)}">${esc(r.bucketLabel)}</span>
       </div>
@@ -83359,6 +83382,25 @@ function _invHistoryRowMenu(event, rowEl) {
       ));
       hasStripeActions = true;
     }
+    // ----- Give discount… — credit note на открытый счёт (v1-гейты:
+    // только open/past_due, только одномесячный rent, не advance-якорь).
+    // Paid/void — пункт просто не показывается (post-payment кредит =
+    // возврат денег, отдельный флоу). Авторитетная проверка — в CF.
+    {
+      const rowYm      = rowEl.dataset.invYm || '';
+      const rowPurpose = (rowEl.dataset.invPurpose || '').toLowerCase();
+      const rowAdvance = rowEl.dataset.invAdvance === '1';
+      const canDiscount = (bucket === 'open' || bucket === 'past_due')
+        && /^\d{4}-\d{2}$/.test(rowYm) && rowPurpose === 'rent' && !rowAdvance;
+      if (canDiscount) {
+        items.push(_invHistoryMenuBtn(
+          'Give discount…',
+          `_invHistoryGiveDiscount('${esc(id)}'); document.getElementById('invHistoryCtxMenu').style.display='none';`,
+          '#b45309'
+        ));
+        hasStripeActions = true;
+      }
+    }
     if (hasStripeActions) {
       items.push(`<div style="height:1px; background:#f1f5f9; margin:4px 0;"></div>`);
     }
@@ -83560,6 +83602,440 @@ function _invHistoryRestore(id, number) {
   _uirUnhideInvoiceIds([id]);
   if (typeof toast === 'function') toast(`Restored — ${number}`, 'success');
   if (typeof renderDetail === 'function') renderDetail();
+}
+
+// ============================================================
+// Give discount — credit note на открытый счёт (v1)
+// docs/invoice-discount-design-2026-07-03.md §3/§5 Steps 2-3.
+// Механика: CF stripeDiscountInvoice выпускает Stripe credit note и
+// САМ пишет discount-поля в u.payments[ym] (леджер + mirror + audit +
+// outreach). Клиент НИЧЕГО в state не пишет — только зовёт callable,
+// патчит UI-кэш (_invoicesCache) и перерисовывает поверхности.
+// v1-границы (одобрены Tony 2026-07-03): только open/past_due,
+// строго <100% (полный comp = waiver-флоу), только одномесячный rent
+// (advance-якоря исключены), paid-счета не трогаем.
+// ============================================================
+
+// Контекст открытого модала: { items:[{invoiceId, unitId, ym, number,
+// tenant, amountDue}], source:'unit'|'billing', skipped:N }.
+let _sfaDiscCtx = null;
+
+// Advance-эвристика для Billing-таблицы (у unit-panel строк есть
+// r._coveredYms из enrich): любой юнит со штампом paidVia='stripe-advance',
+// указывающим на этот инвойс, = advance-якорь. Авторитетная проверка — CF.
+function _sfaDiscLooksAdvance(invoiceId) {
+  try {
+    for (const b of (state?.buildings || [])) {
+      for (const f of (b.floors || [])) {
+        for (const u of (f.units || [])) {
+          const pays = u.payments || {};
+          for (const ym of Object.keys(pays)) {
+            const p = pays[ym];
+            if (p && p.paidVia === 'stripe-advance'
+                && (p.stripeInvoiceId === invoiceId || p.stripe?.invoiceId === invoiceId)) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+  } catch (e) { /* best-effort — CF всё равно перепроверит */ }
+  return false;
+}
+
+// Right-click «Give discount…» из Invoice History юнит-панели.
+function _invHistoryGiveDiscount(id) {
+  if (!id) return;
+  const inv = (typeof _lookupInvoiceRow === 'function') ? _lookupInvoiceRow(id) : null;
+  // Fallback на data-атрибуты строки, если кэш ещё не наполнен.
+  let rowEl = null;
+  for (const r of document.querySelectorAll('.upv2-inv-row[data-inv-id]')) {
+    if (r.dataset.invId === id) { rowEl = r; break; }
+  }
+  const ym = (inv?.metadata?.ym) || (rowEl?.dataset.invYm) || '';
+  if (!/^\d{4}-\d{2}$/.test(ym)) { toast?.('No billing month on this invoice — cannot discount', 'error'); return; }
+  // unitId: metadata сильнее (CF сверяет meta.unitId === unitId).
+  const selUnit = (typeof currentUnits === 'function' && Array.isArray(selectedIds) && selectedIds.length)
+    ? currentUnits().find(x => x.id === selectedIds[0]) : null;
+  const unitId = (inv?.metadata?.unitId) || (selUnit ? selUnit.id : '');
+  if (!unitId) { toast?.('Cannot resolve the unit for this invoice', 'error'); return; }
+  const amountDue = (inv && +inv.amountRemaining > 0) ? +inv.amountRemaining
+    : (inv && +inv.total > 0) ? +inv.total
+    : +(rowEl?.dataset.invAmount || 0);
+  if (!(amountDue > 0)) { toast?.('Invoice has no amount due — nothing to discount', 'error'); return; }
+  openDiscountModal([{
+    invoiceId: id,
+    unitId: String(unitId),
+    ym,
+    number: (inv?.number) || (rowEl?.dataset.invNum) || id,
+    tenant: (inv?.customerName) || (selUnit ? (selUnit.tenant || selUnit.company || '') : ''),
+    amountDue,
+  }], { source: 'unit' });
+}
+
+// ---------- Модал скидки (single + bulk — один и тот же) ----------
+// Визуальный донор: янтарная waiver-карточка #ciDiscountReasonRow +
+// Percent/Fixed паттерн late-fee конфига. Toggle ВСЕГДА с ручным
+// числовым полем рядом (правило памяти: control + manual entry).
+function openDiscountModal(items, opts) {
+  // Гейт от повторного входа посреди прогона: closeDiscountModal() в этом
+  // состоянии no-op, и без гейта второй вызов задвоил бы #sfaDiscountHost
+  // и осиротил бы бегущий контекст.
+  if (_sfaDiscCtx && _sfaDiscCtx.running) { toast?.('A discount run is already in progress', 'error'); return; }
+  const list = (Array.isArray(items) ? items : []).filter(it => it && it.invoiceId && it.unitId && it.ym && +it.amountDue > 0);
+  if (!list.length) { toast?.('No discountable invoices', 'error'); return; }
+  closeDiscountModal();
+  _sfaDiscCtx = { items: list, source: (opts && opts.source) || 'unit', skipped: +(opts && opts.skipped) || 0, running: false };
+  const fmt = (n) => '$' + (+n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const totalDue = list.reduce((s, it) => s + (+it.amountDue || 0), 0);
+  const single = list.length === 1;
+  const sub = single
+    ? `${esc(list[0].number)}${list[0].tenant ? ' · ' + esc(list[0].tenant) : ''} · Suite ${esc(list[0].unitId)} · amount due ${esc(fmt(list[0].amountDue))}`
+    : `${list.length} invoices selected · total amount due ${esc(fmt(totalDue))}${_sfaDiscCtx.skipped ? ` · <span style="color:#a16207;">${_sfaDiscCtx.skipped} ineligible skipped</span>` : ''}`;
+  // До 6 строк-примеров в bulk-режиме — оператор проверяет глазами.
+  const sample = single ? '' : `
+    <ul style="margin:6px 0 0; padding-left:18px; max-height:130px; overflow:auto;">
+      ${list.slice(0, 6).map(it => `<li style="margin:2px 0; font-size:12px;"><code style="font-size:11px;">${esc(it.number)}</code> · Suite ${esc(it.unitId)}${it.tenant ? ' · ' + esc(it.tenant) : ''} · ${esc(fmt(it.amountDue))}</li>`).join('')}
+      ${list.length > 6 ? `<li style="color:var(--muted); font-size:11.5px;">… and ${list.length - 6} more</li>` : ''}
+    </ul>`;
+  const html = `
+    <div class="stripe-modal active" id="sfaDiscountModal" onclick="if(event.target===this && !(_sfaDiscCtx && _sfaDiscCtx.running)) closeDiscountModal()">
+      <div class="stripe-modal-card" style="max-width:480px;">
+        <h3 style="margin:0 0 4px;">Give discount</h3>
+        <div style="color:var(--muted); font-size:12.5px;">${sub}</div>
+        ${sample}
+        <div style="margin-top:10px; padding:11px 12px; background:#fef3c7; border:1px solid #fcd34d; border-radius:10px;">
+          <div style="font-size:10.5px; font-weight:800; color:#78350f; text-transform:uppercase; letter-spacing:0.03em; margin-bottom:6px;">Credit note on the open invoice</div>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <select id="sfaDiscMode" onchange="_sfaDiscPreview()" style="padding:7px 8px; font-size:12px; border:1px solid #fcd34d; border-radius:7px; background:#fffbeb;">
+              <option value="percent" selected>Percent %</option>
+              <option value="fixed">Fixed $</option>
+            </select>
+            <input type="number" id="sfaDiscValue" min="0" step="0.01" placeholder="e.g. 15" oninput="_sfaDiscPreview()" style="flex:1; padding:7px 8px; font-size:13px; font-weight:700; border:1px solid #fcd34d; border-radius:7px; background:#fffbeb;">
+          </div>
+          <div id="sfaDiscPreviewLine" style="font-size:12px; font-weight:700; color:#78350f; margin-top:7px; min-height:16px;">Enter a percent or a fixed amount.</div>
+          <div style="margin-top:9px;">
+            <label style="display:block; font-size:10px; font-weight:800; color:#78350f; margin-bottom:3px; text-transform:uppercase;">Category</label>
+            <select id="sfaDiscCategory" style="width:100%; padding:7px 8px; font-size:12px; border:1px solid #fcd34d; border-radius:7px; background:#fffbeb;">
+              <option value="Elevator">Elevator</option>
+              <option value="Outage">Outage</option>
+              <option value="Goodwill">Goodwill</option>
+              <option value="Promotion">Promotion</option>
+              <option value="Other" selected>Other</option>
+            </select>
+          </div>
+          <div style="margin-top:8px;">
+            <label style="display:block; font-size:10px; font-weight:800; color:#78350f; margin-bottom:3px; text-transform:uppercase;">Reason (required)</label>
+            <textarea id="sfaDiscReason" placeholder="e.g. Elevator out of service Jul 1-15 — 15% rent credit" oninput="_sfaDiscPreview()" style="width:100%; min-height:52px; padding:7px 8px; font-size:12px; border:1px solid #fcd34d; border-radius:7px; resize:vertical; background:#fffbeb; font-family:inherit;"></textarea>
+            <div style="font-size:10.5px; color:#92400e; margin-top:3px;">Goes on the credit note the tenant sees and into the audit trail.</div>
+          </div>
+        </div>
+        <label style="display:flex; gap:8px; align-items:flex-start; margin-top:10px; font-size:12px; cursor:pointer;">
+          <input type="checkbox" id="sfaDiscEmail" checked style="margin-top:2px;">
+          <span><b>Email credit note to tenant</b> — Stripe sends a credit-note PDF with the reason. The invoice link keeps working and shows the reduced amount.</span>
+        </label>
+        <div id="sfaDiscStatus" style="display:none; margin-top:10px; padding:8px 10px; background:var(--surface, #f8fafc); border:1px solid var(--border, #e2e8f0); border-radius:8px; font-size:12px; max-height:160px; overflow:auto;"></div>
+        <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:12px;">
+          <button class="rr-btn" id="sfaDiscCancelBtn" onclick="closeDiscountModal()">Cancel</button>
+          <button class="rr-btn primary" id="sfaDiscApplyBtn" onclick="_sfaDiscApply()" disabled style="background:#b45309; border-color:#b45309; color:#fff;">Apply discount</button>
+        </div>
+      </div>
+    </div>`;
+  const host = document.createElement('div');
+  host.id = 'sfaDiscountHost';
+  host.innerHTML = html;
+  document.body.appendChild(host);
+  _sfaDiscPreview();
+}
+
+function closeDiscountModal() {
+  if (_sfaDiscCtx && _sfaDiscCtx.running) return; // не закрывать посреди прогона
+  const host = document.getElementById('sfaDiscountHost');
+  if (host) host.remove();
+  _sfaDiscCtx = null;
+}
+
+// Живой предпросмотр + валидация. Возвращает null при невалидном вводе,
+// иначе { mode, value, perItem:[{item, computed}] }.
+function _sfaDiscCompute() {
+  if (!_sfaDiscCtx) return null;
+  const mode = document.getElementById('sfaDiscMode')?.value === 'fixed' ? 'fixed' : 'percent';
+  const value = +(document.getElementById('sfaDiscValue')?.value || '');
+  if (!Number.isFinite(value) || value <= 0) return null;
+  const perItem = _sfaDiscCtx.items.map(it => ({
+    item: it,
+    // То же округление, что в CF: percent → round на ЦЕЛЫХ центах remaining.
+    // Сначала округляем float-пыль (*100) до целых центов — иначе на
+    // полуцентовых границах (например $2.05 @10%) расходимся с CF на 1¢.
+    computed: mode === 'percent'
+      ? Math.round(Math.round(+it.amountDue * 100) * value / 100) / 100
+      : Math.round(value * 100) / 100,
+  }));
+  return { mode, value, perItem };
+}
+
+function _sfaDiscPreview() {
+  if (!_sfaDiscCtx) return;
+  const line = document.getElementById('sfaDiscPreviewLine');
+  const applyBtn = document.getElementById('sfaDiscApplyBtn');
+  const reason = (document.getElementById('sfaDiscReason')?.value || '').trim();
+  const fmt = (n) => '$' + (+n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const calc = _sfaDiscCompute();
+  let ok = false;
+  let text = 'Enter a percent or a fixed amount.';
+  let color = '#78350f';
+  if (calc) {
+    const { mode, value, perItem } = calc;
+    // 100%-запрет (v1): полный comp месяца — через Waive (free month).
+    if (mode === 'percent' && value >= 100) {
+      text = '100% discount is not allowed — use Waive (free month) instead.';
+      color = '#b91c1c';
+    } else {
+      // 0 < скидка < amount_due для КАЖДОГО счёта в выборке.
+      const over = perItem.filter(x => x.computed >= +x.item.amountDue - 0.004);
+      const zero = perItem.filter(x => x.computed < 0.01);
+      if (over.length) {
+        text = mode === 'fixed'
+          ? `Discount must be below the amount due — ${over.length === perItem.length ? 'every selected invoice' : over.length + ' of ' + perItem.length + ' invoices'} would hit 100% (use Waive instead).`
+          : 'Discount must be strictly below the amount due — use Waive (free month) instead.';
+        color = '#b91c1c';
+      } else if (zero.length) {
+        // Симметрично over-проверке: блокируем при ЛЮБОМ $0-счёте, а не только
+        // когда все нулевые — иначе $0-элементы уезжают в CF и возвращаются
+        // «ошибками» в сводке, пугая оператора.
+        text = zero.length === perItem.length
+          ? 'Computed discount is $0 — enter a larger value.'
+          : `Computed discount is $0 for ${zero.length} of ${perItem.length} invoices — enter a larger value.`;
+        color = '#b91c1c';
+      } else if (perItem.length === 1) {
+        const it = perItem[0].item;
+        const d = perItem[0].computed;
+        const pct = mode === 'percent' ? value : Math.round(d / +it.amountDue * 1000) / 10;
+        text = `${fmt(it.amountDue)} → ${fmt(+it.amountDue - d)} (−${fmt(d)}, ${pct}%)`;
+        ok = true;
+      } else {
+        const totDue = perItem.reduce((s, x) => s + +x.item.amountDue, 0);
+        const totDisc = perItem.reduce((s, x) => s + x.computed, 0);
+        text = `${perItem.length} invoices: ${fmt(totDue)} → ${fmt(totDue - totDisc)} (−${fmt(totDisc)}${mode === 'percent' ? `, ${value}%` : `, ${fmt(value)} each`})`;
+        ok = true;
+      }
+    }
+  }
+  // Валидная сумма, но пустой reason — объясняем, почему Apply неактивен.
+  if (ok && !reason.length) text += ' · Enter a reason to enable Apply.';
+  if (line) { line.textContent = text; line.style.color = color; }
+  // Apply активен только при валидной сумме И непустом reason.
+  if (applyBtn) applyBtn.disabled = !(ok && reason.length > 0);
+}
+
+// Последовательный прогон callable по каждому счёту (bulk «лифт» = один
+// reason — N кредит-нот; отдельного batch-CF сознательно нет). Каждый
+// вызов идемпотентен на стороне CF (fingerprint + idempotencyKey).
+async function _sfaDiscApply() {
+  if (!_sfaDiscCtx || _sfaDiscCtx.running) return;
+  const calc = _sfaDiscCompute();
+  const reasonTextRaw = (document.getElementById('sfaDiscReason')?.value || '').trim();
+  if (!calc || !reasonTextRaw) { _sfaDiscPreview(); return; }
+  const category = document.getElementById('sfaDiscCategory')?.value || 'Other';
+  // Категория уезжает в тот же reason-параметр CF (single-param API);
+  // «Other» не префиксуем — текст оператора самодостаточен.
+  const reason = category === 'Other' ? reasonTextRaw : `${category}: ${reasonTextRaw}`;
+  const emailTenant = !!document.getElementById('sfaDiscEmail')?.checked;
+  if (!fbSync?.enabled || typeof stripeCallable !== 'function') {
+    toast?.('Sign in required — Cloud Functions not ready', 'error');
+    return;
+  }
+  const fmt = (n) => '$' + (+n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  _sfaDiscCtx.running = true;
+  const applyBtn = document.getElementById('sfaDiscApplyBtn');
+  const cancelBtn = document.getElementById('sfaDiscCancelBtn');
+  const status = document.getElementById('sfaDiscStatus');
+  if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = 'Applying…'; }
+  if (cancelBtn) cancelBtn.disabled = true;
+  if (status) status.style.display = '';
+
+  const results = { ok: 0, already: 0, errors: [] };
+  const n = calc.perItem.length;
+  // try/finally: синхронный throw (например, из фабрики stripeCallable) не
+  // должен навсегда оставить running=true — иначе closeDiscountModal()
+  // заблокирован до перезагрузки страницы.
+  try {
+    const fn = stripeCallable('stripeDiscountInvoice');
+    for (let i = 0; i < n; i++) {
+      const { item } = calc.perItem[i];
+      if (status) status.innerHTML = `Applying ${i + 1}/${n} — <code style="font-size:11px;">${esc(item.number)}</code>…`;
+      try {
+        const res = await fn({
+          invoiceId: item.invoiceId,
+          unitId: String(item.unitId),
+          ym: item.ym,
+          mode: calc.mode,
+          value: calc.value,
+          reason,
+          emailTenant,
+        });
+        const d = (res && res.data) || {};
+        if (d.action === 'noop-existing') results.already++;
+        else results.ok++;
+        // Патчим UI-кэш (не state!): remaining уменьшился на сумму кредит-ноты.
+        if (Array.isArray(_invoicesCache)) {
+          const row = _invoicesCache.find(r => r && r.id === item.invoiceId);
+          if (row) {
+            if (d.newAmountDue != null && Number.isFinite(+d.newAmountDue)) row.amountRemaining = +d.newAmountDue;
+            else if (Number.isFinite(+d.discountAmount)) row.amountRemaining = Math.max(0, (+row.amountRemaining || 0) - +d.discountAmount);
+          }
+        }
+      } catch (err) {
+        console.error('[discount] failed for', item.invoiceId, err);
+        results.errors.push({ number: item.number, msg: err?.message || err?.details?.message || String(err) });
+      }
+    }
+  } finally {
+    if (_sfaDiscCtx) _sfaDiscCtx.running = false;
+    // Аварийный выход: если что-то бросило до сводки, Cancel остаётся живым.
+    if (cancelBtn) cancelBtn.disabled = false;
+  }
+
+  // Итоговая сводка «applied N/M, errors: …» — в модале + toast.
+  const applied = results.ok + results.already;
+  const parts = [`Applied ${applied}/${n}`];
+  if (results.already) parts.push(`${results.already} already discounted`);
+  if (results.errors.length) parts.push(`${results.errors.length} failed`);
+  toast?.(parts.join(' · '), results.errors.length ? 'error' : 'success');
+  if (status) {
+    status.innerHTML = `<b>Applied ${applied}/${n}.</b>`
+      + (results.already ? ` ${results.already} already had a credit note (idempotent).` : '')
+      + (results.errors.length
+        ? `<div style="margin-top:6px; color:var(--danger, #b91c1c);">Errors:</div><ul style="margin:4px 0 0; padding-left:18px;">`
+          + results.errors.map(e => `<li style="font-size:11.5px;"><code style="font-size:11px;">${esc(e.number)}</code> — ${esc(e.msg)}</li>`).join('')
+          + '</ul>'
+        : '');
+  }
+  if (applyBtn) { applyBtn.textContent = 'Done'; applyBtn.style.display = 'none'; }
+  if (cancelBtn) { cancelBtn.disabled = false; cancelBtn.textContent = 'Close'; }
+
+  // Refresh поверхностей — леджер обновит sync-листенер (rec пишет CF);
+  // здесь только UI-кэши и перерисовки.
+  const src = _sfaDiscCtx.source;
+  try {
+    if (src === 'unit') {
+      const u = (typeof currentUnits === 'function' && Array.isArray(selectedIds) && selectedIds.length)
+        ? currentUnits().find(x => x.id === selectedIds[0]) : null;
+      if (u && typeof _fetchUnitInvoicesFromStripe === 'function') {
+        try { await _fetchUnitInvoicesFromStripe(u, { force: true }); } catch (e) { console.warn('[discount] refresh', e); }
+      }
+      if (typeof renderDetail === 'function') renderDetail();
+    } else {
+      if (typeof clearInvoiceSelection === 'function') clearInvoiceSelection();
+      if (typeof renderInvoicesPage === 'function') renderInvoicesPage(true); // свежий amount_remaining из Stripe
+    }
+    if (typeof renderCollectionsBridge === 'function') renderCollectionsBridge();
+  } catch (e) { console.warn('[discount] post-apply refresh', e); }
+}
+
+// ---------- Billing → Invoices: right-click + bulk ----------
+
+// Позиционирование контекст-меню с clamp к вьюпорту (тот же алгоритм,
+// что в _invHistoryRowMenu — хелпер, чтобы не дублировать в новом коде).
+function _sfaCtxMenuShowAt(menu, event) {
+  menu.style.display = 'block';
+  const margin = 6;
+  const rect = menu.getBoundingClientRect();
+  let x = event.clientX;
+  let y = event.clientY;
+  if (x + rect.width + margin > window.innerWidth) x = window.innerWidth - rect.width - margin;
+  if (y + rect.height + margin > window.innerHeight) y = window.innerHeight - rect.height - margin;
+  menu.style.left = Math.max(margin, x) + 'px';
+  menu.style.top = Math.max(margin, y) + 'px';
+}
+
+// Годен ли cache-row под v1-скидку (Billing-поверхность).
+function _sfaDiscRowEligible(r) {
+  if (!r) return { ok: false, why: 'not in cache' };
+  const bucket = (r.bucket || '').toLowerCase();
+  if (bucket !== 'open' && bucket !== 'past_due') return { ok: false, why: 'not open/past due' };
+  const meta = r.metadata || {};
+  if ((meta.purpose || '') !== 'rent') return { ok: false, why: 'not a rent invoice' };
+  if (!/^\d{4}-\d{2}$/.test(String(meta.ym || ''))) return { ok: false, why: 'no billing month' };
+  if (!meta.unitId) return { ok: false, why: 'no unit on invoice' };
+  const due = +r.amountRemaining > 0 ? +r.amountRemaining : +r.total;
+  if (!(due > 0)) return { ok: false, why: 'nothing due' };
+  if (_sfaDiscLooksAdvance(r.id)) return { ok: false, why: 'multi-month advance anchor' };
+  return { ok: true, due };
+}
+
+// Right-click меню строки Billing→Invoices (переиспользуем singleton
+// #invHistoryCtxMenu + _invHistoryMenuBtn).
+function _invPageRowMenu(event, trEl) {
+  event.preventDefault();
+  event.stopPropagation();
+  const id = trEl?.dataset?.invoiceId || '';
+  if (!id) return;
+  const r = (typeof _lookupInvoiceRow === 'function') ? _lookupInvoiceRow(id) : null;
+  const menu = _invHistoryEnsureMenuEl();
+  const fmt = (n) => '$' + (+n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const items = [];
+  items.push(`<div style="padding:8px 10px 6px; border-bottom:1px solid #f1f5f9;">
+    <div style="font-size:11px; color:#94a3b8; text-transform:uppercase; letter-spacing:0.5px; font-weight:700;">${esc(((r?.bucket) || 'invoice').toUpperCase())}</div>
+    <div style="font-weight:700; font-size:13px; color:#0f172a; margin-top:2px;">${esc(r?.number || id)}</div>
+    <div style="font-size:11.5px; color:#64748b; margin-top:1px;">${esc(r?.customerName || '')}${r?.metadata?.unitId ? ' · Suite ' + esc(String(r.metadata.unitId)) : ''} · ${esc(fmt(r?.total))}</div>
+  </div>`);
+  const elig = _sfaDiscRowEligible(r);
+  if (elig.ok) {
+    items.push(_invHistoryMenuBtn(
+      'Give discount…',
+      `_invPageGiveDiscount('${esc(id)}'); document.getElementById('invHistoryCtxMenu').style.display='none';`,
+      '#b45309'
+    ));
+  } else {
+    items.push(`<div style="padding:6px 10px 8px; font-size:10.5px; color:#94a3b8; line-height:1.4;">
+      Discount unavailable — ${esc(elig.why)}. Only single-month rent invoices that are open or past due can take a credit-note discount.
+    </div>`);
+  }
+  menu.innerHTML = items.join('');
+  _sfaCtxMenuShowAt(menu, event);
+}
+
+function _invPageGiveDiscount(id) {
+  const r = (typeof _lookupInvoiceRow === 'function') ? _lookupInvoiceRow(id) : null;
+  const elig = _sfaDiscRowEligible(r);
+  if (!elig.ok) { toast?.('Cannot discount: ' + elig.why, 'error'); return; }
+  openDiscountModal([{
+    invoiceId: r.id,
+    unitId: String(r.metadata.unitId),
+    ym: String(r.metadata.ym),
+    number: r.number || r.id,
+    tenant: r.customerName || '',
+    amountDue: elig.due,
+  }], { source: 'billing' });
+}
+
+// Bulk «Discount selected…» — чекбоксы существующей bulk-инфраструктуры
+// (_invSelection). Один reason/percent — N последовательных кредит-нот.
+function openInvoiceBulkDiscount() {
+  const ids = Array.from(_invSelection);
+  if (!ids.length) return;
+  const byId = new Map((_invoicesCache || []).map(r => [r.id, r]));
+  const items = [];
+  let skipped = 0;
+  for (const id of ids) {
+    const r = byId.get(id);
+    const elig = _sfaDiscRowEligible(r);
+    if (!elig.ok) { skipped++; continue; }
+    items.push({
+      invoiceId: r.id,
+      unitId: String(r.metadata.unitId),
+      ym: String(r.metadata.ym),
+      number: r.number || r.id,
+      tenant: r.customerName || '',
+      amountDue: elig.due,
+    });
+  }
+  if (!items.length) {
+    toast?.('None of the selected invoices can take a discount — only open/past-due single-month rent invoices qualify', 'error');
+    return;
+  }
+  openDiscountModal(items, { source: 'billing', skipped });
 }
 
 function renderUnitInvoiceReportBody(u) {
@@ -136723,6 +137199,7 @@ function _collectionsBridgeRows(yms) {
   for (const ym of list) {
     byYm.set(ym, {
       ym, expected: 0, waived: 0, prorated: 0,
+      discounts: 0, discountLines: [],   // credit-note / create-time скидки (rec.discountAmount)
       collected: { earlier: 0, inMonth: 0, later: 0, total: 0 },
       unpaid: [], notBilled: [], shortPaid: [], gapPct: 0,
       paidLines: [],
@@ -136821,7 +137298,12 @@ function _collectionsBridgeRows(yms) {
               // берём тот же инвойс, который принял _isMonthSettled.
               const invId = _cbrPaidStampForYm(u, ym);
               const cRow = (invId && typeof _lookupInvoiceRow === 'function') ? _lookupInvoiceRow(invId) : null;
-              collAmt = (cRow && +cRow.total > 0) ? +cRow.total : (expectedAmt > 0 ? expectedAmt : rent);
+              // amountPaid сильнее total: после кредит-ноты total инвойса
+              // остаётся ПОЛНЫМ, реально собрано — amount_paid (скидочный
+              // месяц иначе завышал бы Collected на сумму скидки).
+              collAmt = (cRow && +cRow.amountPaid > 0) ? +cRow.amountPaid
+                : (cRow && +cRow.total > 0) ? +cRow.total
+                : (expectedAmt > 0 ? expectedAmt : rent);
               cashYm = _cbrStripeCashYm(cRow, ym);
               method = 'stripe';
               cashDate = cRow ? _cbrFmtCashDate(cRow.paidAt) : '';
@@ -136844,14 +137326,32 @@ function _collectionsBridgeRows(yms) {
             } catch (e) { /* best-effort */ }
           }
 
+          // ---- Discounts (rec.discountAmount, пишет ТОЛЬКО CF) --------
+          // Оба источника одним кодом: скидка-при-создании (Create Invoice
+          // модал) и пост-фактум credit note (stripeDiscountInvoice).
+          // Остаётся ВНУТРИ Expected — объясняет разницу, гэпом не считается.
+          const discAmt = (p && p.wasDiscounted && Number.isFinite(+p.discountAmount) && +p.discountAmount > 0)
+            ? +p.discountAmount : 0;
+          if (discAmt > 0) {
+            row.discounts += discAmt;
+            row.discountLines.push({
+              unitId: u.id,
+              tenant: tenantName || '(no name)',
+              amount: discAmt,
+              reason: String(p.discountReason || ''),
+            });
+          }
+
           // ---- Short-pay (живая верификация 2026-07-03, D1) ---------
           // Settled-месяц с живым окном, где собрано+прощено < expected
           // (недоплата / незаписанная скидка): остаток НЕ попадает ни в
           // Unpaid, ни в Not billed (месяц закрыт) и без этого списка был
           // бы виден лишь как необъяснимая разница Expected vs Collected.
           // В gapPct по одобренной конвенции НЕ входит — только детализация.
+          // ЗАПИСАННАЯ скидка (discAmt) вычитается: скидочный месяц закрыт
+          // честно и в Short-paid списке не место.
           if (windowExpected && (settled === 'paid' || settled === 'stripe-paid')) {
-            const shortDelta = expectedAmt - waivedAmt - collAmt;
+            const shortDelta = expectedAmt - waivedAmt - discAmt - collAmt;
             if (shortDelta > 0.005) {
               row.shortPaid.push({ unitId: u.id, tenant: tenantName || '(no name)', amount: shortDelta });
             }
@@ -136902,6 +137402,7 @@ function _collectionsBridgeRows(yms) {
     row.unpaid.sort((a, z) => z.amount - a.amount);
     row.notBilled.sort((a, z) => z.amount - a.amount);
     row.shortPaid.sort((a, z) => z.amount - a.amount);
+    row.discountLines.sort((a, z) => z.amount - a.amount);
     row.paidLines.sort((a, z) => (a.cashDate || '').localeCompare(z.cashDate || ''));
   }
   return list.map(ym => byYm.get(ym));
@@ -136938,6 +137439,7 @@ function _cbrColumnsByKey() {
     inMonth:   { sortValue: r => r.collected.inMonth },
     later:     { sortValue: r => r.collected.later },
     waived:    { sortValue: r => r.waived },
+    discounts: { sortValue: r => r.discounts },
     prorated:  { sortValue: r => r.prorated },
     unpaid:    { sortValue: r => r.unpaid.reduce((s, x) => s + x.amount, 0) },
     notBilled: { sortValue: r => r.notBilled.reduce((s, x) => s + x.amount, 0) },
@@ -136988,7 +137490,19 @@ function _cbrBuildDetailHtml(r) {
   };
   html += listBlock('Unpaid', r.unpaid, 'var(--danger)', 'Invoice or payment record exists for the month but it is not settled');
   html += listBlock('Not billed', r.notBilled, '#a16207', 'No payment row and no Stripe invoice stamp for this month');
-  html += listBlock('Short-paid (settled)', r.shortPaid, '#a16207', 'Month is settled but recorded collections plus waivers fall short of expected rent — short-payment or an unrecorded discount. Explains the Expected vs Collected difference; not counted in Gap %');
+  html += listBlock('Short-paid (settled)', r.shortPaid, '#a16207', 'Month is settled but recorded collections plus waivers and recorded discounts fall short of expected rent — short-payment or an unrecorded discount. Explains the Expected vs Collected difference; not counted in Gap %');
+  // Discounts — отдельный блок с колонкой Reason (listBlock трёхколоночный,
+  // reason туда не влезает). Все user-typed строки через esc().
+  if (Array.isArray(r.discountLines) && r.discountLines.length) {
+    const dTotal = r.discountLines.reduce((s, x) => s + x.amount, 0);
+    html += `<div style="padding:8px 20px 4px; font-size:10.5px; text-transform:uppercase; letter-spacing:0.4px; color:#b45309; font-weight:700;" title="Credit-note and create-time discounts recorded on the month's ledger rows. Stays inside Expected; not counted in Gap %">Discounts · ${r.discountLines.length} · ${_cbrFmtMoney(dTotal)}</div>`
+      + r.discountLines.map(x => `<div style="display:grid; grid-template-columns: 90px 1fr 110px 1.4fr; gap:10px; padding:4px 20px; font-size:11.5px; align-items:center;">
+          <div style="font-family:var(--zip-mono, monospace); font-weight:600;">${esc(x.unitId)}</div>
+          <div>${esc(x.tenant)}</div>
+          <div style="text-align:right; font-weight:600; font-variant-numeric:tabular-nums; color:#b45309;">${fmtAmt(x.amount)}</div>
+          <div style="color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${esc(x.reason)}">${esc(x.reason || '—')}</div>
+        </div>`).join('');
+  }
   return `<div style="padding:2px 0 8px;">${html}</div>`;
 }
 
@@ -137084,16 +137598,17 @@ function renderCollectionsBridge() {
       <td style="${num}">${_cbrFmtMoney(r.collected.inMonth)}</td>
       <td style="${num} color:#a16207;">${_cbrFmtMoney(r.collected.later)}</td>
       <td style="${num}">${_cbrFmtMoney(r.waived)}</td>
+      <td style="${num} ${r.discounts > 0 ? 'color:#b45309; font-weight:600;' : 'color:var(--muted);'}">${r.discounts > 0 ? `<span title="${esc(`${r.discountLines.length} discount${r.discountLines.length === 1 ? '' : 's'} recorded — expand the row for units and reasons`)}">${_cbrFmtMoney(r.discounts)} · ${r.discountLines.length}</span>` : '—'}</td>
       <td style="${num} color:var(--muted);">${_cbrFmtMoney(r.prorated)}</td>
       <td style="${num}">${unpaidCell}</td>
       <td style="${num}">${nbCell}</td>
       <td style="${num}">${gapCell}</td>
     </tr>`;
     const detail = expandedNow
-      ? `<tr><td colspan="11" style="padding:0; background: var(--surface-2);">${_cbrBuildDetailHtml(r)}</td></tr>`
+      ? `<tr><td colspan="12" style="padding:0; background: var(--surface-2);">${_cbrBuildDetailHtml(r)}</td></tr>`
       : '';
     return main + detail;
-  }).join('') || `<tr><td colspan="11" style="padding:24px; text-align:center; color:var(--muted);">No data for the selected period.</td></tr>`;
+  }).join('') || `<tr><td colspan="12" style="padding:24px; text-align:center; color:var(--muted);">No data for the selected period.</td></tr>`;
 
   // Стандарт таблиц проекта (§14 / память): prefs + Columns-кнопка + sort.
   try {
@@ -144580,7 +145095,7 @@ async function renderInvoicesPage(force, opts) {
       + `title="${esc(lockTip)}">`
       + `</td>`;
     const rowClass = _invSelection.has(r.id) ? ' class="selected"' : '';
-    return `<tr${rowClass} data-invoice-id="${esc(r.id)}" onclick="window.open('${esc(_safeHttpUrl(url))}', '_blank')" title="${esc(tip)}">`
+    return `<tr${rowClass} data-invoice-id="${esc(r.id)}" onclick="window.open('${esc(_safeHttpUrl(url))}', '_blank')" oncontextmenu="_invPageRowMenu(event, this); return false;" title="${esc(tip)}">`
       + selectTd
       + cols.map(c => renderInvCell(c.key, r)).join('')
       + `</tr>`;
