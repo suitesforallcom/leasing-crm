@@ -19376,6 +19376,52 @@
           </div>
         </div>
 
+        <!-- ==========================================================
+             Collections bridge — «ожидалось за месяц → собрано ЗА месяц →
+             пришло раньше / в месяц / позже → waived / prorated /
+             unpaid / not billed». Дизайн + одобренные конвенции:
+             docs/collections-bridge-proposal-2026-07-03.md.
+             Заполняется renderCollectionsBridge() — хук на тот же триггер,
+             что и KPI strip выше (обёртка renderBillingKpiStrip).
+             Display-only: никаких мутаций state. -->
+        <div id="cbrSection" style="margin: 10px 0 2px;">
+          <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            <button class="rr-btn" id="cbrToggleBtn" onclick="cbrToggleCollapsed()" title="Show or hide the Collections bridge — expected rent vs collections applied per billing month, with payment timing, waivers and the unpaid / not-billed gap">▸ Collections bridge</button>
+            <span id="cbrHeadNote" style="font-size:11.5px; color: var(--muted);" title="Current-month snapshot — expand the section for the full monthly table">—</span>
+            <div style="flex:1;"></div>
+            <!-- инлайн-стили = .ar-toolbar .ar-sel (класс ar-sel скоуплен под
+                 .ar-toolbar и здесь был бы мёртвым — селект рендерился голым) -->
+            <select id="cbrRange" onchange="renderCollectionsBridge()" title="Period — how many billing months to show, newest first" style="display:none; height:28px; padding:4px 6px; font-size:11.5px; border:1px solid var(--border); border-radius:5px; background:var(--surface); color:var(--text); cursor:pointer;">
+              <option value="12" selected>12 months</option>
+              <option value="24">24 months</option>
+            </select>
+            <span id="cbrColsHost" style="display: none;"></span>
+          </div>
+          <div id="cbrBody" style="display:none; margin-top:8px;">
+            <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: auto;">
+              <table class="inv-table" id="cbrTable">
+                <thead>
+                  <tr>
+                    <th data-col-key="month" data-col-fixed="true" data-col-sortable="true" style="white-space:nowrap;" title="Billing month the rent was FOR (accrual month) — not the cash-receipt month. Click a row to expand per-unit detail">Month</th>
+                    <th data-col-key="expected" data-col-sortable="true" style="text-align:right;" title="Contract rent expected FOR this month — units whose lease window covers the month. Group leases counted once (head suite). Waived months stay included here. Lease-start and scheduled mid-month move-out months are prorated by day fraction. Moved-out tenants keep their past months via settled ledger evidence">Expected</th>
+                    <th data-col-key="collected" data-col-sortable="true" style="text-align:right;" title="Collections applied — money received FOR this billing month regardless of when it arrived (industry convention). Also values Stripe-paid months that have no local ledger row, so it can exceed the Collected KPI card when webhook rows were dropped. Multi-month advance payments recorded as one lump appear in full in their anchor month (same as P&amp;L)">Collected FOR</th>
+                    <th data-col-key="earlier" data-col-sortable="true" style="text-align:right;" title="Portion of Collected FOR that arrived BEFORE the billing month (prepayments, multi-month advances)">Paid earlier</th>
+                    <th data-col-key="inMonth" data-col-sortable="true" style="text-align:right;" title="Portion of Collected FOR that arrived DURING the billing month itself">Paid in month</th>
+                    <th data-col-key="later" data-col-sortable="true" style="text-align:right;" title="Portion of Collected FOR that arrived AFTER the billing month (late / catch-up payments)">Paid later</th>
+                    <th data-col-key="waived" data-col-sortable="true" style="text-align:right;" title="Rent forgiven for this month — fully waived months plus partial waiver credits. Stays inside Expected; this column explains the difference and is NOT counted as a collection gap">Waived</th>
+                    <th data-col-key="prorated" data-col-sortable="true" style="text-align:right;" title="Reduction vs full contract rent from mid-month lease starts (and scheduled mid-month move-outs) — the day-fraction discount already excluded from Expected">Prorated</th>
+                    <th data-col-key="unpaid" data-col-sortable="true" style="text-align:right;" title="Expected, not collected and not waived, where an invoice or payment record EXISTS for the month. Click the cell to open the Aging tab with the debtor list">Unpaid</th>
+                    <th data-col-key="notBilled" data-col-sortable="true" style="text-align:right;" title="Expected but NO invoice evidence at all for the month — no payment row and no Stripe invoice stamp (billing rule off, building paused, missed cron)">Not billed</th>
+                    <th data-col-key="gap" data-col-sortable="true" style="text-align:right;" title="(Unpaid + Not billed) / Expected — share of the month's expected rent still missing. Waived rent does not count as gap. Settled months that were short-paid (or settled with a $0 record) do NOT raise this number — expand the row and check the Short-paid list">Gap %</th>
+                  </tr>
+                </thead>
+                <tbody id="cbrTbody"></tbody>
+              </table>
+            </div>
+            <div style="font-size:10.5px; color: var(--muted); margin-top:4px;">Click a month row for per-unit detail · click an Unpaid cell to open Aging · scope = active building (same as the KPI cards above)</div>
+          </div>
+        </div>
+
         <!-- Tabs: Invoices / A/R Aging / Leases / Contracts. ZIP-style
              underline-on-active. The Invoices rail button still routes
              through showBilling + setBillingTab('invoices') so all
@@ -136555,6 +136601,540 @@ function renderBillingKpiStrip() {
   }
   drawBillingKpiSpark(points);
 }
+
+// ====================================================================
+// COLLECTIONS BRIDGE — «ожидалось за месяц → собрано ЗА месяц → тайминг
+// (раньше / в месяц / позже) → waived / prorated / unpaid / not billed».
+// Дизайн + одобренные оператором конвенции (§3-гейт закрыт 2026-07-03):
+// docs/collections-bridge-proposal-2026-07-03.md.
+//
+// ЧИСТО ДОБАВОЧНЫЙ БЛОК — существующие функции (_pnlCollect,
+// _computeUnitMoney, цикл KPI-strip, aging, stacking) НЕ тронуты; только
+// читаем state и переиспользуем каноничные хелперы:
+//   · _isMonthSettled     — FIXES_LOG Entry 55: никакого голого
+//     p.status==='paid'; учитывает stripe-paid + депозит-guard Entry 34
+//   · _pnlMonthKey        — кассовый месяц (date-месяц; backfill → сам ym)
+//   · _monthBilling       — prorate стартового месяца (unit НЕ передаём,
+//     чтобы waiver-кредит не смешивался с prorate — waived отдельно)
+//   · _isFinanceShadow    — EQ-2: группа suites = ОДИН лиз (только head)
+//   · _isMonthToMonth     — M2M billable пока occupied
+//   · _unitProrationCredit— частичный waiver (EQ-5)
+//   · _lookupInvoiceRow   — сумма/paidAt Stripe-инвойса для stripe-paid
+//     месяцев без локальной строки леджера (Entry 70/71: строки могли
+//     не записаться; кэш-fallback держит Collected честным)
+// Display-only: НИКАКИХ мутаций state / Firestore / Stripe.
+// ====================================================================
+
+// Кассовый месяц stripe-paid месяца без строки леджера: paidAt из кэша
+// (бывает ms-числом, ISO-строкой или отсутствует → считаем «в месяц»).
+function _cbrStripeCashYm(row, ym) {
+  const pa = row ? row.paidAt : null;
+  if (typeof pa === 'number' && isFinite(pa)) {
+    const d = new Date(pa);
+    if (!isNaN(d.getTime())) return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  }
+  if (typeof pa === 'string' && /^\d{4}-\d{2}/.test(pa)) return pa.slice(0, 7);
+  if (typeof pa === 'string' && pa) {
+    const t = Date.parse(pa);
+    if (!isNaN(t)) {
+      const d = new Date(t);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    }
+  }
+  return ym;
+}
+
+// paidAt кэша → отображаемая дата 'YYYY-MM-DD' (ms | ISO | пусто).
+function _cbrFmtCashDate(v) {
+  if (typeof v === 'number' && isFinite(v)) {
+    const d = new Date(v);
+    if (!isNaN(d.getTime())) return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+  if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10);
+  return '';
+}
+
+// Stripe-стэмп-EVIDENCE для ym — «месяц вообще выставлялся?» (Unpaid vs
+// Not billed). Любой ym-стэмп считается evidence, статус/депозит НЕ
+// проверяем (open/past_due инвойс — тоже evidence биллинга). Оба стэмпа
+// проверяем НЕЗАВИСИМО (Entry 34 паттерн: чистка одного не чистит другой).
+// Для ОЦЕНКИ оплаченного месяца использовать _cbrPaidStampForYm ниже.
+// Возвращает invoiceId или null.
+function _cbrStripeStampForYm(u, ym) {
+  const mi = u && u.stripe ? u.stripe.moveInRent : null;
+  if (mi && mi.ym === ym && mi.invoiceId) return mi.invoiceId;
+  if (u && u.stripe && u.stripe.lastInvoiceYm === ym && u.stripe.lastInvoiceId) return u.stripe.lastInvoiceId;
+  return null;
+}
+
+// Строгий вариант для ОЦЕНКИ stripe-paid месяца (сумма/дата из кэша):
+// принимаем стэмп только если он НЕ указывает на депозит-инвойс
+// (_stampPointsToDeposit, Entry 34) и его инвойс реально в bucket 'paid' —
+// те же гарды и тот же порядок (moveInRent → lastInvoiceId), что в
+// _isMonthSettled. Иначе Entry-34-класс кросс-стэмпа заставил бы мост
+// оценить месяц суммой ДЕПОЗИТА с его же кассовой датой.
+function _cbrPaidStampForYm(u, ym) {
+  const ok = (id) => {
+    if (!id) return false;
+    if (typeof _stampPointsToDeposit === 'function' && _stampPointsToDeposit(u, id)) return false;
+    if (typeof _lookupInvoiceBucket === 'function') return _lookupInvoiceBucket(id) === 'paid';
+    return true; // load-order fallback — кэш-хелперов ещё нет
+  };
+  const mi = u && u.stripe ? u.stripe.moveInRent : null;
+  if (mi && mi.ym === ym && mi.invoiceId && ok(mi.invoiceId)) return mi.invoiceId;
+  if (u && u.stripe && u.stripe.lastInvoiceYm === ym && u.stripe.lastInvoiceId && ok(u.stripe.lastInvoiceId)) return u.stripe.lastInvoiceId;
+  return null;
+}
+
+// --------------------------------------------------------------------
+// ДВИЖОК. Чистая функция: yms (массив 'YYYY-MM') → массив строк
+//   { ym, expected, waived, prorated,
+//     collected: { earlier, inMonth, later, total },
+//     unpaid:    [{unitId, tenant, amount}],
+//     notBilled: [{unitId, tenant, amount}],
+//     shortPaid: [{unitId, tenant, amount}],  // settled, но собрано+прощено < expected
+//     gapPct,
+//     paidLines: [{unitId, tenant, amount, cashDate, method, timing}] }
+// Скоуп = активное здание (тот же canAccessBuilding+_matchesActiveBuilding
+// резолвер, что у KPI-strip выше). Порядок строк = порядок yms на входе.
+//
+// Конвенции (одобрены оператором, см. proposal-doc):
+//  1. Expected(ym) = контрактная рента (EQ-1) для юнитов, чьё окно лизы
+//     покрывает ym; company-only лизы СЧИТАЮТСЯ (u.tenant || u.company,
+//     Suite 421); HOLDOVER — occupied сегодня с истёкшим/пустым until =
+//     expected до текущего месяца включительно; future-лизы не expected;
+//     mid-month старт/выезд → prorate по доле дней (дельта в Prorated);
+//     M2M billable пока occupied; waived-месяцы ОСТАЮТСЯ в Expected.
+//  2. Multi-month платежи: advance-flow уже пишет per-month строки
+//     (coversInvoiceMonths-стэмп); строка без стэмпа = только свой ym.
+//  3. Collected FOR ym — settled-тест ТОЛЬКО через _isMonthSettled;
+//     stripe-paid без строки леджера → сумма из Stripe-кэша (total),
+//     иначе контрактная рента; кассовый месяц по _pnlMonthKey-правилу.
+//  4. Unpaid = expected, не settled, не waived, ЕСТЬ invoice-evidence;
+//     Not billed = то же, но evidence НЕТ (ни строки, ни стэмпа).
+//     Историческая честность: съехавшие арендаторы сохраняют прошлые
+//     месяцы через settled-строку леджера (её сумма = expected).
+// --------------------------------------------------------------------
+function _collectionsBridgeRows(yms) {
+  const now = new Date();
+  const todayMid = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const list = (Array.isArray(yms) ? yms : []).filter(m => /^\d{4}-\d{2}$/.test(String(m)));
+  const byYm = new Map();
+  for (const ym of list) {
+    byYm.set(ym, {
+      ym, expected: 0, waived: 0, prorated: 0,
+      collected: { earlier: 0, inMonth: 0, later: 0, total: 0 },
+      unpaid: [], notBilled: [], shortPaid: [], gapPct: 0,
+      paidLines: [],
+    });
+  }
+  if (!list.length) return [];
+
+  for (const b of (state.buildings || [])) {
+    if (typeof canAccessBuilding === 'function' && !canAccessBuilding(b.id)) continue;
+    // Active-building scope — зеркалит KPI-strip выше (иначе цифры моста
+    // разойдутся с карточкой «Collected» прямо над ним).
+    if (typeof _matchesActiveBuilding === 'function' && !_matchesActiveBuilding(b.id)) continue;
+    for (const f of (b.floors || [])) {
+      for (const u of (f.units || [])) {
+        if (typeof isArchived === 'function' && isArchived(u)) continue;
+        if (u.rentable === false || (u.type && u.type !== 'office')) continue;
+        // EQ-2: члены группового лиза — тени; вся финансовая правда на head.
+        if (typeof _isFinanceShadow === 'function' && _isFinanceShadow(u)) continue;
+
+        const rent = +u.contractRent || +u.rent || 0;
+        const tenantName = u.tenant || u.company || '';
+        const occupied = u.status === 'occupied';
+        const startIso = (typeof toIsoDate === 'function')
+          ? toIsoDate(u.leaseStart || u.signed || '')
+          : String(u.leaseStart || u.signed || '').slice(0, 10);
+        const endIso = (typeof toIsoDate === 'function')
+          ? toIsoDate(u.until || u.leaseEnd || '')
+          : String(u.until || u.leaseEnd || '').slice(0, 10);
+        const startYm = startIso ? startIso.slice(0, 7) : '';
+        const m2m = (typeof _isMonthToMonth === 'function') ? _isMonthToMonth(u) : false;
+        const pays = (u.payments && typeof u.payments === 'object') ? u.payments : {};
+
+        for (const ym of list) {
+          const row = byYm.get(ym);
+          const p = pays[ym] || null;
+          // Entry 55: settled-тест ТОЛЬКО через _isMonthSettled ('paid' /
+          // 'free' / 'stripe-paid' / null). Fallback на голый статус — лишь
+          // load-order защита, как в _computeUnitMoney.
+          const settled = (typeof _isMonthSettled === 'function')
+            ? _isMonthSettled(u, ym)
+            : (p && p.status === 'paid' ? 'paid' : (p && p.status === 'free' ? 'free' : null));
+
+          // ---- Expected по окну лизы -------------------------------
+          // Требуем: occupied сегодня + арендатор (tenant ИЛИ company —
+          // Suite 421) + rent>0 + валидный старт + ym >= startYm.
+          // Лиза-старт-гейт (Entry 1): без startIso окно НЕ считаем —
+          // прошлое ловит evidence-fallback ниже. Все ym в диапазоне
+          // <= текущего месяца, поэтому «покрыт» = ym >= startYm
+          // (HOLDOVER: истёкший until при occupied не выключает expected).
+          let expectedAmt = 0;
+          let proratedDelta = 0;
+          let windowExpected = false;
+          if (occupied && rent > 0 && tenantName && startYm && ym >= startYm) {
+            windowExpected = true;
+            let amt = rent;
+            // Prorate месяца въезда — тот же _monthBilling, что карта/grid.
+            // unit НЕ передаём: waiver-кредит учитываем отдельной колонкой.
+            if (ym === startYm && typeof _monthBilling === 'function') {
+              try {
+                const mb = _monthBilling(rent, ym, startIso, 0, now, null);
+                if (mb && mb.isProratedMonth && isFinite(mb.monthRent) && mb.monthRent >= 0) amt = mb.monthRent;
+              } catch (e) { /* prorate best-effort — fallback на полную ренту */ }
+            }
+            // Mid-month ЗАПЛАНИРОВАННЫЙ выезд (until в этом ym и ещё не
+            // прошёл): prorate по доле дней. Уже истёкший until при
+            // occupied = holdover → полный месяц (арендатор остался).
+            if (!m2m && endIso && endIso.slice(0, 7) === ym) {
+              const endD = new Date(endIso + 'T00:00:00');
+              if (!isNaN(endD.getTime()) && endD >= todayMid) {
+                const parts = ym.split('-').map(Number);
+                const dim = new Date(parts[0], parts[1], 0).getDate();
+                const endDay = endD.getDate();
+                if (endDay < dim) {
+                  const capped = rent * (endDay / dim);
+                  if (capped < amt) amt = capped;
+                }
+              }
+            }
+            expectedAmt = amt;
+            proratedDelta = Math.max(0, rent - amt);
+          }
+
+          // ---- Collected FOR ym ------------------------------------
+          let collAmt = 0, cashYm = ym, method = '', cashDate = '';
+          if (settled === 'paid' || settled === 'stripe-paid') {
+            if (p && p.status === 'paid') {
+              // Локальная строка леджера — источник №1.
+              collAmt = Math.max(0, +p.amount || 0);
+              cashYm = (typeof _pnlMonthKey === 'function') ? (_pnlMonthKey(p, ym) || ym) : ym;
+              method = p.paidMethod || p.paidVia || '';
+              cashDate = p.date || '';
+            } else {
+              // stripe-paid БЕЗ строки леджера (Entry 70 класс) — Stripe-кэш:
+              // сумма = total инвойса, иначе контрактная рента; дата = paidAt.
+              // СТРОГИЙ стэмп-резолвер (депозит-guard + bucket==='paid'):
+              // берём тот же инвойс, который принял _isMonthSettled.
+              const invId = _cbrPaidStampForYm(u, ym);
+              const cRow = (invId && typeof _lookupInvoiceRow === 'function') ? _lookupInvoiceRow(invId) : null;
+              collAmt = (cRow && +cRow.total > 0) ? +cRow.total : (expectedAmt > 0 ? expectedAmt : rent);
+              cashYm = _cbrStripeCashYm(cRow, ym);
+              method = 'stripe';
+              cashDate = cRow ? _cbrFmtCashDate(cRow.paidAt) : '';
+            }
+            // Историческая честность: settled-запись за ym у юнита БЕЗ
+            // живого окна лизы (арендатор съехал, поля затёрты) доказывает,
+            // что месяц был billable → её сумма и есть expected.
+            if (!windowExpected && collAmt > 0) expectedAmt = collAmt;
+          }
+
+          // ---- Waived (остаётся ВНУТРИ Expected) -------------------
+          let waivedAmt = 0;
+          if (settled === 'free') {
+            waivedAmt = expectedAmt;
+          } else if (windowExpected && expectedAmt > 0 && typeof _unitProrationCredit === 'function') {
+            // Частичный waiver (EQ-5) на не-free месяце — прощённая доля.
+            try {
+              const credit = _unitProrationCredit(u, ym);
+              if (credit > 0) waivedAmt = Math.min(expectedAmt, expectedAmt * credit);
+            } catch (e) { /* best-effort */ }
+          }
+
+          // ---- Short-pay (живая верификация 2026-07-03, D1) ---------
+          // Settled-месяц с живым окном, где собрано+прощено < expected
+          // (недоплата / незаписанная скидка): остаток НЕ попадает ни в
+          // Unpaid, ни в Not billed (месяц закрыт) и без этого списка был
+          // бы виден лишь как необъяснимая разница Expected vs Collected.
+          // В gapPct по одобренной конвенции НЕ входит — только детализация.
+          if (windowExpected && (settled === 'paid' || settled === 'stripe-paid')) {
+            const shortDelta = expectedAmt - waivedAmt - collAmt;
+            if (shortDelta > 0.005) {
+              row.shortPaid.push({ unitId: u.id, tenant: tenantName || '(no name)', amount: shortDelta });
+            }
+          }
+
+          if (collAmt > 0) {
+            const timing = cashYm < ym ? 'earlier' : (cashYm > ym ? 'later' : 'inMonth');
+            row.collected[timing] += collAmt;
+            row.collected.total += collAmt;
+            row.paidLines.push({
+              unitId: u.id,
+              tenant: tenantName || '(no name)',
+              amount: collAmt,
+              cashDate: cashDate || '',
+              method: method || '',
+              timing,
+            });
+          }
+
+          // ---- Unpaid / Not billed ---------------------------------
+          // Только для живого окна лизы: не settled, не waived-остаток.
+          // Evidence = любая строка u.payments[ym] (open/late/bounced/
+          // advance) ИЛИ Stripe-стэмп на этот ym → Unpaid; иначе Not billed.
+          if (windowExpected && !settled) {
+            const owed = Math.max(0, expectedAmt - waivedAmt);
+            if (owed > 0.005) {
+              const entry = { unitId: u.id, tenant: tenantName || '(no name)', amount: owed };
+              const hasEvidence = !!p || !!_cbrStripeStampForYm(u, ym);
+              if (hasEvidence) row.unpaid.push(entry);
+              else row.notBilled.push(entry);
+            }
+          }
+
+          row.expected += expectedAmt;
+          row.waived += waivedAmt;
+          row.prorated += proratedDelta;
+        }
+      }
+    }
+  }
+
+  for (const row of byYm.values()) {
+    const unpaidSum = row.unpaid.reduce((s, x) => s + x.amount, 0);
+    const nbSum = row.notBilled.reduce((s, x) => s + x.amount, 0);
+    // Gap = недобор (unpaid + not billed) от ожидания; waived гэпом НЕ
+    // считается (прощено сознательно).
+    row.gapPct = row.expected > 0 ? Math.round(((unpaidSum + nbSum) / row.expected) * 1000) / 10 : 0;
+    row.unpaid.sort((a, z) => z.amount - a.amount);
+    row.notBilled.sort((a, z) => z.amount - a.amount);
+    row.shortPaid.sort((a, z) => z.amount - a.amount);
+    row.paidLines.sort((a, z) => (a.cashDate || '').localeCompare(z.cashDate || ''));
+  }
+  return list.map(ym => byYm.get(ym));
+}
+window._collectionsBridgeRows = _collectionsBridgeRows;
+
+// --------------------------------------------------------------------
+// UI. Свёрнут по умолчанию (не толкает вкладки вниз); заголовочная
+// сводка текущего месяца видна всегда. Состояние — только in-memory
+// (никакого localStorage сверх стандартных table-prefs ключей).
+// --------------------------------------------------------------------
+window._cbrExpandedMonths = window._cbrExpandedMonths || new Set();
+if (typeof window._cbrCollapsed !== 'boolean') window._cbrCollapsed = true;
+
+function _cbrFmtMoney(n) {
+  const v = Math.round(+n || 0);
+  return v ? '$' + v.toLocaleString() : '—';
+}
+
+function _cbrMonthLabel(ym) {
+  const parts = String(ym || '').split('-').map(Number);
+  if (parts.length < 2 || !parts[0]) return String(ym || '');
+  const d = new Date(parts[0], parts[1] - 1, 1);
+  return d.toLocaleString('en-US', { month: 'short' }) + ' ’' + String(parts[0]).slice(2);
+}
+
+// columnsByKey для applyTableSort/attachTableSort (стандарт §14).
+function _cbrColumnsByKey() {
+  return {
+    month:     { sortValue: r => r.ym },
+    expected:  { sortValue: r => r.expected },
+    collected: { sortValue: r => r.collected.total },
+    earlier:   { sortValue: r => r.collected.earlier },
+    inMonth:   { sortValue: r => r.collected.inMonth },
+    later:     { sortValue: r => r.collected.later },
+    waived:    { sortValue: r => r.waived },
+    prorated:  { sortValue: r => r.prorated },
+    unpaid:    { sortValue: r => r.unpaid.reduce((s, x) => s + x.amount, 0) },
+    notBilled: { sortValue: r => r.notBilled.reduce((s, x) => s + x.amount, 0) },
+    gap:       { sortValue: r => r.gapPct },
+  };
+}
+
+// Раскрытие месяца: per-unit платежи (с тайминг-тегом) + должники +
+// невыставленные. Все user-typed строки через esc().
+function _cbrBuildDetailHtml(r) {
+  const fmtAmt = (n) => '$' + (+n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const timingLabel = { earlier: '← earlier', inMonth: 'in month', later: 'later →' };
+  const methodLabel = (m) => {
+    const map = {
+      'check': 'Check', 'ach': 'ACH', 'wire': 'Wire', 'cash': 'Cash',
+      'stripe': 'Stripe', 'stripe-link': 'Stripe-link', 'stripe-advance': 'Stripe-advance',
+      'backfill': 'Backfill',
+    };
+    if (!m) return '(no method)';
+    return map[String(m).toLowerCase()] || m;
+  };
+  const grid = 'display:grid; grid-template-columns: 90px 1fr 110px 100px 120px 90px; gap:10px; padding:6px 20px; align-items:center;';
+  let html = '';
+  if (r.paidLines.length) {
+    html += `<div style="${grid} border-bottom:1px solid var(--border); font-size:10.5px; text-transform:uppercase; letter-spacing:0.4px; color:var(--muted); font-weight:600;">
+      <div>Suite</div><div>Tenant</div><div style="text-align:right;">Amount</div><div>Cash date</div><div>Method</div><div>Timing</div>
+    </div>`;
+    html += r.paidLines.map(l => `<div style="${grid} border-bottom:1px solid var(--border); font-size:11.5px;">
+      <div style="font-family:var(--zip-mono, monospace); font-weight:600;">${esc(l.unitId)}</div>
+      <div>${esc(l.tenant)}</div>
+      <div style="text-align:right; font-weight:600; font-variant-numeric:tabular-nums; color:#16a34a;">${fmtAmt(l.amount)}</div>
+      <div style="color:var(--muted); font-variant-numeric:tabular-nums;">${esc(l.cashDate || '—')}</div>
+      <div>${esc(methodLabel(l.method))}</div>
+      <div style="color:${l.timing === 'inMonth' ? 'var(--muted)' : (l.timing === 'earlier' ? '#0284c7' : '#a16207')}; font-size:11px;">${timingLabel[l.timing] || esc(l.timing)}</div>
+    </div>`).join('');
+  } else {
+    html += `<div style="padding:10px 20px; color:var(--muted); font-style:italic; font-size:11.5px;">No collected payments recorded FOR this month.</div>`;
+  }
+  const listBlock = (title, items, color, tip) => {
+    if (!items.length) return '';
+    const total = items.reduce((s, x) => s + x.amount, 0);
+    return `<div style="padding:8px 20px 4px; font-size:10.5px; text-transform:uppercase; letter-spacing:0.4px; color:${color}; font-weight:700;" title="${esc(tip)}">${title} · ${items.length} · ${_cbrFmtMoney(total)}</div>`
+      + items.map(x => `<div style="display:grid; grid-template-columns: 90px 1fr 110px; gap:10px; padding:4px 20px; font-size:11.5px; align-items:center;">
+          <div style="font-family:var(--zip-mono, monospace); font-weight:600;">${esc(x.unitId)}</div>
+          <div>${esc(x.tenant)}</div>
+          <div style="text-align:right; font-weight:600; font-variant-numeric:tabular-nums; color:${color};">${fmtAmt(x.amount)}</div>
+        </div>`).join('');
+  };
+  html += listBlock('Unpaid', r.unpaid, 'var(--danger)', 'Invoice or payment record exists for the month but it is not settled');
+  html += listBlock('Not billed', r.notBilled, '#a16207', 'No payment row and no Stripe invoice stamp for this month');
+  html += listBlock('Short-paid (settled)', r.shortPaid, '#a16207', 'Month is settled but recorded collections plus waivers fall short of expected rent — short-payment or an unrecorded discount. Explains the Expected vs Collected difference; not counted in Gap %');
+  return `<div style="padding:2px 0 8px;">${html}</div>`;
+}
+
+function cbrToggleMonth(ym) {
+  if (window._cbrExpandedMonths.has(ym)) window._cbrExpandedMonths.delete(ym);
+  else window._cbrExpandedMonths.add(ym);
+  renderCollectionsBridge();
+}
+window.cbrToggleMonth = cbrToggleMonth;
+
+function cbrToggleCollapsed() {
+  window._cbrCollapsed = !window._cbrCollapsed;
+  renderCollectionsBridge();
+}
+window.cbrToggleCollapsed = cbrToggleCollapsed;
+
+// Deep-link в Aging — тот же переход, что у topbar-пилюли Outstanding
+// (showBilling → setBillingTab('aging')); мы уже внутри Billing, поэтому
+// достаточно переключить вкладку.
+function cbrGoToAging() {
+  try {
+    if (state && state.ui && state.ui.activeView !== 'billing' && typeof showBilling === 'function') showBilling();
+    if (typeof setBillingTab === 'function') setBillingTab('aging');
+  } catch (e) { console.warn('[cbridge] aging nav', e); }
+}
+window.cbrGoToAging = cbrGoToAging;
+
+function renderCollectionsBridge() {
+  const section = document.getElementById('cbrSection');
+  if (!section || typeof state === 'undefined' || !state) return;
+  const collapsed = !!window._cbrCollapsed;
+  const btn = document.getElementById('cbrToggleBtn');
+  if (btn) btn.textContent = (collapsed ? '▸' : '▾') + ' Collections bridge';
+  const body = document.getElementById('cbrBody');
+  if (body) body.style.display = collapsed ? 'none' : '';
+  const sel = document.getElementById('cbrRange');
+  if (sel) sel.style.display = collapsed ? 'none' : '';
+  const colsHost = document.getElementById('cbrColsHost');
+  if (colsHost) colsHost.style.display = collapsed ? 'none' : 'contents';
+
+  // Период — новейший месяц первым, текущий включён.
+  const n = Math.max(1, +(sel && sel.value || 12) || 12);
+  const now = new Date();
+  const yms = [];
+  for (let i = 0; i < n; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    yms.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+  }
+  let rows;
+  try { rows = _collectionsBridgeRows(yms); } catch (e) { console.warn('[cbridge] engine', e); return; }
+
+  // Сводка текущего месяца — видна и в свёрнутом состоянии.
+  const cur = rows[0];
+  const note = document.getElementById('cbrHeadNote');
+  if (note) {
+    if (cur && cur.expected > 0) {
+      note.textContent = `${_cbrMonthLabel(cur.ym)}: expected ${_cbrFmtMoney(cur.expected)} · collected ${_cbrFmtMoney(cur.collected.total)} · gap ${cur.gapPct.toFixed(1)}%`;
+    } else {
+      note.textContent = 'No expected rent in scope for the current month';
+    }
+  }
+  if (collapsed) return;   // таблицу рисуем только развёрнутой
+
+  const tbody = document.getElementById('cbrTbody');
+  const tbl = document.getElementById('cbrTable');
+  if (!tbody || !tbl) return;
+
+  const colsByKey = _cbrColumnsByKey();
+  const sortState = (typeof readTableSort === 'function') ? readTableSort('sfa_inv_cbr') : null;
+  const display = (sortState && typeof applyTableSort === 'function')
+    ? applyTableSort(rows, sortState, colsByKey)
+    : rows.slice();   // дефолт: новейший месяц сверху (порядок yms)
+
+  tbody.innerHTML = display.map(r => {
+    const unpaidSum = r.unpaid.reduce((s, x) => s + x.amount, 0);
+    const nbSum = r.notBilled.reduce((s, x) => s + x.amount, 0);
+    const expandedNow = window._cbrExpandedMonths.has(r.ym);
+    const unpaidCell = unpaidSum > 0
+      ? `<span onclick="event.stopPropagation(); cbrGoToAging();" title="${esc(`${r.unpaid.length} unit${r.unpaid.length === 1 ? '' : 's'} unpaid — click to open the Aging tab`)}" style="color:var(--danger); font-weight:600; cursor:pointer; border-bottom:1px dashed var(--danger);">${_cbrFmtMoney(unpaidSum)} · ${r.unpaid.length}</span>`
+      : '—';
+    const nbCell = nbSum > 0
+      ? `<span title="${esc(`${r.notBilled.length} unit${r.notBilled.length === 1 ? '' : 's'} with no invoice evidence — expand the row for the list`)}" style="color:#a16207; font-weight:600;">${_cbrFmtMoney(nbSum)} · ${r.notBilled.length}</span>`
+      : '—';
+    const gapCell = r.expected > 0
+      ? `<span style="color:${r.gapPct >= 10 ? 'var(--danger)' : (r.gapPct > 2 ? '#a16207' : 'var(--muted)')}; font-weight:600;">${r.gapPct.toFixed(1)}%</span>`
+      : '—';
+    const num = 'text-align:right; font-variant-numeric:tabular-nums;';
+    const main = `<tr data-cbr-ym="${esc(r.ym)}" onclick="cbrToggleMonth('${esc(r.ym)}')" style="cursor:pointer;" title="Click to ${expandedNow ? 'collapse' : 'expand'} per-unit detail for ${esc(_cbrMonthLabel(r.ym))}">
+      <td style="font-weight:600; white-space:nowrap;">${expandedNow ? '▾' : '▸'} ${esc(_cbrMonthLabel(r.ym))}</td>
+      <td style="${num}">${_cbrFmtMoney(r.expected)}</td>
+      <td style="${num} font-weight:700; color:var(--success);">${_cbrFmtMoney(r.collected.total)}</td>
+      <td style="${num} color:#0284c7;">${_cbrFmtMoney(r.collected.earlier)}</td>
+      <td style="${num}">${_cbrFmtMoney(r.collected.inMonth)}</td>
+      <td style="${num} color:#a16207;">${_cbrFmtMoney(r.collected.later)}</td>
+      <td style="${num}">${_cbrFmtMoney(r.waived)}</td>
+      <td style="${num} color:var(--muted);">${_cbrFmtMoney(r.prorated)}</td>
+      <td style="${num}">${unpaidCell}</td>
+      <td style="${num}">${nbCell}</td>
+      <td style="${num}">${gapCell}</td>
+    </tr>`;
+    const detail = expandedNow
+      ? `<tr><td colspan="11" style="padding:0; background: var(--surface-2);">${_cbrBuildDetailHtml(r)}</td></tr>`
+      : '';
+    return main + detail;
+  }).join('') || `<tr><td colspan="11" style="padding:24px; text-align:center; color:var(--muted);">No data for the selected period.</td></tr>`;
+
+  // Стандарт таблиц проекта (§14 / память): prefs + Columns-кнопка + sort.
+  try {
+    if (typeof mountTablePrefs === 'function') {
+      mountTablePrefs(tbl, 'sfa_inv_cbr', {
+        hideable: true, draggable: true, resizable: true,
+        onRerender: () => renderCollectionsBridge(),
+      });
+    }
+    if (typeof ensureColumnsButton === 'function') {
+      ensureColumnsButton(tbl, 'sfa_inv_cbr', document.getElementById('cbrColsHost'));
+    }
+    if (typeof attachTableSort === 'function') {
+      attachTableSort(tbl, 'sfa_inv_cbr', colsByKey, () => renderCollectionsBridge());
+    }
+  } catch (e) { console.warn('[cbridge] table prefs', e); }
+}
+window.renderCollectionsBridge = renderCollectionsBridge;
+
+// Хук на «то же событие, что и KPI strip»: добавочная обёртка вокруг
+// renderBillingKpiStrip (сам код KPI-strip НЕ изменён). Любой его вызов —
+// сегодня это только showBilling() (вход/повторный вход в Billing) плюс
+// будущие call-sites — перерисовывает и Collections bridge.
+// ВАЖНО: переключение здания при УЖЕ открытом Billing и сам KPI-strip
+// не перерисовывает (renderBilling — ранний return); мост сознательно
+// разделяет эту staleness, чтобы его цифры всегда совпадали с карточкой
+// «Collected» прямо над ним — отдельный refresh дал бы расхождение.
+// Идемпотентно (_cbrWrapped-гард).
+(function _cbrHookKpiStrip() {
+  try {
+    const orig = window.renderBillingKpiStrip;
+    if (typeof orig !== 'function' || orig._cbrWrapped) return;
+    const wrapped = function () {
+      const r = orig.apply(this, arguments);
+      try { renderCollectionsBridge(); } catch (e) { console.warn('[cbridge]', e); }
+      return r;
+    };
+    wrapped._cbrWrapped = true;
+    window.renderBillingKpiStrip = wrapped;
+  } catch (e) { console.warn('[cbridge] hook', e); }
+})();
 
 // ZIP-style Tenants tab. Walks state.buildings → floors → units
 // (occupied, with a tenant name), bundles each into the row layout
