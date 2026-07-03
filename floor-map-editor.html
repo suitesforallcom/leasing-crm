@@ -83823,21 +83823,32 @@ function _sfaDiscPreview() {
       }
     }
   }
-  // Валидная сумма, но пустой reason — объясняем, почему Apply неактивен.
+  // Валидная сумма, но пустой reason — объясняем, чего не хватает.
   if (ok && !reason.length) text += ' · Enter a reason to enable Apply.';
   if (line) { line.textContent = text; line.style.color = color; }
-  // Apply активен только при валидной сумме И непустом reason.
-  if (applyBtn) {
-    const off = !(ok && reason.length > 0);
-    applyBtn.disabled = off;
-    // inline-фон кнопки перебивает :disabled-стиль — дизейбл обязан быть ВИДЕН
-    // (баг «кнопка выглядит активной, но клик молчит», Tony 2026-07-03)
-    applyBtn.style.opacity = off ? '.45' : '1';
-    applyBtn.style.cursor = off ? 'not-allowed' : 'pointer';
-    applyBtn.title = off
-      ? (ok ? 'Enter a reason below to enable Apply' : 'Enter a valid discount amount first')
-      : '';
+  // Кнопка всегда нажимаемая (кроме прогона) — клик с невалидным вводом даёт
+  // ЯВНОЕ предупреждение в _sfaDiscApply (Tony 2026-07-03: «непонятно, почему
+  // не работает» — молчаливый disabled хуже громкого отказа).
+  if (applyBtn && !(_sfaDiscCtx && _sfaDiscCtx.running)) {
+    applyBtn.disabled = false;
+    applyBtn.style.opacity = '1';
+    applyBtn.style.cursor = 'pointer';
+    applyBtn.title = ok
+      ? (reason.length ? '' : 'Reason is still empty — clicking will ask for it')
+      : 'Enter a valid discount amount first';
   }
+  return ok; // валидность суммы — для гейта в _sfaDiscApply
+}
+
+// Красная вспышка + фокус на поле, которого не хватает — предупреждение видно глазами
+function _sfaDiscFlashField(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const prevBorder = el.style.borderColor, prevShadow = el.style.boxShadow;
+  el.style.borderColor = '#dc2626';
+  el.style.boxShadow = '0 0 0 3px rgba(220,38,38,.25)';
+  try { el.focus(); } catch (e) {}
+  setTimeout(() => { el.style.borderColor = prevBorder || '#fcd34d'; el.style.boxShadow = prevShadow || ''; }, 1600);
 }
 
 // Последовательный прогон callable по каждому счёту (bulk «лифт» = один
@@ -83847,7 +83858,19 @@ async function _sfaDiscApply() {
   if (!_sfaDiscCtx || _sfaDiscCtx.running) return;
   const calc = _sfaDiscCompute();
   const reasonTextRaw = (document.getElementById('sfaDiscReason')?.value || '').trim();
-  if (!calc || !reasonTextRaw) { _sfaDiscPreview(); return; }
+  // Громкая валидация вместо молчаливого отказа (Tony 2026-07-03):
+  // предупреждение toast'ом + красная вспышка на недостающем поле.
+  const amountOk = _sfaDiscPreview() && !!calc;
+  if (!amountOk) {
+    toast?.('Enter a valid discount amount first — see the hint under the field', 'error');
+    _sfaDiscFlashField('sfaDiscValue');
+    return;
+  }
+  if (!reasonTextRaw) {
+    toast?.('Reason is required — it goes on the tenant\'s credit note and into the audit trail', 'error');
+    _sfaDiscFlashField('sfaDiscReason');
+    return;
+  }
   const category = document.getElementById('sfaDiscCategory')?.value || 'Other';
   // Категория уезжает в тот же reason-параметр CF (single-param API);
   // «Other» не префиксуем — текст оператора самодостаточен.
