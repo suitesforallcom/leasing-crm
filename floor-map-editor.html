@@ -124354,7 +124354,17 @@ async function _saveAddLeaseDocModal() {
   // Persist the chosen Term + end date back to the unit for kind='lease'
   // / 'renewal' so the right-panel Lease dates section reflects what
   // the operator just set. Mirror exactly what the right panel writes.
-  if (kind === 'lease' || kind === 'renewal') {
+  //
+  // FIXES_LOG Entry 73 (2026-07-03): для RENEWAL через DocuSign поля лизы
+  // НЕ пишутся при клике по кнопке — DocuSign-ветка ниже открывает send-модал
+  // ДО создания конверта, и оператор, закрывший превью без отправки, молча
+  // получал переписанную ДЕЙСТВУЮЩУЮ лизу (Suite 428: until Jul31→Oct31,
+  // term 6→3 без единой отправки). Новые значения откладываются в
+  // _slPendingRenewal и применяются в _slDoSend ПОСЛЕ успешной отправки.
+  // Для kind='lease' поведение Entry 21 сохранено (пустой юнит — ввод
+  // оператора не теряем); upload/external применяют сразу (акт завершён).
+  const deferRenewalFields = (kind === 'renewal' && source === 'docusign');
+  if ((kind === 'lease' || kind === 'renewal') && !deferRenewalFields) {
     if (termSelVal) {
       u.leaseTerm = termSelVal; // 'mtm' | '6' | '12' | ... | ''
     }
@@ -124372,6 +124382,16 @@ async function _saveAddLeaseDocModal() {
     // устарел; без очистки следующий цикл истечения показал бы серый
     // «ENDS» вместо красного renewal-алерта (fix review 2026-07-03).
     delete u.renewal;
+  }
+  if (deferRenewalFields) {
+    window._slPendingRenewal = {
+      buildingId, floorId, unitId,
+      leaseTerm: termSelVal || '',
+      effDate: effDate || '',
+      until: expDate || '',
+      rentTo: rentTo > 0 ? rentTo : null,
+      stashedAt: new Date().toISOString(),
+    };
   }
 
   // Resolve termMonths for the doc record. Prefer the explicit numeric
@@ -124512,7 +124532,10 @@ async function _saveAddLeaseDocModal() {
     // u.leaseEnvelopes; the existing migration in `_ensureLeaseDocuments`
     // mints a real leaseDocument with envelopeId on the next render —
     // no separate post-send hook needed.
-    if (rentTo > 0) {
+    // Entry 73: при renewal рента тоже откладывается до отправки конверта
+    // (лежит в _slPendingRenewal.rentTo) — иначе закрытое превью меняло
+    // цену действующей лизы.
+    if (rentTo > 0 && !deferRenewalFields) {
       u.contractRent = rentTo;
     }
     // Persist + open send-lease modal, then exit BEFORE the
@@ -124521,8 +124544,12 @@ async function _saveAddLeaseDocModal() {
     try { renderDetail(); } catch {}
     if (typeof renderUnits === 'function') { try { renderUnits(); } catch {} }
     if (typeof toast === 'function') {
-      const rentMsg = rentTo > 0 ? ` · rent set to $${(+u.contractRent).toLocaleString()}/mo` : '';
-      toast(`Opening DocuSign — complete the envelope to record the lease${rentMsg}`, 'info');
+      if (deferRenewalFields) {
+        toast('Opening DocuSign — renewal terms apply ONLY after the envelope is sent', 'info');
+      } else {
+        const rentMsg = rentTo > 0 ? ` · rent set to $${(+u.contractRent).toLocaleString()}/mo` : '';
+        toast(`Opening DocuSign — complete the envelope to record the lease${rentMsg}`, 'info');
+      }
     }
     _closeAddLeaseDocModal();
     if (typeof openSendLeaseModal === 'function') {
@@ -149210,6 +149237,10 @@ function openSendLeaseModal(buildingId, floorId, unitId) {
   const f = b?.floors.find(x => x.id === floorId);
   const u = f?.units.find(x => x.id === unitId);
   if (!u) return;
+  // Entry 73: чужой pending (другой юнит) не должен пережить новое открытие
+  if (window._slPendingRenewal && window._slPendingRenewal.unitId !== unitId) {
+    window._slPendingRenewal = null;
+  }
   _slCtx = { buildingId, floorId, unitId };
 
   // Phase 2C: auto-fill из активного проспекта (если есть). Падает обратно
@@ -149256,6 +149287,14 @@ function openSendLeaseModal(buildingId, floorId, unitId) {
 }
 function closeSendLeaseModal() {
   document.getElementById('sendLeaseModal').classList.remove('active');
+  // Entry 73: закрыли send-модал БЕЗ отправки → отложенные renewal-поля
+  // сбрасываются, действующая лиза остаётся нетронутой (после успешной
+  // отправки _slDoSend уже обнулил pending — тоста не будет).
+  const _pr = window._slPendingRenewal;
+  if (_pr && _slCtx && _pr.unitId === _slCtx.unitId) {
+    window._slPendingRenewal = null;
+    try { toast('Renewal NOT applied — the envelope was not sent. Lease unchanged.', 'info'); } catch (e) {}
+  }
   _slCtx = null;
 }
 
@@ -149296,14 +149335,18 @@ function _slBuildPayloadFromForm() {
   const landlordTitle = (state?.settings?.landlordTitle || '').trim() || 'Authorized Signatory';
   const leaseStartRaw = u.signed || u.leaseStart || '';
   const leaseEndRaw = u.until || '';
+  // Entry 73: отложенное продление — сам ДОКУМЕНТ обязан нести НОВЫЕ условия,
+  // хотя u.* ещё не переписаны (применятся в _slDoSend после отправки).
+  const _prPend = window._slPendingRenewal;
+  const pend = (_prPend && _prPend.unitId === unitId && _prPend.buildingId === buildingId) ? _prPend : null;
   const fields = {
     tenant_name: name,
     suite: u.id,
-    rent: fmtMoney(+u.contractRent || +u.rent || 0),
+    rent: fmtMoney((pend && pend.rentTo > 0 ? pend.rentTo : 0) || +u.contractRent || +u.rent || 0),
     deposit: fmtMoney(+u.deposit || 0),
-    term: u.leaseTerm || '',
+    term: (pend && pend.leaseTerm) || u.leaseTerm || '',
     lease_start: fmtLongDate(leaseStartRaw),
-    lease_end: fmtLongDate(leaseEndRaw),
+    lease_end: fmtLongDate((pend && pend.until) || leaseEndRaw),
     landlord: landlordName,
     landlord_name: landlordName,
     landlord_title: landlordTitle,
@@ -149357,6 +149400,22 @@ async function _slDoSend(payload) {
       fields,
       unit: u, // Шаг 5: даём resolver контекст для выбора library-шаблона
     });
+    // FIXES_LOG Entry 73: конверт РЕАЛЬНО отправлен → применяем отложенные
+    // renewal-поля СРАЗУ (до снапшота u.leaseEnvelopes ниже, чтобы запись
+    // конверта зафиксировала НОВЫЕ даты/ренту). См. _saveAddLeaseDocModal:
+    // для kind='renewal'+DocuSign поля не пишутся при клике, чтобы закрытое
+    // без отправки превью не переписывало действующую лизу. leaseStart не
+    // двигаем (§3, Tony 2026-07-03).
+    const _pr = window._slPendingRenewal;
+    if (_pr && _pr.unitId === unitId && _pr.buildingId === buildingId) {
+      if (_pr.leaseTerm) u.leaseTerm = _pr.leaseTerm;
+      if (_pr.until) u.until = _pr.until;
+      if (_pr.effDate && !/^\d{4}-\d{2}-\d{2}$/.test(u.leaseStart || '')) u.leaseStart = _pr.effDate;
+      if (_pr.rentTo > 0) u.contractRent = _pr.rentTo;
+      delete u.renewal; // продление состоялось — маркер «Ending confirmed» устарел
+      window._slPendingRenewal = null;
+      try { toast(`Renewal applied — lease through ${u.until}`, 'success'); } catch (e) {}
+    }
     // FIXES_LOG Entry 22 — in JWT mode the CF already did the
     // server-authoritative push into state.leaseEnvelopes inside a Firestore
     // transaction (escapes the Web Locks follower-skip class of bugs). Trust
