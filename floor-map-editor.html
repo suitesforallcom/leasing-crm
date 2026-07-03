@@ -3234,6 +3234,13 @@
   .rr-btn:hover { background: var(--surface-3); }
   .rr-btn.primary { background: var(--accent); border-color: var(--accent); color: white; }
   .rr-btn.primary:hover { background: var(--accent-hover); }
+  /* Аудит 2026-07-03 P2: задизейбленные денежные кнопки (ciSendBtn,
+     rv-apply-btn, …) выглядели активными — оператор жал «мёртвую» кнопку
+     и не понимал, отправился ли инвойс. Grey + not-allowed для ВСЕХ
+     .rr-btn:disabled (перебивает и inline-фон через opacity). */
+  .rr-btn:disabled { opacity: .5; cursor: not-allowed; }
+  .rr-btn:disabled:hover { background: var(--surface-2); }
+  .rr-btn.primary:disabled:hover { background: var(--accent); }
   .rr-btn svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
   .rr-cols-dropdown {
@@ -18232,7 +18239,7 @@
          Mirrors the Cmd-K hotkey already wired in shortcut layer. -->
     <div class="top-search" id="topSearch">
       <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-      <input id="topSearchInput" type="search" placeholder="Search suite or tenant…" autocomplete="off" oninput="onTopSearchInput(this.value)" onkeydown="if(event.key==='Escape'){this.value='';onTopSearchInput('');this.blur();}"/>
+      <input id="topSearchInput" type="search" placeholder="Search suite or tenant…" autocomplete="off" oninput="onTopSearchInput(this.value)" onkeydown="if(event.key==='Escape'){this.value='';onTopSearchInput('');this.blur();}else if(event.key==='Enter'&&window._searchCrossHit&&typeof window._searchJumpToCrossHit==='function'){window._searchJumpToCrossHit();}"/>
       <span class="cmdk" aria-hidden="true">⌘K</span>
     </div>
 
@@ -28667,7 +28674,10 @@ function _checkLocalStorageQuota() {
     const capKb  = (_QUOTA_ESTIMATED_CAP_BYTES / 1024).toFixed(0);
     const pct    = (ratio * 100).toFixed(0);
     if (typeof toast === 'function') {
-      toast(`⚠ localStorage ${usedKb}/${capKb} KB (${pct}%) — clean old backups via DevTools: sfaWipeBackups()`, 'warning');
+      // Аудит 2026-07-03 P2: toast советовал sfaWipeBackups() — команду,
+      // запрещённую §0.1 (CLAUDE.md) ровно в тот момент, когда quota давит.
+      // Направляем в UI-путь с гранулярным управлением бэкапами.
+      toast(`⚠ localStorage ${usedKb}/${capKb} KB (${pct}%) — free space in Settings → Local backups (delete old snapshots there)`, 'warning');
     }
     console.warn(`[quota] localStorage usage ${usedKb}KB / ${capKb}KB (${pct}%)`);
     return { used, ratio };
@@ -28699,7 +28709,15 @@ function saveState(opts) {
     _checkLocalStorageQuota();
   } catch(e) {
     console.warn('[save]', e);
-    toast('Could not save (storage full). Try removing large photos/backgrounds.', 'error');
+    // Аудит 2026-07-03 P2: без троттла этот toast штормил на КАЖДЫЙ saveState
+    // при полном хранилище. Паттерн __slofWarnTs (см. saveLocalOnly) — раз в
+    // минуту; текст направляет в Settings → Local backups (не sfaWipeBackups —
+    // запрещено §0.1).
+    const _nowQ = Date.now();
+    if (!window.__saveQuotaWarnTs || _nowQ - window.__saveQuotaWarnTs > 60_000) {
+      window.__saveQuotaWarnTs = _nowQ;
+      toast('Could not save locally (storage full). Free space in Settings → Local backups; cloud sync still runs.', 'error');
+    }
   }
   // Schedule a debounced push to Firestore (no-op if sync isn't enabled yet).
   // Pass opts.priority='money' from money-related callers so the push
@@ -29034,7 +29052,7 @@ function _localBackupCreate(source, label, dataOverride) {
   // huge — they'd just churn the quota. Manual snapshots still go
   // through (the operator explicitly asked for one).
   if (source !== 'manual' && sizeBytes > LBK_AUTO_MAX_STATE_BYTES) {
-    console.warn(`[lbk] skipping ${source} snapshot — state too large (${(sizeBytes/1024).toFixed(0)} KB > ${(LBK_AUTO_MAX_STATE_BYTES/1024).toFixed(0)} KB cap). Run sfaWipeBackups() if you're seeing quota errors.`);
+    console.warn(`[lbk] skipping ${source} snapshot — state too large (${(sizeBytes/1024).toFixed(0)} KB > ${(LBK_AUTO_MAX_STATE_BYTES/1024).toFixed(0)} KB cap). Free space via Settings → Local backups if you're seeing quota errors.`);
     return null;
   }
 
@@ -29081,7 +29099,13 @@ function _localBackupCreate(source, label, dataOverride) {
       try { localStorage.setItem(key, snapshotJson); }
       catch (e3) {
         console.warn('[lbk] gave up', e3);
-        if (typeof toast === 'function') toast('Local backup failed — run sfaWipeBackups() in DevTools console to free space', 'error');
+        // Аудит 2026-07-03 P2: не советуем sfaWipeBackups (§0.1) + троттл
+        // по паттерну __slofWarnTs — auto-снапшоты иначе штормят тостом.
+        const _nowL = Date.now();
+        if (typeof toast === 'function' && (!window.__lbkQuotaWarnTs || _nowL - window.__lbkQuotaWarnTs > 60_000)) {
+          window.__lbkQuotaWarnTs = _nowL;
+          toast('Local backup failed — storage full. Free space in Settings → Local backups (delete old snapshots).', 'error');
+        }
         return null;
       }
     }
@@ -32558,6 +32582,99 @@ async function fbBootstrap() {
   }
 }
 
+// ── Само-лечение монолит-листенера (порт _v2BuildingsOnListenerError; аудит 2026-07-03 P1) ──
+// onSnapshot error = стрим МЁРТВ навсегда: Firestore после error-callback
+// больше ничего не пришлёт и подписку сам не восстановит. Раньше здесь был
+// console.error-only — вкладка выглядела живой, но remote-изменений не
+// получала (класс Suite 344 / stale-tab). Теперь: unsub → toast (раз на
+// эпизод) → re-attach с backoff 5s → 30s → 60s → далее каждые 5 минут.
+// Эпизод закрывает ПЕРВЫЙ успешный снапшот нового стрима.
+const _FB_STATE_HEAL_DELAYS_MS = [5000, 30000, 60000];
+const _FB_STATE_HEAL_STEADY_MS = 5 * 60 * 1000;
+let _fbStateHealTimer = null;
+let _fbStateHealAttempt = 0;
+let _fbStateHealToasted = false;   // toast «Cloud sync interrupted…» — раз на эпизод
+
+function _fbStateHealReset() {
+  if (_fbStateHealTimer) {
+    try { clearTimeout(_fbStateHealTimer); } catch (e) {}
+    _fbStateHealTimer = null;
+  }
+  _fbStateHealAttempt = 0;
+  _fbStateHealToasted = false;
+}
+
+function _fbStateScheduleHeal() {
+  if (_fbStateHealTimer) return;   // попытка уже запланирована
+  const delay = _fbStateHealAttempt < _FB_STATE_HEAL_DELAYS_MS.length
+    ? _FB_STATE_HEAL_DELAYS_MS[_fbStateHealAttempt]
+    : _FB_STATE_HEAL_STEADY_MS;
+  console.info('[fb] state-listener heal: re-attach in ' + Math.round(delay / 1000)
+    + 's (attempt ' + (_fbStateHealAttempt + 1) + ')');
+  _fbStateHealTimer = setTimeout(function () {
+    _fbStateHealTimer = null;
+    _fbStateHealAttempt++;
+    try {
+      // Разлогинились / sync выключен, пока ждали — лечить нечего, эпизод закрыт.
+      if (!fbSync || !fbSync.user || !fbSync.sdk || !fbSync.db) { _fbStateHealReset(); return; }
+      // Подписку уже поднял кто-то другой (повторный sign-in) — ждём её
+      // снапшота, он и сбросит эпизод.
+      if (fbSync.unsub) return;
+      const ok = _fbStateAttachListener();
+      // attach удался → ждём первый снапшот (он вызовет _fbStateHealReset);
+      // не удался → следующий шаг backoff'а тут.
+      if (!ok) _fbStateScheduleHeal();
+    } catch (e) {
+      console.warn('[fb] state-listener heal attempt failed:', e?.message || e);
+      _fbStateScheduleHeal();
+    }
+  }, delay);
+}
+
+function _fbStateOnListenerError(err) {
+  console.error('[fb] snapshot error:', err?.message || err);
+  // Мёртвую подписку отписываем (no-op, но освобождает ресурсы) и зануляем —
+  // иначе _fbStateAttachListener ранним return'ом откажется лечить.
+  try { if (fbSync.unsub) fbSync.unsub(); } catch (e) {}
+  fbSync.unsub = null;
+  if (!_fbStateHealToasted) {
+    _fbStateHealToasted = true;
+    try { if (typeof toast === 'function') toast('Cloud sync interrupted — reconnecting…', 'error'); } catch (e) {}
+  }
+  _fbStateScheduleHeal();
+}
+
+function _fbStateAttachListener() {
+  if (fbSync && fbSync.unsub) return true;
+  if (!fbSync || !fbSync.sdk || !fbSync.db) {
+    console.warn('[fb] state listener: Firestore not ready');
+    return false;
+  }
+  const { sdk, db } = fbSync;
+  try {
+    const stateRef = sdk.doc(db, 'workspaces', WORKSPACE_ID, 'data', 'state');
+    fbSync.unsub = sdk.onSnapshot(stateRef,
+      (snap) => {
+        // Живой снапшот = стрим жив: закрываем heal-эпизод (таймер/счётчик/toast).
+        try { _fbStateHealReset(); } catch (eHeal) {}
+        fbOnRemoteChange(snap);
+      },
+      (err) => {
+        // Throw внутри heal-пути деградирует до прежнего console.error.
+        try { _fbStateOnListenerError(err); }
+        catch (eHeal) {
+          console.error('[fb] snapshot error:', err,
+            '(heal path failed:', (eHeal && eHeal.message) || eHeal, ')');
+        }
+      });
+    return true;
+  } catch (e) {
+    console.warn('[fb] state listener attach failed:', e?.message || e);
+    fbSync.unsub = null;
+    return false;
+  }
+}
+
 // Called by Firebase whenever the signed-in user changes.
 async function fbOnAuthChanged(user) {
   if (!user) {
@@ -32566,6 +32683,9 @@ async function fbOnAuthChanged(user) {
     // bypass: incognito / unauth'd visitors see the sign-in page and nothing
     // else until they authenticate.
     if (fbSync.unsub) { try { fbSync.unsub(); } catch {} fbSync.unsub = null; }
+    // Явное выключение отменяет и pending heal re-attach (иначе таймер
+    // поднимет подписку после sign-out).
+    try { _fbStateHealReset(); } catch {}
     fbSync.enabled = false;
     fbSync.uid = null;
     fbSync.user = null;
@@ -32668,10 +32788,12 @@ async function fbActivateWorkspaceSync() {
     // token lives in URL state, not in /emailAllowlist.
     try { await fbConsumePendingInvite(); } catch (e) { console.warn('[invite]', e); }
 
-    // Attach listener to the workspace state doc
+    // Attach listener to the workspace state doc (heal-обёртка — аудит
+    // 2026-07-03: error-callback теперь unsub → toast → backoff re-attach,
+    // см. _fbStateAttachListener/_fbStateOnListenerError выше).
     const stateRef = sdk.doc(db, 'workspaces', WORKSPACE_ID, 'data', 'state');
-    fbSync.unsub = sdk.onSnapshot(stateRef, (snap) => fbOnRemoteChange(snap),
-                                  (err) => { console.error('[fb] snapshot error:', err); });
+    _fbStateHealReset();
+    _fbStateAttachListener();
 
     // Decide direction of initial sync
     const snap = await sdk.getDoc(stateRef);
@@ -32848,6 +32970,7 @@ async function fbInitSync(silent = false) {
 
 function fbDisableSync() {
   if (fbSync.unsub) { try { fbSync.unsub(); } catch {} fbSync.unsub = null; }
+  try { _fbStateHealReset(); } catch {}   // отменить pending heal re-attach
   if (fbSync.pushTimer) { clearTimeout(fbSync.pushTimer); fbSync.pushTimer = null; }
   // Clear all topbar pill timers — they hit state every 2 minutes and
   // leak CPU after sign-out otherwise. The list is repopulated on next
@@ -34227,6 +34350,60 @@ let _v2PaymentsRerenderTimer = null;
 // появления здания, терялся навсегда → ложные late fees (инцидент 2026-06-03).
 const _v2PaymentsCache = {};
 
+// ── Само-лечение payments-листенера (порт _v2BuildingsOnListenerError; аудит 2026-07-03 P1) ──
+// Раньше error-callback был warn-only («Firestore сам переподпишется» —
+// неправда: после error стрим мёртв навсегда). Платёжные поверхности молча
+// замерзали на stale-данных (класс Suite 344). Теперь: unsub → toast (раз
+// на эпизод) → backoff re-attach; первый снапшот нового стрима закрывает эпизод.
+const _V2_PAYMENTS_HEAL_DELAYS_MS = [5000, 30000, 60000];
+const _V2_PAYMENTS_HEAL_STEADY_MS = 5 * 60 * 1000;
+let _v2PaymentsHealTimer = null;
+let _v2PaymentsHealAttempt = 0;
+let _v2PaymentsHealToasted = false;
+
+function _v2PaymentsHealReset() {
+  if (_v2PaymentsHealTimer) {
+    try { clearTimeout(_v2PaymentsHealTimer); } catch (e) {}
+    _v2PaymentsHealTimer = null;
+  }
+  _v2PaymentsHealAttempt = 0;
+  _v2PaymentsHealToasted = false;
+}
+
+function _v2PaymentsScheduleHeal() {
+  if (_v2PaymentsHealTimer) return;   // попытка уже запланирована
+  const delay = _v2PaymentsHealAttempt < _V2_PAYMENTS_HEAL_DELAYS_MS.length
+    ? _V2_PAYMENTS_HEAL_DELAYS_MS[_v2PaymentsHealAttempt]
+    : _V2_PAYMENTS_HEAL_STEADY_MS;
+  console.info('[v2-read] heal: re-attach in ' + Math.round(delay / 1000)
+    + 's (attempt ' + (_v2PaymentsHealAttempt + 1) + ')');
+  _v2PaymentsHealTimer = setTimeout(function () {
+    _v2PaymentsHealTimer = null;
+    _v2PaymentsHealAttempt++;
+    try {
+      // Read-switch выключили, пока ждали — лечить нечего, эпизод закрыт.
+      if (!syncV2ReadEnabled()) { _v2PaymentsHealReset(); return; }
+      if (_v2PaymentsListenerUnsub) return;   // подписку уже подняли — ждём её снапшота
+      const ok = _v2PaymentsAttachListener();
+      if (!ok) _v2PaymentsScheduleHeal();
+    } catch (e) {
+      console.warn('[v2-read] heal attempt failed:', e?.message || e);
+      _v2PaymentsScheduleHeal();
+    }
+  }, delay);
+}
+
+function _v2PaymentsOnListenerError(err) {
+  console.warn('[v2-read] listener error:', err?.message || err);
+  try { if (_v2PaymentsListenerUnsub) _v2PaymentsListenerUnsub(); } catch (e) {}
+  _v2PaymentsListenerUnsub = null;
+  if (!_v2PaymentsHealToasted) {
+    _v2PaymentsHealToasted = true;
+    try { if (typeof toast === 'function') toast('Payments sync interrupted — reconnecting…', 'error'); } catch (e) {}
+  }
+  _v2PaymentsScheduleHeal();
+}
+
 function _v2PaymentsAttachListener() {
   if (_v2PaymentsListenerUnsub) return;  // уже attached, idempotent
   if (typeof fbSync === 'undefined' || !fbSync || !fbSync.enabled || !fbSync.sdk || !fbSync.db) {
@@ -34238,6 +34415,8 @@ function _v2PaymentsAttachListener() {
     _v2PaymentsListenerUnsub = sdk.onSnapshot(
       sdk.collection(db, 'workspaces', WORKSPACE_ID, 'payments'),
       (snap) => {
+        // Живой снапшот = стрим жив: закрываем heal-эпизод (таймер/счётчик/toast).
+        try { _v2PaymentsHealReset(); } catch (eHeal) {}
         // Safety net — флаг могли flip'нуть в OFF между attach и tick
         if (!syncV2ReadEnabled()) return;
         let changed = 0;
@@ -34294,10 +34473,15 @@ function _v2PaymentsAttachListener() {
         }
       },
       (err) => {
-        console.warn('[v2-read] listener error:', err?.message || err);
-        // НЕ detach — Firestore сам переподпишется при сетевых разрывах.
-        // Если ошибка terminal — _v2PaymentsListenerUnsub останется, callee
-        // может явно вызвать detach.
+        // Аудит 2026-07-03: was warn-only (и с НЕВЕРНЫМ комментарием «Firestore
+        // сам переподпишется» — после error-callback стрим мёртв навсегда).
+        // Теперь freeze-free heal: unsub → toast → backoff re-attach; throw
+        // внутри heal-пути деградирует до прежнего warn.
+        try { _v2PaymentsOnListenerError(err); }
+        catch (eHeal) {
+          console.warn('[v2-read] listener error:', err?.message || err,
+            '(heal path failed:', (eHeal && eHeal.message) || eHeal, ')');
+        }
       }
     );
     console.log('[v2-read] listener attached on workspaces/' + WORKSPACE_ID + '/payments');
@@ -34310,6 +34494,9 @@ function _v2PaymentsAttachListener() {
 }
 
 function _v2PaymentsDetachListener() {
+  // Явное выключение отменяет и pending heal re-attach (ДО раннего return:
+  // после смерти стрима unsub уже null, а heal-таймер жив).
+  try { _v2PaymentsHealReset(); } catch {}
   if (!_v2PaymentsListenerUnsub) return;
   try { _v2PaymentsListenerUnsub(); } catch {}
   _v2PaymentsListenerUnsub = null;
@@ -34926,6 +35113,59 @@ let _v2LeaseDocsListenerUnsub = null;
 let _v2LeaseDocsListenerDocsApplied = 0;
 let _v2LeaseDocsRerenderTimer = null;
 
+// ── Само-лечение leaseDocs-листенера (порт _v2BuildingsOnListenerError; аудит 2026-07-03 P1) ──
+// Раньше error-callback был warn-only — стрим умирал молча, u.leaseDocuments
+// замерзали на stale-версии до перезагрузки. Теперь: unsub → toast (раз на
+// эпизод) → backoff re-attach; первый снапшот нового стрима закрывает эпизод.
+const _V2_LEASEDOCS_HEAL_DELAYS_MS = [5000, 30000, 60000];
+const _V2_LEASEDOCS_HEAL_STEADY_MS = 5 * 60 * 1000;
+let _v2LeaseDocsHealTimer = null;
+let _v2LeaseDocsHealAttempt = 0;
+let _v2LeaseDocsHealToasted = false;
+
+function _v2LeaseDocsHealReset() {
+  if (_v2LeaseDocsHealTimer) {
+    try { clearTimeout(_v2LeaseDocsHealTimer); } catch (e) {}
+    _v2LeaseDocsHealTimer = null;
+  }
+  _v2LeaseDocsHealAttempt = 0;
+  _v2LeaseDocsHealToasted = false;
+}
+
+function _v2LeaseDocsScheduleHeal() {
+  if (_v2LeaseDocsHealTimer) return;   // попытка уже запланирована
+  const delay = _v2LeaseDocsHealAttempt < _V2_LEASEDOCS_HEAL_DELAYS_MS.length
+    ? _V2_LEASEDOCS_HEAL_DELAYS_MS[_v2LeaseDocsHealAttempt]
+    : _V2_LEASEDOCS_HEAL_STEADY_MS;
+  console.info('[v2-leasedocs-read] heal: re-attach in ' + Math.round(delay / 1000)
+    + 's (attempt ' + (_v2LeaseDocsHealAttempt + 1) + ')');
+  _v2LeaseDocsHealTimer = setTimeout(function () {
+    _v2LeaseDocsHealTimer = null;
+    _v2LeaseDocsHealAttempt++;
+    try {
+      // Read-switch выключили, пока ждали — лечить нечего, эпизод закрыт.
+      if (!leaseDocsReadEnabled()) { _v2LeaseDocsHealReset(); return; }
+      if (_v2LeaseDocsListenerUnsub) return;  // подписку уже подняли — ждём её снапшота
+      const ok = _v2LeaseDocsAttachListener();
+      if (!ok) _v2LeaseDocsScheduleHeal();
+    } catch (e) {
+      console.warn('[v2-leasedocs-read] heal attempt failed:', e?.message || e);
+      _v2LeaseDocsScheduleHeal();
+    }
+  }, delay);
+}
+
+function _v2LeaseDocsOnListenerError(err) {
+  console.warn('[v2-leasedocs-read] listener error:', err?.message || err);
+  try { if (_v2LeaseDocsListenerUnsub) _v2LeaseDocsListenerUnsub(); } catch (e) {}
+  _v2LeaseDocsListenerUnsub = null;
+  if (!_v2LeaseDocsHealToasted) {
+    _v2LeaseDocsHealToasted = true;
+    try { if (typeof toast === 'function') toast('Documents sync interrupted — reconnecting…', 'error'); } catch (e) {}
+  }
+  _v2LeaseDocsScheduleHeal();
+}
+
 // Находит юнит по (bid/fid/uid). uid уникален → fallback-поиск только по uid.
 function _findUnitForLeaseDocs(bid, fid, uid) {
   if (!uid) return null;
@@ -34951,6 +35191,8 @@ function _v2LeaseDocsAttachListener() {
     _v2LeaseDocsListenerUnsub = sdk.onSnapshot(
       sdk.collection(db, 'workspaces', WORKSPACE_ID, 'leaseDocs'),
       (snap) => {
+        // Живой снапшот = стрим жив: закрываем heal-эпизод.
+        try { _v2LeaseDocsHealReset(); } catch (eHeal) {}
         if (!leaseDocsReadEnabled()) return;
         let changed = 0;
         snap.docChanges().forEach((ch) => {
@@ -34973,7 +35215,15 @@ function _v2LeaseDocsAttachListener() {
           }, 150);
         }
       },
-      (err) => { console.warn('[v2-leasedocs-read] listener error:', err?.message || err); }
+      (err) => {
+        // Аудит 2026-07-03: was warn-only → теперь unsub + toast + backoff
+        // re-attach; throw внутри heal-пути деградирует до прежнего warn.
+        try { _v2LeaseDocsOnListenerError(err); }
+        catch (eHeal) {
+          console.warn('[v2-leasedocs-read] listener error:', err?.message || err,
+            '(heal path failed:', (eHeal && eHeal.message) || eHeal, ')');
+        }
+      }
     );
     console.log('[v2-leasedocs-read] listener attached on workspaces/' + WORKSPACE_ID + '/leaseDocs');
     return true;
@@ -34981,6 +35231,9 @@ function _v2LeaseDocsAttachListener() {
 }
 
 function _v2LeaseDocsDetachListener() {
+  // Явное выключение отменяет и pending heal re-attach (ДО раннего return:
+  // после смерти стрима unsub уже null, а heal-таймер жив).
+  try { _v2LeaseDocsHealReset(); } catch {}
   if (!_v2LeaseDocsListenerUnsub) return;
   try { _v2LeaseDocsListenerUnsub(); } catch {}
   _v2LeaseDocsListenerUnsub = null;
@@ -61326,7 +61579,10 @@ function stackingUnitStatus(u) {
   // Priority: non-office types first (common areas), then lease-end based.
   if (u.type && u.type !== 'office') return 'common';
   if (u.status === 'reserved') return 'reserved';
-  if (u.status !== 'occupied' || !u.tenant) return 'vacant';
+  // (u.tenant || u.company) — company-only лизы не «vacant» (Suite 421 класс).
+  if (u.status !== 'occupied' || (!u.tenant && !u.company)) return 'vacant';
+  // M2M/открытая лиза не «истекает» — не красим Expired (3 живых M2M-юнита).
+  if (typeof _isMonthToMonth === 'function' && _isMonthToMonth(u)) return 'occupied';
   const d = daysBetween(u.until || u.leaseEnd);
   if (d === null) return 'occupied';
   if (d < 0)   return 'expired';
@@ -61396,6 +61652,8 @@ function stackingSuiteColor(u, metric) {
   }
   if (metric === 'tenure') {
     if (status === 'vacant' || status === 'common') return { bg: PAPER3, dark: false };
+    // M2M — открытая лиза: как «без даты» (зелёный), не Expired-красный.
+    if (typeof _isMonthToMonth === 'function' && _isMonthToMonth(u)) return { bg: PAID, dark: true };
     const d = daysBetween(u.until || u.leaseEnd);
     if (d === null) return { bg: PAID, dark: true };
     if (d < 0)      return { bg: OVERDUE, dark: true };
@@ -63349,7 +63607,7 @@ function _bonusAutoCreateOnDepositPaid() {
         );
         if (existing) continue;
         const signedAt = dep.paidAt || u.signed || u.leaseStart || new Date().toISOString();
-        state.bonuses.push({
+        const _newBonus = {
           id: _empNewId('bns'),
           employeeId: emp.id,
           kind: 'new-lease',
@@ -63365,7 +63623,18 @@ function _bonusAutoCreateOnDepositPaid() {
           status: 'pending',
           pendingReason: 'auto: deposit paid',
           createdAt: new Date().toISOString(),
-        });
+        };
+        state.bonuses.push(_newBonus);
+        // Аудит 2026-07-03 (silent mutations): авто-создание бонуса при
+        // простом визите на страницу People — оставляем поведение, но
+        // фиксируем след в outreach-логе юнита (виден в drawer/Activity).
+        try {
+          if (typeof recordOutreach === 'function') {
+            recordOutreach(u, 'note',
+              `Auto-created new-lease bonus $${(+_newBonus.amount).toLocaleString()} for ${emp.name || emp.email || emp.id} (deposit paid)`,
+              { bonusId: _newBonus.id, auto: true });
+          }
+        } catch (eOut) { console.warn('[bonus:auto-create outreach]', eOut); }
         created++;
       }
     }
@@ -63417,6 +63686,14 @@ function _bonusRunLifecycleChecks() {
       b.status = 'revoked';
       b.revokedAt = new Date().toISOString();
       b.revokedReason = `auto: lease ${unitArchived ? 'archived' : 'cancelled'} within ${clawbackDays}-day grace`;
+      // Аудит 2026-07-03: авто-revoke по факту визита — след в outreach-логе.
+      try {
+        if (typeof recordOutreach === 'function') {
+          recordOutreach(u, 'note',
+            `Auto-revoked bonus $${(+b.amount || 0).toLocaleString()} (${b.revokedReason})`,
+            { bonusId: b.id, auto: true });
+        }
+      } catch (eOut) { console.warn('[bonus:revoke outreach]', eOut); }
       revoked++; changed = true;
       continue;
     }
@@ -63437,6 +63714,14 @@ function _bonusRunLifecycleChecks() {
         b.paidAt = new Date().toISOString();
         b.pendingReason = '';
         b.paidReason = 'auto: payment received after lease signed';
+        // Аудит 2026-07-03: авто-выплата по факту визита — след в outreach-логе.
+        try {
+          if (typeof recordOutreach === 'function') {
+            recordOutreach(u, 'note',
+              `Auto-marked bonus $${(+b.amount || 0).toLocaleString()} PAID (${b.paidReason})`,
+              { bonusId: b.id, auto: true });
+          }
+        } catch (eOut) { console.warn('[bonus:paid outreach]', eOut); }
         paidFlipped++; changed = true;
       }
     }
@@ -63446,6 +63731,19 @@ function _bonusRunLifecycleChecks() {
     // saveState triggers Firestore push and re-renders — but renderPeople
     // is already calling this during its own render, so we only save.
     try { saveState(); } catch {}
+  }
+  // Аудит 2026-07-03 (silent mutations): деньги сотрудников двигались молча
+  // при простом открытии People. Поведение сохранено (авто-цикл полезен),
+  // но теперь любое реальное изменение объявляется тостом. Тоста нет, когда
+  // ничего не поменялось (обычный случай — sweep идемпотентен).
+  if ((autoCreated > 0 || paidFlipped > 0 || revoked > 0) && typeof toast === 'function') {
+    try {
+      const parts = [];
+      if (autoCreated > 0) parts.push(`${autoCreated} created`);
+      if (paidFlipped > 0) parts.push(`${paidFlipped} marked paid`);
+      if (revoked > 0) parts.push(`${revoked} revoked`);
+      toast(`Bonuses auto-updated: ${parts.join(' · ')} — see unit Activity log`, 'info');
+    } catch (eToast) {}
   }
   return { paidFlipped, revoked };
 }
@@ -67191,6 +67489,7 @@ window.searchUnits = function(q) {
   const groups = document.querySelectorAll('#unitsG .unit-group');
   if (!groups.length) return;
   if (!query) {
+    window._searchCrossHit = null;   // очистка поиска гасит и Enter-прыжок
     groups.forEach(g => {
       g.classList.remove('search-hit');
       g.classList.remove('search-miss');
@@ -67253,7 +67552,9 @@ window.searchUnits = function(q) {
   // look. Non-intrusive — just updates a status area if present.
   if (hits === 0) {
     try {
+      window._searchCrossHit = null;   // прошлый кандидат устарел вместе с query
       const b = (typeof currentBuilding === 'function') ? currentBuilding() : null;
+      let foundLocal = false;
       if (b) {
         for (const f of b.floors || []) {
           if (f.id === state.ui.currentFloorId) continue;
@@ -67263,6 +67564,7 @@ window.searchUnits = function(q) {
             return hay.includes(query);
           });
           if (m) {
+            foundLocal = true;
             // Hint shown once per typing pause — throttled via a timer
             // stamp so we don't toast on every keystroke.
             const now = Date.now();
@@ -67276,7 +67578,66 @@ window.searchUnits = function(q) {
           }
         }
       }
+      // Аудит 2026-07-03 P2: поиск был молча ограничен текущим зданием —
+      // имя арендатора из другого здания давало «ничего не найдено» при
+      // 5 зданиях / 638 сьютах, и оператор решал, что арендатора нет.
+      // Fallback-скан по ОСТАЛЬНЫМ зданиям (в рамках роли) + toast с
+      // адресом и прыжком по Enter (см. _searchJumpToCrossHit).
+      if (!foundLocal) {
+        outerB: for (const ob of (state.buildings || [])) {
+          if (!ob || (b && ob.id === b.id)) continue;
+          if (typeof canAccessBuilding === 'function' && !canAccessBuilding(ob.id)) continue;
+          for (const f of (ob.floors || [])) {
+            const m = (f.units || []).find(u => {
+              const hay = [u.id, u.tenant, u.company, u.email, u.tel, u.phone, u.note]
+                .filter(Boolean).map(v => String(v).toLowerCase()).join(' · ');
+              return hay.includes(query);
+            });
+            if (m) {
+              const bl = (typeof buildingLabel === 'function') ? buildingLabel(ob) : (ob.name || ob.id);
+              window._searchCrossHit = { buildingId: ob.id, floorId: f.id, unitId: m.id, label: bl };
+              const now = Date.now();
+              if (!window._searchHintAt || (now - window._searchHintAt) > 1500) {
+                window._searchHintAt = now;
+                if (typeof toast === 'function') {
+                  toast(`Found in ${bl} — Suite ${m.id}. Press Enter to jump.`, 'info');
+                }
+              }
+              break outerB;
+            }
+          }
+        }
+      }
     } catch {}
+  } else {
+    window._searchCrossHit = null;   // есть локальные попадания — прыжок не нужен
+  }
+};
+
+// Прыжок к cross-building результату поиска (Enter в topbar-поиске).
+// switchBuilding — тот же путь, что клик по селектору зданий (сохраняет
+// state.ui + фильтры per-building); затем точный этаж + повторная подсветка.
+window._searchJumpToCrossHit = function () {
+  const hit = window._searchCrossHit;
+  if (!hit) return false;
+  window._searchCrossHit = null;
+  try {
+    const b = (state.buildings || []).find(x => x && x.id === hit.buildingId);
+    if (!b) return false;
+    if (state.ui?.currentBuildingId !== hit.buildingId && typeof switchBuilding === 'function') {
+      switchBuilding(hit.buildingId);
+    }
+    if (hit.floorId && state.ui?.currentFloorId !== hit.floorId && typeof switchFloor === 'function') {
+      switchFloor(hit.floorId);
+    }
+    // Пере-подсветка на новом этаже — после рендера.
+    const q = window._mapSearchQuery || '';
+    if (q) setTimeout(() => { try { window.searchUnits(q); } catch (e) {} }, 250);
+    if (typeof toast === 'function') toast(`Jumped to ${hit.label} — Suite ${hit.unitId}`, 'success');
+    return true;
+  } catch (e) {
+    console.warn('[search cross-jump]', e?.message || e);
+    return false;
   }
 };
 
@@ -67292,6 +67653,10 @@ function onTopSearchInput(q) {
   };
   const sinkId = sinks[v];
   if (sinkId) {
+    // На табличных вью cross-building прыжок не действует (таблицы
+    // фильтруются сами) — гасим устаревший кандидат, чтобы Enter не
+    // прыгнул к неактуальному юниту из прошлого plan-view поиска.
+    window._searchCrossHit = null;
     const el = document.getElementById(sinkId);
     if (el) {
       el.value = q;
@@ -81113,7 +81478,8 @@ function _collectLateFeeSentList(u) {
 // status of any sent late-fee invoice. Hides entirely once all fees
 // are billed AND paid.
 function _renderUnitLateFeeOwed(u) {
-  if (u.status !== 'occupied' || !u.tenant) return '';
+  // (u.tenant || u.company) — company-only лизы (Suite 421 класс) тоже биллятся.
+  if (u.status !== 'occupied' || (!u.tenant && !u.company)) return '';
   const cfg = (typeof getLateFeeConfig === 'function') ? getLateFeeConfig(u) : null;
   if (!cfg || !cfg.enabled) return '';
   const rent = +u.contractRent || +u.rent || 0;
@@ -81146,7 +81512,13 @@ function _renderUnitLateFeeOwed(u) {
     if (startDate && !isNaN(startDate.getTime()) && lastDay < startDate) continue;
     const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
     const p = u.payments?.[ym];
-    if (p?.status === 'paid' || p?.status === 'free') continue;
+    // Entry 55: settled — ТОЛЬКО через _isMonthSettled (учитывает stripe-paid
+    // + депозит-guard Entry 34). Голый p.status штрафовал оплаченный через
+    // Stripe месяц (класс Suite 417). Fallback — load-order защита.
+    const _lfSettled = (typeof _isMonthSettled === 'function')
+      ? _isMonthSettled(u, ym)
+      : (p?.status === 'paid' ? 'paid' : (p?.status === 'free' ? 'free' : null));
+    if (_lfSettled) continue;
     const mb = _monthBilling(rent, ym, startIso, grace, now, u);
     // Прошлые месяцы — всегда late (грейс уже истёк). Текущий — по
     // _monthBilling (учитывает якорь к leaseStart для месяца въезда).
@@ -81451,7 +81823,13 @@ async function _sendInvoiceWithLateFees(unitId, totalFee, opts) {
       if (startDate && !isNaN(startDate.getTime()) && lastDay < startDate) continue;
       const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
       const p = u.payments?.[ym];
-      if (p?.status === 'paid' || p?.status === 'free') continue;
+      // Entry 55: Send-кнопка не должна выставлять fee за settled месяц
+      // (stripe-paid без локального стэмпа — класс Suite 417). Зеркало
+      // проверки в _renderUnitLateFeeOwed; fallback — load-order защита.
+      const _sfSettled = (typeof _isMonthSettled === 'function')
+        ? _isMonthSettled(u, ym)
+        : (p?.status === 'paid' ? 'paid' : (p?.status === 'free' ? 'free' : null));
+      if (_sfSettled) continue;
       const dismissed = u.lateFeeDismissed?.[ym];
       if (dismissed) continue;
       // [6]: каноничный late-критерий — зеркало _renderUnitLateFeeOwed.
@@ -92315,6 +92693,11 @@ function openNewTenantOnboarding(u) {
           if (sentEmail && expEmail && sentEmail !== expEmail) {
             delete u.stripe.lastInvoiceId;
             delete u.stripe.lastInvoiceYm;
+            // Аудит 2026-07-03 (silent mutations): удаление Entry-71-штампа
+            // (lastInvoiceYm — «never moves backwards») было НЕВИДИМЫМ и без
+            // saveState (терялось/переживало непредсказуемо). Теперь идёт в
+            // cleared → toast + saveState ниже, как deposit/rent штампы.
+            cleared.push('invoice pointer');
           }
         }
       }
@@ -93973,6 +94356,43 @@ function _isMonthSettled(u, ym) {
       return 'stripe-paid';
     }
   }
+  return null;
+}
+
+// ── Партия 2 аудита 2026-07-03 («дрейф канонических предикатов») ────────
+// Строка Stripe-кэша для stripe-paid месяца БЕЗ локальной строки леджера
+// (класс Entry 70: оплата есть в Stripe, в u.payments — нет). Резолвер
+// стэмпа зеркалит _isMonthSettled (депозит-guard Entry 34 + bucket==='paid'),
+// т.е. возвращает ровно тот инвойс, который _isMonthSettled принял как
+// оплату месяца. null — если стэмпа/кэша нет.
+function _stripePaidRowForYm(u, ym) {
+  if (!u || !ym) return null;
+  if (typeof _unitLeaseHead === 'function') u = _unitLeaseHead(u);
+  if (typeof _lookupInvoiceBucket !== 'function' || typeof _lookupInvoiceRow !== 'function') return null;
+  const _depGuard = (invId) =>
+    (typeof _stampPointsToDeposit === 'function') && _stampPointsToDeposit(u, invId);
+  const mi = u?.stripe?.moveInRent;
+  if (mi?.ym === ym && mi?.invoiceId && !_depGuard(mi.invoiceId)
+      && _lookupInvoiceBucket(mi.invoiceId) === 'paid') {
+    return _lookupInvoiceRow(mi.invoiceId) || null;
+  }
+  if (u?.stripe?.lastInvoiceYm === ym && u?.stripe?.lastInvoiceId
+      && !_depGuard(u.stripe.lastInvoiceId)
+      && _lookupInvoiceBucket(u.stripe.lastInvoiceId) === 'paid') {
+    return _lookupInvoiceRow(u.stripe.lastInvoiceId) || null;
+  }
+  return null;
+}
+
+// Реально собранная сумма stripe-paid месяца: amountPaid → total → null
+// (вызывающий подставляет контрактную ренту). Конвенция Collections-моста:
+// amountPaid сильнее total — после кредит-ноты total остаётся полным,
+// собрано именно amount_paid. Никакой новой формулы — только чтение кэша.
+function _stripePaidAmountForYm(u, ym) {
+  const row = _stripePaidRowForYm(u, ym);
+  if (!row) return null;
+  if (+row.amountPaid > 0) return +row.amountPaid;
+  if (+row.total > 0) return +row.total;
   return null;
 }
 
@@ -98928,7 +99348,13 @@ function _outstandingForUnit(u) {
     if (!startMs || d.getTime() < startMs) break;
     const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
     const p = u.payments?.[ym];
-    if (p?.status === 'paid' || p?.status === 'free') continue;
+    // Entry 55 / аудит P1 move-out: settled — только через _isMonthSettled,
+    // иначе Stripe-paid месяц попадает в «долг» (юридический риск: претензия
+    // к арендатору, который заплатил — 42 таких юнита в Entry 70).
+    const _moSettled = (typeof _isMonthSettled === 'function')
+      ? _isMonthSettled(u, ym)
+      : (p?.status === 'paid' ? 'paid' : (p?.status === 'free' ? 'free' : null));
+    if (_moSettled) continue;
     months++;
   }
   return months * rent;
@@ -98981,7 +99407,12 @@ function _moBuildBalanceBreakdown(u) {
     if (!startMs || d.getTime() < startMs) break;
     const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
     const p = u.payments?.[ym];
-    if (p?.status === 'paid' || p?.status === 'free') continue;
+    // Entry 55 / аудит P1: Stripe-paid месяц НЕ долг — иначе он уходит
+    // pre-checked в recoveryCases / tenantHistory / PDF для коллекторов.
+    const _moSettled = (typeof _isMonthSettled === 'function')
+      ? _isMonthSettled(u, ym)
+      : (p?.status === 'paid' ? 'paid' : (p?.status === 'free' ? 'free' : null));
+    if (_moSettled) continue;
     unpaidMonths.push({ d, ym });
   }
   // Rent lines — newest first.
@@ -100564,11 +100995,42 @@ function _unitNsfFee(u) {
 // Run async (fire-and-forget) so move-out completes locally without
 // waiting on N round trips. Surfaces a summary toast when done.
 async function _voidTenantOpenInvoices(u, snapshotEmail, tenancyStartMs) {
-  const cache = (typeof _invoicesCache !== 'undefined' && _invoicesCache) || null;
-  if (!cache || !u) return;
+  if (!u) return;
   const suiteId = String(u.id || '').toLowerCase();
   const email = (snapshotEmail || u.email || '').toLowerCase().trim();
   if (!suiteId || !email) return;
+  // Аудит P1 2026-07-03: пустой кэш раньше = МОЛЧАЛИВЫЙ no-op — открытые
+  // инвойсы продолжали dunning после выезда. Теперь при пустом/несозданном
+  // кэше честно тянем список через callable (до 3 страниц × 100, как
+  // Invoices tab) и мёржим через _mergeIntoInvoicesCache; провал — toast,
+  // не тишина. Read-only fetch, войд ниже остался прежним.
+  let cache = (typeof _invoicesCache !== 'undefined' && Array.isArray(_invoicesCache) && _invoicesCache.length)
+    ? _invoicesCache : null;
+  if (!cache) {
+    if (typeof stripeListInvoices !== 'function') {
+      toast('Could not load Stripe invoices to void — open Billing → Invoices and void manually', 'error');
+      return;
+    }
+    try {
+      const fetched = [];
+      let cursor = null;
+      for (let page = 0; page < 3; page++) {
+        const res = await stripeListInvoices(cursor ? { limit: 100, startingAfter: cursor } : { limit: 100 });
+        const rows = (res && Array.isArray(res.rows)) ? res.rows : [];
+        fetched.push(...rows);
+        if (typeof _mergeIntoInvoicesCache === 'function') _mergeIntoInvoicesCache(rows);
+        if (!res?.hasMore || !res?.nextCursor) break;
+        cursor = res.nextCursor;
+      }
+      cache = (typeof _invoicesCache !== 'undefined' && Array.isArray(_invoicesCache) && _invoicesCache.length)
+        ? _invoicesCache : fetched;
+    } catch (e) {
+      console.warn('[move-out:void] invoice fetch failed', e);
+      toast('Could not load Stripe invoices to void — open Billing → Invoices and void manually', 'error');
+      return;
+    }
+  }
+  if (!cache || !cache.length) return;   // список честно пуст — войдить нечего
   const VOIDABLE = new Set(['open', 'past_due', 'uncollectible', 'draft']);
   const candidates = [];
   for (const r of cache) {
@@ -121960,14 +122422,16 @@ function openUnitServicesModal(buildingId, floorId, unitId) {
   _unitSvcCtx = { buildingId, floorId, unitId };
   document.getElementById('unitSvcSub').innerHTML =
     `Suite <b>${esc(u.id)}</b> · ${esc(u.tenant || u.company || '(no name)')}`;
-  // Auto-snapshot from workspace catalog if this unit has nothing yet.
-  // Idempotent: only fires once per unit. Keeps existing per-unit
-  // overrides intact on re-open.
-  // Always materialize the unit's service list against the workspace
-  // catalog. Missing services are added (active=false) so the operator
-  // always sees the full price-list as a checkbox grid; any edits or
-  // active-flags they made previously are preserved.
-  if (!Array.isArray(u.additionalServices)) u.additionalServices = [];
+  // Аудит 2026-07-03 (silent mutations): раньше открытие модала МУТИРОВАЛО
+  // u.additionalServices (материализация каталога + backfill + фильтр пустых
+  // строк) без единого действия оператора — недетерминированный state от
+  // простого просмотра. Теперь материализация живёт в DRAFT-копии на
+  // _unitSvcCtx.draft; в state она попадает только вместе с ПЕРВЫМ реальным
+  // редактированием (см. _unitSvcCommit) — «state пишется только по
+  // завершении акта» (правило №3 аудита). Закрытие без правок = юнит нетронут.
+  const draft = JSON.parse(JSON.stringify(
+    Array.isArray(u.additionalServices) ? u.additionalServices : []
+  ));
   const ws = _addSvcGet();
   const sendBefore = (state.settings?.invoiceSendBeforeDays ?? 10);
   // Index existing rows by both id and name for matching against the
@@ -121975,14 +122439,14 @@ function openUnitServicesModal(buildingId, floorId, unitId) {
   // the operator created manually before the catalog had matching ids).
   const haveById   = new Set();
   const haveByName = new Set();
-  for (const s of u.additionalServices) {
+  for (const s of draft) {
     if (s?.id)   haveById.add(String(s.id));
     if (s?.name) haveByName.add(String(s.name).trim().toLowerCase());
   }
   for (const w of ws) {
     if (haveById.has(String(w.id))) continue;
     if (w.name && haveByName.has(String(w.name).trim().toLowerCase())) continue;
-    u.additionalServices.push({
+    draft.push({
       id: w.id,
       name: w.name,
       description: w.description || '',
@@ -121997,7 +122461,7 @@ function openUnitServicesModal(buildingId, floorId, unitId) {
   }
   // Backfill missing fields on every row (handles legacy entries that
   // pre-date the active/autoInvoice/daysBefore schema).
-  for (const s of u.additionalServices) {
+  for (const s of draft) {
     if (typeof s.active !== 'boolean') s.active = false;
     if (typeof s.autoInvoice !== 'boolean') s.autoInvoice = false;
     if (typeof s.daysBefore !== 'number' || !Number.isFinite(s.daysBefore)) {
@@ -122007,7 +122471,7 @@ function openUnitServicesModal(buildingId, floorId, unitId) {
   // Drop any pristine blank rows that an old "+ Add line" click left
   // behind — they clutter the checklist and the operator can re-add
   // them via "+ Add line" if they really need a custom service.
-  u.additionalServices = u.additionalServices.filter(s =>
+  _unitSvcCtx.draft = draft.filter(s =>
     (s.name && String(s.name).trim() !== '')
     || (+s.amount > 0)
     || s.active
@@ -122016,7 +122480,34 @@ function openUnitServicesModal(buildingId, floorId, unitId) {
   document.getElementById('unitSvcModal').classList.add('active');
 }
 
+// Draft-хелперы модала services (аудит 2026-07-03, silent mutations).
+// _unitSvcList — рабочий список, пока модал открыт (draft).
+// _unitSvcCommit — единственная точка записи draft'а в state: глубокая копия
+// в u.additionalServices. Вызывается КАЖДЫМ user-инициированным действием
+// (toggle/edit/add/remove/sync) вместе с saveState — как и раньше, но
+// открытие/закрытие без правок теперь не пишет ничего.
+function _unitSvcList() {
+  return _unitSvcCtx && Array.isArray(_unitSvcCtx.draft) ? _unitSvcCtx.draft : null;
+}
+function _unitSvcCommit() {
+  if (!_unitSvcCtx || !Array.isArray(_unitSvcCtx.draft)) return null;
+  const u = state.buildings.find(b => b.id === _unitSvcCtx.buildingId)
+    ?.floors.find(f => f.id === _unitSvcCtx.floorId)
+    ?.units.find(x => x.id === _unitSvcCtx.unitId);
+  if (!u) return null;
+  u.additionalServices = JSON.parse(JSON.stringify(_unitSvcCtx.draft));
+  return u;
+}
+
 function _closeUnitSvcModal() {
+  // Flush отложенного commit'а: оператор напечатал и сразу закрыл — правка
+  // не должна потеряться из-за 600ms debounce (_unitSvcEditField).
+  if (_unitSvcCtx && _unitSvcCtx._saveTimer) {
+    clearTimeout(_unitSvcCtx._saveTimer);
+    _unitSvcCtx._saveTimer = null;
+    _unitSvcCommit();
+    try { saveState(); } catch {}
+  }
   document.getElementById('unitSvcModal').classList.remove('active');
   _unitSvcCtx = null;
 }
@@ -122029,7 +122520,9 @@ function _renderUnitSvcBody() {
   if (!u) return;
   const host = document.getElementById('unitSvcBody');
   if (!host) return;
-  const items = u.additionalServices || [];
+  // Рендерим DRAFT (аудит 2026-07-03) — u.additionalServices остаётся
+  // fallback'ом на случай потери draft'а.
+  const items = _unitSvcList() || u.additionalServices || [];
   if (items.length === 0) {
     host.innerHTML = `
       <div style="padding: 22px 14px; text-align: center; color: var(--muted); border: 1px dashed var(--border); border-radius: 8px;">
@@ -122135,11 +122628,9 @@ function _renderUnitSvcBody() {
 // the top of the list, and re-enable / disable the auto-invoice cluster.
 function _unitSvcToggleActive(idx) {
   if (!_unitSvcCtx) return;
-  const u = state.buildings.find(b => b.id === _unitSvcCtx.buildingId)
-    ?.floors.find(f => f.id === _unitSvcCtx.floorId)
-    ?.units.find(x => x.id === _unitSvcCtx.unitId);
-  if (!u || !Array.isArray(u.additionalServices) || !u.additionalServices[idx]) return;
-  const s = u.additionalServices[idx];
+  const list = _unitSvcList();
+  if (!list || !list[idx]) return;
+  const s = list[idx];
   const wasActive = !!s.active;
   s.active = !s.active;
   s.activatedAt = s.active ? new Date().toISOString() : s.activatedAt;
@@ -122163,6 +122654,7 @@ function _unitSvcToggleActive(idx) {
     }
   }
   s.updatedAt = new Date().toISOString();
+  _unitSvcCommit();   // draft → state: действие оператора завершено
   try { saveState(); } catch {}
   _renderUnitSvcBody();
   if (typeof toast === 'function') {
@@ -122181,11 +122673,9 @@ function _unitSvcToggleActive(idx) {
 
 function _unitSvcToggleAutoInv(idx) {
   if (!_unitSvcCtx) return;
-  const u = state.buildings.find(b => b.id === _unitSvcCtx.buildingId)
-    ?.floors.find(f => f.id === _unitSvcCtx.floorId)
-    ?.units.find(x => x.id === _unitSvcCtx.unitId);
-  if (!u || !Array.isArray(u.additionalServices) || !u.additionalServices[idx]) return;
-  const s = u.additionalServices[idx];
+  const list = _unitSvcList();
+  if (!list || !list[idx]) return;
+  const s = list[idx];
   s.autoInvoice = !s.autoInvoice;
   // Mark the operator's preference as explicit so future activations
   // don't override it back to the default. Without this flag, deactivating
@@ -122193,35 +122683,35 @@ function _unitSvcToggleAutoInv(idx) {
   // even if the operator deliberately turned it off.
   s.autoInvoiceUserSet = true;
   s.updatedAt = new Date().toISOString();
+  _unitSvcCommit();   // draft → state: действие оператора завершено
   try { saveState(); } catch {}
   _renderUnitSvcBody();
 }
 
 function _unitSvcEditField(idx, field, value) {
   if (!_unitSvcCtx) return;
-  const u = state.buildings.find(b => b.id === _unitSvcCtx.buildingId)
-    ?.floors.find(f => f.id === _unitSvcCtx.floorId)
-    ?.units.find(x => x.id === _unitSvcCtx.unitId);
-  if (!u || !Array.isArray(u.additionalServices) || !u.additionalServices[idx]) return;
-  u.additionalServices[idx][field] = value;
-  u.additionalServices[idx].updatedAt = new Date().toISOString();
+  const list = _unitSvcList();
+  if (!list || !list[idx]) return;
+  list[idx][field] = value;
+  list[idx].updatedAt = new Date().toISOString();
   // Debounce save — typing in the name field would otherwise spam state writes.
+  // Commit тоже внутри debounce: state получает draft одним куском.
   clearTimeout(_unitSvcCtx._saveTimer);
   _unitSvcCtx._saveTimer = setTimeout(() => {
+    _unitSvcCommit();
     try { saveState(); } catch {}
   }, 600);
 }
 
 function _unitSvcRemove(idx) {
   if (!_unitSvcCtx) return;
-  const u = state.buildings.find(b => b.id === _unitSvcCtx.buildingId)
-    ?.floors.find(f => f.id === _unitSvcCtx.floorId)
-    ?.units.find(x => x.id === _unitSvcCtx.unitId);
-  if (!u || !Array.isArray(u.additionalServices)) return;
-  const item = u.additionalServices[idx];
+  const list = _unitSvcList();
+  if (!list) return;
+  const item = list[idx];
   if (!item) return;
   if (!confirm(`Remove "${item.name}" from this tenant's services?`)) return;
-  u.additionalServices.splice(idx, 1);
+  list.splice(idx, 1);
+  _unitSvcCommit();
   try { saveState(); } catch {}
   _renderUnitSvcBody();
   toast('Service removed for this tenant', 'info');
@@ -122229,12 +122719,9 @@ function _unitSvcRemove(idx) {
 
 function _unitSvcAddRow() {
   if (!_unitSvcCtx) return;
-  const u = state.buildings.find(b => b.id === _unitSvcCtx.buildingId)
-    ?.floors.find(f => f.id === _unitSvcCtx.floorId)
-    ?.units.find(x => x.id === _unitSvcCtx.unitId);
-  if (!u) return;
-  u.additionalServices = Array.isArray(u.additionalServices) ? u.additionalServices : [];
-  u.additionalServices.push({
+  const list = _unitSvcList();
+  if (!list) return;
+  list.push({
     id: 'svc_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 5),
     name: '', description: '', amount: 0, frequency: 'monthly', category: '',
     active: false,
@@ -122242,27 +122729,27 @@ function _unitSvcAddRow() {
     daysBefore: (state.settings?.invoiceSendBeforeDays ?? 10),
     addedAt: new Date().toISOString(),
   });
-  try { saveState(); } catch {}
+  // Пустая строка — ещё не завершённый акт: state НЕ трогаем (пустые строки
+  // всё равно отфильтровываются при следующем открытии). Персист случится
+  // при первом реальном вводе (_unitSvcEditField / toggle).
   _renderUnitSvcBody();
 }
 
 function _unitSvcSyncFromWorkspace() {
   if (!_unitSvcCtx) return;
-  const u = state.buildings.find(b => b.id === _unitSvcCtx.buildingId)
-    ?.floors.find(f => f.id === _unitSvcCtx.floorId)
-    ?.units.find(x => x.id === _unitSvcCtx.unitId);
-  if (!u) return;
+  const list = _unitSvcList();
+  if (!list) return;
   const ws = _addSvcGet();
   if (ws.length === 0) {
     toast('No workspace services defined yet — add some in Settings → Billing first', 'info');
     return;
   }
   if (!confirm(
-    `Replace this tenant's ${(u.additionalServices || []).length} service${(u.additionalServices || []).length === 1 ? '' : 's'} ` +
+    `Replace this tenant's ${list.length} service${list.length === 1 ? '' : 's'} ` +
     `with the current workspace catalog (${ws.length} item${ws.length === 1 ? '' : 's'})?\n\n` +
     `Per-tenant overrides will be lost. This is meant for tenants whose snapshot is stale and you want to apply the latest workspace prices.`
   )) return;
-  u.additionalServices = ws.map(s => ({
+  _unitSvcCtx.draft = ws.map(s => ({
     id: s.id,
     name: s.name,
     description: s.description || '',
@@ -122274,6 +122761,7 @@ function _unitSvcSyncFromWorkspace() {
     daysBefore: (state.settings?.invoiceSendBeforeDays ?? 10),
     snapshotAt: new Date().toISOString(),
   }));
+  _unitSvcCommit();   // confirm получен — явное действие оператора
   try { saveState(); } catch {}
   _renderUnitSvcBody();
   toast(`✓ Synced ${ws.length} service${ws.length === 1 ? '' : 's'} from workspace`, 'success');
@@ -124494,7 +124982,26 @@ async function _saveAddLeaseDocModal() {
   const isNewLease = (kind === 'lease');
   const proforma   = isNewLease ? rentFromRaw : 0;
   const previousRent = isNewLease ? 0 : rentFromRaw;
-  if (isNewLease && proforma > 0) {
+
+  // ENTRY-73 гейты v2 (аудит 2026-07-03, P1 — «инвариант дырявый»):
+  //  · amendment через DocuSign: contractRent раньше писался ДО создания
+  //    конверта (та же дыра, что Suite 428 у renewal) — теперь defer;
+  //  · kind='lease' через DocuSign на ЗАНЯТОМ юните (vacancy-гейт): клик по
+  //    кнопке не должен переписывать leaseStart/rent действующей лизы —
+  //    поля едут через pending, как у renewal. Entry 21 («не терять ввод»)
+  //    остаётся в силе ТОЛЬКО для пустого юнита;
+  //  · renewal через upload/external с versionStatus ≠ signed: документ
+  //    сохраняем, unit-поля НЕ пишем — драфт юриста не переписывает
+  //    действующий договор (см. renewalDraftGate ниже).
+  const versionStatusEarly = document.getElementById('addLeaseDocVersionStatus')?.value || 'signed';
+  // «Занят» = status occupied ИЛИ живая identity (u.tenant||u.company — LLC-
+  // конвенция): защищает и юниты класса 414/344 (vacant-статус с остаточным
+  // арендатором). Пустой юнит без identity → Entry 21 как раньше.
+  const unitOccupied = (u.status === 'occupied') || !!(u.tenant || u.company);
+  const deferLeaseFields = (kind === 'lease' && source === 'docusign' && unitOccupied);
+  const renewalDraftGate = (kind === 'renewal' && (source === 'upload' || source === 'external')
+                            && versionStatusEarly !== 'signed');
+  if (isNewLease && proforma > 0 && !deferLeaseFields) {
     u.rent = proforma; // keep right-panel proforma in sync
   }
 
@@ -124510,8 +125017,11 @@ async function _saveAddLeaseDocModal() {
   // _slPendingRenewal и применяются в _slDoSend ПОСЛЕ успешной отправки.
   // Для kind='lease' поведение Entry 21 сохранено (пустой юнит — ввод
   // оператора не теряем); upload/external применяют сразу (акт завершён).
-  const deferRenewalFields = (kind === 'renewal' && source === 'docusign');
-  if ((kind === 'lease' || kind === 'renewal') && !deferRenewalFields) {
+  // Entry-73 v2: defer распространён на amendment (DocuSign) и на новую
+  // лизу поверх занятого юнита (deferLeaseFields выше).
+  const deferRenewalFields = ((kind === 'renewal' || kind === 'amendment') && source === 'docusign')
+                             || deferLeaseFields;
+  if ((kind === 'lease' || kind === 'renewal') && !deferRenewalFields && !renewalDraftGate) {
     if (termSelVal) {
       u.leaseTerm = termSelVal; // 'mtm' | '6' | '12' | ... | ''
     }
@@ -124533,10 +125043,14 @@ async function _saveAddLeaseDocModal() {
   if (deferRenewalFields) {
     window._slPendingRenewal = {
       buildingId, floorId, unitId,
+      kind,   // Entry-73 v2: apply-ветка в _slDoSend различает lease/renewal/amendment
       leaseTerm: termSelVal || '',
       effDate: effDate || '',
       until: expDate || '',
       rentTo: rentTo > 0 ? rentTo : null,
+      // Vacancy-гейт: proforma-rent новой лизы на занятом юните тоже
+      // откладывается — иначе закрытое превью меняло u.rent действующего.
+      proformaRent: (isNewLease && proforma > 0) ? proforma : null,
       stashedAt: new Date().toISOString(),
     };
   }
@@ -124692,7 +125206,11 @@ async function _saveAddLeaseDocModal() {
     if (typeof renderUnits === 'function') { try { renderUnits(); } catch {} }
     if (typeof toast === 'function') {
       if (deferRenewalFields) {
-        toast('Opening DocuSign — renewal terms apply ONLY after the envelope is sent', 'info');
+        // Entry-73 v2: текст различает renewal / amendment / new-lease-on-occupied
+        const _whatTxt = kind === 'amendment' ? 'amendment terms'
+                       : kind === 'lease' ? 'new lease terms'
+                       : 'renewal terms';
+        toast(`Opening DocuSign — ${_whatTxt} apply ONLY after the envelope is sent`, 'info');
       } else {
         const rentMsg = rentTo > 0 ? ` · rent set to $${(+u.contractRent).toLocaleString()}/mo` : '';
         toast(`Opening DocuSign — complete the envelope to record the lease${rentMsg}`, 'info');
@@ -124727,7 +125245,12 @@ async function _saveAddLeaseDocModal() {
   if (typeof toast === 'function') {
     const verb = source === 'upload' ? 'Uploaded' : 'Drafted';
     const rentMsg = rentBumped ? ` · rent now $${u.contractRent.toLocaleString()}/mo` : '';
-    toast(`${verb} "${doc.title}"${rentMsg}`, 'success');
+    if (renewalDraftGate) {
+      // Entry-73 v2: видимая пометка — unit-поля НЕ применены до signed-версии.
+      toast(`${verb} "${doc.title}" — lease dates/term NOT applied until a SIGNED version is saved`, 'info');
+    } else {
+      toast(`${verb} "${doc.title}"${rentMsg}`, 'success');
+    }
   }
   _closeAddLeaseDocModal();
 
@@ -130429,7 +130952,7 @@ function _leasesPayHist(u, r) {
   const tenureStartMs = startDate && !isNaN(startDate.getTime()) ? startDate.getTime() : null;
 
   const dots = [];
-  let paidOnTime = 0, paidLate = 0, unpaid = 0, inTenure = 0;
+  let paidOnTime = 0, paidLate = 0, unpaid = 0, inTenure = 0, preLease = 0, waived = 0;
   // Walk oldest → newest (11..0 months ago) so left = oldest.
   for (let i = 11; i >= 0; i--) {
     const d = new Date(curY, curM - i, 1);
@@ -130437,10 +130960,18 @@ function _leasesPayHist(u, r) {
     // Month is before this tenant's lease started → N/A
     if (tenureStartMs) {
       const monthEnd = new Date(d.getFullYear(), d.getMonth()+1, 0).getTime();
-      if (monthEnd < tenureStartMs) { dots.push('na'); continue; }
+      if (monthEnd < tenureStartMs) { dots.push('na'); preLease++; continue; }
     }
-    inTenure++;
     const p = payments[ym];
+    // Entry 55: settled — только через _isMonthSettled. Раньше точка была
+    // красной «unpaid» для waived ('free') и stripe-paid месяцев — вопреки
+    // собственному тултипу (аудит «12-точечная полоска красит оплаченное»).
+    const _dotSettled = (typeof _isMonthSettled === 'function')
+      ? _isMonthSettled(u, ym)
+      : (p?.status === 'paid' ? 'paid' : (p?.status === 'free' ? 'free' : null));
+    // Waived месяц — платёж не ожидался: серая N/A-точка, вне знаменателя.
+    if (_dotSettled === 'free') { dots.push('na'); waived++; continue; }
+    inTenure++;
     // Anchor due to the 1st of THIS month + grace (matches lease /
     // workspace late-fee policy). Earlier code anchored to 1st of
     // NEXT month → effectively a 30-day grace, so payments made
@@ -130460,6 +130991,10 @@ function _leasesPayHist(u, r) {
       const daysLate = (paidAt && !isBackfill) ? Math.max(0, Math.floor((paidAt.getTime() - dueWithGraceMs) / 86400000)) : 0;
       if (daysLate > 0) { dots.push('late'); paidLate++; }
       else              { dots.push('paid'); paidOnTime++; }
+    } else if (_dotSettled === 'stripe-paid') {
+      // Stripe-paid без локальной строки (Entry 70 класс) — месяц оплачен;
+      // точной даты нет → считаем on-time, не красим красным.
+      dots.push('paid'); paidOnTime++;
     } else {
       // Don't flag the current month as unpaid until it's actually
       // past the grace period (rent isn't "late" yet inside grace).
@@ -130477,7 +131012,13 @@ function _leasesPayHist(u, r) {
     const col = late === 0 ? '#3d6b4a' : late <= 1 ? '#a86b1c' : '#a8332a';
     sub = `<div class="leases-payhist-sub" style="color:${col};">${paidOnTime}/${inTenure} on time${paidLate ? ` · ${paidLate} late` : ''}${unpaid ? ` · ${unpaid} unpaid` : ''}</div>`;
   }
-  const title = `Pay history · last 12 months (oldest left). ${paidOnTime} on-time, ${paidLate} late, ${unpaid} unpaid, ${12 - inTenure} before lease start.`;
+  // Знаменатель тултипа: раньше «12 - inTenure before lease start» валил в ОДНУ
+  // категорию и пред-лизовые, и waived месяцы (waived теперь вне inTenure) —
+  // waived ложно читался «before lease start». Считаем раздельно.
+  const _naParts = [];
+  if (preLease) _naParts.push(`${preLease} before lease start`);
+  if (waived)   _naParts.push(`${waived} waived`);
+  const title = `Pay history · last 12 months (oldest left). ${paidOnTime} on-time, ${paidLate} late, ${unpaid} unpaid${_naParts.length ? ', ' + _naParts.join(', ') : ''}.`;
   // Явный flex-column — точки сверху, подпись (No history / N on time) строго
   // под ними, не сбоку (Tony 2026-05-30). .leases-payhist — inline-flex, поэтому
   // без этого подпись могла прилипать справа.
@@ -130563,7 +131104,13 @@ function renderLeases() {
       if (r.leaseEndIso   && ym > r.leaseEndIso.slice(0, 7))   continue;
       billed += r.rent;
       const p = u.payments && u.payments[ym];
-      if (p && p.status === 'paid') paid += r.rent;
+      // Entry 55: settled — только через _isMonthSettled ('free' = waived →
+      // вне billed, зеркалит Billing-KPI-конвенцию; stripe-paid = собрано).
+      const _lkSettled = (typeof _isMonthSettled === 'function')
+        ? _isMonthSettled(u, ym)
+        : (p && p.status === 'paid' ? 'paid' : (p && p.status === 'free' ? 'free' : null));
+      if (_lkSettled === 'free') billed -= r.rent;
+      else if (_lkSettled) paid += r.rent;
     }
     const collectedPct = billed ? Math.round(paid / billed * 100) : 0;
     const outstanding  = Math.max(0, billed - paid);
@@ -133396,11 +133943,18 @@ function renderHomeView() {
         const billable = occupied && rent > 0 && !tenantless && !leaseFuture;
 
         // Money this month
+        // Entry 55: settled — только через _isMonthSettled (stripe-paid без
+        // локального стэмпа раньше падал в billed как «не собрано»).
         if (billable) {
           const p = u.payments?.[ymThis];
-          if (p?.status === 'paid')      collected += +p.amount || rent;
-          else if (p?.status === 'free') { /* waived */ }
-          else                           billed += rent;
+          const _hvSettled = (typeof _isMonthSettled === 'function')
+            ? _isMonthSettled(u, ymThis)
+            : (p?.status === 'paid' ? 'paid' : (p?.status === 'free' ? 'free' : null));
+          if (_hvSettled === 'paid')             collected += +p.amount || rent;
+          else if (_hvSettled === 'stripe-paid') collected += (typeof _stripePaidAmountForYm === 'function')
+                                                     ? (_stripePaidAmountForYm(u, ymThis) ?? rent) : rent;
+          else if (_hvSettled === 'free')        { /* waived */ }
+          else                                   billed += rent;
 
           // Overdue — single source of truth: _isUnitOverdue (used by
           // the floor-map red overlay too). Catches units with unpaid
@@ -133676,9 +134230,17 @@ function _hvRenderRevenueChart() {
           const rent = +u.contractRent || +u.rent || 0;
           if (rent <= 0) continue;
           const p = u.payments?.[ym];
-          if (p?.status === 'free') continue;
+          // Entry 55: Revenue-виджет тем же settled-предикатом, что KPI.
+          const _rvSettled = (typeof _isMonthSettled === 'function')
+            ? _isMonthSettled(u, ym)
+            : (p?.status === 'paid' ? 'paid' : (p?.status === 'free' ? 'free' : null));
+          if (_rvSettled === 'free') continue;
           billed += rent;
-          if (p?.status === 'paid') actual += +p.amount || rent;
+          if (_rvSettled === 'paid') actual += +p.amount || rent;
+          else if (_rvSettled === 'stripe-paid') {
+            actual += (typeof _stripePaidAmountForYm === 'function')
+              ? (_stripePaidAmountForYm(u, ym) ?? rent) : rent;
+          }
         }
       }
     }
@@ -133789,9 +134351,13 @@ function _hvRenderPortfolio() {
         const rent = +u.contractRent || +u.rent || 0;
         if (u.status === 'occupied' && rent > 0) {
           const p = u.payments?.[ymThis];
-          if (p?.status === 'paid' || p?.status === 'free') mrr += rent;
-          else mrr += rent;             // count rent as collectible regardless
-          if (p?.status === 'late' || p?.status === 'overdue') attn++;
+          mrr += rent;                  // collectible regardless of status
+          // Entry 55: локальный 'late' при stripe-paid месяце — НЕ attention
+          // (класс Suite 417: застрявший стэмп при оплаченном инвойсе).
+          const _pfSettled = (typeof _isMonthSettled === 'function')
+            ? _isMonthSettled(u, ymThis)
+            : (p?.status === 'paid' ? 'paid' : (p?.status === 'free' ? 'free' : null));
+          if ((p?.status === 'late' || p?.status === 'overdue') && !_pfSettled) attn++;
         }
       }
     }
@@ -134541,7 +135107,10 @@ function renderCommissions() {
       for (const u of f.units || []) {
         if (isArchived(u)) continue;
         if (u.rentable === false || u.type !== 'office') continue;
-        if (!u.tenant || !u.tenant.trim()) continue;
+        // (u.tenant || u.company) — company-only лизы (Suite 421 / LLC) тоже
+        // приносят комиссию; голый u.tenant терял их полностью (аудит P1).
+        const _commTenant = String(u.tenant || u.company || '').trim();
+        if (!_commTenant) continue;
         const when = u.filledAt || u.signed || u.leaseStart || null;
         if (!inPeriod(when, _commPeriod)) continue;
         const uid = u.filledByUid || bldgMgr || 'unattributed';
@@ -134551,7 +135120,7 @@ function renderCommissions() {
         row.count += 1;
         const rent = (+u.contractRent || +u.rent || 0); // аудит H7: контракт-рента приоритетна (EQ-1), не proforma
         row.rentSum += rent;
-        row.units.push({ bid: b.id, fid: f.id, uid: u.id, suite: u.id, tenant: u.tenant, rent, curUid: uid });
+        row.units.push({ bid: b.id, fid: f.id, uid: u.id, suite: u.id, tenant: _commTenant, rent, curUid: uid });
         byUid.set(uid, row);
         totalUnits += 1;
         totalRent += rent;
@@ -134578,7 +135147,11 @@ function renderCommissions() {
         const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
         const p = u2.payments?.[ym];
         billable++;
-        if (p?.status === 'paid' || p?.status === 'free') paidOk++;
+        // Entry 55: on-time rate через _isMonthSettled (stripe-paid = ok).
+        const _cSettled = (typeof _isMonthSettled === 'function')
+          ? _isMonthSettled(u2, ym)
+          : (p?.status === 'paid' ? 'paid' : (p?.status === 'free' ? 'free' : null));
+        if (_cSettled) paidOk++;
       }
     }
     row.onTime = billable > 0 ? Math.round((paidOk / billable) * 100) : null;
@@ -136430,6 +137003,11 @@ function renderRRCell(r, c) {
     case 'cap':
       return r.cap || '<span style="color:var(--muted)">—</span>';
     case 'daysLeft': {
+      // M2M/открытая лиза не «истекает» — не красим красным «Nd ago»
+      // (3 живых M2M-юнита горели Expired; конвенция _isMonthToMonth).
+      if (r._u && typeof _isMonthToMonth === 'function' && _isMonthToMonth(r._u)) {
+        return '<span style="color:var(--muted)" title="Month-to-month — no fixed end date">MTM</span>';
+      }
       const d = daysBetween(r.leaseEnd);
       if (d === null) return '<span style="color:var(--muted)">—</span>';
       if (d < 0) return `<span class="rr-days expired">${Math.abs(d)}d ago</span>`;
@@ -136469,8 +137047,15 @@ function renderRRCell(r, c) {
       if (!s.lastInvoiceId) return '<span style="color:var(--muted)">—</span>';
       const ym = s.lastInvoiceYm || '';
       const p = u.payments?.[ym];
+      // Entry 55: settled — только через _isMonthSettled. Раньше «Overdue»
+      // писался на stripe-paid месяц с застрявшим локальным 'late'
+      // (аудит: «Rent Roll пишет Overdue на оплаченный месяц»).
+      const _riSettled = (typeof _isMonthSettled === 'function')
+        ? _isMonthSettled(u, ym)
+        : (p?.status === 'paid' ? 'paid' : (p?.status === 'free' ? 'free' : null));
       let statusLbl = 'Sent', statusClr = 'var(--accent)';
-      if (p?.status === 'paid') { statusLbl = 'Paid'; statusClr = 'var(--success)'; }
+      if (_riSettled === 'free') { statusLbl = 'Waived'; statusClr = 'var(--success)'; }
+      else if (_riSettled) { statusLbl = 'Paid'; statusClr = 'var(--success)'; }
       else if (p?.status === 'late') { statusLbl = 'Overdue'; statusClr = 'var(--danger)'; }
       const url = stripeDashboardInvoiceUrl(s.lastInvoiceId);
       return `<a href="${url}" target="_blank" rel="noopener" onclick="event.stopPropagation();" style="text-decoration:none; color:inherit;">
@@ -137385,10 +137970,29 @@ function renderBillingKpiStrip() {
         if (billable) {
           billed += rent;
           const p = u.payments?.[ymThis];
-          if (p?.status === 'free') {
+          // Entry 55 (аудит «дрейф предикатов», якорь ~:137390): settled —
+          // только через _isMonthSettled. Голый p.status считал stripe-paid
+          // месяц (без локального стэмпа) как outstanding → завышенный
+          // «Outstanding» и заниженный collection rate.
+          const _kSettled = (typeof _isMonthSettled === 'function')
+            ? _isMonthSettled(u, ymThis)
+            : (p?.status === 'paid' ? 'paid' : (p?.status === 'free' ? 'free' : null));
+          if (_kSettled === 'free') {
             billed -= rent;          // waived → not billed
-          } else if (p?.status !== 'paid') {
+          } else if (!_kSettled) {
             outstanding += rent; openCount++;
+          } else if (_kSettled === 'stripe-paid' && !(p && p.status === 'paid')) {
+            // stripe-paid БЕЗ локальной строки леджера (Entry 70 класс):
+            // цикл по u.payments выше его не увидел — добираем сумму из
+            // Stripe-кэша (fallback контрактная рента), иначе юнит выпадает
+            // и из Collected, и из Outstanding.
+            const _sAmt = (typeof _stripePaidAmountForYm === 'function')
+              ? (_stripePaidAmountForYm(u, ymThis) ?? rent) : rent;
+            collectedForMonth += _sAmt;
+            // Кассовый месяц — по paidAt инвойса (нет данных → «в месяц»).
+            const _sRow = (typeof _stripePaidRowForYm === 'function') ? _stripePaidRowForYm(u, ymThis) : null;
+            const _sCashYm = (typeof _cbrStripeCashYm === 'function') ? _cbrStripeCashYm(_sRow, ymThis) : ymThis;
+            if (_sCashYm === ymThis) cashReceivedInMonth += _sAmt;
           }
 
           // Overdue — single source of truth: same _isUnitOverdue
@@ -137494,9 +138098,17 @@ function renderBillingKpiStrip() {
           const rent = +u.contractRent || +u.rent || 0;
           if (rent <= 0) continue;
           const p = u.payments?.[ym];
-          if (p?.status === 'free') continue;        // waived
+          // Entry 55: спарклайн collection-rate тем же предикатом, что KPI.
+          const _spSettled = (typeof _isMonthSettled === 'function')
+            ? _isMonthSettled(u, ym)
+            : (p?.status === 'paid' ? 'paid' : (p?.status === 'free' ? 'free' : null));
+          if (_spSettled === 'free') continue;        // waived
           mBilled += rent;
-          if (p?.status === 'paid') mPaid += +p.amount || rent;
+          if (_spSettled === 'paid') mPaid += +p.amount || rent;
+          else if (_spSettled === 'stripe-paid') {
+            mPaid += (typeof _stripePaidAmountForYm === 'function')
+              ? (_stripePaidAmountForYm(u, ym) ?? rent) : rent;
+          }
         }
       }
     }
@@ -138534,13 +139146,28 @@ function _bvDeriveTenantStatus(u, ym) {
   const leaseFirstDay = new Date(startDate.getFullYear(), startDate.getMonth(), 1);
   if (ymLastDay < leaseFirstDay) return 'upcoming';
   // Normal status derivation для уже-активных tenants.
+  // Entry 55: settled — только через _isMonthSettled (stripe-paid месяц с
+  // застрявшим локальным 'late' раньше показывал Overdue — класс Suite 417).
   const p = u.payments?.[ym];
-  if (p?.status === 'paid' || p?.status === 'free') return 'paid';
+  const _tSettled = (typeof _isMonthSettled === 'function')
+    ? _isMonthSettled(u, ym)
+    : (p?.status === 'paid' ? 'paid' : (p?.status === 'free' ? 'free' : null));
+  if (_tSettled) return 'paid';
   if (p?.status === 'late' || p?.status === 'overdue') return 'overdue';
   // No record this month — check if it's past the due date.
+  // Грейс — из getLateFeeConfig (каскад workspace→building→floor→unit),
+  // не хардкод «5» (аудит: hardcoded grace).
   const today = new Date();
-  if (today.getDate() > 15) return 'overdue';   // mid-month grace cut-off
-  if (today.getDate() > 5)  return 'due';
+  const _tGrace = (typeof getLateFeeConfig === 'function'
+    ? +getLateFeeConfig(u)?.graceDays : NaN);
+  const _tGraceDays = Number.isFinite(_tGrace) ? _tGrace : 5;
+  // Mid-month cut-off — эвристика «прошла середина месяца → overdue», но она
+  // НЕ должна перебивать бОльший настроенный грейс (getLateFeeConfig, до 60
+  // дней): для grace>15 арендатор внутри грейса иначе ложно читался Overdue
+  // (label-only, balance-пути корректны). Поднимаем порог до max(15,grace).
+  const _tMidCut = Math.max(15, _tGraceDays);
+  if (today.getDate() > _tMidCut) return 'overdue';
+  if (today.getDate() > _tGraceDays) return 'due';
   return 'paid';                                  // early in month → not due yet
 }
 
@@ -138565,7 +139192,11 @@ function _bvComputeTenantBalance(u, ymThis) {
       const ls = new Date(u.leaseStart.length <= 10 ? u.leaseStart + 'T00:00:00' : u.leaseStart);
       if (!isNaN(ls.getTime()) && d < new Date(ls.getFullYear(), ls.getMonth(), 1)) break;
     }
-    if (p?.status === 'paid' || p?.status === 'free') continue;
+    // Entry 55: settled — только через _isMonthSettled (stripe-paid ≠ долг).
+    const _bSettled = (typeof _isMonthSettled === 'function')
+      ? _isMonthSettled(u, ym)
+      : (p?.status === 'paid' ? 'paid' : (p?.status === 'free' ? 'free' : null));
+    if (_bSettled) continue;
     bal += rent;
   }
   return bal;
@@ -138589,7 +139220,11 @@ function _bvCountOutstandingMonths(u, ymThis) {
       const ls = new Date(u.leaseStart.length <= 10 ? u.leaseStart + 'T00:00:00' : u.leaseStart);
       if (!isNaN(ls.getTime()) && d < new Date(ls.getFullYear(), ls.getMonth(), 1)) break;
     }
-    if (p?.status === 'paid' || p?.status === 'free') continue;
+    // Entry 55: settled — только через _isMonthSettled (stripe-paid ≠ долг).
+    const _nSettled = (typeof _isMonthSettled === 'function')
+      ? _isMonthSettled(u, ym)
+      : (p?.status === 'paid' ? 'paid' : (p?.status === 'free' ? 'free' : null));
+    if (_nSettled) continue;
     n++;
   }
   return n;
@@ -140142,6 +140777,35 @@ function exportScheduleECsv() {
           } else if (p.status === 'bounced') {
             const amt = +p.bouncedAmount || +p.amount || 0;
             if (amt > 0) bRec.refundsBounced += amt;
+          }
+        }
+        // Entry 55/70: stripe-paid месяцы БЕЗ локальной строки леджера
+        // (webhook-провалы) раньше выпадали из Schedule E → занижение
+        // налоговой выручки (аудит). Стэмпов максимум два (moveInRent,
+        // lastInvoiceYm) — добираем их через каноничный предикат.
+        if (typeof _isMonthSettled === 'function' && typeof _stripePaidRowForYm === 'function') {
+          const _seYms = new Set([u.stripe?.moveInRent?.ym, u.stripe?.lastInvoiceYm].filter(Boolean));
+          for (const sym of _seYms) {
+            if (!/^\d{4}-\d{2}$/.test(sym)) continue;
+            const lp = (u.payments || {})[sym];
+            if (lp && (lp.status === 'paid' || lp.status === 'bounced')) continue; // уже посчитан выше
+            if (_isMonthSettled(u, sym) !== 'stripe-paid') continue;
+            const sRow = _stripePaidRowForYm(u, sym);
+            const sAmt = (typeof _stripePaidAmountForYm === 'function')
+              ? _stripePaidAmountForYm(u, sym) : null;
+            if (!(sAmt > 0)) continue;
+            // Кассовый год — по paidAt инвойса, fallback год ym (та же
+            // логика bucketing'а, что для локальных строк выше).
+            let sYear = null;
+            const pa = sRow ? sRow.paidAt : null;
+            if (typeof pa === 'number' && isFinite(pa)) sYear = new Date(pa).getFullYear();
+            else if (typeof pa === 'string' && pa) {
+              const t = Date.parse(pa);
+              if (!isNaN(t)) sYear = new Date(t).getFullYear();
+            }
+            if (sYear == null) sYear = +sym.slice(0, 4);
+            if (sYear !== year) continue;
+            bRec.rentsReceived += sAmt; bRec.payments++;
           }
         }
         // Days rented = max(intersection of [u.leaseStart, u.until] with [year-01-01, year-12-31]).
@@ -141764,7 +142428,11 @@ function lateFeePreviewFor(rec) {
     const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
     if (!firstYm || ym < firstYm) continue;    // аудит #51: без известного начала аренды НЕ начисляем late fee (lease-start gate, анти-фантом; ср. H14)
     const p = rec.u.payments?.[ym];
-    if (p?.status === 'paid' || p?.status === 'free') continue;
+    // Entry 55: settled — только через _isMonthSettled (stripe-paid без fee).
+    const _lpSettled = (typeof _isMonthSettled === 'function')
+      ? _isMonthSettled(rec.u, ym)
+      : (p?.status === 'paid' ? 'paid' : (p?.status === 'free' ? 'free' : null));
+    if (_lpSettled) continue;
     const mb = _monthBilling(rent, ym, startIso, cfg.graceDays, today, rec.u);
     // Прошлые месяцы (i > 0) гарантированно прошли грейс. Текущий —
     // по mb.isOverdueByDate (учитывает якорь к leaseStart).
@@ -141802,7 +142470,11 @@ function dsoForTenant(rec) {
     const d = new Date(curY, curM - i, 1);
     const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
     const p = rec.u.payments?.[ym];
-    if (p?.status === 'paid' || p?.status === 'free') continue;
+    // Entry 55: settled — только через _isMonthSettled (stripe-paid ≠ долг).
+    const _dsoSettled = (typeof _isMonthSettled === 'function')
+      ? _isMonthSettled(rec.u, ym)
+      : (p?.status === 'paid' ? 'paid' : (p?.status === 'free' ? 'free' : null));
+    if (_dsoSettled) continue;
     const due = new Date(d.getFullYear(), d.getMonth(), 1 + _grace);
     const days = Math.max(0, Math.floor((today - due) / 86400000));
     owedSum += rec.rent;
@@ -141832,9 +142504,20 @@ function trendForTenant(rec, todayTotal) {
     const p = rec.u.payments?.[ym];
     // A month that's paid NOW but was unpaid 30 days ago still counted
     // toward the previous total.
-    const paidDate = p?.date ? new Date(p.date + 'T00:00:00') : null;
-    const wasPaidByCutoff = (p?.status === 'paid' || p?.status === 'free')
-                            && paidDate && paidDate <= cutoff;
+    // Entry 55: settled — через _isMonthSettled; для stripe-paid без
+    // локальной строки дата оплаты — paidAt инвойса из Stripe-кэша.
+    const _trSettled = (typeof _isMonthSettled === 'function')
+      ? _isMonthSettled(rec.u, ym)
+      : (p?.status === 'paid' ? 'paid' : (p?.status === 'free' ? 'free' : null));
+    let paidDate = p?.date ? new Date(p.date + 'T00:00:00') : null;
+    if (!paidDate && _trSettled === 'stripe-paid' && typeof _stripePaidRowForYm === 'function') {
+      const _trRow = _stripePaidRowForYm(rec.u, ym);
+      const _trPa = _trRow ? _trRow.paidAt : null;
+      const _trT = (typeof _trPa === 'number' && isFinite(_trPa)) ? _trPa
+        : (typeof _trPa === 'string' && _trPa) ? Date.parse(_trPa) : NaN;
+      if (!isNaN(_trT)) paidDate = new Date(_trT);
+    }
+    const wasPaidByCutoff = !!_trSettled && paidDate && paidDate <= cutoff;
     if (wasPaidByCutoff) continue;
     const due = new Date(d.getFullYear(), d.getMonth(), 1 + _grace); // [20]: 1-е месяца + grace
     if (due > cutoff) continue;   // wasn't due yet at cutoff
@@ -141862,9 +142545,14 @@ function recoveryPctForTenant(rec) {
     const d = new Date(curY, curM - i, 1);
     const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
     const p = rec.u.payments?.[ym];
-    if (p?.status === 'free') continue;
+    // Entry 55: settled — через _isMonthSettled ('free' вне billable,
+    // paid/stripe-paid = собрано).
+    const _rcSettled = (typeof _isMonthSettled === 'function')
+      ? _isMonthSettled(rec.u, ym)
+      : (p?.status === 'paid' ? 'paid' : (p?.status === 'free' ? 'free' : null));
+    if (_rcSettled === 'free') continue;
     billable++;
-    if (p?.status === 'paid') paid++;
+    if (_rcSettled) paid++;
   }
   if (billable === 0) return null;
   // Blend historical ontime with a base rate to smooth small samples.
@@ -142253,14 +142941,30 @@ function buildAgingRows() {
           // Skip months before the tenant's lease started
           if (_startYm && ym < _startYm) continue;
           const p = u.payments?.[ym];
-          if (p?.status === 'paid' || p?.status === 'free') {
-            if (p.status === 'paid' && !lastPaidYm) {
+          // Entry 55 (chip task_b768be86): aging был Stripe-blind — голый
+          // p.status давал фантомный owed + завышенный months-behind +
+          // заниженный Last-paid для stripe-paid месяцев (Suite 433 класс).
+          const _agSettled = (typeof _isMonthSettled === 'function')
+            ? _isMonthSettled(u, ym)
+            : (p?.status === 'paid' ? 'paid' : (p?.status === 'free' ? 'free' : null));
+          if (_agSettled) {
+            if (_agSettled !== 'free' && !lastPaidYm) {
               lastPaidYm = ym;
               // Полная дата + время если есть. Идём от наибольшей точности
               // к наименьшей: paidAtIso (новый schema) → date 'YYYY-MM-DD'
-              // (старый schema). Фолбэк на 1-е число месяца если ничего нет.
-              if (p.paidAtIso) lastPaidAtIso = p.paidAtIso;
-              if (p.date) lastPaidDate = p.date;
+              // (старый schema) → paidAt Stripe-инвойса (stripe-paid без
+              // строки) → 1-е число месяца.
+              if (p?.paidAtIso) lastPaidAtIso = p.paidAtIso;
+              if (p?.date) lastPaidDate = p.date;
+              else if (_agSettled === 'stripe-paid' && typeof _stripePaidRowForYm === 'function') {
+                const _agRow = _stripePaidRowForYm(u, ym);
+                const _agPa = _agRow ? _agRow.paidAt : null;
+                const _agT = (typeof _agPa === 'number' && isFinite(_agPa)) ? _agPa
+                  : (typeof _agPa === 'string' && _agPa) ? Date.parse(_agPa) : NaN;
+                lastPaidDate = !isNaN(_agT)
+                  ? new Date(_agT).toISOString().slice(0, 10)
+                  : ym + '-01';
+              }
               else lastPaidDate = ym + '-01';
             }
             continue;
@@ -142562,6 +143266,22 @@ function _renderTenantDrawerBody(r) {
 // tenant owe / have they paid" view.
 // ============================================================
 
+// FINANCIAL_INVARIANTS §VIII (two-way attestation), аудит 2026-07-03 P2:
+// ручной «paid» без внешнего якоря (bankTxnId / stripeInvoiceId / stripe-метод)
+// — это заявление, а не доказательство. Такие записи получают muted-чип
+// «unverified» в drawer-леджере и в Manual-Payment модале. Backfill
+// (Excel-бутстрап) исключён — исторические месяцы задокументированы как
+// оплаченные, чип на 90+ строк дал бы только шум.
+function _paymentRecUnverified(p) {
+  if (!p || p.status !== 'paid') return false;
+  if (p.bankTxnId || p.stripeInvoiceId) return false;
+  const via = String(p.paidVia || p.paidMethod || '').toLowerCase();
+  if (via.startsWith('stripe')) return false;   // stripe-якорь несёт webhook/каллейбл
+  if (via === 'backfill') return false;         // исторический импорт — не флажим
+  return true;
+}
+window._paymentRecUnverified = _paymentRecUnverified;
+
 function _buildTenantLedger(u, rent) {
   const entries = [];
   const defaultRent = rent || +u.contractRent || +u.rent || 0;
@@ -142675,6 +143395,8 @@ function _buildTenantLedger(u, rent) {
         ym,
         receiptUrl: p.receiptUrl,
         memo: p.memo,
+        // §VIII: ручной paid без банковского/Stripe-якоря → muted-чип.
+        unverified: (typeof _paymentRecUnverified === 'function') && _paymentRecUnverified(p),
       });
     } else {
       // Unpaid (or no status) — emit charge only.
@@ -142853,7 +143575,7 @@ function _renderTenantDrawerLedger(u, rent) {
           return `
             <div class="ledger-row ${cls}" ${click}>
               <span class="lr-date">${esc(ds)}</span>
-              <span class="lr-desc">${esc(e.desc)}${e.memo ? `<br><span class="lr-memo">${esc(e.memo)}</span>` : ''}</span>
+              <span class="lr-desc">${esc(e.desc)}${e.unverified ? ` <span style="color:var(--muted); font-size:10px; border:1px solid var(--border); border-radius:6px; padding:0 5px; white-space:nowrap;" title="Marked paid by hand — no bank transaction or Stripe invoice is linked to this record (FINANCIAL_INVARIANTS §VIII). Link a bank txn or Stripe invoice to verify.">⚠ unverified</span>` : ''}${e.memo ? `<br><span class="lr-memo">${esc(e.memo)}</span>` : ''}</span>
               <span class="lr-num lr-charge">${e.charge ? '+$' + Math.round(e.charge).toLocaleString() : ''}</span>
               <span class="lr-num lr-payment">${e.payment ? '–$' + Math.round(e.payment).toLocaleString() : ''}</span>
               <span class="lr-num lr-balance ${balClass}">${e.balance === 0 ? '$0' : (e.balance > 0 ? '' : '–') + '$' + Math.round(Math.abs(e.balance)).toLocaleString()}</span>
@@ -147389,6 +148111,12 @@ function ciOnTermsEdited() {
 // days are per-unit (u.rentDueDay / u.rentGraceDay) so different
 // leases can have different cycles. Stripe due_date = grace day so
 // the invoice doesn't show "overdue" during the grace window.
+// Аудит 2026-07-03 (silent mutations): раньше КАЖДОЕ нажатие в полях due/grace
+// немедленно писало u.rentDueDay/u.rentGraceDay + saveState — просмотр модала
+// с опечаткой навсегда менял биллинг-цикл юнита. Теперь ввод живёт в draft'е
+// и персистится ТОЛЬКО при подтверждённом Send (см. ciSubmit).
+let _ciDueDayDraft = null;   // { day, grace } — черновик до Submit
+
 function ciOnRentDueDayInput() {
   const day   = Math.max(1, Math.min(28, +document.getElementById('ciRentDueDay').value || 1));
   const grace = Math.max(day, Math.min(28, +document.getElementById('ciRentGraceDay').value || day));
@@ -147396,18 +148124,9 @@ function ciOnRentDueDayInput() {
   if (grace !== +document.getElementById('ciRentGraceDay').value) {
     document.getElementById('ciRentGraceDay').value = grace;
   }
-  // Persist both to the unit so it sticks for next month + future invoices.
-  if (_ciSelection) {
-    const b = state.buildings.find(x => x.id === _ciSelection.buildingId);
-    const f = b?.floors.find(x => x.id === _ciSelection.floorId);
-    const u = f?.units.find(x => x.id === _ciSelection.unitId);
-    if (u) {
-      let dirty = false;
-      if (+u.rentDueDay !== day)      { u.rentDueDay = day; dirty = true; }
-      if (+u.rentGraceDay !== grace)  { u.rentGraceDay = grace; dirty = true; }
-      if (dirty) { try { saveState(); } catch {} }
-    }
-  }
+  // Draft-паттерн: state не трогаем до Submit («state пишется только по
+  // завершении акта» — правило №3 аудита 2026-07-03).
+  if (_ciSelection) _ciDueDayDraft = { day, grace };
   // Re-sync terms text if it still matches an auto-generated form
   // (operator hand-edits are preserved). Only on rent invoices.
   const purposeNow = _ciCanonicalPurpose(document.getElementById('ciPurpose')?.value || 'rent');
@@ -148638,6 +149357,7 @@ function ciSelectSuggestion(buildingId, floorId, unitId) {
     return;
   }
   _ciSelection = {buildingId, floorId, unitId};
+  _ciDueDayDraft = null;   // новый юнит — черновик due/grace прошлого юнита сбрасывается
   document.getElementById('ciSuggestions').style.display = 'none';
   document.getElementById('ciSearchInput').value = `${u.tenant || u.company || 'Tenant'} · Suite ${u.id}`;
   document.getElementById('ciSelectedName').textContent = `${u.tenant || u.company || '(no name)'} · Suite ${u.id}`;
@@ -149136,6 +149856,22 @@ async function ciSubmit() {
   const btn = document.getElementById('ciSendBtn');
   btn.disabled = true;
   btn.textContent = 'Sending…';
+  // Аудит 2026-07-03: due/grace-черновик персистится ТОЛЬКО здесь — после
+  // подтверждённого Send (раньше — на каждое нажатие клавиши в модале).
+  if (_ciDueDayDraft && purpose === 'rent' && _ciSelection) {
+    try {
+      const _bD = state.buildings.find(x => x.id === _ciSelection.buildingId);
+      const _fD = _bD?.floors.find(x => x.id === _ciSelection.floorId);
+      const _uD = _fD?.units.find(x => x.id === _ciSelection.unitId);
+      if (_uD) {
+        let _dirtyD = false;
+        if (+_uD.rentDueDay !== _ciDueDayDraft.day)     { _uD.rentDueDay = _ciDueDayDraft.day; _dirtyD = true; }
+        if (+_uD.rentGraceDay !== _ciDueDayDraft.grace) { _uD.rentGraceDay = _ciDueDayDraft.grace; _dirtyD = true; }
+        if (_dirtyD) { try { saveState(); } catch {} }
+      }
+      _ciDueDayDraft = null;
+    } catch (eDraft) { console.warn('[ci due-day draft]', eDraft); }
+  }
   try {
     toast('Creating Stripe invoice…', 'loading');
     // Pack operator-added one-off lines for the backend. The rent main
@@ -149550,16 +150286,35 @@ function getPaymentStatus(unit, ym) {
 
 // ===== Send Lease modal (DocuSign) ========================================
 let _slCtx = null;
+// Entry-73 v2: сброс отложенных полей лизы (_slPendingRenewal) с тостом.
+// Вызывается на КАЖДОМ early-return send-флоу, где модал не открылся и,
+// значит, некому будет очистить pending при close. Без сброса «взведённый»
+// pending выстрелил бы при следующей успешной отправке ЛЮБОГО конверта
+// по этому юниту — молчаливая перезапись действующей лизы (класс Suite 428).
+function _slAbortPendingLeaseFields(reason) {
+  if (!window._slPendingRenewal) return;
+  window._slPendingRenewal = null;
+  try {
+    if (typeof toast === 'function') {
+      toast('Pending lease terms NOT applied — ' + reason + '. Lease unchanged.', 'info');
+    }
+  } catch (e) {}
+}
+
 function openSendLeaseModal(buildingId, floorId, unitId) {
-  if (!canEdit()) { toast('Your role cannot send leases', 'error'); return; }
+  if (!canEdit()) {
+    _slAbortPendingLeaseFields('your role cannot send leases');
+    toast('Your role cannot send leases', 'error'); return;
+  }
   if (!_dsHasValidToken()) {
+    _slAbortPendingLeaseFields('DocuSign is not connected');
     toast('DocuSign not connected — open Settings → DocuSign to authorize first', 'error');
     return;
   }
   const b = state.buildings.find(x => x.id === buildingId);
   const f = b?.floors.find(x => x.id === floorId);
   const u = f?.units.find(x => x.id === unitId);
-  if (!u) return;
+  if (!u) { _slAbortPendingLeaseFields('unit not found'); return; }
   // Entry 73: чужой pending (другой юнит) не должен пережить новое открытие
   if (window._slPendingRenewal && window._slPendingRenewal.unitId !== unitId) {
     window._slPendingRenewal = null;
@@ -149613,10 +150368,12 @@ function closeSendLeaseModal() {
   // Entry 73: закрыли send-модал БЕЗ отправки → отложенные renewal-поля
   // сбрасываются, действующая лиза остаётся нетронутой (после успешной
   // отправки _slDoSend уже обнулил pending — тоста не будет).
+  // Entry-73 v2: чистим и при потерянном _slCtx (двойной close / внешний
+  // сброс контекста) — pending не должен пережить закрытие модала никогда.
   const _pr = window._slPendingRenewal;
-  if (_pr && _slCtx && _pr.unitId === _slCtx.unitId) {
+  if (_pr && (!_slCtx || _pr.unitId === _slCtx.unitId)) {
     window._slPendingRenewal = null;
-    try { toast('Renewal NOT applied — the envelope was not sent. Lease unchanged.', 'info'); } catch (e) {}
+    try { toast('New lease terms NOT applied — the envelope was not sent. Lease unchanged.', 'info'); } catch (e) {}
   }
   _slCtx = null;
 }
@@ -149668,7 +150425,9 @@ function _slBuildPayloadFromForm() {
     rent: fmtMoney((pend && pend.rentTo > 0 ? pend.rentTo : 0) || +u.contractRent || +u.rent || 0),
     deposit: fmtMoney(+u.deposit || 0),
     term: (pend && pend.leaseTerm) || u.leaseTerm || '',
-    lease_start: fmtLongDate(leaseStartRaw),
+    // Entry-73 v2: для отложенной НОВОЙ лизы (vacancy-гейт) документ несёт
+    // новую дату старта, хотя u.leaseStart ещё не переписан.
+    lease_start: fmtLongDate((pend && pend.kind === 'lease' && pend.effDate) || leaseStartRaw),
     lease_end: fmtLongDate((pend && pend.until) || leaseEndRaw),
     landlord: landlordName,
     landlord_name: landlordName,
@@ -149693,6 +150452,9 @@ function _slBuildPayloadFromForm() {
 // _slConfirmAndSend(), которая дёрнет _slDoSend(payload).
 function submitSendLease() {
   const payload = _slBuildPayloadFromForm();
+  // Entry-73 v2: return при невалидной форме НЕ сбрасывает pending — модал
+  // остаётся открытым для исправления (email и т.п.), а очистку при отказе
+  // от отправки гарантирует closeSendLeaseModal.
   if (!payload) return;
   _slStashedPayload = payload;
   _slOpenPreview(payload);
@@ -149731,13 +150493,29 @@ async function _slDoSend(payload) {
     // двигаем (§3, Tony 2026-07-03).
     const _pr = window._slPendingRenewal;
     if (_pr && _pr.unitId === unitId && _pr.buildingId === buildingId) {
+      // Entry-73 v2: apply-ветка стала kind-aware (renewal | amendment | lease).
+      const _prKind = _pr.kind || 'renewal';
       if (_pr.leaseTerm) u.leaseTerm = _pr.leaseTerm;
       if (_pr.until) u.until = _pr.until;
-      if (_pr.effDate && !/^\d{4}-\d{2}-\d{2}$/.test(u.leaseStart || '')) u.leaseStart = _pr.effDate;
+      if (_prKind === 'lease') {
+        // Vacancy-гейт: НОВАЯ лиза поверх занятого юнита — leaseStart и
+        // proforma-rent применяются только теперь, после отправки конверта.
+        if (_pr.effDate) u.leaseStart = _pr.effDate;
+        if (_pr.proformaRent > 0) u.rent = _pr.proformaRent;
+      } else if (_pr.effDate && !/^\d{4}-\d{2}-\d{2}$/.test(u.leaseStart || '')) {
+        u.leaseStart = _pr.effDate;
+      }
       if (_pr.rentTo > 0) u.contractRent = _pr.rentTo;
-      delete u.renewal; // продление состоялось — маркер «Ending confirmed» устарел
+      // Маркер «Ending confirmed» гасим для lease/renewal; amendment не
+      // является продлением и цикл истечения не трогает.
+      if (_prKind !== 'amendment') delete u.renewal;
       window._slPendingRenewal = null;
-      try { toast(`Renewal applied — lease through ${u.until}`, 'success'); } catch (e) {}
+      const _prMsg = _prKind === 'amendment'
+        ? `Amendment applied${_pr.rentTo > 0 ? ' — rent $' + (+_pr.rentTo).toLocaleString() + '/mo' : ''}`
+        : _prKind === 'lease'
+          ? `New lease terms applied — Suite ${u.id}`
+          : `Renewal applied — lease through ${u.until}`;
+      try { toast(_prMsg, 'success'); } catch (e) {}
     }
     // FIXES_LOG Entry 22 — in JWT mode the CF already did the
     // server-authoritative push into state.leaseEnvelopes inside a Firestore
@@ -149810,6 +150588,16 @@ async function _slDoSend(payload) {
     console.error('[send-lease]', err);
     toast('Send failed: ' + (err.message || err), 'error');
     if (btn) { btn.disabled = false; btn.innerHTML = origLabel; }
+    // Entry-73 v2: пока send-модал открыт, pending живёт для повторного Send
+    // (closeSendLeaseModal очистит его при закрытии). Но если модал уже
+    // закрыт (некому чистить) — сбрасываем здесь, чтобы «взведённый» pending
+    // не применился при следующей отправке без ведома оператора.
+    try {
+      const _slOpen = document.getElementById('sendLeaseModal')?.classList.contains('active');
+      if (!_slOpen && window._slPendingRenewal) {
+        _slAbortPendingLeaseFields('the envelope send failed');
+      }
+    } catch (e) {}
   }
 }
 
@@ -153843,10 +154631,17 @@ function openManualPaymentModal(buildingId, floorId, unitId, ym) {
   // на NUHS lease а на самом деле модал открылся для второго юнита
   // с $2,000 без tenant). Building label делает контекст однозначным.
   const _bldLabel = (typeof buildingLabel === 'function') ? buildingLabel(b) : (b?.name || '');
+  // §VIII (аудит 2026-07-03 P2): существующая запись «paid» без bankTxnId /
+  // stripeInvoiceId визуально не отличалась от верифицированной — muted-чип
+  // в контекстной строке модала.
+  const _mpmUnverified = (typeof _paymentRecUnverified === 'function') && _paymentRecUnverified(existing);
   document.getElementById('mpmContext').innerHTML =
     `Suite <b>${esc(u.id)}</b>` +
     (_bldLabel ? ` · <span style="color:var(--muted);">${esc(_bldLabel)}</span>` : '') +
-    ` · ${esc(u.tenant || u.company || '(no name)')}`;
+    ` · ${esc(u.tenant || u.company || '(no name)')}` +
+    (_mpmUnverified
+      ? ` · <span style="color:var(--muted); font-size:10px; border:1px solid var(--border); border-radius:6px; padding:0 5px; white-space:nowrap;" title="This month is marked paid by hand — no bank transaction or Stripe invoice is linked (FINANCIAL_INVARIANTS §VIII). Use the bank-feed card below to link one.">⚠ unverified paid</span>`
+      : '');
 
   // Populate the billing-month picker. Year list spans lease window ±
   // 2 years, falling back to ±5 years from today when there's no lease.
@@ -154722,7 +155517,11 @@ function _paymRowBalance(u, currentYm) {
       const isProrate = cursor === startYm && startDay > 1;
       const p = u.payments?.[cursor];
       const status = p?.status || '';
-      if (status === 'paid' || status === 'free') {
+      // Entry 55: settled — только через _isMonthSettled (stripe-paid ≠ долг).
+      const _pbSettled = (typeof _isMonthSettled === 'function')
+        ? _isMonthSettled(u, cursor)
+        : (status === 'paid' ? 'paid' : (status === 'free' ? 'free' : null));
+      if (_pbSettled) {
         // ничего не должны
       } else if (status === 'partial') {
         outstanding += Math.max(0, rent - (+p.amount || 0));
@@ -154758,8 +155557,12 @@ function _paymRowAging(u, currentYm) {
     const isProrate = cursor === startYm && startDay > 1;
     const p = u.payments?.[cursor];
     const status = p?.status || '';
+    // Entry 55: settled — только через _isMonthSettled (stripe-paid ≠ долг).
+    const _paSettled = (typeof _isMonthSettled === 'function')
+      ? _isMonthSettled(u, cursor)
+      : (status === 'paid' ? 'paid' : (status === 'free' ? 'free' : null));
     let owed = 0;
-    if (status === 'paid' || status === 'free') {
+    if (_paSettled) {
       owed = 0;
     } else if (status === 'partial') {
       owed = Math.max(0, rent - (+p.amount || 0));
@@ -154802,7 +155605,11 @@ function _paymRowSparkline(u, currentYm, monthsCount) {
       const isProrate = ym === startYm && startDay > 1;
       const p = u.payments?.[ym];
       const st = p?.status || '';
-      if (st === 'paid' || st === 'free') cls = 'spark-paid';
+      // Entry 55: settled — через _isMonthSettled (stripe-paid = зелёный).
+      const _psSettled = (typeof _isMonthSettled === 'function')
+        ? _isMonthSettled(u, ym)
+        : (st === 'paid' ? 'paid' : (st === 'free' ? 'free' : null));
+      if (_psSettled) cls = 'spark-paid';
       else if (st === 'late' || st === 'partial') cls = 'spark-late';
       else if (ym < currentYm && !isProrate && u.status === 'occupied' && (+u.contractRent || +u.rent) > 0) {
         // Прошлый месяц без записи на occupied юните — auto-late.
@@ -154951,8 +155758,14 @@ function payTenantStatement(buildingId, floorId, unitId) {
     const amt    = p?.amount || 0;
     const date   = p?.date || '';
     const method = p?.paidMethod || p?.paidVia || (p?.stripe ? 'stripe' : '');
+    // Entry 55: statement — тем же settled-предикатом (stripe-paid = Paid,
+    // не «Late» из застрявшего локального стэмпа).
+    const _stSettled = (typeof _isMonthSettled === 'function')
+      ? _isMonthSettled(u, m.ym)
+      : (status === 'paid' ? 'paid' : (status === 'free' ? 'free' : null));
     let statusLabel = '—';
     if (status === 'paid')    statusLabel = 'Paid';
+    else if (_stSettled === 'stripe-paid') statusLabel = 'Paid';
     else if (status === 'late')    statusLabel = 'Late';
     else if (status === 'free')    statusLabel = 'Waived';
     else if (status === 'partial') statusLabel = 'Partial';
@@ -155179,8 +155992,15 @@ function renderPayments() {
     const p = u.payments?.[currentYm];
     const rent = +u.contractRent || +u.rent || 0;
     if (u.status === 'occupied') expectedThisMonth += rent;
-    if (p?.status === 'paid') collected += p.amount || rent;
-    else if (p?.status === 'free') freeThisMonth += rent;
+    // Entry 55: settled — только через _isMonthSettled (stripe-paid без
+    // локального стэмпа раньше падал в Outstanding + Late Tenants).
+    const _pkSettled = (typeof _isMonthSettled === 'function')
+      ? _isMonthSettled(u, currentYm)
+      : (p?.status === 'paid' ? 'paid' : (p?.status === 'free' ? 'free' : null));
+    if (_pkSettled === 'paid') collected += p.amount || rent;
+    else if (_pkSettled === 'stripe-paid') collected += (typeof _stripePaidAmountForYm === 'function')
+        ? (_stripePaidAmountForYm(u, currentYm) ?? rent) : rent;
+    else if (_pkSettled === 'free') freeThisMonth += rent;
     else if (u.status === 'occupied') {
       outstanding += rent;
       if (p?.status === 'late') lateCount++;
@@ -155278,7 +156098,8 @@ function renderPayments() {
       }
       const p = u.payments?.[m.ym];
       const st = p?.status || '';
-      const amount = p?.amount || u.rent || 0;
+      // EQ-1: fallback суммы — контрактная рента, не proforma.
+      const amount = p?.amount || +u.contractRent || +u.rent || 0;
       const stripe = p?.stripe;
       const dashUrl = stripe ? (stripeDashboardInvoiceUrl(stripe.invoiceId) || stripeDashboardUrl(stripe.chargeId)) : null;
       const badge = stripe && dashUrl
@@ -155288,11 +156109,24 @@ function renderPayments() {
       // ---- Derive cell state ---------------------------------------------
       // Priority: explicit paid/late/free/partial → else auto-derive overdue
       // from calendar → else check if invoice was sent but not paid → empty.
+      // Entry 55: stripe-paid месяц БЕЗ локального 'paid'-стэмпа (или с
+      // застрявшим 'late') рисуем как оплаченный — сумма из Stripe-кэша.
+      const _pcSettled = (typeof _isMonthSettled === 'function')
+        ? _isMonthSettled(u, m.ym)
+        : (st === 'paid' ? 'paid' : (st === 'free' ? 'free' : null));
       let cls = st || 'empty';
       let display = st ? (st === 'paid' ? '$' + amount.toLocaleString() : PAY_STATUS_LABEL[st]) : '—';
       let tooltip = `Click to cycle status for ${m.label}`;
+      if (_pcSettled === 'stripe-paid' && st !== 'paid' && st !== 'free') {
+        const _pcAmt = (typeof _stripePaidAmountForYm === 'function')
+          ? (_stripePaidAmountForYm(u, m.ym) ?? (+u.contractRent || +u.rent || 0))
+          : (+u.contractRent || +u.rent || 0);
+        cls = 'paid';
+        display = '$' + Math.round(_pcAmt).toLocaleString();
+        tooltip = `Paid via Stripe (invoice) — no local ledger row\n\n` + tooltip;
+      }
 
-      if (!st && !m.isFuture && u.status === 'occupied' && (+u.contractRent || +u.rent) > 0) {
+      if (!st && !_pcSettled && !m.isFuture && u.status === 'occupied' && (+u.contractRent || +u.rent) > 0) {
         // Past or current month on an occupied unit with rent — derive aging.
         // Compute days past the 1st of next month (due date for standard rent).
         const [yr, mo] = m.ym.split('-').map(Number);
@@ -155364,7 +156198,9 @@ function renderPayments() {
     // навигацию что Rent Roll и aging-pill): переключает building +
     // floor + selectedIds + view → справа открывается detail-panel юнита,
     // как при клике на карте. Для свободных юнитов — ни клика, ни пилла.
-    const _tenantName = (u.tenant || '').trim();
+    // (u.tenant || u.company) — company-only лизы (Suite 421 класс) должны
+    // получать кликабельную карточку + actions, а не «—».
+    const _tenantName = String(u.tenant || u.company || '').trim();
     let tenantInner;
     if (_tenantName) {
       const _winLeft  = (u.leaseStart || u.signed || '').slice(0, 7);
@@ -155452,7 +156288,17 @@ function renderPayments() {
   const monthSums = months.map(m =>
     rows.reduce((s, { u }) => {
       const p = u.payments?.[m.ym];
-      if (p && p.status === 'paid') return s + (+p.amount || +u.rent || 0);
+      // Entry 55 + EQ-1: settled через _isMonthSettled; fallback суммы —
+      // контрактная рента. Stripe-paid месяц без строки — сумма из кэша.
+      const _fSettled = (typeof _isMonthSettled === 'function')
+        ? _isMonthSettled(u, m.ym)
+        : (p && p.status === 'paid' ? 'paid' : null);
+      if (_fSettled === 'paid' && p) return s + (+p.amount || +u.contractRent || +u.rent || 0);
+      if (_fSettled === 'stripe-paid') {
+        const _fAmt = (typeof _stripePaidAmountForYm === 'function')
+          ? _stripePaidAmountForYm(u, m.ym) : null;
+        return s + (_fAmt ?? (+u.contractRent || +u.rent || 0));
+      }
       return s;
     }, 0)
   );
