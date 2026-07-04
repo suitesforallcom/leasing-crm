@@ -10226,8 +10226,12 @@
     font-family: var(--rd-font);
   }
   .upv2-renewal.urgent { border-color: #f5c6d0; background: var(--rd-red-soft); }
-  .upv2-renewal-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+  /* wrap: заголовок держит всю первую строку (flex-basis 100%), кнопки
+     переносятся рядком ниже — иначе на узкой панели три кнопки отжимали
+     текст в узкую колонку с переносом по одному слову (Tony 2026-07-03) */
+  .upv2-renewal-top { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; }
   .upv2-renewal-title {
+    flex: 1 1 100%; min-width: 0;
     display: flex; align-items: center; gap: 6px;
     font-size: 12.5px; font-weight: 600; color: var(--rd-amber); line-height: 1.35;
   }
