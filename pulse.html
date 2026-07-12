@@ -157,5 +157,96 @@
   <script type="text/babel" src="/pulse/drawer.jsx"></script>
   <script type="text/babel" src="/pulse/tweaks-panel.jsx"></script>
   <script type="text/babel" src="/pulse/app.jsx?v=20260526a"></script>
+
+  <!-- Boot watchdog (PLAIN JS — НЕ text/babel, иначе сам зависнет вместе с
+       Babel). Pulse грузит ~26 .jsx через Babel-runtime; если любой из них
+       даёт 404 / parse-fail, React не монтируется и страница молча
+       остаётся на спиннере «Loading Pulse…» навсегда. createRoot().render()
+       всегда очищает детей #root, поэтому если приложение село — #pulse-boot
+       исчез. Если он всё ещё в DOM спустя ~30s (2× от заявленных 5-15s) —
+       значит boot завис: показываем ошибку + кнопку Reload. -->
+  <script>
+    (function () {
+      var BOOT_TIMEOUT_MS = 30000;
+      // Собираем необработанные ошибки (например parse-fail .jsx бросает на
+      // eval), чтобы показать оператору более конкретную причину.
+      var bootErrors = [];
+      window.addEventListener('error', function (ev) {
+        try {
+          var msg = ev && ev.message ? String(ev.message) : '';
+          // resource-load ошибки (<script>/<link>) приходят без message —
+          // у них есть target с src/href.
+          if (!msg && ev && ev.target && (ev.target.src || ev.target.href)) {
+            msg = 'Failed to load ' + (ev.target.src || ev.target.href);
+          }
+          if (msg) bootErrors.push(msg);
+        } catch (e) { /* never let the watchdog itself throw */ }
+      }, true);
+
+      function esc(s) {
+        return String(s).replace(/[&<>"']/g, function (c) {
+          return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+      }
+
+      function showBootError() {
+        var boot = document.getElementById('pulse-boot');
+        if (!boot) return; // React всё-таки сел — ничего не делаем.
+
+        var detail = '';
+        if (bootErrors.length) {
+          // показываем максимум первые 3 уникальные ошибки
+          var seen = {}, uniq = [];
+          for (var i = 0; i < bootErrors.length && uniq.length < 3; i++) {
+            var m = bootErrors[i];
+            if (!seen[m]) { seen[m] = 1; uniq.push(m); }
+          }
+          detail =
+            '<div style="margin-top:14px; max-width:520px; text-align:left;' +
+            ' font-family:\'JetBrains Mono\',ui-monospace,monospace; font-size:11px;' +
+            ' color:#b91c1c; background:#fef2f2; border:1px solid #fecaca;' +
+            ' border-radius:8px; padding:10px 12px; white-space:pre-wrap;' +
+            ' word-break:break-word;">' + esc(uniq.join('\n')) + '</div>';
+        }
+
+        boot.innerHTML =
+          '<div style="display:flex; flex-direction:column; align-items:center;' +
+          ' gap:8px; max-width:560px; padding:0 20px; text-align:center;">' +
+            '<div style="font-size:34px; line-height:1;">&#9888;&#65039;</div>' +
+            '<div style="font-size:16px; font-weight:700; color:#1e293b;">' +
+              'Pulse didn’t finish loading</div>' +
+            '<div style="font-size:12.5px; color:#64748b; line-height:1.5;">' +
+              'One of the dashboard modules failed to load (a network blip or a ' +
+              'bad cached file). Your data is safe — nothing was changed.' +
+            '</div>' +
+            detail +
+            '<div style="display:flex; gap:10px; margin-top:18px;">' +
+              '<button id="pulse-boot-reload" style="cursor:pointer;' +
+                ' font-family:\'Manrope\',-apple-system,system-ui,sans-serif;' +
+                ' font-size:13px; font-weight:600; color:#fff; background:#6366f1;' +
+                ' border:none; border-radius:8px; padding:9px 18px;' +
+                ' box-shadow:0 2px 6px rgba(99,102,241,0.3);">Reload Pulse</button>' +
+              '<a href="/floor-map-editor.html" style="text-decoration:none;' +
+                ' display:inline-flex; align-items:center;' +
+                ' font-family:\'Manrope\',-apple-system,system-ui,sans-serif;' +
+                ' font-size:13px; font-weight:600; color:#334155; background:#fff;' +
+                ' border:1px solid #cbd5e1; border-radius:8px; padding:9px 18px;">' +
+                'Back to floor map</a>' +
+            '</div>' +
+          '</div>';
+
+        var btn = document.getElementById('pulse-boot-reload');
+        if (btn) {
+          btn.addEventListener('click', function () {
+            // bypass-cache reload: true (deprecated но безвреден) → иначе
+            // плейн reload; не передаём аргументы кроссбраузерно.
+            try { location.reload(); } catch (e) { location.href = location.href; }
+          });
+        }
+      }
+
+      window.setTimeout(showBootError, BOOT_TIMEOUT_MS);
+    })();
+  </script>
 </body>
 </html>

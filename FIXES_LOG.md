@@ -60,6 +60,356 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 76. Audit batch-4 CF hygiene: rate-limits on money callables, PII masking, dead-checkpoint removal (robustness/security, 2026-07-03)
+
+**From audit 2026-07-03 P2 (§2 GO Tony). Deployed 3b8935a → 9 function targets.** Rate-limits (reuse createStripeInvoice counter pattern, fail-closed BEFORE Stripe call): stripeDiscountInvoice 40/ws-hr·5/unit-day, markInvoicePaidOutOfBand 40·5, voidOrDeleteStripeInvoice 40/ws-hr (no unitId in req.data). `_maskEmail` on 7 logger.* Cloud-Logging sites (audit docs untouched). Dead checkpoint in runAutoInvoices REMOVED (never called; resume relies on durable autoSentYm stamp) — the WORKING checkpoint in runAutoLateFees is untouched. No money-math change; §0.2 invariants intact.
+
+### 75. Audit batch-1 server: late-fee Stripe-blind, $0 late-fee invoices, webhook coverage gaps, null-leaseStart phantom fees (finance/robustness, 2026-07-03)
+
+**From audit 2026-07-03 (AUDIT_REPORT_2026-07-03.md, §2 GO Tony). Deployed a779c05 → stripeWebhook,runAutoInvoices,triggerAutoInvoicesNow,runAutoLateFees,triggerAutoLateFeesNow.**
+
+Fixes: (1) runAutoLateFees/_computeOverdueMonths dup-search rent-invoice before fining; paid → skip + opportunistic ledger heal (capture-inside-mutate Entry 74, rent-line amount Entry 70, Entry 72 spread, Entry 71 only-advance); refund/bounced/partial rows guarded (dissent + in-mutate race guard) — real unpaid still fined; LIVE-only. (2) null-leaseStart gate: _computeOverdueMonths→[] + runAutoInvoices logs+dead-letter (no phantom fees after clobber/restore). (3) invoice-first late-fee cron (exclude→items→finalize→send, stamp after success never backwards; $0-shell excluded; stuck-draft resumed not re-stamped). (4) webhook: case invoice.paid (idempotent), case charge.dispute.closed (reads Dispute→charge→invoice; lost→bounced+audit); dead-letter on all silent returns (voided/refunded/failed); building-mirror failure → rethrow → Stripe Smart Retry (opts.rethrowMirrorFailure on 6 money sites; crons/callables keep warn-only default).
+
+**OPEN (Tony action):** enable `invoice.paid` + `charge.dispute.closed` in the Stripe Dashboard webhook subscription — until then those two cases are dead (no harm; rest is live). 414/Fyffe after restore MUST get a valid ISO leaseStart or the null-leaseStart gate dead-letters it instead of billing.
+
+### 74. All 4 payment mirrors used post-mutate re-read → silent write loss under strip (finance/data-integrity, 2026-07-03)
+
+**Symptom class (аудит P0):** handleInvoicePaid/handleInvoiceVoided/handleChargeRefunded/confirmBankMatch зеркалили rec в v2-коллекцию из POST-mutate re-read (`_stateIfSyncV2` → findUnit), который под syncBuildingsStrip рехидрируется из ЕЩЁ НЕ обновлённой коллекции → свежая запись терялась (та же механика, что Entry 70). Именно поэтому reconcile dry-run находил расхождения после каждого биллинг-цикла.
+
+**Fix (e27b966, deployed stripeWebhook+confirmBankMatch):** захват rec + routing-ключей в closure-переменные ВНУТРИ колбэка mutateWorkspaceState в момент записи; сброс captures в начале колбэка (txn-retry-safe); в paid — anchor + advance-сиблинги из того же снапшота, включая idempotent already-applied ветку (Smart-Retry re-heal); `_stateIfSyncV2` остался только гейтом.
+
+**Invariant (правило №1 аудита — порти во все будущие CF-зеркала):** любой CF, зеркалирующий запись в v2-коллекцию, обязан брать rec из closure-переменной, заполненной ВНУТРИ mutateWorkspaceState. Post-mutate re-read как источник данных для зеркала ЗАПРЕЩЁН.
+
+**Acceptance:** первый reconcile dry-run после следующего биллинг-цикла должен показать ноль расхождений.
+
+### 73. Renewal via DocuSign rewrote the ACTIVE lease before any envelope was sent (lease/data-integrity, 2026-07-03)
+
+**Symptom:** оператор нажал [Renew…] → в Add-Document модале (kind=renewal, source=docusign) кликнул главную кнопку → посмотрел lease preview → закрыл, НИЧЕГО не отправив. Действующая лиза уже переписана: Suite 428 until Jul31→Oct31, leaseTerm 6→3, документов 0, конвертов 0.
+
+**Root cause:** DocuSign-ветка `_saveAddLeaseDocModal` (осознанное решение Entry 21 «не терять ввод, даже если не отправил» — правильное для НОВОЙ лизы на пустом юните) писала unit-поля и saveState() ДО создания конверта, а док не создавала вовсе. Для renewal на занятом юните это молчаливая перезапись действующего договора.
+
+**Fix (36c41b0):** для kind='renewal'+source='docusign' поля идут в `window._slPendingRenewal` и применяются в `_slDoSend` ТОЛЬКО после успешной отправки (до снапшота u.leaseEnvelopes); документ несёт новые term/lease_end/rent через overlay в `_slBuildPayloadFromForm`; закрытие send-модала без отправки сбрасывает pending (тост «Renewal NOT applied»); чужой pending гасится при открытии модала другого юнита.
+
+**Invariant:** операция над ДЕЙСТВУЮЩЕЙ лизой (renewal/amendment) не должна мутировать unit-поля раньше завершения акта (отправка конверта / загрузка подписанного файла). kind='lease' на пустом юните — Entry 21 остаётся в силе.
+
+### 72. Rec-rebuild writers wiped payment metadata + falsy amount fallback in invoice.paid (finance/data-integrity, 2026-07-03)
+
+**Symptom class (latent, caught pre-incident):** четыре серверных писателя пересобирали `u.payments[ym]` с нуля (handleInvoicePaid, handleInvoiceFailed, reconcile apply, full-refund writer) — любые метаданные на строке (с 2026-07-03: discount-поля `wasDiscounted/discountAmount/discountReason/…`) молча исчезали при следующем событии оплаты/фейла/рефанда. Плюс `(invoice.amount_paid || invoice.total || 0)` в invoice.paid: falsy-fallback записал бы ПОЛНУЮ сумму как собранную для счёта с amount_paid=0.
+
+**Fix (3fd1b0c):** хелпер `_discountFieldsOf(rec)` (functions/index.js ~:404) — единственный источник discount-полей; все четыре писателя spread-сохраняют их из prior-rec; fallback заменён на явный null-check (`amount_paid != null ? amount_paid : total`).
+
+**Invariant (порти в новые писатели):** ЛЮБОЙ писатель, пересобирающий `u.payments[ym]` объектом-литералом, ОБЯЗАН spread-сохранить `_discountFieldsOf(prior)` (и любые будущие метаданные-семейства). Не использовать falsy-fallback на денежных полях Stripe-событий — только явный null-check.
+
+**Context:** родился из фичи скидок (stripeDiscountInvoice, credit note на открытый счёт — docs/invoice-discount-design-2026-07-03.md). Скидка пишется callable-ом синхронно (mutateWorkspaceState + _writePaymentV2 mirror под strip-гейтом — Entry 70 паттерн, rec захватывается ВНУТРИ txn-замыкания, не re-read). Идемпотентность: creditNotes.list fingerprint + Stripe idempotencyKey. v1-запреты: 100% (→ waiver), paid-счета (→ refund-флоу), advance-якоря.
+
+**Known v1 edge (accepted):** void скидочного счёта оставляет discount-поля на rec (фантомная строка в bridge Discounts до ручной чистки) — display-only.
+
+### 71. lastInvoiceYm stamp regressed by back-month writes → paid-green units with OPEN invoices (display/data-integrity, 2026-07-02)
+
+- **Status:** active (healed + guarded, deployed)
+- **Branch / commit:** main @ `f26329e` (F1/F1b/F2) + `572945d` (heal cap+whitelist). Deployed: `functions:reconcileStripeInvoices` + `functions:stripeWebhook`.
+- **Area:** functions/index.js — reconcile apply stamp write, handleInvoicePaid stamp write (~3330), healStamps mode; client readers of `u.stripe.lastInvoiceYm` (_unitRentCurrentStatus, grid _invoiceSentThisYm, reminder buttons)
+- **Bug it fixed:** BOTH reconcile apply AND `handleInvoicePaid` stamped `lastInvoiceId/lastInvoiceYm` UNCONDITIONALLY. The Entry-70 June batch therefore regressed 21 units' stamps `2026-07→2026-06` (each had a live July `-v2` invoice). Symptom (suite 412): map tile/header pill GREEN «Deposit paid · Jul» while the July $800 invoice is OPEN — `_unitRentCurrentStatus` misses the current-month branch and falls to the deposit-paid fallback; Reminder buttons re-targeted the paid June invoice; client catch-up dedupe gate disarmed. Same hole fires webhook-side whenever a tenant pays an OLD open invoice after a newer one is issued. Discovered via adversarial workflow wf_63898b05 (also found: $0-twins are status='paid' and would win a naive max-ym heal; future advance invoices — 337 Jul+Aug — would capture the stamp and manufacture the same bug).
+- **Fix:** (F1) reconcile apply + (F1b) handleInvoicePaid: stamp writes only when `ym >= current stamp ym` (validated YYYY-MM; '>=' keeps same-month restamp; invalid/empty current → allow). (F2) `healStamps` mode in reconcileStripeInvoices: stamps-only repair, zero u.payments writes — candidate per unit = latest metadata-ym REAL rent invoice, **capped at the current UTC month** (future advance invoices never win), $0-shells excluded (`rentLineAmount>0 || total>0`), groups/void/draft excluded, `onlyInvoiceIds` whitelist honored, strict `>` on write, txn-retry-safe. Healed 2026-07-02 with 21-id whitelist: 20×(06→07) + 246; **337/224 + 11 null→old-month rows deliberately NOT applied**. Verified in building docs post-heal.
+- **Invariant — DO NOT BREAK:** `u.stripe.lastInvoiceYm` NEVER moves backwards from any writer (webhook, reconcile, future tools); heal candidates NEVER exceed the current month; $0 'paid' shells NEVER become the stamp. Remaining unguarded writers (createStripeInvoice ~1567, client stamp writers 144767/91823/92155/93810) are operator-initiated — port the guard when touched.
+- **Verification:** pre-check healPlan 21/21 rows `06→07`; post-heal GETs on b1/BayVista docs: 412/433/431/341/246 all lastInvoiceYm=2026-07 with July invoice ids, autoSentYm untouched.
+- **Regression test:** none (live-verified)
+- **Related PR / issue:** Entry 70 (the batch that triggered it); RECONCILE_PLAN_2026-07-02.md.
+- **Porting note:** deployed us-central1 2026-07-02. Pre-heal backup: backups/pre-healstamps-2026-07-02/.
+
+---
+
+### 70. invoice.paid webhook silently dropped card payments → $25,674 missing from ledger; hardened reconcile recovered 42 payments (finance/data-integrity, 2026-07-02)
+
+- **Status:** active (recovery COMPLETE; webhook hardening = Этап 4, pending)
+- **Branch / commit:** main @ `01f46ce` (reconcile crash fix) + `3737dc5` (hardened apply + RECONCILE_PLAN_2026-07-02.md). Deployed: `functions:reconcileStripeInvoices`.
+- **Area:** functions/index.js — stripeWebhook/handleInvoicePaid (~2910), reconcileStripeInvoices (~2300); ledger `workspaces/default/payments/*`
+- **Bug it fixed:** two bugs. (A) `handleInvoicePaid` FAIL-CLOSES (returns 200, Stripe never retries) on any transient verify error (~2968-2972) → June (bulk-billed May 28) and July (backfill Jul 1) card payments were paid on Stripe but NEVER recorded in the ledger: **42 payments / $25,674.16** (18×Jul $12,125 + 23×Jun $12,849.16 + 315-May $700). Symptom chain: «Last payment: June», phantom aging owed (Suite 433 case), grid blue-while-header-green split-brain (Suite 452). (B) `reconcileStripeInvoices` — the recovery tool itself — was UNUSABLE: metadata-match returned `{building,floor,unit}` where downstream reads `{b,f,u}` → 500 crash on every auto-invoice; and its apply-path was a TRAP: wrote every paid invoice as rent (deposits/fees/$0/re-issues), amount=whole invoice, and under buildings-strip the write never persisted (monolith re-strips :316, building mirror deletes u.payments :233, `_writePaymentV2` never called) while still reporting appliedCount>0.
+- **Fix:** multi-agent workflow (5 analysis lenses + live Firestore spot-check + adversarial review = NO-GO on naive apply) → staged plan (RECONCILE_PLAN_2026-07-02.md). Hardened apply: (1) post-txn `_writePaymentV2` mirror per applied month (handleInvoicePaid pattern ~3306); (2) amount = rent-purpose line items only; (3) per-row gates — $0-artifact, non-rent, month-already-settled (free/waived/paid&amount>0; paid+$0 shell counts NOT settled), group-member, advance-anchor, before-lease-start, purpose-unknown, ym-not-explicit (created-date fallback never auto-writes); (4) `onlyInvoiceIds` whitelist — apply writes only operator-confirmed ids, whitelist overrides ONLY soft gates; (5) txn-retry-safe counters; prior non-settled record preserved into `history` (354/417 late→paid upgrades). Recovery executed with verified pre-write backup (backups/pre-reconcile-2026-07-02/) in batches (452 reference → 17 July → 24 June/May), every doc GET-verified after write: **42/42 paid, correct amounts, zero dupes** (concurrent double-run converged — writes are absolute-value idempotent).
+- **Invariant — DO NOT BREAK:** (1) reconcile apply MUST mirror every applied month via `_writePaymentV2` — a `u.payments` write inside `mutateWorkspaceState` alone does NOT persist under strip; (2) apply MUST derive rent amount from rent-line-items, never invoice `amount_paid`; (3) `month-already-settled` MUST treat `paid && amount===0` as NOT settled; (4) never bulk-apply without the whitelist on live data; (5) the 72 $0-shell invoices, deposits (D-), late fees (L-/X-) stay OUT of the rent ledger.
+- **Verification:** live GETs on all 42 payment docs post-write (paid, exact rent amounts, linkedVia reconcile:metadata, 354/417 history=1 prior:late). Gates live-tested: 72 $0 + 32 non-rent + 28 settled + 74 tracked + 42 purpose-unknown correctly skipped.
+- **Regression test:** none (recovery operation; gates exercised on live dry-run)
+- **Related PR / issue:** RECONCILE_PLAN_2026-07-02.md (full staged plan + adversarial appendix). Root-cause hardening of the webhook itself (throw-for-retry on transient errors + dead-letter) = Этап 4, NOT yet shipped — until then dropped events remain possible; re-run reconcile dry-run after each billing cycle as a stopgap.
+- **Porting note:** deployed to prod us-central1 2026-07-02. Excluded pending operator decision: 437-May $2 (test junk), 414-May $400 (ambiguous, equals its deposit).
+
+---
+
+### 69. Invoices table right-edge clip — silent-refresh wiped table-prefs every 30s (UI/recurring-regression, 2026-06-10)
+
+- **Status:** active
+- **Branch / commit:** `fix/invoice-table-clip` @ `ab392b9`, merged to main
+- **Area:** Billing → Invoices table (#invTable, renderInvoicesPage/renderInvoicesHeader ~L143420); table-prefs system
+- **Bug it fixed:** rightmost columns (CREATED/SENT BY) clipped with no affordance; «fixed» repeatedly, always regressed. THREE stacked causes (measured): (1) Σ column widths 1410px > container with macOS overlay scrollbars invisible (0 layout px) → legit overflow read as hard clip; (2) SMOKING GUN — the 30s silent auto-refresh re-built the thead, wiping applyTHWidth inline widths/resizers/hidden-cols, and the sig early-return exited BEFORE mountTablePrefs → layout oscillated every 30s, so every prior CSS fix appeared to work then broke; (3) unbounded sfa_inv_col_widths prefs synced via Firestore re-poisoned every device after each fix (900/1200px cols). Bonus: checkbox TH collapsed to 0px under fixed-layout deficit.
+- **Fix:** .inv-scroll-wrap with overflow-x:auto + custom ::-webkit-scrollbar (permanently visible when overflowing; NOTE scrollbar-width:thin DISABLES ::-webkit-scrollbar in Chrome 121+ — do not re-add); silent-refresh no longer rebuilds thead (and every thead-rebuild path now reaches mountTablePrefs; sig reset on empty branch); makeTableResizable restore clamps [40..640] for ALL tables; one-time _sanitizeInvColWidths() heals the Firestore copy for keyBase sfa_inv_col_widths only; checkbox TH fixed 36px.
+- **Invariant — DO NOT BREAK:** any code path that rebuilds a prefs-mounted table thead MUST re-run mountTablePrefs afterwards (or not rebuild on silent refreshes); width-prefs restore paths MUST clamp; never style scrollbars with scrollbar-width:thin alongside ::-webkit-scrollbar.
+- **Verification:** headless Chromium @1400/@1100 with absurd prefs + silent-refresh flow: visible 11px h-scrollbar in all scenarios, no silent clip, prefs clamped, checkbox 36px.
+- **Regression test:** none — manual + headless probe (agent-run).
+- **Related PR / issue:** prior symptom patch 52d8cfb (scrollbar-gutter) — superseded by this root-cause fix.
+
+---
+
+### 68. Backup snapshots were empty shells under strip-ON — rehydrate + chunked verify + cascade prune (backup/data-safety, 2026-06-10)
+
+- **Status:** active (deployed 2026-06-10; live-verified — frequent snapshots now chunked=true, 5 chunks, ~1.15MB with rehydrated buildings vs 48KB empty shells before)
+- **Branch / commit:** `fix/backup-collections` @ `5810147`, merged via `cf5a067`. Deployed all 5 touchers: frequentBackupSnapshot, dailyBackupSnapshot, monthlyBackupVerify, takeManualBackup, restoreBackup
+- **Area:** Backups (`_writeBackupSnapshot` / frequent+daily crons / prune / monthlyBackupVerify)
+- **Files:** functions/index.js
+- **Functions:** `_writeBackupSnapshot` (~4812), `_pruneOldBackups`, `_pruneOldFrequentBackups`, `monthlyBackupVerify`; test hooks under `SFA_TEST_EXPORTS`
+- **Bug it fixed:** under buildings-strip (LIVE since ~2026-06-01) every snapshot read the raw monolith → stored `buildings: []` and no payments — ALL backups since ~June 4 were useless shells (CLAUDE.md §0.1 violation). Confirmed empirically in the 2026-06-09 Suite 344 incident: PITR was the only recovery source. Three latent companions: prune never deleted the `chunks` subcollection (orphan leak the moment chunking activates), `monthlyBackupVerify` read only the main doc (false «buildings empty» alarm on every chunked backup), and a failed rehydrate would have produced silent empty backups again.
+- **Fix:** (1) `_writeBackupSnapshot` rehydrates via the existing strip-aware `_rehydrateStateForStripCF` (buildings from collection + payments merged into `u.payments`) before serializing — size goes >800KB → existing chunked path handles it; (2) explicit FAIL-LOUD: strip-ON + empty buildings after rehydrate → throw (cron error, not a phantom-success backup); (3) chunked path got the same read-back verify as inline (reassemble, compare building count); (4) both prune fns cascade-delete `chunks/*` before the parent (one batch per backup, ≤ ~20 ops); (5) `monthlyBackupVerify` reads via `_readBackupSnapshotBody` (reassembles chunks).
+- **Invariant — DO NOT BREAK:** every backup snapshot MUST contain the rehydrated buildings (non-empty under strip-ON) and pass read-back verify; pruning MUST cascade into `chunks`; verify paths MUST read through `_readBackupSnapshotBody`, never the main doc alone.
+- **Verification:** `firebase emulators:exec --only firestore "SFA_TEST_EXPORTS=1 node functions/test-harness/test-backup-collections.js"` — 13 asserts incl. the incident regression case (tenant+deposit stamp+merged payments present in a chunked, read-back-verified snapshot; empty rehydrate throws; prune cascades). All passed 2026-06-10.
+- **Regression test:** functions/test-harness/test-backup-collections.js (emulator; local-only)
+- **Related PR / issue:** docs/incident-2026-06-09-suite344.md (lesson #3). Cost: rehydrate ≈ +1.3k reads / 15-min snapshot ≈ $2-3/mo; chunked storage ≈ 350MB resident at 48h frequent retention.
+- **Porting note:** DEPLOYED 2026-06-10 (targeted: 3 crons + takeManualBackup + restoreBackup). Live verification same day: 3 consecutive 15-min snapshots chunked with buildings.
+
+---
+
+### 67. CF building mirror wiped _savedRev — Entry 65 guard floor reset by every server mirror (sync/data-safety, 2026-06-09)
+
+- **Status:** active (deployed 2026-06-10 03:34Z, full `firebase deploy --only functions`)
+- **Branch / commit:** `fix/cf-mirror-savedrev` @ `83614f6`, merged to main via `d6f4784`. Deploy was forced by the 2026-06-09 Suite 344 incident (docs/incident-2026-06-09-suite344.md): this exact hole let a stale tab clobber building b1 — webhook deposit mark-paid 06-08 22:01Z wiped _savedRev, stale client wrote rev=2 on 06-09 12:30-12:45Z. Restored from PITR 12:30Z + _savedRev floors raised to 50000 on b1/Pasadena/BayVista. New Tampa & Tech Data survived BECAUSE their floors were intact — live proof the Entry 65 guard works when not wiped
+- **Area:** Sync / buildings-strip mirror — SERVER write path (`_mirrorBuildingV2CF`)
+- **Files:** functions/index.js
+- **Functions:** `_mirrorBuildingV2CF` (~248); test hook `exports._test_mirrorBuildingV2CF` (env-gated `SFA_TEST_EXPORTS=1`, invisible to deploy discovery)
+- **Bug it fixed:** `_mirrorBuildingV2CF` did a full `.set()` of `{_schema, buildingId, doc, _mirroredAt, _mirroredBy}` WITHOUT `_savedRev`. Every server-side mirror (Stripe webhook → mutateWorkspaceState, runAutoInvoices / runAutoLateFees crons) therefore DELETED `_savedRev` from `workspaces/{ws}/buildings/{bid}`. The Entry 65 Layer-2 rules guard (`request.resource.data.get('_savedRev',0) >= resource.data.get('_savedRev',0)`) then read resource `_savedRev` as 0 — the next stale-tab client write passed the guard, RE-OPENING the 2026-06-08 data-loss clobber vector. Found by adversarial review during the PP-webhook design (the webhook trigger observes CF-mirror writes).
+- **Fix:** mirror now runs in a transaction: `tx.get` current `_savedRev` (missing/non-number → 0), `tx.set` full replacement INCLUDING `_savedRev: cur + 1`. Transaction also closes the read-modify-write race with a concurrent client mirror (tx retries with fresh rev). Legacy docs already wiped by the old code self-heal to `_savedRev: 1` on the next CF mirror. `doc` stays a FULL replace — never merge (deleted units must not linger).
+- **Invariant — DO NOT BREAK:** every server-side write to `buildings/{bid}` MUST preserve-and-advance the top-level `_savedRev` inside a transaction. Never `.set()` a building doc without `_savedRev`; never lower it; never `merge:true` the `doc` field. (Extends Entry 65 invariant #2 from client writes to CF writes.)
+- **Verification:** `firebase emulators:exec --only firestore "SFA_TEST_EXPORTS=1 node functions/test-harness/test-mirror-savedrev.js"` — 9 asserts: 5→6 advance, create→1, legacy-no-field→1 heal, monotonic re-mirror→7, full doc replace, pointsFlat flattening intact. All passed 2026-06-09.
+- **Regression test:** functions/test-harness/test-mirror-savedrev.js (emulator; local-only)
+- **Related PR / issue:** none. Related: Entry 65 (the guard this fix restores).
+- **Porting note:** DEPLOYED 2026-06-10. (Historical: until deployed, prod CF mirrors kept wiping `_savedRev` — which materialized as the 2026-06-09 incident.)
+
+---
+
+### 66. Entire-floor lease — gross area becomes the leased/rentable area (feature/finance-surface, 2026-06-09)
+
+- **Status:** active
+- **Branch / commit:** `main` @ (this commit)
+- **Area:** Floor leasing / rentable-area definition / multi-suite lease head
+- **Files:** floor-map-editor.html · FINANCIAL_MODEL_REFERENCE.md (EQ-8)
+- **Functions:** `_floorRentableSqft`, `_floorFullLeaseActive` (after `_floorGrossSqft`), `_floorFullLeaseEnable` / `_floorFullLeaseDisable` / `bmSetFloorFullLease` (Building modal block), `_groupCreate` (new `opts.keepStatus`), wiring in `_renderStackingChart` + summary tables, `updateStats`, `calcStatsPerFloor`, settings Manage Floors list, `renderRentRoll` KPIs, `saveBuildingModal` (flag transitions)
+- **Bug it fixed:** none — feature (operator request 2026-06-09: «Когда арендуется весь этаж включается абсолютно все помещения в аренду. Т.е. гросс эрия арендуется»). Design from workflow wf_c8a13109-eb2, approved then built.
+- **Invariant — DO NOT BREAK:**
+  1. `_floorRentableSqft(f, base)` is a PURE resolver — `f.rentableSqft` is NEVER overwritten by this feature; disabling the flag must restore prior area numbers byte-identically.
+  2. Money lives on the EXISTING group-lease head (Entry/EQ-2): no `floor.rent` / `floor.tenant` fields. Enable = `_groupCreate` over `_stRentableUnits(f)` (head = largest sqft); disable = `_groupDissolve` (keeps per-unit data).
+  3. Restroom/common/circulation units are NEVER marked `rentable=true` — their area enters only arithmetically via `_floorGrossSqft`.
+  4. Occupancy honesty: 100%-occupied ONLY while `_floorFullLeaseActive(f)` (head `status==='occupied'` AND `head.tenant||head.company` — LLC-only fallback). The bare flag must not inflate occupancy.
+  5. `_groupCreate` third arg `opts.keepStatus` — vacant-floor enable must NOT force members to `occupied` (anti-phantom-lease). Existing callers pass no opts → behavior unchanged.
+  6. Enable guards: block when the floor already has any suite group (commingling) or >1 distinct tenant. Vacant-floor enable zeroes head `contractRent` (proforma only — no phantom contract).
+- **Verification:** Building modal → Floors → tick "Lease entire floor" on a floor with units → Save. Dashboard Rentable/RSF, Stacking Rentable column, Manage Floors occupancy, Rent Roll Rentable KPI all show gross for that floor; $/ft² drops accordingly. Untick → all numbers revert exactly. Vacant floor: occupancy does NOT jump to 100%.
+- **Regression test:** none — manual UI only.
+- **Related PR / issue:** none (auto-deploy pipeline). Design memory: project_floor_rentable_and_total_area.
+- **Known limitation (v1):** units drawn on the floor AFTER enabling are not auto-added to the full-floor group (re-toggle to rebuild); no map overlay yet (planned follow-up).
+
+---
+
+### 65. Follower-tab building clobber → DATA LOSS (New Tampa floors 4-6); leader-gate _mirrorBuildingsToV2 (sync/data-safety, 2026-06-08)
+
+- **Status:** active
+- **Branch / commit:** `main` @ `3c81bde` (fix) + stamp `a2d763a`; data restore via Admin/REST write (not a code commit)
+- **Area:** Sync / buildings-strip mirror (`syncBuildingsV2`) — client→collection write path
+- **Files:** floor-map-editor.html
+- **Functions:** `_mirrorBuildingsToV2` (~33619), `_mirrorBuildingsReady` (33531); compare `fbPushNow` leader-gate (`_sfaTabSync.isLeader()`, 32427)
+- **Bug it caused:** Under strip-ON, buildings live in `workspaces/{ws}/buildings/{id}` and EVERY tab mirrored them on each `saveState` — `_mirrorBuildingsToV2` was NOT leader-gated, unlike `fbPushNow` (Entry 16). With 2+ tabs open, a stale FOLLOWER tab re-mirrored each building from its OWN outdated `state.buildings`, overwriting the leader's edits in the collection; the read-listener (`_v2BuildingsAttachListener`) then reverted the leader's in-memory value. Symptoms: building-field edits revert (excelId/code never stick), and — when a follower held a pre-import building — whole floors + blueprints were OVERWRITTEN with the stale version. 2026-06-08 incident: New Tampa floors 4/5/6 lost ALL units (25/32/36 → 0) + blueprints reverted; floor 3 reverted to an old 13-unit layout. Other 4 buildings + floors 1-2 intact. Diagnosed via direct Firestore REST reads (architect morning export `_rev 20073` vs current `_rev 20321`).
+- **Fix:** (1) CODE — follower tabs skip the building mirror (added `_sfaTabSync.isLeader()` guard at the top of `_mirrorBuildingsToV2`, symmetric with `fbPushNow`; typeof-guard → not-ready tab-sync counts as leader so single-tab is unaffected). (2) DATA — surgically restored New Tampa floors 4/5/6 from the architect morning export into the collection doc (flattened points→pointsFlat, payments stripped, format = `_buildingForV2`), KEEPING current floors 1/2/3 (incl. 3 post-morning tenants on F3: units 305/308/310) and excelId 217.1; other buildings untouched. Written with `_mirroredBy:'incident-restore-2026-06-08'`; verified stable (no re-clobber).
+- **Layer 2 — DB-enforced monotonic version (permanent, 2026-06-08 commits `c3954fc` client + `82e1563` rules):** the leader-gate alone is insufficient (a stale LEADER, or an old-code tab, still clobbers). Each building collection doc carries a top-level `_savedRev`; the v2 read paths (`_v2BuildingsAttachListener` + getDocs fallback) record the last-seen `_savedRev` into `_buildingSavedRev[bid]`; `_mirrorBuildingsToV2` writes `lastSeen+1` and only advances `_buildingSavedRev` on write SUCCESS. `firestore.rules` `match /buildings/{bid}`: `allow create, update: if isEditor(wid) && (resource==null || request.resource.data.get('_savedRev',0) >= resource.data.get('_savedRev',0))` — a stale write (version behind, or old-code with no `_savedRev` → defaults to 0 → < current) is REJECTED BY THE DATABASE, independent of tab count or client code version. `allow delete: if isEditor(wid)` (delete has no incoming version). NOTE: this means EVERY client buildings-write path MUST stamp `_savedRev` (audited: only the mirror writes/creates; delete is separate) or it will be denied. Restore writes used the project-owner OAuth token via the Firestore REST API, which BYPASSES rules (IAM owner) — so the rule cannot be tested that way; verify with a real Firebase-Auth client (multi-tab edit → no clobber). Data restored: New Tampa rebuilt from the architect morning export (`~/sfa-incident-2026-06-08/architect-morning.json`), `_savedRev=30000`.
+- **Invariant — DO NOT BREAK:** (1) any client→Firestore write that can run from multiple tabs MUST be leader-gated (`_sfaTabSync.isLeader()`) — monolith push (`fbPushNow`), buildings mirror (`_mirrorBuildingsToV2`), payments/leaseDocs mirrors. (2) Every client write to `buildings/{bid}` MUST stamp a monotonic `_savedRev` (else the rules deny it). (3) Don't lower a building's `_savedRev`. Multi-tab editing of buildings was the loss vector.
+- **Verification:** open in ONE tab only (or all tabs on the fixed build); edit a building field / floor → save → reopen → persists; the collection doc's `_mirroredBy` should never flip to a stale follower's overwrite. Incident copies preserved in `~/sfa-incident-2026-06-08/`.
+- **Regression test:** none — manual / live REST verification.
+- **Related:** extends Entry 16 (follower-tab push skip) to the buildings mirror; same root mechanism as the excelId-revert finding (2026-06-08).
+
+---
+
+### 64. Customizable dashboards — drag-reorder + freeform corner-resize + hide, per-user (UI/feature, 2026-06-07)
+
+- **Status:** active
+- **Branch / commit:** `main` @ `<this commit>`
+- **Area:** UI / Home dashboard layout customization (Task 10, Phase 1 = Home)
+- **Files:** floor-map-editor.html
+- **Functions / rules:** `DASHBOARDS` registry, `_defaultDashboardLayout`, `_ensureDashboardLayout`, `_dashIsPristine`, `applyDashboardLayout`, `toggleDashboardCustomize`, `_dashBuildAffordances`, `_dashClearAffordances`, `toggleDashBlock`, `setDashBlockSpan`, `resetDashboardLayout`, `_dashResizeStart`, `_wireDashBlockDnD`, `_dashReorder`; CSS `.hv-body.dash-grid` / `body.dash-customizing` / `.dash-affordances` / `.dash-resize-handle`; `renderHomeView` (apply call at end); `PER_USER_SETTINGS_KEYS` (added `'dashboardLayouts'`); `state.settings.dashboardLayouts` default.
+- **Feature it added:** Operator request — a "Customize" gear on dashboards to **drag blocks to reorder, resize freely by dragging a corner, hide/show, and Reset**, saved per-user. Phase 1 = Home (the 6 `hv-section` blocks: queue/revenue/portfolio/quick/upcoming/activity). Phase 2 (other dashboards: `#financeAnalyticsView`, Portfolio) is deferred — the engine is already view-parameterized via the `DASHBOARDS` registry.
+- **Architecture:** Home blocks are static `<section data-dash-block>` filled BY ID (`renderHomeView` sets `#hvQueueCard.innerHTML` etc., never rebuilds the section), so re-applying layout after each render is safe. `applyDashboardLayout('home')` runs as the LAST line of `renderHomeView`. **Default-parity guard:** while the stored layout equals default AND customize is off (`_dashIsPristine`), the ORIGINAL flex `.hv-body` (2fr/1fr masonry) is kept untouched — `.dash-grid` is only added once the user actually customizes or opens Customize. On `.dash-grid`, `.hv-main`/`.hv-side` become `display:contents` so the 6 sections are direct 12-col-grid items; width = `grid-column: span var(--dw)` (1–12), height = optional `min-height var(--dh)` (0 = natural), order = CSS `order`. Customize affordances (grip/eye/resize-handle, `draggable=true`, `body.dash-customizing`) are injected dynamically and NEVER persisted.
+- **Invariant — DO NOT BREAK:** (1) `renderHomeView` MUST keep filling cards BY ID (never `section.innerHTML` / never rebuild `<section>`), and MUST call `applyDashboardLayout('home')` last (wrapped in try/catch). (2) `'dashboardLayouts'` MUST stay in `PER_USER_SETTINGS_KEYS` (per-user: stripped from `fbPushNow` payload, restored in `fbApplyRemote` — never leak one user's layout to another). (3) The pristine-default path MUST leave the original flex layout (no `.dash-grid`, no inline `order/--dw/--dh`) so non-customizers see zero change. (4) Persist only on drop / resize-end / eye-toggle (never mid-drag). (5) Adding `state.settings.dashboardLayouts` is additive/backward-compatible — `_ensureDashboardLayout` lazily backfills; old states without the key default to `{}`.
+- **Verification (live, headless, demo data — layout is data-independent):** default render = original masonry (queue/revenue/portfolio left x=248 w=649, quick/upcoming/activity right x=917 w=325, independent stacking, no `.dash-grid`). Gear → `body.dash-customizing`, `.hv-body` 12 tracks, every section draggable + grip/eye/resize handle, Reset visible. `setDashBlockSpan('home','queue',12,320)` → `--dw:12` (w 994px) + `--dh:320px`. `toggleDashBlock` → hidden. `_dashReorder` → order reassigned. State written to `localStorage['sfa_v5_state'].settings.dashboardLayouts`. Reload → custom layout persists as grid WITHOUT affordances, `_dashCustomizing=null` (transient off). Reset → pristine, back to flex masonry exactly. parse-check 3/0.
+- **Discoverability fix (same day, 2026-06-07):** the first cut used an icon-only "gear" whose SVG (centre dot + 8 radial spokes) read as a SUN/brightness toggle — operator couldn't find it. Replaced with a **labelled pill button** (`.hv-dash-btn`, real cog icon + the word **"Customize"**, `id="hvDashGear"`, `[data-dash-label]` span that swaps to **"Done"** + `.active` in edit mode), plus a **hint bar** (`.hv-dash-hint` / `#hvDashHint`, shown only under `body.dash-customizing`, inserted before `.hv-body`) that explains the gestures and carries **Reset layout** + **Done** buttons. Lesson: layout/affordance icons must be unambiguous OR labelled — verify the icon doesn't collide with a common meaning (sun/settings).
+- **Reorder-drag rewrite (same day, 2026-06-07):** the first cut used native HTML5 drag-and-drop (`draggable=true` + `dragstart/dragover/drop`). In a CSS grid it was unreliable (operator: right-column blocks wouldn't lift up) and gave NO drop-target feedback. Replaced with **pointer-drag + live reflow** (`_dashPointerDown` / `_dashLiveSequence` / `_dashApplyOrders`, all on `pointerdown`/`pointermove`/`pointerup`): a floating clone (`.dash-drag-clone`, `position:fixed`) follows the cursor, the source block dims (`.dash-dragging`) and the other blocks **reflow live** so the gap shows exactly where it will land; orders persist on `pointerup` only, **Esc cancels** (restores captured orders). Row grouping in `_dashLiveSequence` is by **top edge** (align-items:start → same-row blocks share top), NOT centre — block heights differ (left tall / right short), so centre-grouping mis-sorts. Resize-handle pointerdown `stopPropagation`s so it never starts a reorder; `_dashPointerDown` also bails on `.dash-resize-handle`/`.dash-affordances` targets. `touch-action:none` on sections in customize so touch-drag doesn't scroll.
+- **Regression test:** none — manual UI / live `preview_eval` measurement.
+- **Related PR / issue:** Task 10; plan `fluffy-painting-cake.md`. Phase 2 pending operator confirmation.
+
+---
+
+### 63. Map cut off at the bottom — grid row overflow + letterbox top-pin (UI/layout, 2026-06-07)
+
+- **Status:** active
+- **Branch / commit:** `main` @ `<this commit>`
+- **Area:** UI / floor-map canvas layout + viewBox fit alignment + pan math
+- **Files:** floor-map-editor.html
+- **Functions / rules:** `.workspace`, `.canvas-area`, `.sidebar`, `.sidebar-content`, `#planSvg` CSS; `<svg id=planSvg preserveAspectRatio>`; `onPanMove`
+- **Bug it fixed:** Long-standing "the map is cut off at the bottom by a border; can't view the full height." LIVE MEASUREMENT (not code-reading) found TWO causes: **(1) Grid-row overflow** — `.workspace` had `grid-template-columns` but **no `grid-template-rows`**, so its single implicit row was `auto` and grew to the tallest column's content (the right `.sidebar` Dashboard ≈775px). At a 720px window the row resolved to 775px → `.canvas-area` (and the docked legend bar) extended to y=831, **111px below the 720px viewport** → the legend + map bottom were clipped (the operator's "бордюр"). **(2) Letterbox top-pin** — `#planSvg` was `width:auto;height:auto`, so a viewBox'd SVG took its INTRINSIC height (= viewBox aspect) and sat top-pinned; with `preserveAspectRatio="xMidYMin meet"` (Y-top) all the vertical slack pooled at the BOTTOM (the big empty area below wide floors).
+- **Fix:** (1) `.workspace { grid-template-rows: minmax(0, 1fr) }` pins the row to (100vh−56px); `min-height:0` on `.canvas-area`/`.sidebar`/`.sidebar-content` so grid/flex items don't inflate by min-content and the sidebar's existing `.sidebar-content` scroller engages. (2) `#planSvg { width:100%; height:100% }` makes the SVG fill the whole canvas; `preserveAspectRatio="xMidYMid meet"` centers the content vertically (verified: equal top/bottom gaps). (3) Because filling the SVG introduces a letterbox on the short axis, `onPanMove` was changed from separate `viewBox.w/clientWidth` & `viewBox.h/clientHeight` scales to a single uniform `min(...)` scale (the real px/unit) so vertical panning tracks the cursor 1:1. Click mapping already uses `svgPoint()`→`getScreenCTM()` (letterbox-safe); the wheel handler uses `svgPoint` + width-scale (safe) — both untouched.
+- **Invariant — DO NOT BREAK:** (1) `.workspace` MUST define `grid-template-rows` (a column-only grid with `height:100%` lets content stretch the row past the viewport — the root cause). (2) Any pan/zoom that maps screen↔SVG must account for `preserveAspectRatio` letterbox — use `getScreenCTM()` (svgPoint) or the uniform `min()` scale, never per-axis `clientWidth/clientHeight`. (3) `#planSvg` fills the canvas (`width/height:100%`), not intrinsic. (4) Topbar-always-visible (UX §15) + auto-fit Entry 61 (`sfaFitToContent` bbox math) untouched.
+- **Verification (live, headless, demo data — layout is data-independent):** before — `gridTemplateRows:775px`, `.canvas-area` bottom 831 (>720), legend 767–831 off-screen. After — `gridTemplateRows:664px`, `.canvas-area` 56→720, legend 656–720 on-screen, `#planSvg` fills 664, content centered (topGap 87 = bottomGap 87). Pan tracks 1:1 in both axes.
+- **Regression test:** none — manual UI / live measurement.
+- **Related PR / issue:** workflow `wq4p5zrq9` (identified the letterbox/xMidYMin half); the grid-row-overflow half was found by live `getBoundingClientRect` measurement (the code-only analysis had wrongly concluded the height chain was sound — a reminder to MEASURE layout bugs, not just read CSS).
+
+---
+
+### 62. Degenerate (zero-length) walls render as a clickable black dot — skip them (UI, 2026-06-07)
+
+- **Status:** active
+- **Branch / commit:** `main` @ `<this commit>`
+- **Area:** UI / floor-plan wall rendering
+- **Files:** floor-map-editor.html
+- **Functions:** `renderWalls` (@68260), wall-create handler (@71401)
+- **Bug it fixed:** Operator saw a small black dot floating in empty canvas space (New Tampa 2nd floor) with a hand cursor on hover. It was a wall in `currentBuilding().walls[]` with coincident endpoints (`points:[x1,y1,x2,y2]`, (x1,y1)≈(x2,y2)). `.wall-line { stroke-linecap: round }` (@8954) renders a zero-length line as a filled round dot, and `cursor:pointer` makes it clickable. Created by a click-without-drag in wall-draw mode (@71401) or floor auto-generation.
+- **Fix:** (1) `renderWalls` skips any wall whose endpoint distance < 2px (`Math.hypot(dx,dy) < 2`) or whose `points` is malformed — `forEach` index `i` is preserved so select/splice-by-`i` of the OTHER walls is unaffected; (2) the wall-create handler no longer pushes a wall when start≈end (cancels the draw without writing dead data). Data is NOT mutated — existing degenerate walls are simply not drawn; cleanup of the dead `walls[]` entries is a separate optional data-fix.
+- **Invariant — DO NOT BREAK:** wall select/delete uses the array index from `renderWalls`' `forEach`; skipping a render must NOT reindex (keep `forEach((w,i)=>{ if(degenerate) return; ... })`, never `.filter()` before the loop). `stroke-linecap:round` stays (real walls want rounded ends) — the guard is what prevents the dot.
+- **Verification:** the black dot disappears on reload; drawing a wall with a click-without-drag no longer creates a dot; normal walls render unchanged. parse-check 3/0.
+- **Regression test:** none — manual UI.
+- **Related PR / issue:** identified via live DOM probe (operator 2026-06-07); relates to the "outlier coords" note in Entry 61.
+
+---
+
+### 61. Floor plan must bg-aware auto-fit on every open (building/view/boot), not only floor-switch (UI, 2026-06-07)
+
+- **Status:** active
+- **Branch / commit:** `main` @ `<this commit>`
+- **Area:** UI / floor-plan viewBox auto-fit
+- **Files:** floor-map-editor.html (viewBox/UI only)
+- **Functions:** `switchBuilding`, `showFloorPlan`, boot-fit, the ungated resize listener
+- **Bug it fixed:** Some floors opened filling the canvas, others opened small in the upper-left with a big empty bottom-right (operator: "должна растягиваться на всю ширину/высоту"). Root cause: only `switchFloor` (@65447) ran the **bg-aware** fitter `sfaFitToContent` (@100783) AND reset the two gates (`_userHasPanned=false`, `window._sfaLastBgSrc=null`). `switchBuilding` (@61902) and `showFloorPlan` (@130244) ran NO fit → the viewBox stayed stale from the previous floor → with `preserveAspectRatio="xMidYMin meet"` (X-center, Y-top) the slack pooled bottom-right = the small-upper-left look. Boot (@152722) used the **bg-blind** `zoomReset` (ignores the blueprint extent).
+- **Fix:** mirror `switchFloor`'s ritual on the other open paths — `switchBuilding`: reset both gates after the floor repoint + `setTimeout(sfaFitToContent,0)` after `renderAll()`; `showFloorPlan`: same tail, **guarded by `_wasPlan`** so a redundant in-plan call never clobbers the operator's manual zoom; boot-fit swapped `zoomReset`→`sfaFitToContent`. Also **gated the previously-ungated resize listener** (@100783) with `activeView==='plan'` + `_userHasPanned` checks (it was the only resize path that blew away manual pan on any window resize — had to be gated since this fix makes `sfaFitToContent` canonical).
+- **Invariant — DO NOT BREAK:** (1) Every explicit open of the plan (building/floor/view switch, boot) must bg-aware-fit AND reset both gates (`_userHasPanned` + `_sfaLastBgSrc`) — `_sfaLastBgSrc=null` is required so the async `renderBg.onload` corrective re-fit (@66026, gated `isNewSrc && !_userHasPanned`) upgrades the 0ms baseVB-fallback fit to the true bg extent. (2) The fit must NOT fire on incidental re-renders / resize when `_userHasPanned` (respect manual zoom) — hence the `_wasPlan` guard in `showFloorPlan` and the resize gates. (3) `renderBg` no-blank (Entry 51) untouched. (4) `switchFloor` unchanged.
+- **Verification:** open a building via the dropdown → plan now fills the canvas (was small upper-left); switch floors → still fits; resize after a manual zoom → manual zoom preserved (resize gated). Live probe (workflow `wuqe7lcrj`) dumps current viewBox vs would-be sfaFitToContent bbox → "matches" on every open after the fix.
+- **Regression test:** none — manual UI / live.
+- **Related PR / issue:** workflow `wuqe7lcrj`. Out of scope (flagged): finite-but-wrong outlier unit coords over-zoom both fitters; `sfaFitToContent` doesn't reserve the top-pill slack that `zoomReset` did (minor, only relevant if resize/RO are later swapped too).
+
+---
+
+### 60. Rent invoices must set Stripe due_date = anchor + grace at issuance (finance/Stripe, 2026-06-07)
+
+- **Status:** active
+- **Branch / commit:** `main` @ `<this commit>`
+- **Area:** Finance / Stripe invoice creation / due-date anchor
+- **Files:** functions/index.js (Cloud Function — manual create + auto-invoice cron), floor-map-editor.html (senders + `_rentDueUnix` helper)
+- **Bug it fixed:** RENT invoices were created with `days_until_due:7` (or cron `dueDays`) from the SEND date, never anchored to the lease/billing schedule. For a future lease (Suite 449, starts Jul 1), the July invoice's Stripe `due_date` was in mid-June → Stripe buckets it `past_due` and (collection_method `send_invoice`) may dun the tenant for rent not yet due. Entry 59 fixed only the UI badge; this fixes the actual Stripe `due_date`.
+- **Fix:** client `_rentDueUnix(rent, ym, leaseStartIso, u)` computes the absolute anchor (`ym===leaseStartYm ? leaseStart : 1st-of-ym`) + `state.settings.lateFee.graceDays ?? 5` via the canonical `_monthBilling`, and every RENT sender passes it as `dueDateUnix` (Unix seconds): move-in `sendRent`, split installment 1, NTO rent, catch-up. The CF accepts optional `dueDateUnix` (rent-only) and, **for `send_invoice`**, sets Stripe `due_date` when the anchor is in the FUTURE (`> now+120s, < now+366d`), else `days_until_due:0` = due immediately/`past_due` (operator decision 2026-06-07: late-issued rent shows past_due). The **auto-invoice cron** (`runAutoInvoices`) computes the same anchor server-side (`1st-of-nextYm + grace`). Footer shows the exact date. No `dueDateUnix` / non-rent → unchanged (`days_until_due`). Stripe takes `due_date` XOR `days_until_due`, never both.
+- **Invariant — DO NOT BREAK:** (1) `due_date` only for RENT + `send_invoice` + FUTURE anchor; deposit/late-fee/custom and `charge_automatically` untouched. (2) NEVER pass both `due_date` and `days_until_due`. (3) NEVER pass an absolute past `due_date` (Stripe rejects on finalize → would abort the send); past anchor → `days_until_due:0`. (4) Grace source = `state.settings.lateFee.graceDays` (matches `_computeUnitMoney`/Entry 59), not the per-building override. (5) Split installment 2 keeps its own `daysUntilDue2` anchor. (6) Backward-compatible: old client (no `dueDateUnix`) → CF behaves as before.
+- **Verification:** Stripe TEST mode — send move-in rent for a unit whose lease starts next month → invoice `due_date` = leaseStart+grace, bucket not `past_due`; deposit still send+7d; late-fee still due-now; back-dated lease → falls to `days_until_due:0` and still sends (no finalize throw). `node --check functions/index.js` + client parse-check 3/0.
+- **Regression test:** none — manual / Stripe test-mode UI.
+- **Related PR / issue:** workflow `wa9bj0bx1`. Completes Entry 59. The EXISTING mis-dated 449 invoice is NOT auto-fixed — void + resend via the UI to reissue with correct due_date. Deployed `firebase deploy --only functions` + `--only hosting` (CLAUDE.md §2 operator approval 2026-06-07).
+
+---
+
+### 59. Move-in rent badge must honor lease-start grace, not raw Stripe past_due (finance-display, 2026-06-07)
+
+- **Status:** active
+- **Branch / commit:** `main` @ `<this commit>`
+- **Area:** Finance display / move-in card / overdue grace anchor
+- **Files:** floor-map-editor.html
+- **Functions:** `_moveInInvoicePill` (+ 3 RENT call sites: `_renderProrateBox`, `_renderMoveInCardForModal`, split-remainder)
+- **Bug it fixed:** Suite 449 (lease starts Jul 1 2026, grace 5d) showed "First month rent — July 2026 **PAST DUE**" while viewing June — before the lease even starts. `_moveInInvoicePill` (~90653) rendered the **raw Stripe bucket** (`_lookupInvoiceBucket` → `past_due` → "PAST DUE", ~90682-90685) with no grace anchor. Stripe buckets the July invoice `past_due` because its `due_date` (created `days_until_due:7` from send date, NOT anchored to lease-start) already elapsed. Meanwhile `_monthBilling` (~84275) already computes the correct lease-start-month due date (`leaseStart + graceDays` = Jul 6) → `isOverdueByDate=false`, which is why the map renders BLUE (not red). Only the move-in pill bypassed the canonical grace. Exactly 3 surfaces wrong, all the same pill, RENT context only; deposit pill + map + `_computeUnitMoney` + Invoices table all already correct.
+- **Fix:** added optional tri-state `graceOverdue` param to `_moveInInvoicePill`. When `graceOverdue === false` AND bucket is `past_due`, render "SENT" (blue, with a "Due <leaseStart+grace>" tooltip) instead of "PAST DUE". The 3 RENT call sites compute `_monthBilling(rent, ym, leaseStart, graceDays, now, u).isOverdueByDate` using `state.settings.lateFee.graceDays ?? 5` — the SAME source as `_computeUnitMoney` (NOT the per-building override) so the pill matches the map. Deposit calls pass no 3rd arg → `undefined` → unchanged. No formula touched — `_monthBilling` is read-only.
+- **Invariant — DO NOT BREAK:** (1) Genuinely-overdue months still show PAST DUE (`graceOverdue===true` → gate is a no-op). (2) The pill's grace source MUST equal `_computeUnitMoney`'s (`state.settings.lateFee.graceDays`), never the per-building late-fee override — else the badge drifts off the map. (3) Deposit pill keeps its own non-rent grace (no 3rd arg). (4) `_isMonthSettled` paid-wins (Entry 55) short-circuits before the gate; lease-start gate (Entry 1) untouched. (5) Only `past_due` is gated (not `open`) — surgical.
+- **Verification:** Suite 449 today → move-in rent badge reads SENT (blue) not PAST DUE; map still blue. Probe (workflow `wbfy9c5z4`) dumps `isOverdueByDate=false`, `dueDate=Jul 6`, `stripeBucket='past_due'`, pill should=SENT. After Jul 6 unpaid → PAST DUE returns.
+- **Regression test:** none — manual UI / live console.
+- **Related PR / issue:** workflow `wbfy9c5z4`. **SEPARATE follow-up (NOT done — needs operator approval, CLAUDE.md §2):** the Stripe invoice `due_date` itself is wrong (senders hardcode `days_until_due:7` from send date — `~85194`/`~91671`/`~91686`; CF `functions/index.js:1273`). Stripe may already be dunning the tenant for July rent. Fix = create the lease-start-month invoice with absolute `due_date = leaseStart + grace`. The display gate does NOT solve the tenant-facing Stripe reality.
+
+---
+
+### 58. Colored (non-vacant) units stay full-opacity in view mode; Opacity slider dims only vacant (UI, 2026-06-07)
+
+- **Status:** active
+- **Branch / commit:** `main` @ `<this commit>`
+- **Area:** UI / floor-map unit fill rendering
+- **Files:** floor-map-editor.html
+- **Functions:** `renderUnits` (per-unit opacity computation)
+- **Bug it fixed:** The Layers "Opacity" slider (`state.settings.unitOpacity`) was applied uniformly to ALL units, so lowering it (to see the blueprint underlay) also faded the colored/occupied units — their status colors went weak and the blueprint bled through them. Operator wanted colored units to stay full-strength.
+- **Fix:** in `renderUnits` (~66196), compute per-unit opacity with a condition — in VIEW mode, any unit that is NOT a rentable vacant unit (`isVacantUnit = isRentable && u.status === 'vacant'`) renders at `opacity 1` regardless of the slider; only vacant units use `unitOpacity` (so the blueprint shows through empty space). EDIT mode is unchanged (all units stay translucent at `editModeOpacity` so the plan is visible while drawing). Selected-unit 0.7 floor preserved. Applied via the existing `unitOpacity` local that feeds both the rect `opacity` (~66331) and polygon `fill-opacity` (~66329).
+- **Invariant — DO NOT BREAK:** (1) The Opacity slider must dim ONLY vacant units in view mode; non-vacant (occupied/reserved + non-rentable common areas) stay opaque. (2) EDIT mode keeps all units translucent (editModeOpacity) — do not make occupied units opaque in edit mode (the plan must stay visible while editing). (3) Default `unitOpacity=1` → no visible change at 100%; the branch only diverges when the slider is lowered.
+- **Verification:** lower Layers→Opacity to ~40% in view mode → occupied units stay solid, vacant units fade and show the blueprint. Toggle Edit Mode → all units translucent as before. Console: `document.querySelectorAll('.unit-rect')` — vacant rects have `opacity≈0.4`, occupied rects `opacity=1`.
+- **Regression test:** none — manual UI / live.
+- **Related PR / issue:** operator request 2026-06-07 (follow-on to Entry 56/57 background work).
+
+---
+
+### 57. Background-settings sliders must re-sync from the active floor (UI/data-integrity, 2026-06-07)
+
+- **Status:** active
+- **Branch / commit:** `main` @ `<this commit>`
+- **Area:** UI / floor-plan background panel / per-floor data integrity
+- **Files:** floor-map-editor.html
+- **Functions:** `_syncBgPanel` (new), `switchFloor`, `switchBuilding`, sidebar-tab handler, blueprint `handleFile`, `dedupeFloorsIn`
+- **Bug it fixed:** Operator perceived background settings (Opacity / Scale / Offset X / Offset Y) "crossing between buildings." **Storage is genuinely per-floor and isolated** (every floor owns a fresh `bg` literal; no shared refs; no workspace-global opacity/offset — only `state.settings.showBg` boolean). The real bug: the Background-Settings panel was **WRITE-ONLY** — sliders `#bgOpacity/#bgScale/#bgX/#bgY` + spans `#bgOpacityVal/#bgScaleVal/#bgXVal/#bgYVal` were written only in the input handler (~101016) and **never repopulated from the active floor** on `switchFloor`/`switchBuilding`. After a switch the knobs stayed frozen on the previous floor's values → looked cross-building. **And it caused REAL corruption on interaction:** dragging a slider on a freshly-switched floor wrote the *stale displayed value* into that floor's `bg` and `saveState()`-persisted it to Firestore — overwriting the new floor's real setting with a neighbor's value.
+- **Fix:** added `_syncBgPanel()` (reads `currentFloor().bg` → sets the four sliders + value spans) and call it on `switchFloor`, `switchBuilding`, blueprint upload reset (`handleFile`), and when the Layers sidebar tab opens. Also hardened the only `bg`-reference reassignment — `dedupeFloorsIn` `survivor.bg = doomed.bg` → `survivor.bg = { ...doomed.bg }` (deep-clone, no live alias). No data-model change, no migration, **`bg.src`/Storage/`renderBg` untouched** (Entry 51/52 invariants preserved).
+- **Invariant — DO NOT BREAK:** (1) every read/write of a slider's `.value` must reflect the CURRENT floor — any new floor/building/panel entry point must call `_syncBgPanel()`. (2) The input handler writes to `currentFloor().bg` only — never make a bg setting workspace-global (it must stay per-floor). (3) No two live floors may share a `bg` object (clone on any copy path). (4) Never touch `bg.src`/`storagePath`/`finalizeBlueprintUpload`/`renderBg`'s atomic-swap (Entry 51/52).
+- **Verification:** set Opacity=30% on Building A floor 1, switch to Building B floor 1 → slider now reads B's own value (not 30%); switch back → A still 30%. Live isolation probe (workflow `wavijvmkz`) dumps every floor's `{bld,floor,opacity,x,y}` + shared-ref detection — expect "ISOLATION OK".
+- **Regression test:** none — manual UI / live console.
+- **Related PR / issue:** workflow `wavijvmkz` (2026-06-07). Pre-existing already-corrupted floors (from past switch-then-drag) cannot be auto-recovered — the probe surfaces anomalies for manual review.
+
+---
+
+### 56. Building-address pill must not flex-collapse on crowded views (UI, 2026-06-07)
+
+- **Status:** active
+- **Branch / commit:** `main` @ `<this commit>`
+- **Area:** UI / topbar building selector
+- **Files:** floor-map-editor.html (CSS only)
+- **Functions:** none (pure CSS — `.building-selector` / `.building-pill .bp-main` / `.top-search` + a relax `@media`)
+- **Bug it fixed:** The building address (and on the worst views the name too) vanished from the topbar pill on **Floor Plan / Rent Roll / Stacking** but showed on every other view ("на некоторых страницах есть, на некоторых нет"). Root cause: the topbar is a single non-wrapping flex row where `.floor-group` (floor tabs, shown only on those 3 views via the `data-view` whitelist @ ~5786) and `.topbar-actions` are `flex-shrink:0`, so `.building-selector` (`flex:0 1 260px`, the only shrinkable text element) was squeezed to its `min-width:84px`; inside it `.bp-main` had `min-width:0` and collapsed to 0 → name+address ellipsis to nothing, leaving only photo+chevron. Not a media-query (the old `@media(max-width:1180px){.bp-addr{display:none}}` was already removed in `52d8cfb`) and not a data problem (the name vanished too). Verified live: at narrow width `.bp-main` width → 0 with `display:block` (flex-collapse, not a CSS hide).
+- **Fix:** reserve a readable minimum for the text block — `.bp-main min-width:0→88px`, `.building-selector min-width:84→160px` — and **fund it from the expendable search box** (`.top-search min-width:160→84px`) so the reservation is **net-zero on overflow** (selector +76px = search −76px). A relax `@media(max-width:1280px)` restores all three to their old values so on a genuinely narrow window the address yields to ellipsis and the pill never overflows onto Map/Rent Roll. Live-measured: `addedOverflow = 0px` vs the pre-fix baseline at the same width; `selector.right − topNavTabs.left = −40px` (no overlap) before and after.
+- **Invariant — DO NOT BREAK:** (1) `.building-selector` must never shrink below the pill's content min such that the pill overflows right onto Map/Rent Roll (2026-05-29 overlap incident, comment @ ~244-248). (2) The address reservation MUST stay overflow-neutral — if you raise `.bp-main`/`.building-selector` min-width, keep the offsetting `.top-search` reduction (and the `@media` relax) so total shrink capacity is unchanged. (3) Floor tabs are higher priority than the address (operator 2026-06-07): never shrink/scroll `.floor-group` to make room for the address. (4) Keep `.topbar` always-visible (sticky, no scroll-reveal — UX_STANDARDS §15 / Entry 49).
+- **Verification:** at window > 1280px on Floor Plan, `#bpAddr` renders (≥~88px wide); at ≤1280px it ellipsizes and the pill stays within the selector (no overlap). Console: compare `document.querySelector('.topbar').scrollWidth - clientWidth` before/after the style — must not increase.
+- **Regression test:** none — manual UI / live width sweep.
+- **Related PR / issue:** workflow `wigax3hnc` (2026-06-07); supersedes the partial `#3` fix in `52d8cfb` (which only removed the media query, leaving the flex-collapse).
+
+---
+
+### 55. Overdue/late-fee engine must honor Stripe-paid, not only local stamp (finance, 2026-06-07)
+
+- **Status:** active
+- **Branch / commit:** `main` @ `<this commit>`
+- **Area:** Finance / overdue detection / late-fee accrual
+- **Files:** floor-map-editor.html
+- **Functions:** `_computeUnitMoney` (main per-month loop + late-fee loop)
+- **Bug it fixed:** Split-brain "paid-but-overdue". A rent month paid on Stripe (`cache.bucket === 'paid'`) but whose local stamp `u.payments[ym].status` ≠ `'paid'`/`'free'` (e.g. stuck at `'late'`) read **OVERDUE** on the red "!" map badge, the Overview "Current month overdue — $X due" banner, the unbilled late-fee accrual, and the topbar/A-R surfaces — while the floor-map "Payment status" fill (`_computeUnitFillImpl`) and the Payment-History grid (`_renderUnitTenantHistoryBlock`) correctly read **PAID** (both honor the Stripe paid-bucket). Confirmed live on Suite 417 / June 2026: `u.payments['2026-06'].status === 'late'` while rent invoice `in_1Tc7Dz…` was `bucket:'paid'` ($350). `_computeUnitMoney` consulted ONLY the local stamp; every "green" surface also consulted Stripe. Same class as Entry 34 (display surfaces were migrated to `_isMonthSettled`; the overdue/late-fee engine was not).
+- **Fix:** route `_computeUnitMoney`'s per-month settled test through the existing consolidated `_isMonthSettled(u, ym)` (returns `'paid'`/`'free'`/`'stripe-paid'`, carries the `_stampPointsToDeposit` deposit-cross-stamp guard, returns `null` for `open`/`past_due`). Both the main loop and the late-fee loop now treat `'paid'` **or** `'stripe-paid'` (or local `'paid'`/`'free'`) as settled. Old narrow check kept as a typeof-guarded fallback for load-order safety. No formula touched (proration, late-fee math, effective-rent unchanged).
+- **Invariant — DO NOT BREAK:** a month is "settled" (no overdue, no late fee) iff `_isMonthSettled` returns `'paid'`/`'free'`/`'stripe-paid'`. A **sent-but-unpaid** invoice (`open`/`past_due`) MUST still count as overdue — `_isMonthSettled` returns `null` for those; never broaden the engine to treat an alive-unpaid invoice as paid. The lease-start gate (Entry 1) and deposit-cross-stamp guard (Entry 34) stay intact.
+- **Verification:** live console `sfaDiagnoseSuitePaid('417','2026-06')` → unit reads PAID via Stripe; after fix `_isUnitOverdue(u)` returns `false`, Overview banner clears, June late fee no longer accrues. The floor-map fill + history grid were already PAID and must stay PAID (now all surfaces agree).
+- **Regression test:** none — manual UI / live console (`_isMonthSettled` vs `_computeUnitMoney.unpaidMonths` agreement).
+- **Related PR / issue:** workflow `wyvnhkho1` root-cause report (2026-06-07). Builds on Entry 34.
+
+---
+
+### 54. Move-addendum DocuSign anchors must land on the CLIENT line, not PROVIDER (legal, 2026-06-07)
+
+- **Status:** active
+- **Bug it fixed:** The relocation **addendum** (`_aeBuildDefaultBody` + `_aeBuildEnvelopeHtml`) shipped a broken DocuSign signing layout (the master lease path `_docusignBuildEnvelopeBody` was already correct — only the addendum was affected). Two compounding latent bugs: (1) `_aeBuildDefaultBody` emits LITERAL `/signHere/` `/dateSigned/` in BOTH the PROVIDER and CLIENT blocks, but `_aeBuildEnvelopeHtml`'s injection loop only matched `By: ___` (underscores) inside a `\bTENANT\b` block — the default body uses PROVIDER/CLIENT (never TENANT) and markers (not underscores), so the loop was DEAD and the fallback bolted ONE orphan anchor onto the doc END. DocuSign matches `anchorString` on the FIRST occurrence → the tenant's Sign-Here tab landed on the **PROVIDER** line. (2) **Extra bug caught only by post-fix verification, not in the audit plan:** the re-substitute regex that restores the invisible anchor span after HTML-escaping used literal `"` quotes, but `escTxt` escapes `"` → `&quot;`, so it NEVER matched and the span rendered as **visible escaped text** in the signed PDF.
+- **Fix:** order-based, label-independent — convert literal markers to invisible span-anchors BEFORE escaping; only the LAST occurrence of each marker becomes a live anchor (tenant signs last = CLIENT block), earlier (PROVIDER) markers become a blank signature underline (provider signs offline, matching the master-agreement convention). Underscore-based injection kept ONLY as a zero-marker fallback. Re-substitute regex fixed to `&quot;`. Commit `d03c034`.
+- **Risk if regressed:** a tenant's Sign-Here / Date tab lands on the landlord's line, or `/signHere/` prints as visible garbage in a legal document. Signature placement is INVISIBLE (`font-size:1px; color:white`) so it cannot be eyeballed in the PDF — only a DocuSign sandbox test reveals where the tab lands.
+- **Gate:** `scripts/check-invariants.sh` — `Audit [9]` greps `_aeBuildEnvelopeHtml`'s re-substitute for the escaped `&quot;font-size:1px` form (guards against a "tidy-up" reverting it to literal `"`, which silently re-breaks the anchor).
+- **Verification:** standalone Node harness on the signature region asserted exactly ONE live `/signHere/` + ONE `/dateSigned/` span, both in the CLIENT block, zero visible markers, zero escaped-span garbage, PROVIDER lines blank — all 7/7 pass. **Operator MUST still send one DocuSign sandbox envelope before relying on it for a real tenant** (anchor placement unverifiable from code alone).
+- **PR / commits:** `d03c034` (shipped to main + prod 2026-06-07, deploy `d03c03494a5f`).
+- **Porting concern:** none — on main + prod.
+
+---
+
+### 53. Multi-agent audit 2026-06-06 — 3 reintroduced regressions re-gated (2026-06-07)
+
+- **Status:** active
+- **Bug it fixed:** A read-only multi-agent audit (workflow `woboipj8u`, 191 agents, 55 verified findings — full list in `AUDIT_REPORT_2026-06-06.md`) caught THREE previously-fixed invariants that had silently regressed:
+  1. **Entry-2 class** — `openBouncedCheckModal` used `if (startMs && … < startMs) break`, which short-circuits to a no-op when `startMs == null` → the bounced-check picker surfaced the **previous tenant's** paid months. Fixed to `!startMs ||` (commit `b3bec0f`, audit H14).
+  2. **LLC-only occupancy** — `_isUnitOverdue` gated on `!u.tenant` only, so company-only leases (`u.company`, no `u.tenant`) never lit up overdue on the floor map. Fixed to `(!u.tenant && !u.company)` (commit `d613109`, audit M7).
+  3. **Entry-44 class (data-safety)** — `fixFloorAssignments` deduped floors/units with no pre-mutation snapshot. Added `_localBackupCreate('pre-mutation')` at the top, before any mutation (commit `4e216f2`, audit H11/H12).
+- **Risk if regressed:** (1) corrupts a prior tenant's payment history + creates a phantom recovery case; (2) company-only tenants' overdue debt invisible on the map; (3) unrecoverable floor/unit data loss (the 2026-06-04 incident class).
+- **Gate:** `scripts/check-invariants.sh` — three new checks (`Audit H14 / M7 / H11/H12`) grep the three functions for the protective pattern; `firebase deploy --only hosting` aborts if any regresses.
+- **PR / commits:** audit fixes shipped across `afabc36..1237d91` (merged to main); regression gates added 2026-06-07.
+- **Test:** `bash scripts/check-invariants.sh` → all three print ✓.
+- **Porting concern:** none — on main + prod.
+
+---
+
 ### 52. NEVER delete blueprint Storage files + self-heal bg from cache (DATA LOSS, 2026-06-05)
 
 - **Status:** active

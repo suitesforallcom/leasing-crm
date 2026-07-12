@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "reporecall": {
+      "command": "/usr/local/bin/node",
+      "args": [
+        "/Users/diskc/.npm-global/bin/reporecall",
+        "mcp",
+        "--project",
+        "/Users/diskc/Documents/Claude/Projects/Office map"
+      ]
+    }
+  }
+}

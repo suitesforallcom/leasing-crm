@@ -4,3 +4,5 @@ node_modules/
 *.log
 .runtimeconfig.json
 .firebase/
+.secret.local
+*.secret.local

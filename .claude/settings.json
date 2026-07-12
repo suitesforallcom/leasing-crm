@@ -9,6 +9,98 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/session-context.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PROJECT_DIR=\"${CLAUDE_PROJECT_DIR:-$PWD}\"; TOKEN=$(cat \"$PROJECT_DIR/.memory/daemon.token\" 2>/dev/null || echo \"\"); curl -s -X POST   -H \"Authorization: Bearer $TOKEN\"   -H \"Content-Type: application/json\"   --data-binary @-   \"http://127.0.0.1:37223/hooks/session-start\"   2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/hooks/block-secrets.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/check-rybbit.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/check-branch.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/check-ports.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/check-e2e.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/check-mdd-version.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/lint-on-save.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/verify-no-secrets.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/check-rulecatch.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/check-env-sync.sh"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PROJECT_DIR=\"${CLAUDE_PROJECT_DIR:-$PWD}\"; TOKEN=$(cat \"$PROJECT_DIR/.memory/daemon.token\" 2>/dev/null || echo \"\"); curl -s -X POST   -H \"Authorization: Bearer $TOKEN\"   -H \"Content-Type: application/json\"   --data-binary @-   \"http://127.0.0.1:37223/hooks/prompt-context\"   2>/dev/null || true"
+          }
+        ]
       }
     ]
   }

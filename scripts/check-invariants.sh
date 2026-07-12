@@ -180,6 +180,67 @@ else
 fi
 
 echo
+
+# ═══ Audit 2026-06-06 (workflow woboipj8u) — 3 reintroduced regressions ═══
+
+# ─── Entry-2 reintro: openBouncedCheckModal lease-start guard (audit H14) ──
+# `if (startMs && ...) break` short-circuits when startMs==null → the bounced-
+# check picker surfaced the PREVIOUS tenant's paid months. Must be `!startMs ||`.
+echo "Audit H14 — openBouncedCheckModal lease-start guard:"
+if grep -A 55 "^function openBouncedCheckModal(" "$HTML" | grep -qE "if \(startMs && .* < startMs\) break"; then
+  echo "  ✗ openBouncedCheckModal — broken 'if (startMs && ...) break' (must be '!startMs ||') — audit H14 regression"
+  FAIL=1
+else
+  echo "  ✓ openBouncedCheckModal (no broken short-circuit)"
+fi
+
+echo
+
+# ─── LLC-only occupancy gate: _isUnitOverdue honors u.company (audit M7) ───
+# Company-only leases carry u.company without u.tenant. Checking only u.tenant
+# hides their overdue state on the floor map. Must use (!u.tenant && !u.company).
+echo "Audit M7 — _isUnitOverdue honors u.company (LLC-only):"
+if grep -A 3 "^function _isUnitOverdue(" "$HTML" | grep -qE "!u\.tenant && !u\.company"; then
+  echo "  ✓ _isUnitOverdue (u.company honored)"
+else
+  echo "  ✗ _isUnitOverdue — missing u.company fallback (LLC-only leases never overdue) — audit M7 regression"
+  FAIL=1
+fi
+
+echo
+
+# ─── Entry-44 class: fixFloorAssignments pre-mutation backup (audit H11/H12) ─
+# Destructive fixFloorAssignments (floor/unit dedupe) must take a
+# _localBackupCreate('pre-mutation') snapshot BEFORE mutating — the 2026-06-04
+# data-loss incident class. Without it a bad dedupe is unrecoverable.
+echo "Audit H11/H12 — fixFloorAssignments pre-mutation backup:"
+if grep -A 14 "^function fixFloorAssignments(" "$HTML" | grep -qE "_localBackupCreate\('pre-mutation'"; then
+  echo "  ✓ fixFloorAssignments (pre-mutation backup present)"
+else
+  echo "  ✗ fixFloorAssignments — missing _localBackupCreate('pre-mutation') before dedupe — audit H11/H12 (Entry-44 class)"
+  FAIL=1
+fi
+
+echo
+echo "Audit [9] — addendum DocuSign anchor re-substitute (escaped quotes):"
+if grep -A 70 "^function _aeBuildEnvelopeHtml(" "$HTML" | grep -qE '&quot;font-size:1px'; then
+  echo "  ✓ _aeBuildEnvelopeHtml (re-substitute matches the escaped &quot; span — anchor restored, not printed)"
+else
+  echo "  ✗ _aeBuildEnvelopeHtml — re-substitute regex must use &quot; (escTxt escapes the span's quotes); literal \" silently re-breaks: /signHere/ renders visible + tenant tab lands on wrong line — audit [9] (Entry 54)"
+  FAIL=1
+fi
+
+echo
+echo "Entry 66 — entire-floor lease: pure resolver + keepStatus opt:"
+if grep -qE "^function _floorRentableSqft\(f, baseSqft\)" "$HTML" \
+   && grep -qE "opts && opts\.keepStatus" "$HTML"; then
+  echo "  ✓ _floorRentableSqft resolver + _groupCreate keepStatus present"
+else
+  echo "  ✗ Entry 66 — _floorRentableSqft (pure rentable→gross resolver) or _groupCreate opts.keepStatus missing — entire-floor lease math regresses (FIXES_LOG 66 / EQ-8)"
+  FAIL=1
+fi
+
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."

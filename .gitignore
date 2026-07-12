@@ -55,3 +55,8 @@ _v-*.jpg
 _body-*.jpg
 _sig-verify*.jpg
 _body-verify*.jpg
+
+# Added by starter kit conversion
+CLAUDE.local.md
+_ai_temp/
+.memory/

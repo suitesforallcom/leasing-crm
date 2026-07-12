@@ -116,6 +116,19 @@ Per-unit `u.lateFee.autoSend` opt-in. Per-building pause. Workspace dry-run flag
 Window: month-to-date. Inclusion criterion: `leaseStart`. Scope: active building.
 **Equivalent of Kiwi**: no direct rule (Kiwi doesn't define dashboard pills).
 
+### EQ-8. Entire-floor lease (`f.leaseEntireFloor`)
+When a floor is leased whole to a single company, the leased/rentable area is the floor's **gross** area (load factor 1.0 — corridors, restrooms, common areas enter arithmetically; their units are never marked `rentable=true`):
+```
+floorRentableSqft = f.leaseEntireFloor ? _floorGrossSqft(f)            // gross
+                                       : <surface's own base branch>   // Σ office sqft or f.rentableSqft
+```
+- Resolver is **pure** (`_floorRentableSqft(f, base)`) — `f.rentableSqft` is NEVER overwritten; toggling OFF restores prior numbers byte-identically.
+- Money flows through the EXISTING multi-suite lease head (EQ-2): enable creates one group over all office units of the floor, head = largest-sqft office, head holds combined rent, secondaries 0. No `floor.rent` / `floor.tenant` fields exist.
+- **$/ft² drops** when the denominator flips to gross — this is correct, not a rent cut (rate reads "per gross floor area").
+- Occupancy honest: a floor counts as 100% occupied ONLY while `_floorFullLeaseActive(f)` — head `status==='occupied'` AND `(head.tenant || head.company)`. The flag alone never inflates occupancy.
+- **UI entry points:** Building modal → Floors tab checkbox (dormant toggle), AND floor «···» kebab → «Lease entire floor…» (operator enters tenant + whole-floor monthly rent; live $/ft²/yr on gross shown; price → group-lease head via _groupCreate, secondaries 0). Both set f.leaseEntireFloor; same EQ-8 math.
+**Equivalent of Kiwi**: no direct rule. See FIXES_LOG Entry 66.
+
 ---
 
 ## 4. Architectural gap (read this before proposing big changes)

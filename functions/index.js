@@ -245,18 +245,38 @@ function _buildingForV2CF(b) {
 }
 
 // Зеркалит одно здание в коллекцию (формат 1-в-1 с клиентским _mirrorBuildingsToV2).
+// ВАЖНО (FIXES_LOG 65 Layer 2): _savedRev обязан СОХРАНЯТЬСЯ И РАСТИ при
+// каждой серверной записи. Старая версия делала полный set() БЕЗ _savedRev →
+// поле исчезало из дока → rules-гард монотонности читал resource._savedRev
+// как 0, и следующая запись stale-таба проходила гард — заново открывая
+// вектор затирания 2026-06-08. Транзакция (а не get+set) закрывает заодно
+// гонку с конкурентной клиентской записью: при конфликте tx ретраится и
+// перечитывает свежий _savedRev. Док с отсутствующим _savedRev (наследие
+// старых CF-записей) лечится: 0 → 1.
+// Возвращает true при успехе / false при проглоченной ошибке — money-вебхуки
+// (аудит 2026-07-03, правило №5) через opts.rethrowMirrorFailure в
+// mutateWorkspaceState превращают false в throw → 500 → Stripe Smart Retry.
 async function _mirrorBuildingV2CF(b) {
-  if (!b || !b.id) return;
+  if (!b || !b.id) return true;   // нечего зеркалить — не провал
   try {
-    await db.doc(`workspaces/${WORKSPACE_ID}/buildings/${b.id}`).set({
-      _schema: 'v2',
-      buildingId: b.id,
-      doc: _buildingForV2CF(b),
-      _mirroredAt: admin.firestore.FieldValue.serverTimestamp(),
-      _mirroredBy: 'cloud-function',
+    const ref = db.doc(`workspaces/${WORKSPACE_ID}/buildings/${b.id}`);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const curRev = (snap.exists && typeof snap.data()._savedRev === 'number')
+        ? snap.data()._savedRev : 0;
+      tx.set(ref, {
+        _schema: 'v2',
+        buildingId: b.id,
+        doc: _buildingForV2CF(b),   // полная замена doc — merge тут запрещён (удалённые юниты не должны липнуть)
+        _mirroredAt: admin.firestore.FieldValue.serverTimestamp(),
+        _mirroredBy: 'cloud-function',
+        _savedRev: curRev + 1,      // монотонно: сохранить и продвинуть гард-пол
+      });
     });
+    return true;
   } catch (e) {
     logger.warn(`[strip-cf:mirror] ${b.id}: ${(e && e.message) || e}`);
+    return false;
   }
 }
 
@@ -269,7 +289,13 @@ async function readWorkspaceState() {
 // Write — runs a transactional mutation of the `state` sub-object. `mutate`
 // receives the current state and may modify it in place. We bump _rev so
 // the client's onSnapshot picks up our change and does not echo it back.
-async function mutateWorkspaceState(mutate) {
+// opts.rethrowMirrorFailure (аудит 2026-07-03, правило №5): для money-вебхуков
+// провал building-зеркала НЕ должен завершаться 200+done — кидаем transient-
+// ошибку → внешний catch вебхука вернёт 500 → Stripe Smart Retry. При retry
+// mutate-peek читает СТАРОЕ здание из коллекции → мутация и зеркало повторяются
+// целиком (хендлеры идемпотентны). Дефолт (без opts) — прежнее поведение
+// warn-only для кронов/callable'ов.
+async function mutateWorkspaceState(mutate, opts) {
   // Под strip предзагружаем здания+платежи ВНЕ транзакции (коллекция — источник
   // истины; _rev-лок монолита защищает settings/ui/прочее). null когда strip off.
   let stripBuildings = null;
@@ -316,7 +342,16 @@ async function mutateWorkspaceState(mutate) {
   });
   // После транзакции — зеркалим только реально изменившиеся здания в коллекцию.
   if (toMirror && toMirror.length) {
-    for (const b of toMirror) await _mirrorBuildingV2CF(b);
+    const failedMirrors = [];
+    for (const b of toMirror) {
+      const ok = await _mirrorBuildingV2CF(b);
+      if (!ok) failedMirrors.push(b.id);
+    }
+    if (failedMirrors.length && opts && opts.rethrowMirrorFailure) {
+      // «[mirror-failed]» сознательно НЕ матчится под permanent-паттерны
+      // вебхука → классифицируется как transient → 500 → Smart Retry.
+      throw new Error(`[mirror-failed] building mirror failed for: ${failedMirrors.join(', ')}`);
+    }
   }
 }
 
@@ -383,6 +418,94 @@ async function _deletePaymentV2(buildingId, unitId, ym) {
     await ref.delete();
   } catch (e) {
     logger.warn(`[mirror-v2:del] ${buildingId}/${unitId}/${ym}: ${e.message}`);
+  }
+}
+
+// ─── Discount-метаданные на строке леджера u.payments[ym] ────────────────
+// (docs/invoice-discount-design-2026-07-03.md §2). Единый список полей:
+// пишет их stripeDiscountInvoice, а КАЖДЫЙ писатель, который пересобирает
+// rec целиком (handleInvoicePaid, reconcile-apply, handleInvoiceFailed),
+// ОБЯЗАН spread-сохранить их из prior-записи — иначе оплата/фейл счёта
+// стирает запись скидки. Возвращает объект только с реально
+// присутствующими полями, чтобы spread не сеял undefined в Firestore-док.
+const DISCOUNT_REC_FIELDS = [
+  'wasDiscounted', 'discountAmount', 'discountPct', 'originalAmount',
+  'discountReason', 'discountBy', 'discountAt',
+  'discountCreditNoteId', 'discountInvoiceId',
+];
+function _discountFieldsOf(rec) {
+  const out = {};
+  if (!rec || typeof rec !== 'object') return out;
+  for (const k of DISCOUNT_REC_FIELDS) {
+    if (rec[k] !== undefined) out[k] = rec[k];
+  }
+  return out;
+}
+
+// ─── PII-маскирование email в Cloud Logging (аудит P2 2026-07-03) ────────
+// Cloud Logging retains логи 30д и доступен всем с ролью Logs Viewer —
+// email арендатора/оператора в открытом виде = утечка PII. Маскируем:
+// оставляем первый символ local-part + домен целиком (для форензики
+// достаточно: видно провайдера и первую букву, но не полный адрес).
+//   'john.doe@example.com' → 'j***@example.com'
+//   'a@x.com'              → 'a***@x.com'
+// НЕ-email / пустое / uid → возвращаем как есть (uid тоже иногда попадает
+// в actor-fallback; он не PII-email, маскировать смысла нет).
+// ВАЖНО: применять ТОЛЬКО к logger.* (Cloud Logging). Audit-доки в
+// Firestore (writeAudit / u.outreach) — internal, их НЕ трогаем.
+function _maskEmail(v) {
+  const s = String(v == null ? '' : v);
+  const at = s.indexOf('@');
+  if (at <= 0 || at === s.length - 1) return s; // не email-подобное — как есть
+  return s[0] + '***' + s.slice(at);
+}
+
+// ─── Rate-limit для денежных callable (аудит P2 2026-07-03) ──────────────
+// Переиспользует ТОЧНО тот же счётчик-паттерн, что createStripeInvoice
+// (:748): Firestore-счётчики /workspaces/{ws}/rateLimits/{key}, два яруса —
+//   1. per-workspace HOUR bucket: широкий runaway (скомпрометированная
+//      сессия крутит credit notes / void'ы по многим юнитам);
+//   2. per-unit DAY bucket: ботнутый ретрай-луп по одному юниту.
+// Инкремент внутри транзакции (как в оригинале). Бросает
+// HttpsError('resource-exhausted') при превышении — вызов не доходит до
+// Stripe. Ключи неймспейснуты префиксом `ns` чтобы не пересекаться со
+// счётчиками createStripeInvoice (ws_/u_) и takeManualBackup.
+//   ns   — короткий тег операции ('disc' | 'void' | 'oob')
+//   unitId — для per-unit-яруса ('' → только per-workspace ярус)
+//   perWsHour / perUnitDay — капы (см. вызовы ниже, задокументированы там)
+async function _rateLimitMoneyCallable(ns, unitId, perWsHour, perUnitDay) {
+  const d = new Date();
+  const dayKey = `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}`;
+  const hourKey = dayKey + String(d.getUTCHours()).padStart(2, '0');
+  // Ярус 1 — per-workspace/hour.
+  const wsRef = db.doc(`workspaces/${WORKSPACE_ID}/rateLimits/ns_${ns}_ws_${hourKey}`);
+  const wsCount = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(wsRef);
+    const cur = snap.exists ? (snap.data().count || 0) : 0;
+    const next = cur + 1;
+    if (next > perWsHour) return next;
+    tx.set(wsRef, { count: next, hourKey, _exp: Date.now() + 2 * 60 * 60 * 1000 });
+    return next;
+  });
+  if (wsCount > perWsHour) {
+    throw new HttpsError('resource-exhausted',
+      `Workspace rate limit reached (${perWsHour}/hr for this operation). Wait until the next hour or contact support if this is unexpected.`);
+  }
+  // Ярус 2 — per-unit/day (только если unitId задан).
+  if (unitId) {
+    const uRef = db.doc(`workspaces/${WORKSPACE_ID}/rateLimits/ns_${ns}_u_${String(unitId).replace(/[^A-Za-z0-9_-]/g, '')}_${dayKey}`);
+    const uCount = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(uRef);
+      const cur = snap.exists ? (snap.data().count || 0) : 0;
+      const next = cur + 1;
+      if (next > perUnitDay) return next;
+      tx.set(uRef, { count: next, unitId: String(unitId), dayKey, _exp: Date.now() + 48 * 60 * 60 * 1000 });
+      return next;
+    });
+    if (uCount > perUnitDay) {
+      throw new HttpsError('resource-exhausted',
+        `Suite ${unitId} has reached the daily limit (${perUnitDay}/day) for this operation. Wait until tomorrow UTC or contact support.`);
+    }
   }
 }
 
@@ -494,7 +617,29 @@ const PURPOSE_CODE = {
 const MONTH_ABBR = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
                     'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 
-function buildCustomInvoiceNumber({purpose, unitId, ym, auto}) {
+// Авто-генерация 3-буквенного кода здания из ЛОКАЦИИ (город из адреса, иначе
+// название). Используется когда оператор не задал building.code вручную.
+// Формат адреса: "улица, ГОРОД, штат[, индекс]" → первые 3 буквы города.
+function _autoBuildingCode(b) {
+  if (!b) return '';
+  const segs = String(b.address || '').split(',').map((s) => s.trim()).filter(Boolean);
+  let city = '';
+  if (segs.length >= 3) city = segs[1];        // street, CITY, state[, zip]
+  else if (segs.length === 2) city = segs[0];  // CITY, state
+  const src = (city || b.name || '').toUpperCase().replace(/[^A-Z]/g, '');
+  return src.slice(0, 3);
+}
+
+// 3-буквенный код здания для префикса номера счёта (запрос оператора 2026-06-07).
+// Приоритет: явно заданный building.code (Building Info) → иначе авто-ген из
+// локации. На сверку/Stripe-matching не влияет: всё по metadata, не по строке.
+function buildingInvoiceCode(b) {
+  if (!b) return '';
+  const explicit = String(b.code || '').replace(/[^A-Za-z]/g, '').toUpperCase().slice(0, 3);
+  return explicit || _autoBuildingCode(b);
+}
+
+function buildCustomInvoiceNumber({purpose, unitId, ym, auto, code}) {
   // Rent + auto-flag → "RA" prefix to distinguish cron-fired invoices
   // from manually-sent ones. All other purposes ignore the auto flag.
   let p = PURPOSE_CODE[purpose] || 'X';
@@ -541,9 +686,14 @@ function buildCustomInvoiceNumber({purpose, unitId, ym, auto}) {
   const billingPart = (purpose === 'rent' && ym && /^\d{4}-\d{2}$/.test(ym))
     ? `-${MONTH_ABBR[+ym.split('-')[1] - 1]}${ym.slice(2,4)}`
     : '';
-  let n = `${p}-${suite}${billingPart}-${issuedCode}-${timeCode}-${rand}`;
-  if (n.length > 26) n = `${p}-${suite}${billingPart}-${issuedCode}-${timeCode}`;
-  if (n.length > 26) n = `${p}-${suite}${billingPart}-${issuedCode}-${rand}`;
+  // Префикс кода здания (если задан) — в САМОМ начале. Stripe limit = 26 симв.;
+  // при переполнении код здания отбрасывается ПОСЛЕДНИМ (после rand и time).
+  const bCode = String(code || '').replace(/[^A-Z]/gi, '').toUpperCase().slice(0, 3);
+  const pre = bCode ? `${bCode}-` : '';
+  let n = `${pre}${p}-${suite}${billingPart}-${issuedCode}-${timeCode}-${rand}`;
+  if (n.length > 26) n = `${pre}${p}-${suite}${billingPart}-${issuedCode}-${timeCode}`; // -rand
+  if (n.length > 26) n = `${pre}${p}-${suite}${billingPart}-${issuedCode}`;             // -time (код здания держим — он важнее времени)
+  if (n.length > 26) n = `${p}-${suite}${billingPart}-${issuedCode}-${timeCode}`;       // крайний случай (очень длинный suite) → жертвуем кодом здания (Stripe лимит)
   return n;
 }
 
@@ -608,7 +758,7 @@ exports.ensureStripeCustomer = onCall(
       && c.metadata?.workspaceId
       && c.metadata.workspaceId !== WORKSPACE_ID);
     if (conflictMatch && !customer) {
-      logger.warn(`[stripe] email ${emailLower} has Stripe customer ${conflictMatch.id} tagged for workspace "${conflictMatch.metadata.workspaceId}" — creating a NEW customer for ours instead of adopting`);
+      logger.warn(`[stripe] email ${_maskEmail(emailLower)} has Stripe customer ${conflictMatch.id} tagged for workspace "${conflictMatch.metadata.workspaceId}" — creating a NEW customer for ours instead of adopting`); // PII-маск (аудит P2)
     }
 
     if (customer) {
@@ -630,7 +780,7 @@ exports.ensureStripeCustomer = onCall(
           logger.warn(`[stripe] could not tag adopted customer ${customer.id}: ${err.message}`);
         }
       }
-      logger.info(`[stripe] linked existing customer ${customer.id} for ${emailLower} (adopted=${needsTag})`);
+      logger.info(`[stripe] linked existing customer ${customer.id} for ${_maskEmail(emailLower)} (adopted=${needsTag})`); // PII-маск (аудит P2)
     } else {
       customer = await stripe.customers.create({
         email, name,
@@ -641,7 +791,7 @@ exports.ensureStripeCustomer = onCall(
           source: 'suitesforall',
         },
       });
-      logger.info(`[stripe] created customer ${customer.id} for ${emailLower}`);
+      logger.info(`[stripe] created customer ${customer.id} for ${_maskEmail(emailLower)}`); // PII-маск (аудит P2)
     }
 
     await mutateWorkspaceState((s) => {
@@ -700,6 +850,7 @@ exports.createStripeInvoice = onCall(
       buildingId, floorId, unitId,
       ym,                                  // required only for rent invoices
       daysUntilDue,
+      dueDateUnix,                         // FIXES_LOG Entry 60: опц. абсолютная due_date (Unix SECONDS), rent-only; клиент = leaseStart|1-е месяца + grace
       description: customDesc,             // visible to tenant (prefixed onto line item + header)
       privateNote,                         // hidden from tenant; stripe metadata only
       purpose,                             // 'rent' | 'late_fee' | 'keys' | 'damages' | 'cleaning' | 'custom'
@@ -763,6 +914,23 @@ exports.createStripeInvoice = onCall(
     const _defDays   = _isLateFee ? 0 : 30;
     const safeDaysUntilDue = Math.max(_minDays, Math.min(365,
       Number.isFinite(+daysUntilDue) ? Math.floor(+daysUntilDue) : _defDays));
+    // FIXES_LOG Entry 60 — абсолютная due_date для RENT. Клиент шлёт dueDateUnix
+    // (anchor = leaseStart|1-е месяца + grace, Unix SECONDS):
+    //   future anchor (> now+120с, < now+366д) → Stripe due_date (точная дата);
+    //   past/now anchor (поздний выпуск) → days_until_due:0 = сразу due/past_due
+    //     (решение оператора 2026-06-07);
+    //   нет dueDateUnix / не rent → прежний days_until_due (safeDaysUntilDue).
+    // Stripe принимает due_date ЛИБО days_until_due (не оба). collectionMethod
+    // ещё не определён здесь — гейт send_invoice применяется на самом create.
+    const _nowSecDue = Math.floor(Date.now() / 1000);
+    const _dueAtNum  = Number.isFinite(+dueDateUnix) ? Math.floor(+dueDateUnix) : null;
+    const _rentAbsDue = (invPurpose === 'rent' && _dueAtNum
+        && _dueAtNum > _nowSecDue + 120 && _dueAtNum < _nowSecDue + 366 * 86400)
+      ? _dueAtNum : null;
+    const _rentDueNow = !!(invPurpose === 'rent' && _dueAtNum && !_rentAbsDue);
+    const _dueFooter = _rentAbsDue
+      ? `Payment due: ${new Date(_rentAbsDue * 1000).toISOString().slice(0, 10)}`
+      : (_rentDueNow ? `Payment due: immediately (past due)` : `Payment due: within ${safeDaysUntilDue} days`);
     // Stripe invoice description has a 1500-char limit; we cap at 500
     // so the line item, custom_fields, and footer all stay readable.
     const safeCustomDesc = (typeof customDesc === 'string')
@@ -1142,7 +1310,7 @@ exports.createStripeInvoice = onCall(
       `Suite: ${unitId}`,
       invPurpose === 'rent' ? `Billing period: ${monthLabel} ${year}` : `Charge type: ${copy.label}`,
       `Invoice issued: ${nowIso}`,
-      `Payment due: within ${daysDue} days`,
+      _dueFooter,                          // Entry 60: точная дата для rent, иначе «within N days»
       `Landlord: ${landlordName}${landlordEmail ? ' · ' + landlordEmail : ''}`,
     ];
 
@@ -1159,7 +1327,8 @@ exports.createStripeInvoice = onCall(
     // sends get the "RA-" prefix (vs operator-initiated plain "R-").
     // Coerce to bool — clients sometimes send 'true' (string) or 1.
     const isAuto = (auto === true || auto === 'true' || auto === 1);
-    const customNumber = buildCustomInvoiceNumber({purpose: invPurpose, unitId, ym: effectiveYm, auto: isAuto});
+    const _invBldg = (state.buildings || []).find((x) => x && x.id === buildingId);
+    const customNumber = buildCustomInvoiceNumber({purpose: invPurpose, unitId, ym: effectiveYm, auto: isAuto, code: buildingInvoiceCode(_invBldg)});
 
     // Auto-charge routing. Three inputs matter:
     //   1. Workspace-level auto-charge toggle (settings.autoInvoice.autoCharge)
@@ -1242,7 +1411,11 @@ exports.createStripeInvoice = onCall(
       customer: customerId,
       auto_advance: false,                // we control the finalize sequence
       collection_method: collectionMethod,
-      ...(collectionMethod === 'send_invoice' ? { days_until_due: daysDue } : {}),
+      // Entry 60: due_date (rent, future anchor) ЛИБО days_until_due. Никогда оба.
+      ...(collectionMethod === 'send_invoice'
+          ? (_rentAbsDue ? { due_date: _rentAbsDue }
+             : (_rentDueNow ? { days_until_due: 0 } : { days_until_due: daysDue }))
+          : {}),
       ...(paymentSettings ? { payment_settings: paymentSettings } : {}),
       description: topSummary,
       footer: footerText,
@@ -1431,7 +1604,7 @@ exports.createStripeInvoice = onCall(
       await stripe.invoices.update(invoice.id, {number: customNumber});
     } catch (err) {
       if (err.code === 'resource_already_exists' || /already.*exists/i.test(err.message || '')) {
-        const retry = buildCustomInvoiceNumber({purpose: invPurpose, unitId, ym: effectiveYm, auto: isAuto});
+        const retry = buildCustomInvoiceNumber({purpose: invPurpose, unitId, ym: effectiveYm, auto: isAuto, code: buildingInvoiceCode((state.buildings || []).find((x) => x && x.id === buildingId))});
         logger.warn(`[stripe] invoice number ${customNumber} collided; retrying with ${retry}`);
         await stripe.invoices.update(invoice.id, {number: retry});
       } else {
@@ -1714,7 +1887,19 @@ exports.listStripeInvoices = onCall(
     const page = await stripe.invoices.list(args);
     const now = Math.floor(Date.now() / 1000);
     const rows = page.data
-      .filter(inv => !inv.metadata || inv.metadata.source === 'suitesforall' || !inv.metadata.source)
+      // Авто-счета (source:'auto') — тоже наши. Без 'auto' в фильтре список
+      // и история юнита их не показывают (инцидент 2026-07: авто-счета невидимы).
+      // ПЛЮС прячем пустые $0-артефакты backfill-бага (total===0 && 0 строк):
+      // это не настоящие счета (Stripe их не даёт void/delete), они захламляют
+      // список/историю и ложно красят месяц «paid».
+      .filter(inv => {
+        const src = inv.metadata && inv.metadata.source;
+        if (!(!inv.metadata || !src || src === 'suitesforall' || src === 'auto')) return false;
+        const total = Number(inv.total ?? inv.amount_due ?? 0);
+        const lineCount = inv.lines?.total_count ?? (inv.lines?.data?.length ?? 0);
+        if (total === 0 && lineCount === 0) return false;
+        return true;
+      })
       .map(inv => {
         const customer = (typeof inv.customer === 'object') ? inv.customer : null;
         // Derive "past due" client-friendly bucket
@@ -1827,6 +2012,12 @@ exports.voidOrDeleteStripeInvoice = onCall(
     if (!invoiceId) {
       throw new HttpsError('invalid-argument', 'invoiceId is required');
     }
+    // RATE LIMIT (аудит P2 2026-07-03) — void/delete уничтожает Stripe-счёт
+    // (open→void, draft→delete); runaway при компрометации = массовое
+    // обнуление выставленных счетов. unitId в req.data НЕТ (только после
+    // retrieve из metadata) → ограничиваем ТОЛЬКО per-workspace ярусом,
+    // 40/hr. До Stripe-вызова.
+    await _rateLimitMoneyCallable('void', '', 40, 0);
     const stripe = getStripe();
     const actor = req.auth?.token?.email || req.auth?.uid || 'unknown';
     // Helper to log every void/delete to the workspace audit collection.
@@ -1926,6 +2117,12 @@ exports.markInvoicePaidOutOfBand = onCall(
     if (!invoiceId) {
       throw new HttpsError('invalid-argument', 'invoiceId is required');
     }
+    // RATE LIMIT (аудит P2 2026-07-03) — OOB-mark-paid переводит счёт в
+    // paid без движения денег через Stripe (пишет леджер + Stripe-статус);
+    // runaway = массовое ложное «оплачено». Капы как у скидки: 40/hr на
+    // workspace, 5/сутки на юнит (suiteId — best-effort, может быть пустым
+    // для legacy-вызовов → тогда только per-workspace ярус). До Stripe.
+    await _rateLimitMoneyCallable('oob', suiteId, 40, 5);
     const stripe = getStripe();
     const actor = req.auth?.token?.email || req.auth?.uid || 'unknown';
 
@@ -2017,6 +2214,389 @@ exports.markInvoicePaidOutOfBand = onCall(
       logger.error('[markPaidOOB] failed:', err.message, err.stack);
       await writeAudit('mark-paid-oob-failed', { note: 'Failure: ' + err.message });
       throw new HttpsError('internal', `Mark paid OOB failed: ${err.message || err}`);
+    }
+  }
+);
+
+// =========================================================================
+// ===== Stripe — Discount an open invoice (credit note) ==================
+// Сценарий «сломался лифт» (docs/invoice-discount-design-2026-07-03.md §1/§4):
+// скидка на УЖЕ выставленный ОТКРЫТЫЙ счёт БЕЗ void + перевыставления.
+// Механика — Stripe credit note: уменьшает amount_due, номер счёта и
+// hosted-ссылка арендатора живут дальше, штампы lastInvoiceId/lastInvoiceYm
+// не трогаются вовсе (инвариант Entry 71 даже не задействуется).
+//
+// v1-границы (утверждены Tony 2026-07-03):
+//   - только status='open' (paid → отказ: post-payment кредит = реальный
+//     возврат денег, отдельный флоу с отдельным одобрением);
+//   - строго < 100% (счёт с amount_due=0 переходит в paid через
+//     НЕслушаемый invoice.paid — леджер завис бы open навсегда;
+//     полный comp месяца = существующий waiver-флоу «free month»);
+//   - только одномесячные rent-счета: metadata.ym есть, advance-маркеров
+//     нет (кредит на advance-якорь ломает экономику всех покрытых месяцев).
+//
+// Идемпотентность: перед create — creditNotes.list по инвойсу; своя
+// не-void кредит-нота (metadata-отпечаток source+unitId+ym) уже есть →
+// возвращаем её и дописываем леджер, если запись скидки потерялась.
+// Повторный клик / сетевой ретрай клиента безопасен.
+//
+// Запись в леджер — СИНХРОННО здесь же, не через вебхук (credit_note.created
+// не слушается — и не должен, событие уходит в default→ignored). Строго
+// strip-aware: mutateWorkspaceState + _writePaymentV2-зеркало под
+// _stateIfSyncV2-гейтом (Entry 70: запись в u.payments внутри mutate БЕЗ
+// зеркала под strip = тихий no-op). Плюс audit-док + u.outreach[].
+// =========================================================================
+exports.stripeDiscountInvoice = onCall(
+  {secrets: [STRIPE_SECRET_KEY], timeoutSeconds: 60},
+  async (req) => {
+    const authInfo = await requireEditor(req.auth);
+    const {invoiceId, unitId, ym, mode, value, reason, emailTenant = true} = req.data || {};
+
+    // ── Валидация параметров (до любого Stripe-вызова) ──────────────────
+    if (!invoiceId || !unitId || !ym) {
+      throw new HttpsError('invalid-argument', 'invoiceId, unitId and ym are required');
+    }
+    if (!/^\d{4}-\d{2}$/.test(String(ym))) {
+      throw new HttpsError('invalid-argument', 'ym must be YYYY-MM');
+    }
+    if (mode !== 'percent' && mode !== 'fixed') {
+      throw new HttpsError('invalid-argument', "mode must be 'percent' or 'fixed'");
+    }
+    const numValue = +value;
+    if (!Number.isFinite(numValue) || numValue <= 0) {
+      throw new HttpsError('invalid-argument', 'value must be a positive number');
+    }
+    if (mode === 'percent' && numValue >= 100) {
+      // 100%-запрет (v1): полный comp месяца — через waiver-флоу.
+      throw new HttpsError('invalid-argument',
+        '100% discount is not allowed — use the Waive (free month) flow instead');
+    }
+    const reasonText = String(reason || '').trim();
+    if (!reasonText) {
+      throw new HttpsError('invalid-argument', 'reason is required (non-empty)');
+    }
+
+    // RATE LIMIT (аудит P2 2026-07-03) — credit note = вывод денег со счёта;
+    // runaway при скомпрометированной сессии = бесконтрольные скидки. Капы
+    // чуть НИЖЕ invoice-капа (createStripeInvoice: 100/hr, 5/unit/day),
+    // потому что скидка — редкая ручная операция «сломался лифт», а не
+    // массовая рассылка: 40/hr на workspace, 5/сутки на юнит. Инкремент
+    // ДО Stripe-вызова (ловим ретрай-луп до создания кредит-нот).
+    // NB: лимит стоит ПЕРЕД идемпотентной проверкой (:2456), поэтому
+    // повторный вызов по уже-заскидированному инвойсу ТОЖЕ расходует
+    // токен (вернёт 'noop-existing', денег не двигает — безопасно; при
+    // ретрай-цикле упрётся в 5/сутки и отдаст resource-exhausted).
+    await _rateLimitMoneyCallable('disc', unitId, 40, 5);
+
+    const stripe = getStripe();
+    const actor = authInfo.email || req.auth?.uid || 'unknown';
+
+    // Audit-хелпер — best-effort, как в voidOrDeleteStripeInvoice: сбой
+    // записи аудита никогда не блокирует сам флоу.
+    const writeAudit = async (action, payload) => {
+      try {
+        await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+          ts: admin.firestore.FieldValue.serverTimestamp(),
+          actor,
+          actorUid: req.auth?.uid || null,
+          actorRole: authInfo.role || null,
+          action: 'invoice.' + action,
+          source: 'stripeDiscountInvoice',
+          invoiceId,
+          unitId: String(unitId),
+          ym: String(ym),
+          ...payload,
+        });
+      } catch (e) {
+        logger.warn('[discount] audit write failed: ' + e.message);
+      }
+    };
+
+    try {
+      // ── Инвойс наш? Одномесячный rent? ─────────────────────────────────
+      const inv = await stripe.invoices.retrieve(invoiceId);
+      const meta = inv.metadata || {};
+      if (meta.source !== 'suitesforall' && meta.source !== 'auto') {
+        throw new HttpsError('failed-precondition',
+          `Invoice ${invoiceId} is not a SuitesForAll invoice (source="${meta.source || ''}")`);
+      }
+      if (String(meta.unitId || '') !== String(unitId)) {
+        throw new HttpsError('failed-precondition',
+          `Invoice ${invoiceId} belongs to unit "${meta.unitId || '?'}", not "${unitId}"`);
+      }
+      if (String(meta.ym || '') !== String(ym)) {
+        // metadata.ym обязан присутствовать и совпадать — иначе это не
+        // одномесячный rent-счёт за запрошенный месяц.
+        throw new HttpsError('failed-precondition',
+          `Invoice ${invoiceId} is not a single-month rent invoice for ${ym} (metadata.ym="${meta.ym || ''}")`);
+      }
+      if ((meta.purpose || '') !== 'rent') {
+        throw new HttpsError('failed-precondition',
+          `Only rent invoices can be discounted in v1 (purpose="${meta.purpose || ''}")`);
+      }
+      const buildingId = meta.buildingId || '';
+      const floorId = meta.floorId || '';
+      if (!buildingId || !floorId) {
+        throw new HttpsError('failed-precondition',
+          `Invoice ${invoiceId} metadata missing buildingId/floorId — cannot route the ledger write`);
+      }
+      // ВАЖНО: status-гейт стоит НИЖЕ idempotency-проверки (после блока
+      // prior) — иначе replay/backfill после crash-after-CN недостижим для
+      // уже оплаченного счёта (adversarial-ревью, finding 4b).
+
+      // ── Advance-маркеры (Entry 30): строки rent_advance → отказ ────────
+      // Строки инвойса пейджируем полностью (у advance-пакетов их > 10).
+      {
+        let after = null;
+        for (let page = 0; page < 10; page++) {
+          const res = await stripe.invoices.listLineItems(invoiceId,
+            {limit: 100, ...(after ? {starting_after: after} : {})});
+          for (const ln of (res.data || [])) {
+            if (ln?.metadata?.purpose === 'rent_advance') {
+              throw new HttpsError('failed-precondition',
+                `Invoice ${invoiceId} is a multi-month advance invoice — discounting advance anchors is not supported in v1`);
+            }
+          }
+          const last = res.data && res.data[res.data.length - 1];
+          after = (res.has_more && last?.id) ? last.id : null;
+          if (!after) break;
+        }
+      }
+
+      // ── State: юнит существует + advance-штампы (paidVia='stripe-advance')
+      // на любом месяце, указывающие на ЭТОТ инвойс → тоже advance-якорь.
+      const state = await readWorkspaceState();
+      const found = findUnit(state, {buildingId, floorId, unitId});
+      if (!found) {
+        throw new HttpsError('not-found',
+          `Unit ${unitId} (${buildingId}/${floorId}) not found in workspace state`);
+      }
+      for (const sy of Object.keys(found.unit.payments || {})) {
+        const sp = found.unit.payments[sy];
+        if (sp && sp.paidVia === 'stripe-advance'
+            && (sp.stripeInvoiceId === invoiceId || sp.stripe?.invoiceId === invoiceId)) {
+          throw new HttpsError('failed-precondition',
+            `Invoice ${invoiceId} anchors a multi-month advance prepayment (${sy}) — not supported in v1`);
+        }
+      }
+
+      // ── Запись в леджер (общая для create-пути и idempotent-backfill) ──
+      // Синхронно, strip-aware. u.payments[ym] НЕ пересобирается — discount-
+      // поля spread'ятся ПОВЕРХ существующего rec (все прежние поля живут).
+      const applyLedger = async (creditNote, ctx) => {
+        let unitFoundInMutate = false;
+        let recForMirror = null; // rec, захваченный ВНУТРИ mutate (паттерн reconcile appliedRows)
+        await mutateWorkspaceState((s) => {
+          unitFoundInMutate = false; // сброс на transaction-retry мутатора
+          recForMirror = null;
+          const f = findUnit(s, {buildingId, floorId, unitId});
+          if (!f) return;
+          unitFoundInMutate = true;
+          const u = f.unit;
+          u.payments = u.payments || {};
+          const rec = (u.payments[ym] && typeof u.payments[ym] === 'object') ? u.payments[ym] : {};
+          u.payments[ym] = {
+            ...rec,
+            wasDiscounted: true,
+            discountAmount: ctx.discountAmount,
+            discountPct: ctx.discountPct,
+            originalAmount: ctx.originalAmount,
+            discountReason: reasonText,
+            discountBy: actor,
+            discountAt: ctx.atIso,
+            discountCreditNoteId: creditNote.id,
+            discountInvoiceId: invoiceId,
+          };
+          recForMirror = u.payments[ym];
+          // Activity-trail — как у webhook'а: idempotency через scan по
+          // creditNoteId (повторный вызов / backfill не дублирует запись).
+          u.outreach = u.outreach || [];
+          const hasPriorOutreach = u.outreach.some(
+            (e) => e && e.kind === 'discount' && e.creditNoteId === creditNote.id
+          );
+          if (!hasPriorOutreach) {
+            u.outreach.push({
+              ts: ctx.atIso,
+              kind: 'discount',
+              note: `Discount $${ctx.discountAmount.toLocaleString()}` +
+                (ctx.discountPct != null ? ` (${ctx.discountPct}%)` : '') +
+                ` applied to ${ym} — ${reasonText} — by ${actor}`,
+              by: actor,
+              byEmail: actor,
+              ym,
+              amount: ctx.discountAmount,
+              invoiceId,
+              creditNoteId: creditNote.id,
+            });
+            while (u.outreach.length > 100) u.outreach.shift();
+          }
+        });
+        if (!unitFoundInMutate) {
+          // Кредит-нота уже в Stripe, а юнит исчез между проверкой и txn —
+          // теоретический случай; фиксируем в audit, не глотаем молча.
+          await writeAudit('discount-ledger-miss', {
+            creditNoteId: creditNote.id,
+            note: `Credit note ${creditNote.id} created but unit ${unitId} not found for ledger write — backfill via repeat call`,
+          });
+          return false;
+        }
+        // Entry 70: зеркало per-payment дока ОБЯЗАТЕЛЬНО — под strip монолит
+        // ре-стрипится и building-зеркало выкидывает u.payments, поэтому
+        // зеркалим rec, ЗАХВАЧЕННЫЙ внутри mutate (свежее re-read его уже
+        // не увидит — тот же silent-no-op класс, что Entry 70). Паттерн
+        // reconcileStripeInvoices appliedRows[].rec.
+        try {
+          const syncState = await _stateIfSyncV2();
+          if (syncState && recForMirror) {
+            await _writePaymentV2(buildingId, floorId, unitId, ym, recForMirror);
+          }
+        } catch (e) {
+          logger.warn(`[discount] mirror-v2 failed for ${unitId}/${ym}: ${e.message}`);
+        }
+        return true;
+      };
+
+      // ── Идемпотентность: наша кредит-нота уже существует? ──────────────
+      const existing = await stripe.creditNotes.list({invoice: invoiceId, limit: 100});
+      const prior = (existing.data || []).find((cn) => cn && cn.status !== 'void'
+        && cn.metadata && cn.metadata.source === 'suitesforall'
+        && String(cn.metadata.unitId || '') === String(unitId)
+        && String(cn.metadata.ym || '') === String(ym));
+      if (prior) {
+        const priorAmount = (prior.total || 0) / 100;
+        const priorPct = prior.metadata.discountPct !== undefined && prior.metadata.discountPct !== ''
+          ? +prior.metadata.discountPct : null;
+        // Backfill state, если запись скидки в леджере потерялась/не дописалась.
+        const curRec = found.unit.payments?.[ym];
+        let ledgerBackfilled = false;
+        if (!curRec || curRec.discountCreditNoteId !== prior.id) {
+          // originalAmount восстанавливаем из текущего инвойса: open →
+          // remaining+credit; paid → amount_paid+credit (что было бы к оплате).
+          const backOriginal = inv.status === 'open'
+            ? ((inv.amount_remaining || 0) + (prior.total || 0)) / 100
+            : ((inv.amount_paid != null ? inv.amount_paid : 0) + (prior.total || 0)) / 100;
+          ledgerBackfilled = await applyLedger(prior, {
+            discountAmount: priorAmount,
+            discountPct: Number.isFinite(priorPct) ? priorPct : null,
+            originalAmount: backOriginal,
+            atIso: prior.created ? new Date(prior.created * 1000).toISOString() : new Date().toISOString(),
+          });
+          if (ledgerBackfilled) {
+            await writeAudit('discounted', {
+              creditNoteId: prior.id,
+              amount: priorAmount,
+              reason: reasonText,
+              note: `Idempotent replay: existing credit note ${prior.id} returned, ledger backfilled`,
+            });
+          }
+        }
+        logger.info(`[discount] ${invoiceId}: existing credit note ${prior.id} returned (idempotent), backfilled=${ledgerBackfilled}`);
+        return {
+          invoiceId,
+          creditNoteId: prior.id,
+          action: 'noop-existing',
+          alreadyDiscounted: true,
+          discountAmount: priorAmount,
+          discountPct: Number.isFinite(priorPct) ? priorPct : null,
+          ledgerBackfilled,
+        };
+      }
+
+      // ── Status-гейт (после idempotency: replay на paid-счёте легален) ──
+      if (inv.status !== 'open') {
+        throw new HttpsError('failed-precondition',
+          `Only open invoices can be discounted (status="${inv.status}")` +
+          (inv.status === 'paid' ? ' — post-payment credit is a refund flow, not supported in v1' : ''));
+      }
+
+      // ── Повторное чтение статуса ПРЯМО перед create (гонка с autoPay) ──
+      const fresh = await stripe.invoices.retrieve(invoiceId);
+      if (fresh.status !== 'open') {
+        throw new HttpsError('failed-precondition',
+          `Invoice ${invoiceId} is no longer open (status="${fresh.status}") — likely just paid; discount aborted`);
+      }
+      const remainingCents = fresh.amount_remaining != null ? +fresh.amount_remaining : 0;
+      const computedCents = mode === 'percent'
+        ? Math.round(remainingCents * numValue / 100)
+        : Math.round(numValue * 100);
+      if (!(computedCents > 0)) {
+        throw new HttpsError('invalid-argument',
+          `Computed discount is $0 (value=${numValue}, mode=${mode})`);
+      }
+      if (computedCents >= remainingCents) {
+        // Покрывает и fixed=полная сумма, и percent→округление до 100%.
+        throw new HttpsError('invalid-argument',
+          `Discount ($${(computedCents / 100).toFixed(2)}) must be strictly below the amount remaining ` +
+          `($${(remainingCents / 100).toFixed(2)}) — full comp goes through the Waive (free month) flow`);
+      }
+      const discountPct = mode === 'percent' ? numValue : null;
+      const discountAmount = computedCents / 100;
+      const originalAmount = remainingCents / 100;
+      const atIso = new Date().toISOString();
+
+      // ── Кредит-нота. reason у Stripe — закрытый enum (duplicate/fraudulent/
+      // order_change/product_unsatisfactory); свободный текст — memo+metadata.
+      const cn = await stripe.creditNotes.create({
+        invoice: invoiceId,
+        lines: [{
+          type: 'custom_line_item',
+          description: `Discount — ${reasonText}`.slice(0, 250),
+          quantity: 1,
+          unit_amount: computedCents,
+        }],
+        memo: reasonText.slice(0, 500),
+        reason: 'order_change',
+        // email_type: 'credit_note' → Stripe сам шлёт арендатору PDF с memo.
+        email_type: emailTenant === false ? 'none' : 'credit_note',
+        metadata: {
+          source: 'suitesforall',
+          workspaceId: WORKSPACE_ID,
+          unitId: String(unitId),
+          ym: String(ym),
+          discountPct: discountPct == null ? '' : String(discountPct),
+          discountAmount: String(discountAmount),
+          by: actor,
+        },
+      }, {
+        // Конкурентный double-click: Stripe-side дедуп (паттерн :1314) —
+        // два overlapping-вызова не создадут две кредит-ноты. Sequential
+        // повтор ловится fingerprint-проверкой выше.
+        idempotencyKey: `sfa-discount-${invoiceId}-${unitId}-${ym}`,
+      });
+      logger.info(`[discount] ${invoiceId}: credit note ${cn.id} created ` +
+        `($${discountAmount}${discountPct != null ? ` = ${discountPct}%` : ''} of $${originalAmount}) by ${actor}`);
+
+      // ── Леджер + зеркало + audit + outreach — синхронно ────────────────
+      const ledgerApplied = await applyLedger(cn, {discountAmount, discountPct, originalAmount, atIso});
+      if (ledgerApplied) {
+        await writeAudit('discounted', {
+          creditNoteId: cn.id,
+          amount: discountAmount,
+          reason: reasonText,
+          before: {amountDue: originalAmount},
+          after: {amountDue: (remainingCents - computedCents) / 100},
+          note: `Discount $${discountAmount}` +
+            (discountPct != null ? ` (${discountPct}%)` : '') +
+            ` on ${invoiceId} (${ym}) — ${reasonText}`,
+        });
+      }
+
+      return {
+        invoiceId,
+        creditNoteId: cn.id,
+        action: 'discounted',
+        discountAmount,
+        discountPct,
+        originalAmount,
+        newAmountDue: (remainingCents - computedCents) / 100,
+        emailSent: emailTenant !== false,
+        ledgerApplied,
+      };
+    } catch (err) {
+      if (err.httpErrorCode) throw err;
+      logger.error('[discount] failed:', err.message, err.stack);
+      await writeAudit('discount-failed', {note: 'Failure: ' + err.message});
+      throw new HttpsError('internal', `Discount failed: ${err.message || err}`);
     }
   }
 );
@@ -2229,7 +2809,12 @@ exports.reconcileStripeInvoices = onCall(
       logger.error('[reconcile] auth failed:', err.message);
       throw err;
     }
-    const {sinceDays, apply} = req.data || {};
+    const {sinceDays, apply, onlyInvoiceIds, healStamps} = req.data || {};
+    // Whitelist-режим (Этап 3 плана RECONCILE_PLAN_2026-07-02): apply пишет
+    // ТОЛЬКО явно перечисленные invoice-id — оператор поимённо подтвердил
+    // каждую строку по Stripe-чеку. Без whitelist apply = только hard-гейты.
+    const whitelist = (Array.isArray(onlyInvoiceIds) && onlyInvoiceIds.length)
+      ? new Set(onlyInvoiceIds.map(String)) : null;
     const stripe = getStripe();
     let state;
     try {
@@ -2292,7 +2877,10 @@ exports.reconcileStripeInvoices = onCall(
 
         if (md.unitId && md.buildingId && md.floorId) {
           const f = findUnit(state, {buildingId: md.buildingId, floorId: md.floorId, unitId: md.unitId});
-          if (f) { match = f; via = 'metadata'; }
+          // findUnit → {building, floor, unit}; нормализуем в {b,f,u}, как во
+          // всех остальных match-ветках (иначе match.b/f/u.id ниже = undefined
+          // → краш «reading 'id'» на auto-счетах с полной metadata).
+          if (f) { match = { b: f.building, f: f.floor, u: f.unit }; via = 'metadata'; }
         }
         const cust = (typeof inv.customer === 'object') ? inv.customer : null;
         const custEmail = cust?.email || inv.customer_email || '';
@@ -2346,16 +2934,61 @@ exports.reconcileStripeInvoices = onCall(
         }
 
         // Derive the target month (ym). Prefer metadata, then invoice period,
-        // then invoice creation month.
+        // then invoice creation month. ymSource фиксируем: created-fallback
+        // мис-датирует депозиты/штрафы на «месяц создания» — такие строки
+        // apply НЕ пишет автоматически (гейт ym-not-explicit ниже).
         let ym = md.billingMonth || md.ym;
+        let ymSource = ym ? 'metadata' : null;
         if (!ym && inv.period_start) {
           const d = new Date(inv.period_start * 1000);
           ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+          ymSource = 'period';
         }
         if (!ym) {
           const d = new Date(inv.created * 1000);
           ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+          ymSource = 'created';
         }
+
+        // ── Hardened-гейты (RECONCILE_PLAN_2026-07-02 Этап 2, adversarial-ревью) ──
+        // Сумма РЕНТЫ = сумма rent-line-item'ов, НЕ amount_paid целиком:
+        // на одном инвойсе рента может ехать вместе с late-fee/service/advance.
+        const _rentLineCents = (inv.lines?.data || [])
+          .filter((ln) => ln?.metadata?.purpose === 'rent')
+          .reduce((s, ln) => s + (+ln.amount || 0), 0);
+        const _cur = match.u.payments?.[ym];
+        // «Месяц уже закрыт»: free/waived ИЛИ paid с РЕАЛЬНОЙ суммой.
+        // paid+$0 (артефакт $0-бага) — НЕ закрыт, иначе настоящий -v2 не запишется.
+        const _monthSettled = !!(_cur && (_cur.status === 'free' || _cur.status === 'waived'
+          || (_cur.status === 'paid' && (+_cur.amount || 0) > 0)));
+        // Advance-якорь: какой-то месяц юнита застампован этим же инвойсом как
+        // stripe-advance → писать нельзя (нужен sibling-sweep, путь webhook-replay).
+        let _advanceAnchor = false;
+        for (const _sy of Object.keys(match.u.payments || {})) {
+          const _sp = match.u.payments[_sy];
+          if (_sp && _sp.paidVia === 'stripe-advance'
+              && (_sp.stripeInvoiceId === inv.id || _sp.stripe?.invoiceId === inv.id)) { _advanceAnchor = true; break; }
+        }
+        const _groupMember = !!(match.u.groupId && match.u.groupRole !== 'primary');
+        const _lsYm = String(match.u.leaseStart || '').slice(0, 7);
+        const _beforeLease = !!(/^\d{4}-\d{2}$/.test(_lsYm) && ym < _lsYm);
+        const _purpose = md.purpose || null;
+        const _amountPaidUsd = (inv.amount_paid || 0) / 100;
+        const _alreadyTracked = !!(_cur?.status === 'paid' && _cur?.stripe?.invoiceId === inv.id);
+        // skipReason: hard-гейты блокируют ВСЕГДА; soft-гейты ('purpose-unknown',
+        // 'ym-not-explicit') может переопределить ТОЛЬКО whitelist (= оператор
+        // поимённо подтвердил строку по чеку).
+        let _skip = null;
+        if (inv.status !== 'paid') _skip = 'not-paid';
+        else if (_alreadyTracked) _skip = 'already-tracked';
+        else if (!(_amountPaidUsd > 0)) _skip = '$0-artifact';
+        else if (_purpose && _purpose !== 'rent') _skip = 'non-rent';
+        else if (_monthSettled) _skip = 'month-already-settled';
+        else if (_groupMember) _skip = 'group-member';
+        else if (_advanceAnchor) _skip = 'advance-anchor';
+        else if (_beforeLease) _skip = 'before-lease-start';
+        else if (!_purpose) _skip = 'purpose-unknown';
+        else if (ymSource !== 'metadata') _skip = 'ym-not-explicit';
 
         matched.push({
           invoiceId: inv.id,
@@ -2363,14 +2996,23 @@ exports.reconcileStripeInvoices = onCall(
           buildingId: match.b.id, floorId: match.f.id, unitId: match.u.id,
           tenantName: match.u.tenant || match.u.company || '',
           ym,
+          ymSource,
+          purpose: _purpose,
           status: inv.status,
           total: (inv.total || 0) / 100,
-          amountPaid: (inv.amount_paid || 0) / 100,
+          amountPaid: _amountPaidUsd,
+          rentLineAmount: _rentLineCents / 100,
+          monthSettled: _monthSettled,
+          groupMember: _groupMember,
+          advanceAnchor: _advanceAnchor,
           paidAt: inv.status_transitions?.paid_at ? inv.status_transitions.paid_at * 1000 : null,
+          created: inv.created ? inv.created * 1000 : 0,   // tie-break для healStamps
           chargeId: inv.charge || null,
           hostedUrl: inv.hosted_invoice_url || null,
           via,
-          alreadyTracked: !!(match.u.payments?.[ym]?.status === 'paid' && match.u.payments[ym]?.stripe?.invoiceId === inv.id),
+          alreadyTracked: _alreadyTracked,
+          wouldApply: !_skip,
+          skipReason: _skip,
         });
       }
       // Safe pagination + budget guards. With the server-side
@@ -2394,41 +3036,175 @@ exports.reconcileStripeInvoices = onCall(
     }
     logger.info(`[reconcile] scanned ${processed} invoices, matched=${matched.length}, unmatched=${unmatched.length}`);
 
-    // Apply mode: actually write the matched paid invoices into state.
-    // Only "paid" invoices get written — drafts/open/void are informational.
+    // ── healStamps-режим (регрессия lastInvoiceYm, spec wf_63898b05) ──────
+    // ТОЛЬКО штампы, ноль записей в u.payments. Кандидат на юнит = последний
+    // по metadata-ym (tie-break created) НАСТОЯЩИЙ rent-инвойс: $0-двойники
+    // ОТСЕКАЮТСЯ (у них status='paid'!), депозиты/void/draft/группы — мимо.
+    // Без apply — report-only (healPlan), запись только при apply:true.
+    if (healStamps) {
+      // Кэп: кандидат не дальше ТЕКУЩЕГО месяца. Будущий (advance) счёт
+      // (кейс 337: июль+август оба open) не должен захватить штамп —
+      // иначе текущий месяц «исчезает» из дисплея (та же болезнь 412).
+      const _healNow = new Date();
+      const _healCapYm = `${_healNow.getUTCFullYear()}-${String(_healNow.getUTCMonth() + 1).padStart(2, '0')}`;
+      const healCand = {};   // "buildingId|floorId|unitId" → лучшая строка
+      for (const m of matched) {
+        if (m.ymSource !== 'metadata') continue;
+        if (!/^\d{4}-\d{2}$/.test(m.ym)) continue;
+        if (m.ym > _healCapYm) continue;                            // future-cap
+        if (whitelist && !whitelist.has(String(m.invoiceId))) continue;  // поимённый apply
+        if (m.purpose !== 'rent') continue;
+        if (['void', 'draft', 'uncollectible'].includes(m.status)) continue;
+        if (!((m.rentLineAmount > 0) || (m.total > 0))) continue;   // $0-shell
+        if (m.groupMember) continue;
+        if (!String(m.via).startsWith('metadata')) continue;
+        const k = `${m.buildingId}|${m.floorId}|${m.unitId}`;
+        const cur = healCand[k];
+        if (!cur || m.ym > cur.ym || (m.ym === cur.ym && (m.created || 0) > (cur.created || 0))) healCand[k] = m;
+      }
+      let healedRows = [];
+      const healPlan = [];
+      // dry-план: сравниваем с ТЕКУЩИМ штампом (из state list-pass'а)
+      for (const k of Object.keys(healCand)) {
+        const m = healCand[k];
+        const f0 = findUnit(state, {buildingId: m.buildingId, floorId: m.floorId, unitId: m.unitId});
+        const curYm = String(f0?.unit?.stripe?.lastInvoiceYm || '');
+        if (!/^\d{4}-\d{2}$/.test(curYm) || m.ym > curYm) {   // строго '>': не понижаем, равные не трогаем
+          healPlan.push({unitId: m.unitId, buildingId: m.buildingId, from: curYm || null, to: m.ym,
+            invoiceId: m.invoiceId, invoiceNumber: m.invoiceNumber, invStatus: m.status});
+        }
+      }
+      if (apply && healPlan.length) {
+        await mutateWorkspaceState((s) => {
+          healedRows = [];   // сброс на входе — транзакция ретраится
+          for (const k of Object.keys(healCand)) {
+            const m = healCand[k];
+            const f = findUnit(s, {buildingId: m.buildingId, floorId: m.floorId, unitId: m.unitId});
+            if (!f) continue;
+            f.unit.stripe = f.unit.stripe || {};
+            const curYm = String(f.unit.stripe.lastInvoiceYm || '');
+            if (!/^\d{4}-\d{2}$/.test(curYm) || m.ym > curYm) {
+              healedRows.push({unitId: m.unitId, from: curYm || null, to: m.ym, invoiceId: m.invoiceId});
+              f.unit.stripe.lastInvoiceId = m.invoiceId;
+              f.unit.stripe.lastInvoiceYm = m.ym;
+              logger.info(`[reconcile:heal] ${m.unitId}: lastInvoiceYm ${curYm || '(none)'} → ${m.ym} (${m.invoiceId})`);
+            }
+          }
+        });
+      }
+      return {
+        processed, matched: matched.length, unmatched: unmatched.length,
+        healMode: true, healPlan, healedCount: healedRows.length, healedRows,
+        appliedCount: 0,
+      };
+    }
+
+    // Apply mode — HARDENED (RECONCILE_PLAN_2026-07-02 Этап 2). Пишем только
+    // строки, прошедшие гейты (wouldApply); soft-гейты ('purpose-unknown',
+    // 'ym-not-explicit') переопределяет ТОЛЬКО whitelist. Hard-гейты
+    // ($0 / non-rent / settled / group / advance / before-lease) — никогда.
     let applied = 0;
+    let appliedRows = [];
+    const SOFT_SKIPS = ['purpose-unknown', 'ym-not-explicit'];
     if (apply) {
-      const toApply = matched.filter(m => m.status === 'paid' && !m.alreadyTracked);
+      const toApply = matched.filter((m) => {
+        if (whitelist && !whitelist.has(String(m.invoiceId))) return false;
+        if (m.wouldApply) return true;
+        // whitelist = оператор поимённо подтвердил строку по Stripe-чеку →
+        // разрешаем только soft-причины; hard-гейты не переопределяются.
+        return !!(whitelist && SOFT_SKIPS.includes(m.skipReason));
+      });
+      // Whitelist-ID, которые ни во что не превратились — отдаём явно (не тихо).
+      const whitelistUnresolved = whitelist
+        ? [...whitelist].filter((id) => !toApply.some((m) => String(m.invoiceId) === id))
+        : [];
       if (toApply.length) {
         try {
           await mutateWorkspaceState((s) => {
+            // Сброс на входе: транзакция может ретраиться — иначе двойной счёт.
+            applied = 0;
+            appliedRows = [];
             for (const m of toApply) {
               const f = findUnit(s, {buildingId: m.buildingId, floorId: m.floorId, unitId: m.unitId});
-              if (!f) continue;
+              if (!f) { logger.warn(`[reconcile] apply: unit ${m.unitId} (${m.buildingId}/${m.floorId}) not found — skipped`); continue; }
               f.unit.payments = f.unit.payments || {};
+              // Сумма = rent-line-item'ы; amount_paid — только если line-меток
+              // нет (dashboard-инвойс, подтверждён whitelist'ом).
+              const _amt = (m.rentLineAmount > 0) ? m.rentLineAmount : m.amountPaid;
+              // Прежнюю НЕ-settled запись ($0-shell / open / late) сохраняем в history.
+              const prior = f.unit.payments[m.ym];
+              const priorHistory = Array.isArray(prior?.history) ? prior.history.slice() : [];
+              if (prior && prior.status) {
+                priorHistory.push({
+                  ts: new Date().toISOString(),
+                  status: prior.status, amount: prior.amount || 0,
+                  paidVia: prior.paidVia || null,
+                  invoiceId: prior.stripe?.invoiceId || prior.stripeInvoiceId || null,
+                  replacedBy: m.invoiceId, replacedReason: 'reconcile-apply',
+                });
+                while (priorHistory.length > 10) priorHistory.shift();
+              }
               f.unit.payments[m.ym] = {
                 status: 'paid',
-                amount: m.amountPaid || m.total,
+                amount: _amt,
                 date: m.paidAt ? new Date(m.paidAt).toISOString().slice(0, 10) : null,
+                // Discount-метаданные (stripeDiscountInvoice) обязаны пережить
+                // пересборку rec — иначе оплата скидочного месяца стирает след.
+                ..._discountFieldsOf(prior),
+                ...(priorHistory.length ? { history: priorHistory } : {}),
                 stripe: {
                   invoiceId: m.invoiceId,
                   chargeId: m.chargeId,
                   hostedInvoiceUrl: m.hostedUrl,
                   paidAt: m.paidAt,
-                  linkedVia: m.via,
+                  linkedVia: 'reconcile:' + m.via,
                 },
               };
               f.unit.stripe = f.unit.stripe || {};
-              f.unit.stripe.lastInvoiceId = m.invoiceId;
-              f.unit.stripe.lastInvoiceYm = m.ym;
+              // Штамп только ВПЕРЁД (регрессия 412): запись СТАРОГО месяца
+              // (июньский backfill при живом июльском счёте) не откатывает
+              // lastInvoiceYm. '>=': same-month — перештамповать можно.
+              {
+                const _curStampYm = String(f.unit.stripe.lastInvoiceYm || '');
+                if (/^\d{4}-\d{2}$/.test(m.ym) && (!/^\d{4}-\d{2}$/.test(_curStampYm) || m.ym >= _curStampYm)) {
+                  f.unit.stripe.lastInvoiceId = m.invoiceId;
+                  f.unit.stripe.lastInvoiceYm = m.ym;
+                }
+              }
               applied++;
+              appliedRows.push({ buildingId: m.buildingId, floorId: m.floorId, unitId: m.unitId, ym: m.ym, amount: _amt, invoiceId: m.invoiceId, rec: f.unit.payments[m.ym] });
+              logger.info(`[reconcile] APPLIED ${m.unitId}/${m.ym} $${_amt} invoice=${m.invoiceId}`);
             }
           });
         } catch (err) {
           logger.error('[reconcile] apply write failed:', err.message, err.stack);
           throw new HttpsError('internal', `Failed to persist links: ${err.message}`);
         }
+        // ── КРИТИЧНО (BLOCKER 1 adversarial-ревью): под buildings-strip монолит
+        // ре-стрипится и building-зеркало выкидывает u.payments → единственная
+        // живучая запись = payments-коллекция. Зеркалим каждый применённый месяц
+        // через _writePaymentV2, как handleInvoicePaid (~:3306-3318).
+        try {
+          const syncState = await _stateIfSyncV2();
+          if (syncState) {
+            for (const a of appliedRows) {
+              await _writePaymentV2(a.buildingId, a.floorId, a.unitId, a.ym, a.rec);
+            }
+            logger.info(`[reconcile] mirror-v2: ${appliedRows.length} payment doc(s) written`);
+          }
+        } catch (e) {
+          logger.error(`[reconcile] mirror-v2 FAILED (payments collection NOT updated — writes may not persist under strip!): ${e.message}`);
+        }
       }
+      if (whitelistUnresolved.length) {
+        logger.warn(`[reconcile] whitelist ids not applied: ${whitelistUnresolved.join(', ')}`);
+      }
+    }
+
+    // Сводка skip-причин — чтобы dry-run сразу показывал, что и почему не пишется.
+    const skippedSummary = {};
+    for (const m of matched) {
+      if (m.skipReason) skippedSummary[m.skipReason] = (skippedSummary[m.skipReason] || 0) + 1;
     }
 
     return {
@@ -2436,6 +3212,9 @@ exports.reconcileStripeInvoices = onCall(
       matched: matched.length,
       unmatched: unmatched.length,
       appliedCount: applied,
+      appliedRows: appliedRows.map(({rec, ...a}) => a),
+      wouldApplyCount: matched.filter((m) => m.wouldApply).length,
+      skippedSummary,
       matchedRows: matched,
       unmatchedRows: unmatched,
     };
@@ -2534,18 +3313,44 @@ exports.stripeWebhook = onRequest(
     try {
       await db.runTransaction(async (tx) => {
         const snap = await tx.get(seenEventRef);
-        if (snap.exists) {
+        const prev = snap.exists ? (snap.data() || {}) : null;
+        // H3 (Этап 4): дубликатом считаем ТОЛЬКО успешно обработанное событие.
+        // Раньше маркер писался ДО обработки: упавший handler → 500 → Stripe
+        // retry → skip как «duplicate» → платёж терялся навсегда (retry был
+        // бесполезен). Статусы: 'processing' (до обработки, retry разрешён) /
+        // 'done' / 'permanent-failure' (оба финальные — skip).
+        if (prev && (prev.status === 'done' || prev.status === 'permanent-failure')) {
           throw new Error('[duplicate-event]');
+        }
+        // Cap на retry: системная persistent-ошибка (Firestore NOT_FOUND,
+        // TypeError в verify, Stripe 401) иначе 500-ит вечно → Stripe в
+        // live-режиме может авто-отключить endpoint (хуже Entry 70).
+        if (prev && ((prev.attempts || 0) >= 6)) {
+          tx.set(seenEventRef, {
+            status: 'permanent-failure',
+            doneAt: admin.firestore.FieldValue.serverTimestamp(),
+          }, {merge: true});
+          throw new Error('[retries-exhausted]');
         }
         tx.set(seenEventRef, {
           eventType: event.type,
-          firstSeenAt: admin.firestore.FieldValue.serverTimestamp(),
+          status: 'processing',
+          attempts: ((prev && prev.attempts) || 0) + 1,
+          firstSeenAt: (prev && prev.firstSeenAt) || admin.firestore.FieldValue.serverTimestamp(),
           // Auto-cleanup hint — Firestore TTL field. Configure TTL on
           // `webhookEvents._ttl` in Firebase console for free pruning.
           _ttl: admin.firestore.Timestamp.fromMillis(Date.now() + 7 * 24 * 60 * 60 * 1000),
         });
       });
     } catch (dupErr) {
+      if (/\[retries-exhausted\]/.test(dupErr.message || '')) {
+        await _webhookDeadLetter(event.id, {
+          eventId: event.id, eventType: event.type, invoiceId: null,
+          unitId: null, ym: null, customerId: null, reason: 'retries-exhausted',
+        });
+        res.status(200).json({received: true, retriesExhausted: true});
+        return;
+      }
       if (/duplicate-event/.test(dupErr.message)) {
         logger.info(`[stripe] event ${event.id} (${event.type}) already processed — skipping`);
         res.json({received: true, duplicate: true});
@@ -2558,7 +3363,15 @@ exports.stripeWebhook = onRequest(
     try {
       switch (event.type) {
         case 'invoice.payment_succeeded':
-          await handleInvoicePaid(event.data.object);
+        // invoice.paid (аудит P1 2026-07-03): mark-paid из Stripe Dashboard /
+        // out-of-band оплата шлёт invoice.paid БЕЗ payment_succeeded — без
+        // этого case платёж не доходил до леджера. Двойная доставка обоих
+        // событий безвредна: у них разные event.id (event-dedupe их не
+        // склеивает), но handleInvoicePaid идемпотентен по
+        // prior.status==='paid' && prior.stripe.invoiceId===invoice.id —
+        // второй проход лишь ре-зеркалит тот же rec (Smart-Retry re-heal).
+        case 'invoice.paid':
+          await handleInvoicePaid(event.data.object, event.id);
           break;
         case 'invoice.payment_failed':
           await handleInvoiceFailed(event.data.object);
@@ -2577,6 +3390,11 @@ exports.stripeWebhook = onRequest(
         case 'charge.dispute.created':
           await handleChargeDisputed(event.data.object);
           break;
+        case 'charge.dispute.closed':
+          // Проигранный chargeback (аудит P1 2026-07-03): деньги ушли обратно
+          // банку — месяц не должен оставаться «paid» в леджере.
+          await handleChargeDisputeClosed(event.data.object, event.id);
+          break;
         case 'customer.subscription.created':
         case 'customer.subscription.updated':
           await handleSubscriptionUpdate(event.data.object);
@@ -2589,6 +3407,17 @@ exports.stripeWebhook = onRequest(
           break;
         default:
           logger.info(`[stripe] ignored event type ${event.type}`);
+      }
+      // H3: маркер «обработано» пишем ПОСЛЕ успешной обработки — только
+      // теперь retry этого event.id можно скипать как duplicate.
+      try {
+        await seenEventRef.set({
+          status: 'done', eventType: event.type,
+          doneAt: admin.firestore.FieldValue.serverTimestamp(),
+          _ttl: admin.firestore.Timestamp.fromMillis(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        }, {merge: true});
+      } catch (e) {
+        logger.warn(`[stripe] done-stamp write failed for ${event.id}: ${e.message}`);
       }
       res.json({received: true});
     } catch (err) {
@@ -2620,6 +3449,13 @@ exports.stripeWebhook = onRequest(
             note: `${event.type} ${event.id}: ${err.message}`.slice(0, 500),
           });
         } catch {}
+        try {
+          await seenEventRef.set({
+            status: 'permanent-failure', eventType: event.type,
+            doneAt: admin.firestore.FieldValue.serverTimestamp(),
+            _ttl: admin.firestore.Timestamp.fromMillis(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          }, {merge: true});
+        } catch {}
         res.status(200).json({received: true, permanentFailure: true});
         return;
       }
@@ -2643,12 +3479,26 @@ async function handleInvoiceVoided(invoice, eventType) {
   const {buildingId, floorId, unitId, ym, purpose} = meta;
   if (!buildingId || !floorId || !unitId) {
     logger.warn(`[stripe] ${eventType} ${invoice.id} missing metadata`);
+    // Аудит P1 2026-07-03 (правило №5): денежное событие не умирает молча.
+    await _webhookDeadLetter(`${invoice.id}-voided-missing-metadata`, {
+      invoiceId: invoice.id, unitId: unitId || null, ym: ym || null,
+      customerId: (typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id) || null,
+      eventId: null, reason: 'missing-metadata', handler: eventType,
+    });
     return;
   }
   const newStatus = eventType === 'invoice.marked_uncollectible' ? 'uncollectible' : 'void';
+  // Entry 70 / audit P0 2026-07-03: rec для v2-зеркала захватываем ВНУТРИ
+  // mutate — post-mutate re-read (_stateIfSyncV2) под strip рехидрируется из
+  // ЕЩЁ НЕ обновлённой коллекции и не видит свежую мутацию (silent no-op).
+  let voidedRecForMirror = null;
+  let voidedUnitFound = false; // аудит P1: unit-not-found → dead-letter, не молчание
   await mutateWorkspaceState((s) => {
+    voidedRecForMirror = null; // сброс на transaction-retry мутатора
+    voidedUnitFound = false;   // сброс на transaction-retry мутатора
     const f = findUnit(s, {buildingId, floorId, unitId});
     if (!f) return;
+    voidedUnitFound = true;
     const u = f.unit;
     u.stripe = u.stripe || {};
     // Clear deposit stamp if this invoice was the deposit.
@@ -2701,6 +3551,8 @@ async function handleInvoiceVoided(invoice, eventType) {
           ...(cur.paidVia ? { paidVia: cur.paidVia, paidBy: cur.paidBy, memo: cur.memo } : {}),
           history,
         };
+        // Entry 70: захват свежезаписанного rec для зеркала после commit'а.
+        voidedRecForMirror = u.payments[ym];
       }
     }
     s._invoiceBus = {
@@ -2711,17 +3563,26 @@ async function handleInvoiceVoided(invoice, eventType) {
       unitId, buildingId, floorId,
       at: Date.now(),
     };
-  });
+  }, { rethrowMirrorFailure: true }); // правило №5: провал зеркала → 500 → Smart Retry
+  // Аудит P1 2026-07-03: unit не найден — void НЕ применён; dead-letter вместо молчания.
+  if (!voidedUnitFound) {
+    await _webhookDeadLetter(`${invoice.id}-voided-unit-not-found`, {
+      invoiceId: invoice.id, unitId, ym: ym || null,
+      customerId: (typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id) || null,
+      eventId: null, reason: 'unit-not-found', handler: eventType,
+    });
+    return;
+  }
   // Phase 1 dual-write — зеркалим обновлённый u.payments[ym] в v2-коллекцию.
   // Только rent-purpose (deposit/move-in лежат в u.stripe.*, не в payments).
-  if (purpose === 'rent' && ym) {
+  // Entry 70 / audit P0 2026-07-03: НЕ re-read'им state (под strip рехидрация
+  // из ещё-не-обновлённой коллекции теряла свежий rec) — берём захваченный
+  // внутри mutate rec; _stateIfSyncV2 остаётся только как gate.
+  if (purpose === 'rent' && ym && voidedRecForMirror) {
     try {
       const syncState = await _stateIfSyncV2();
       if (syncState) {
-        const f = findUnit(syncState, {buildingId, floorId, unitId});
-        if (f && f.unit.payments && f.unit.payments[ym]) {
-          await _writePaymentV2(buildingId, floorId, unitId, ym, f.unit.payments[ym]);
-        }
+        await _writePaymentV2(buildingId, floorId, unitId, ym, voidedRecForMirror);
       }
     } catch (e) {
       logger.warn(`[mirror-v2:invoice-voided] ${invoice.id}: ${e.message}`);
@@ -2740,17 +3601,45 @@ async function handleChargeRefunded(charge) {
   const stripe = getStripe();
   let inv;
   try { inv = await stripe.invoices.retrieve(invoiceId); }
-  catch (e) { logger.warn(`[stripe] charge.refunded: cannot fetch invoice ${invoiceId}: ${e.message}`); return; }
+  catch (e) {
+    // H1: invoice доказуемо не существует → 200; transient сбой Stripe API →
+    // пробрасываем, внешний catch вернёт 500 → Smart Retry (иначе refund
+    // молча не отражался бы в ledger).
+    if (e && (e.code === 'resource_missing' || e.statusCode === 404)) {
+      logger.warn(`[stripe] charge.refunded: invoice ${invoiceId} does not exist: ${e.message}`);
+      return;
+    }
+    throw e;
+  }
   const meta = inv.metadata || {};
-  if (meta.source !== 'suitesforall' && meta.source !== 'auto') return;
+  if (meta.source !== 'suitesforall' && meta.source !== 'auto') {
+    logger.info(`[stripe] charge.refunded ${charge.id}: invoice ${invoiceId} not ours; ignored`);
+    return;
+  }
   const {buildingId, floorId, unitId, ym, purpose} = meta;
-  if (!buildingId || !floorId || !unitId) return;
+  if (!buildingId || !floorId || !unitId) {
+    // Аудит P1 2026-07-03 (правило №5): раньше — полностью молчаливый return.
+    logger.warn(`[stripe] charge.refunded ${charge.id}: invoice ${invoiceId} missing metadata`);
+    await _webhookDeadLetter(`${charge.id}-refund-missing-metadata`, {
+      invoiceId, unitId: unitId || null, ym: ym || null,
+      customerId: (typeof charge.customer === 'string' ? charge.customer : charge.customer?.id) || null,
+      eventId: null, reason: 'missing-metadata', handler: 'charge.refunded',
+    });
+    return;
+  }
   const refundedAmt = (charge.amount_refunded || 0) / 100;
   const totalAmt = (charge.amount || 0) / 100;
   const fullyRefunded = refundedAmt >= totalAmt - 0.01;
+  // Entry 70 / audit P0 2026-07-03: rec для v2-зеркала захватываем ВНУТРИ
+  // mutate — post-mutate re-read под strip не видит свежую мутацию.
+  let refundRecForMirror = null;
+  let refundUnitFound = false; // аудит P1: unit-not-found → dead-letter, не молчание
   await mutateWorkspaceState((s) => {
+    refundRecForMirror = null; // сброс на transaction-retry мутатора
+    refundUnitFound = false;   // сброс на transaction-retry мутатора
     const f = findUnit(s, {buildingId, floorId, unitId});
     if (!f) return;
+    refundUnitFound = true;
     const u = f.unit;
     u.payments = u.payments || {};
     if (purpose === 'rent' && ym && u.payments[ym]) {
@@ -2767,8 +3656,11 @@ async function handleChargeRefunded(charge) {
       });
       while (history.length > 10) history.shift();
       u.payments[ym] = fullyRefunded
-        ? { status: 'refunded', amount: 0, history, refundedAt: new Date().toISOString() }
+        // сохраняем discount-метаданные при полном рефанде (инвариант _discountFieldsOf — как в handleInvoicePaid/reconcile)
+        ? { ..._discountFieldsOf(cur), status: 'refunded', amount: 0, history, refundedAt: new Date().toISOString() }
         : { ...cur, status: 'partial', amount: Math.max(0, (cur.amount || 0) - refundedAmt), history };
+      // Entry 70: захват свежезаписанного rec для зеркала после commit'а.
+      refundRecForMirror = u.payments[ym];
     }
     s._invoiceBus = {
       invoiceId, status: fullyRefunded ? 'refunded' : 'partial-refund',
@@ -2777,16 +3669,24 @@ async function handleChargeRefunded(charge) {
       amountPaid: Math.max(0, totalAmt - refundedAmt),
       at: Date.now(),
     };
-  });
+  }, { rethrowMirrorFailure: true }); // правило №5: провал зеркала → 500 → Smart Retry
+  // Аудит P1 2026-07-03: unit не найден — рефанд НЕ отражён; dead-letter вместо молчания.
+  if (!refundUnitFound) {
+    await _webhookDeadLetter(`${charge.id}-refund-unit-not-found`, {
+      invoiceId, unitId, ym: ym || null,
+      customerId: (typeof charge.customer === 'string' ? charge.customer : charge.customer?.id) || null,
+      eventId: null, reason: 'unit-not-found', handler: 'charge.refunded',
+    });
+    return;
+  }
   // Phase 1 dual-write — зеркалим refunded/partial-record в v2-коллекцию.
-  if (purpose === 'rent' && ym) {
+  // Entry 70 / audit P0 2026-07-03: rec захвачен внутри mutate, re-read убран
+  // (под strip он терял свежую мутацию); _stateIfSyncV2 остаётся только gate.
+  if (purpose === 'rent' && ym && refundRecForMirror) {
     try {
       const syncState = await _stateIfSyncV2();
       if (syncState) {
-        const f = findUnit(syncState, {buildingId, floorId, unitId});
-        if (f && f.unit.payments && f.unit.payments[ym]) {
-          await _writePaymentV2(buildingId, floorId, unitId, ym, f.unit.payments[ym]);
-        }
+        await _writePaymentV2(buildingId, floorId, unitId, ym, refundRecForMirror);
       }
     } catch (e) {
       logger.warn(`[mirror-v2:charge-refunded] ${charge.id}: ${e.message}`);
@@ -2828,17 +3728,265 @@ async function handleChargeDisputed(charge) {
   logger.error(`[stripe] DISPUTE OPENED: charge ${charge.id}, invoice ${invoiceId}, reason ${charge.dispute?.reason || 'unknown'}`);
 }
 
+// Handle charge.dispute.closed (аудит P1 2026-07-03). ВАЖНО: data.object у
+// charge.dispute.* — объект Dispute (dp_…), НЕ Charge: invoice достаём через
+// dispute.charge → charges.retrieve → charge.invoice. Проигранный спор
+// (status='lost') = деньги ушли обратно банку: покрывающая строка леджера
+// НЕ может оставаться 'paid' — флипаем в 'bounced' с history-записью
+// (append-only trail, FINANCIAL_INVARIANTS §I), спрэдом discount-полей
+// (Entry 72) и захватом rec ВНУТРИ mutate для v2-зеркала (Entry 74).
+// won / warning_closed — только audit-запись, state не трогаем.
+async function handleChargeDisputeClosed(dispute, eventId) {
+  const disputeStatus = dispute && dispute.status;
+  const chargeId = typeof dispute?.charge === 'string' ? dispute.charge : dispute?.charge?.id;
+  const _dlKey = eventId || (dispute && dispute.id) || `dispute-${chargeId || 'unknown'}`;
+  if (disputeStatus !== 'lost') {
+    // Спор закрыт в нашу пользу — деньги остаются, леджер верен. Audit-след.
+    logger.info(`[stripe] dispute ${dispute?.id || '-'} closed as '${disputeStatus}' (charge ${chargeId || '-'}) — no ledger change`);
+    try {
+      await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+        ts: admin.firestore.FieldValue.serverTimestamp(),
+        actor: 'stripe-webhook',
+        action: 'charge.dispute.closed',
+        source: 'stripeWebhook',
+        disputeId: dispute?.id || '',
+        chargeId: chargeId || '',
+        amount: ((dispute?.amount || 0) / 100),
+        note: `Dispute closed: ${disputeStatus || 'unknown'} — funds retained, no ledger change.`,
+      });
+    } catch {}
+    return;
+  }
+  if (!chargeId) {
+    logger.warn(`[stripe] dispute ${dispute?.id || '-'} LOST but has no charge id`);
+    await _webhookDeadLetter(_dlKey, {
+      invoiceId: null, unitId: null, ym: null, customerId: null,
+      eventId: eventId || null, reason: 'dispute-no-charge', handler: 'charge.dispute.closed',
+    });
+    return;
+  }
+  const stripe = getStripe();
+  let charge;
+  try { charge = await stripe.charges.retrieve(chargeId); }
+  catch (e) {
+    // Charge доказуемо не существует → dead-letter; transient → 500 → Smart Retry.
+    if (e && (e.code === 'resource_missing' || e.statusCode === 404)) {
+      logger.warn(`[stripe] dispute.closed: charge ${chargeId} does not exist: ${e.message}`);
+      await _webhookDeadLetter(_dlKey, {
+        invoiceId: null, unitId: null, ym: null, customerId: null,
+        eventId: eventId || null, reason: 'charge-not-found', handler: 'charge.dispute.closed',
+      });
+      return;
+    }
+    throw e;
+  }
+  const invoiceId = typeof charge.invoice === 'string' ? charge.invoice : charge.invoice?.id;
+  if (!invoiceId) {
+    // Charge без инвойса (payment link / ручной charge) — маршрутизировать некуда.
+    logger.warn(`[stripe] dispute.closed LOST: charge ${chargeId} has no invoice — cannot route to ledger`);
+    await _webhookDeadLetter(_dlKey, {
+      invoiceId: null, unitId: null, ym: null,
+      customerId: (typeof charge.customer === 'string' ? charge.customer : charge.customer?.id) || null,
+      eventId: eventId || null, reason: 'no-invoice-on-charge', handler: 'charge.dispute.closed',
+    });
+    return;
+  }
+  let inv;
+  try { inv = await stripe.invoices.retrieve(invoiceId); }
+  catch (e) {
+    if (e && (e.code === 'resource_missing' || e.statusCode === 404)) {
+      logger.warn(`[stripe] dispute.closed: invoice ${invoiceId} does not exist: ${e.message}`);
+      await _webhookDeadLetter(_dlKey, {
+        invoiceId, unitId: null, ym: null, customerId: null,
+        eventId: eventId || null, reason: 'invoice-not-found', handler: 'charge.dispute.closed',
+      });
+      return;
+    }
+    throw e;
+  }
+  const meta = inv.metadata || {};
+  if (meta.source !== 'suitesforall' && meta.source !== 'auto') {
+    logger.info(`[stripe] dispute.closed LOST: invoice ${invoiceId} not ours; ignored`);
+    await _webhookDeadLetter(_dlKey, {
+      invoiceId, unitId: meta.unitId || null, ym: meta.ym || null,
+      customerId: (typeof charge.customer === 'string' ? charge.customer : charge.customer?.id) || null,
+      eventId: eventId || null, reason: 'not-ours-source', handler: 'charge.dispute.closed',
+    });
+    return;
+  }
+  const {buildingId, floorId, unitId, ym, purpose} = meta;
+  if (!buildingId || !floorId || !unitId) {
+    logger.warn(`[stripe] dispute.closed LOST: invoice ${invoiceId} missing metadata`);
+    await _webhookDeadLetter(_dlKey, {
+      invoiceId, unitId: unitId || null, ym: ym || null,
+      customerId: (typeof charge.customer === 'string' ? charge.customer : charge.customer?.id) || null,
+      eventId: eventId || null, reason: 'missing-metadata', handler: 'charge.dispute.closed',
+    });
+    return;
+  }
+  const disputedAmt = (dispute.amount || charge.amount || 0) / 100;
+  // Entry 74: rec для v2-зеркала захватываем ВНУТРИ mutate (post-mutate
+  // re-read под strip рехидрируется из ещё-не-обновлённой коллекции).
+  let bouncedRecForMirror = null;
+  let disputeUnitFound = false;
+  let recWasFlipped = false;
+  await mutateWorkspaceState((s) => {
+    bouncedRecForMirror = null; // сброс на transaction-retry мутатора
+    disputeUnitFound = false;
+    recWasFlipped = false;
+    const f = findUnit(s, {buildingId, floorId, unitId});
+    if (!f) return;
+    disputeUnitFound = true;
+    const u = f.unit;
+    u.payments = u.payments || {};
+    if (purpose === 'rent' && ym && u.payments[ym]) {
+      const cur = u.payments[ym];
+      // Покрывающая строка — та, что ссылается на этот invoice/charge.
+      const covers = (cur.stripe?.invoiceId === invoiceId)
+        || (cur.stripe?.chargeId && cur.stripe.chargeId === chargeId)
+        || (cur.stripeInvoiceId === invoiceId);
+      // Идемпотентность Smart-Retry: уже bounced этим же спором — только re-mirror.
+      if (cur.status === 'bounced' && cur.disputeId === dispute.id) {
+        bouncedRecForMirror = cur;
+        return;
+      }
+      if (covers) {
+        const history = Array.isArray(cur.history) ? cur.history.slice() : [];
+        history.push({
+          ts: new Date().toISOString(),
+          status: cur.status,
+          amount: cur.amount || 0,
+          invoiceId,
+          chargeId,
+          disputeId: dispute.id || null,
+          disputedAmount: disputedAmt,
+          replacedReason: 'dispute-lost',
+        });
+        while (history.length > 10) history.shift();
+        u.payments[ym] = {
+          // Спрэд discount-полей (Entry 72) — пересборка rec не стирает след скидки.
+          ..._discountFieldsOf(cur),
+          status: 'bounced',
+          amount: 0,
+          history,
+          disputeId: dispute.id || null,
+          disputeLostAt: new Date().toISOString(),
+          stripe: {
+            invoiceId,
+            chargeId,
+            disputeId: dispute.id || null,
+            hostedInvoiceUrl: inv.hosted_invoice_url || null,
+          },
+        };
+        // Entry 74: захват свежезаписанного rec для зеркала после commit'а.
+        bouncedRecForMirror = u.payments[ym];
+        recWasFlipped = true;
+      }
+    }
+    s._invoiceBus = {
+      invoiceId, status: 'dispute-lost',
+      ym: ym || null, purpose: purpose || 'custom',
+      unitId, buildingId, floorId,
+      amountPaid: 0,
+      at: Date.now(),
+    };
+  }, { rethrowMirrorFailure: true }); // правило №5: провал зеркала → 500 → Smart Retry
+  if (!disputeUnitFound) {
+    await _webhookDeadLetter(_dlKey, {
+      invoiceId, unitId, ym: ym || null,
+      customerId: (typeof charge.customer === 'string' ? charge.customer : charge.customer?.id) || null,
+      eventId: eventId || null, reason: 'unit-not-found', handler: 'charge.dispute.closed',
+    });
+    return;
+  }
+  // Rent-строка не найдена / не покрыта этим инвойсом — не молчим (правило №5):
+  // оператор должен вручную атрибутировать проигранный спор (деньги уже ушли).
+  if (purpose === 'rent' && ym && !bouncedRecForMirror) {
+    await _webhookDeadLetter(_dlKey, {
+      invoiceId, unitId, ym,
+      customerId: (typeof charge.customer === 'string' ? charge.customer : charge.customer?.id) || null,
+      eventId: eventId || null, reason: 'no-covering-rec', handler: 'charge.dispute.closed',
+    });
+  }
+  // Non-rent (deposit/late_fee/custom): леджер-строки per-month нет — только
+  // audit ниже; ручная атрибуция оператором (депозитный штамп не трогаем).
+  // Entry 74: зеркалим захваченный rec (только rent-purpose).
+  if (purpose === 'rent' && ym && bouncedRecForMirror) {
+    try {
+      const syncState = await _stateIfSyncV2();
+      if (syncState) {
+        await _writePaymentV2(buildingId, floorId, unitId, ym, bouncedRecForMirror);
+      }
+    } catch (e) {
+      logger.warn(`[mirror-v2:dispute-lost] ${dispute.id || chargeId}: ${e.message}`);
+    }
+  }
+  // Audit — проигранный chargeback это громкое денежное событие.
+  try {
+    await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+      ts: admin.firestore.FieldValue.serverTimestamp(),
+      actor: 'stripe-webhook',
+      action: 'charge.dispute.lost',
+      source: 'stripeWebhook',
+      buildingId, floorId, unitId,
+      ym: ym || '',
+      invoiceId,
+      chargeId,
+      disputeId: dispute.id || '',
+      amount: disputedAmt,
+      before: recWasFlipped ? { status: 'paid', amount: disputedAmt } : null,
+      after: recWasFlipped ? { status: 'bounced', amount: 0 } : null,
+      note: `DISPUTE LOST: charge ${chargeId} ($${disputedAmt}) — funds reversed by bank. ` +
+        (recWasFlipped
+          ? `Ledger ${unitId}/${ym} flipped to 'bounced'.`
+          : `No covering ledger row flipped (purpose=${purpose || 'rent'}) — manual attribution needed.`),
+    });
+  } catch (e) {
+    logger.warn(`[stripe] dispute-lost audit write failed: ${e.message}`);
+  }
+  logger.error(`[stripe] DISPUTE LOST: charge ${chargeId} ($${disputedAmt}), invoice ${invoiceId}, unit ${unitId}/${ym || '-'} — ledger ${recWasFlipped ? "flipped to 'bounced'" : 'NOT flipped (manual attribution needed)'}`);
+}
+
 // ---- Webhook handlers ---------------------------------------------------
 
-async function handleInvoicePaid(invoice) {
+// H2 (Этап 4): dead-letter для webhook-платежей. Каждый молчаливый
+// early-return в handleInvoicePaid обязан оставить след — иначе платёж
+// исчезает без диагностики (Entry 70: 42 потерянных платежа, $25,674).
+// try/catch внутри: сбой записи DL никогда не ломает сам webhook.
+async function _webhookDeadLetter(docKey, payload) {
+  try {
+    await db.doc(`workspaces/${WORKSPACE_ID}/webhookDeadLetter/${docKey}`).set({
+      ...payload,
+      at: admin.firestore.FieldValue.serverTimestamp(),
+      _ttl: admin.firestore.Timestamp.fromMillis(Date.now() + 90 * 24 * 60 * 60 * 1000),
+    }, {merge: true});
+  } catch (e) {
+    logger.warn(`[stripe] dead-letter write failed for ${docKey}: ${e.message}`);
+  }
+}
+
+async function handleInvoicePaid(invoice, eventId) {
   const meta = invoice.metadata || {};
+  // Нормализованный customer id — нужен и для dead-letter до verify-блока.
+  const _dlCustomerId = typeof invoice.customer === 'string'
+    ? invoice.customer
+    : (invoice.customer && invoice.customer.id) || null;
+  const _dlKey = eventId || invoice.id;
   if (meta.source !== 'suitesforall' && meta.source !== 'auto') {
     logger.info(`[stripe] invoice ${invoice.id} not ours (source="${meta.source}"); ignored`);
+    await _webhookDeadLetter(_dlKey, {
+      invoiceId: invoice.id, unitId: meta.unitId || null, ym: meta.ym || null,
+      customerId: _dlCustomerId, eventId: eventId || null, reason: 'not-ours-source',
+    });
     return;
   }
   const {buildingId, floorId, unitId, ym, purpose} = meta;
   if (!buildingId || !floorId || !unitId) {
     logger.warn(`[stripe] invoice ${invoice.id} missing metadata; cannot route`);
+    await _webhookDeadLetter(_dlKey, {
+      invoiceId: invoice.id, unitId: unitId || null, ym: ym || null,
+      customerId: _dlCustomerId, eventId: eventId || null, reason: 'missing-metadata',
+    });
     return;
   }
   // CUSTOMER VERIFICATION — defense against payment hijack via crafted
@@ -2854,6 +4002,10 @@ async function handleInvoicePaid(invoice) {
       : invoice.customer?.id;
     if (!customerId) {
       logger.warn(`[stripe] invoice ${invoice.id} has no customer; refusing to route`);
+      await _webhookDeadLetter(_dlKey, {
+        invoiceId: invoice.id, unitId, ym: ym || null,
+        customerId: null, eventId: eventId || null, reason: 'no-customer',
+      });
       return;
     }
     const state = await readWorkspaceState();
@@ -2881,17 +4033,38 @@ async function handleInvoicePaid(invoice) {
           trusted = true;
         }
       } catch (custErr) {
-        logger.warn(`[stripe] customer fetch failed for ${customerId}: ${custErr.message}`);
+        // H1: различаем «customer доказуемо не существует» (positive reject —
+        // trusted остаётся false, идём в REJECTED-ветку) и transient-сбой
+        // Stripe API (сеть/5xx/rate-limit) — его НЕЛЬЗЯ глотать: раньше он
+        // маскировался под hijack-reject и платёж молча терялся. Пробрасываем
+        // → внешний catch → 500 → Stripe Smart Retry.
+        if (custErr && (custErr.code === 'resource_missing' || custErr.statusCode === 404)) {
+          logger.warn(`[stripe] customer ${customerId} does not exist in Stripe: ${custErr.message}`);
+        } else {
+          throw custErr;
+        }
       }
     }
     if (!trusted) {
       logger.error(`[stripe] REJECTED invoice ${invoice.id} for ${unitId}/${ym}: customer ${customerId} not in workspace state or tagged metadata. Possible payment hijack attempt — investigate Stripe Dashboard for unauthorized invoice creation.`);
+      // Positive reject (hijack-защита) — сознательно 200 (retry бессмыслен),
+      // но dead-letter обязателен: отказ должен быть виден оператору.
+      await _webhookDeadLetter(_dlKey, {
+        invoiceId: invoice.id, unitId, ym: ym || null,
+        customerId, eventId: eventId || null, reason: 'customer-rejected',
+      });
       return;
     }
   } catch (verifyErr) {
-    logger.error(`[stripe] customer verification failed for invoice ${invoice.id}: ${verifyErr.message}`);
-    // Fail closed — refuse to apply if we can't verify.
-    return;
+    // H1 — КОРЕНЬ Entry 70. Раньше: молчаливый return → 200 → платёж терялся.
+    // Сюда попадают сбои verify-инфраструктуры (readWorkspaceState, Firestore
+    // unavailable, проброшенный transient custErr). ВАЖНО: strip-сбои сюда НЕ
+    // доходят — _rehydrateStateForStripCF, mutate-peek и _mirrorBuildingV2CF
+    // глотают внутри себя; при strip=ON сбой зеркала по-прежнему теряет
+    // платёж с 200+done (см. residual risk в Entry 72). Positive reject
+    // выходит через return выше. Пробрасываем → 500 → Stripe Smart Retry.
+    logger.error(`[stripe] customer verification failed for invoice ${invoice.id} — rethrowing for Stripe retry: ${verifyErr.message}`);
+    throw verifyErr;
   }
 
   // Non-rent invoices — for deposit, flip the stamp status + release
@@ -2901,10 +4074,13 @@ async function handleInvoicePaid(invoice) {
   if (purpose && purpose !== 'rent') {
     let shouldAuditNonRent = false;
     let depositFlipped = false;
+    let nonRentUnitFound = false; // H2: 8-й молчаливый return (депозитный путь)
     const nonRentAmount = (invoice.amount_paid || invoice.total || 0) / 100;
     await mutateWorkspaceState((s) => {
+      nonRentUnitFound = false; // сброс на transaction-retry мутатора
       const f = findUnit(s, {buildingId, floorId, unitId});
       if (!f) return;
+      nonRentUnitFound = true;
       const u = f.unit;
       u.stripe = u.stripe || {};
       // Match deposit by invoice id OR by /deposit/ in description
@@ -2960,7 +4136,15 @@ async function handleInvoicePaid(invoice) {
         amountRemaining: 0,
         at: Date.now(),
       };
-    });
+    }, { rethrowMirrorFailure: true }); // правило №5: провал зеркала → 500 → Smart Retry
+    // H2: unit не найден — non-rent платёж НЕ применён; dead-letter + выход.
+    if (!nonRentUnitFound) {
+      await _webhookDeadLetter(_dlKey, {
+        invoiceId: invoice.id, unitId, ym: 'deposit',
+        customerId: _dlCustomerId, eventId: eventId || null, reason: 'unit-not-found',
+      });
+      return;
+    }
     // Audit write — same pattern as rent path, fires только после commit.
     if (shouldAuditNonRent) {
       try {
@@ -2990,10 +4174,17 @@ async function handleInvoicePaid(invoice) {
   }
   if (!ym) {
     logger.warn(`[stripe] rent invoice ${invoice.id} missing ym; cannot apply to matrix`);
+    await _webhookDeadLetter(_dlKey, {
+      invoiceId: invoice.id, unitId, ym: null,
+      customerId: _dlCustomerId, eventId: eventId || null, reason: 'missing-ym',
+    });
     return;
   }
   // Paid amount in cents → dollars. Use amount_paid not total because of discounts.
-  const amount = (invoice.amount_paid || invoice.total || 0) / 100;
+  // Явный null-check вместо falsy-fallback: amount_paid=0 (легитимный ноль,
+  // напр. полностью закрытый кредит-нотой счёт) НЕ должен фолбэчить на
+  // ПОЛНЫЙ total — иначе леджер записал бы несобранные деньги как собранные.
+  const amount = (invoice.amount_paid != null ? invoice.amount_paid : (invoice.total || 0)) / 100;
   const chargeId = invoice.charge || null;
   const paidAt = (invoice.status_transitions?.paid_at || Math.floor(Date.now() / 1000)) * 1000;
   const paymentMethod = await inferPaymentMethod(invoice);
@@ -3007,17 +4198,45 @@ async function handleInvoicePaid(invoice) {
   // флагом `shouldAuditPayment`.
   let shouldAuditPayment = false;
   let priorStatusForAudit = null;
+  let unitFoundInMutate = false; // H2: false после mutate = unit-not-found → dead-letter
+  // Entry 70 / audit P0 2026-07-03: rec'и для v2-зеркала захватываем ВНУТРИ
+  // mutate — post-mutate re-read (_stateIfSyncV2) под strip рехидрируется из
+  // ЕЩЁ НЕ обновлённой коллекции → свежая мутация отсутствует и зеркало
+  // молча писало СТАРЫЙ rec (или ничего) — та же механика, что Entry 70.
+  let paidRecForMirror = null;             // anchor u.payments[ym]
+  let paidSiblingsForMirror = [];          // advance-prepay siblings: {ym, rec}
 
   await mutateWorkspaceState((s) => {
+    unitFoundInMutate = false; // сброс на каждый transaction-retry мутатора
+    paidRecForMirror = null;           // сброс захвата на transaction-retry
+    paidSiblingsForMirror = [];        // (иначе retry утёк бы stale-захват)
     const f = findUnit(s, {buildingId, floorId, unitId});
     if (!f) {
       logger.warn(`[stripe] invoice ${invoice.id}: unit ${unitId} not found`);
       return;
     }
+    unitFoundInMutate = true;
     f.unit.payments = f.unit.payments || {};
     const prior = f.unit.payments[ym] || {};
     if (prior.status === 'paid' && prior.stripe?.invoiceId === invoice.id) {
       logger.info(`[stripe] invoice ${invoice.id} already applied to ${unitId}/${ym}`);
+      // Идемпотентный retry вебхука: rec уже в монолите — захватываем его,
+      // чтобы retry чинил зеркало, если первый mirror-write не прошёл
+      // (прежнее поведение re-read'а, но из txn-снапшота, не из рехидрации).
+      paidRecForMirror = f.unit.payments[ym];
+      // Паритет со старым post-mutate rescan'ом: siblings advance-prepay,
+      // уже flip'нутые прошлой доставкой (paidVia='stripe-advance' +
+      // stripe.invoiceId === invoice.id), тоже re-mirror'им на retry —
+      // иначе crash между anchor- и sibling-mirror оставил бы v2-доки
+      // siblings навсегда stale (audit 2026-07-03 Finding A).
+      for (const sibYm of Object.keys(f.unit.payments)) {
+        if (sibYm === ym || sibYm === 'deposit') continue;
+        const sib = f.unit.payments[sibYm];
+        if (sib && typeof sib === 'object' && sib.paidVia === 'stripe-advance' &&
+            sib.stripe && sib.stripe.invoiceId === invoice.id) {
+          paidSiblingsForMirror.push({ ym: sibYm, rec: sib });
+        }
+      }
       return;
     }
     // PRESERVE PRIOR PAYMENT — if a prior record exists (manual payment,
@@ -3058,6 +4277,9 @@ async function handleInvoicePaid(invoice) {
       ...(prior.paidBy ? { paidBy: prior.paidBy } : {}),
       ...(prior.memo ? { memo: prior.memo } : {}),
       ...(prior.receiptUrl ? { receiptUrl: prior.receiptUrl, receiptPath: prior.receiptPath } : {}),
+      // Discount-метаданные (stripeDiscountInvoice) обязаны пережить
+      // пересборку rec — иначе оплата скидочного счёта стирает запись скидки.
+      ..._discountFieldsOf(prior),
       ...(priorHistory.length ? { history: priorHistory } : {}),
       stripe: {
         invoiceId: invoice.id,
@@ -3067,6 +4289,8 @@ async function handleInvoicePaid(invoice) {
         paidAt,
       },
     };
+    // Entry 70: захват свежезаписанного anchor-rec для зеркала после commit'а.
+    paidRecForMirror = f.unit.payments[ym];
     // Multi-month advance prepayment (FIXES_LOG Entry 30) — frontend
     // застампил несколько месяцев с одним и тем же stripeInvoiceId +
     // paidVia='stripe-advance'. Сейчас, когда tenant заплатил по invoice,
@@ -3118,6 +4342,11 @@ async function handleInvoicePaid(invoice) {
             advance: true,
           },
         };
+        // Entry 70: захват sibling-rec для зеркала ('deposit' в v2 не зеркалим —
+        // паритет с прежним post-mutate фильтром sibYm !== 'deposit').
+        if (sibYm !== 'deposit') {
+          paidSiblingsForMirror.push({ ym: sibYm, rec: pmap[sibYm] });
+        }
         coveredCount++;
       }
       if (coveredCount > 0) {
@@ -3128,8 +4357,17 @@ async function handleInvoicePaid(invoice) {
     }
     f.unit.stripe = f.unit.stripe || {};
     f.unit.stripe.customerId = invoice.customer || f.unit.stripe.customerId;
-    f.unit.stripe.lastInvoiceId = invoice.id;
-    f.unit.stripe.lastInvoiceYm = ym;
+    // Штамп только ВПЕРЁД (регрессия 412, 2026-07-02): оплата СТАРОГО открытого
+    // инвойса (напр. июньского при уже отправленном июльском) не должна
+    // откатывать lastInvoiceYm — иначе статус-пилл/карта теряют текущий месяц.
+    // '>=': same-month перештамповка на реально закрывший месяц инвойс — ок.
+    {
+      const _curStampYm = String(f.unit.stripe.lastInvoiceYm || '');
+      if (/^\d{4}-\d{2}$/.test(ym) && (!/^\d{4}-\d{2}$/.test(_curStampYm) || ym >= _curStampYm)) {
+        f.unit.stripe.lastInvoiceId = invoice.id;
+        f.unit.stripe.lastInvoiceYm = ym;
+      }
+    }
     // Clear any dead send-lock — the invoice is paid, the send clearly
     // finished. Prevents the ⏳ spinner from lingering on paid rows.
     delete f.unit.stripe._sendingRentAt;
@@ -3187,7 +4425,16 @@ async function handleInvoicePaid(invoice) {
       amountRemaining: 0,
       at: Date.now(),
     };
-  });
+  }, { rethrowMirrorFailure: true }); // правило №5: провал зеркала → 500 → Smart Retry
+  // H2: unit не найден — платёж НЕ применён (txn закоммитился без изменений).
+  // Dead-letter + выход: audit/mirror-v2 без unit'а не имеют смысла.
+  if (!unitFoundInMutate) {
+    await _webhookDeadLetter(_dlKey, {
+      invoiceId: invoice.id, unitId, ym,
+      customerId: _dlCustomerId, eventId: eventId || null, reason: 'unit-not-found',
+    });
+    return;
+  }
   // Audit write — fires только после успешного commit'а txn и только
   // если outreach push был выполнен (shouldAuditPayment=true). Pattern
   // зеркалит client'ский recordAuditClient('payment.mark-paid', …)
@@ -3218,25 +4465,20 @@ async function handleInvoicePaid(invoice) {
     }
   }
   // Phase 1 dual-write — зеркалим anchor + advance-prepay siblings в v2.
-  // Sibling-сигнатура: paidVia='stripe-advance' + stripe.invoiceId совпадает
-  // с invoice.id, что мы только что выставили внутри mutate (см. строки выше).
-  // Sibling-deposit намеренно исключаем — он лежит в u.stripe.depositInvoice,
-  // не в payments коллекции (v2 zerкало только per-month rent).
+  // Entry 70 / audit P0 2026-07-03: rec'и захвачены ВНУТРИ mutate в момент
+  // записи (paidRecForMirror / paidSiblingsForMirror) — post-mutate re-read
+  // убран, под strip он рехидрировался из ещё-не-обновлённой коллекции и
+  // зеркалил старый rec (silent loss). _stateIfSyncV2 остаётся только gate.
+  // Sibling-deposit по-прежнему исключён на захвате — он лежит в
+  // u.stripe.depositInvoice, не в payments (v2 зеркало только per-month rent).
   try {
     const syncState = await _stateIfSyncV2();
     if (syncState) {
-      const f = findUnit(syncState, {buildingId, floorId, unitId});
-      if (f && f.unit.payments) {
-        if (f.unit.payments[ym]) {
-          await _writePaymentV2(buildingId, floorId, unitId, ym, f.unit.payments[ym]);
-        }
-        for (const sibYm of Object.keys(f.unit.payments)) {
-          if (sibYm === ym || sibYm === 'deposit') continue;
-          const sib = f.unit.payments[sibYm];
-          if (sib && sib.paidVia === 'stripe-advance' && sib.stripe && sib.stripe.invoiceId === invoice.id) {
-            await _writePaymentV2(buildingId, floorId, unitId, sibYm, sib);
-          }
-        }
+      if (paidRecForMirror) {
+        await _writePaymentV2(buildingId, floorId, unitId, ym, paidRecForMirror);
+      }
+      for (const sib of paidSiblingsForMirror) {
+        await _writePaymentV2(buildingId, floorId, unitId, sib.ym, sib.rec);
       }
     }
   } catch (e) {
@@ -3247,18 +4489,33 @@ async function handleInvoicePaid(invoice) {
 
 async function handleInvoiceFailed(invoice) {
   const meta = invoice.metadata || {};
-  if (meta.source !== 'suitesforall') return;
+  if (meta.source !== 'suitesforall' && meta.source !== 'auto') return;
   const {buildingId, floorId, unitId, ym} = meta;
-  if (!buildingId || !floorId || !unitId || !ym) return;
+  if (!buildingId || !floorId || !unitId || !ym) {
+    // Аудит P1 2026-07-03 (правило №5): раньше — полностью молчаливый return.
+    logger.warn(`[stripe] invoice.payment_failed ${invoice.id} missing metadata`);
+    await _webhookDeadLetter(`${invoice.id}-failed-missing-metadata`, {
+      invoiceId: invoice.id, unitId: unitId || null, ym: ym || null,
+      customerId: (typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id) || null,
+      eventId: null, reason: 'missing-metadata', handler: 'invoice.payment_failed',
+    });
+    return;
+  }
 
+  let failedUnitFound = false; // аудит P1: unit-not-found → dead-letter, не молчание
   await mutateWorkspaceState((s) => {
+    failedUnitFound = false;   // сброс на transaction-retry мутатора
     const f = findUnit(s, {buildingId, floorId, unitId});
     if (!f) return;
+    failedUnitFound = true;
     f.unit.payments = f.unit.payments || {};
     if (f.unit.payments[ym]?.status === 'paid') return;
     f.unit.payments[ym] = {
       status: 'late',
       amount: (invoice.amount_due || 0) / 100,
+      // Discount-метаданные обязаны пережить и failed-пересборку rec
+      // (autoPay-счёт со скидкой может зафейлиться — след скидки не стираем).
+      ..._discountFieldsOf(f.unit.payments[ym]),
       stripe: {
         invoiceId: invoice.id,
         hostedInvoiceUrl: invoice.hosted_invoice_url || null,
@@ -3343,7 +4600,16 @@ async function handleInvoiceFailed(invoice) {
       code: invoice.last_finalization_error?.code || 'charge_failed',
       at: Date.now(),
     };
-  });
+  }, { rethrowMirrorFailure: true }); // правило №5: провал зеркала → 500 → Smart Retry
+  // Аудит P1 2026-07-03: unit не найден — fail-статус НЕ записан; dead-letter.
+  if (!failedUnitFound) {
+    await _webhookDeadLetter(`${invoice.id}-failed-unit-not-found`, {
+      invoiceId: invoice.id, unitId, ym,
+      customerId: (typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id) || null,
+      eventId: null, reason: 'unit-not-found', handler: 'invoice.payment_failed',
+    });
+    return;
+  }
   logger.warn(`[stripe] ✗ failed: ${unitId}/${ym} on invoice ${invoice.id} (attempt ${invoice.attempt_count || 1})`);
 
   // Audit — payment failure is a money operation; operator needs a
@@ -3370,7 +4636,7 @@ async function handleInvoiceFailed(invoice) {
 
 async function handleSubscriptionUpdate(sub) {
   const meta = sub.metadata || {};
-  if (meta.source !== 'suitesforall') return;
+  if (meta.source !== 'suitesforall' && meta.source !== 'auto') return;
   const {buildingId, floorId, unitId} = meta;
   if (!buildingId || !floorId || !unitId) return;
 
@@ -3419,7 +4685,7 @@ async function handleCustomerDeleted(customer) {
       at: Date.now(),
     };
   });
-  logger.warn(`[stripe] customer ${customerId} (${customerEmail}) deleted in Stripe — workspace state unlinked`);
+  logger.warn(`[stripe] customer ${customerId} (${_maskEmail(customerEmail)}) deleted in Stripe — workspace state unlinked`); // PII-маск (аудит P2)
   // Audit — high-impact (future invoices for this tenant will require
   // creating a new customer). Operator needs to know.
   try {
@@ -3437,7 +4703,7 @@ async function handleCustomerDeleted(customer) {
 
 async function handleSubscriptionDelete(sub) {
   const meta = sub.metadata || {};
-  if (meta.source !== 'suitesforall') return;
+  if (meta.source !== 'suitesforall' && meta.source !== 'auto') return;
   const {buildingId, floorId, unitId} = meta;
   if (!buildingId || !floorId || !unitId) return;
 
@@ -3516,19 +4782,50 @@ async function inferPaymentMethod(invoice) {
 // =========================================================================
 const {onSchedule} = require('firebase-functions/v2/scheduler');
 
-exports.runAutoInvoices = onSchedule(
-  {
-    schedule: '0 9 * * *',         // 09:00 UTC daily (~5am ET, ~2am PT)
-    timeZone: 'UTC',
-    secrets: [STRIPE_SECRET_KEY],
-    memory: '512MiB',
-    timeoutSeconds: 540,           // 9 min — we could have hundreds of units
-  },
-  async () => {
+// Версия ключа идемпотентности авто-счёта. 2026-07 backfill-$0 инцидент:
+// прогон с багом израсходовал ключи `auto-rent-<id>-2026-07(+суффиксы)`;
+// Stripe кэширует идемпотентные ответы 24ч → повтор с тем же ключом вернул бы
+// кэшированный ПУСТОЙ $0-инвойс. Сегмент версии заставляет Stripe промахнуться
+// мимо кэша. КОНСТАНТА фиксированная (не timestamp/random) → плановый крон
+// детерминирован per (unit, ym, версия): in-run retry того же юнита = ТОТ ЖЕ
+// новый инвойс, дубля нет. bump v2→v3 = рычаг оператора для форс-перевыставления
+// в 24ч; он ОТКЛЮЧАЕТ защиту идемпотентности → применять ТОЛЬКО с подтверждённо-
+// пустым Stripe Search и очищенными штампами (см. runbook).
+// Month-to-month / открытая лиза (Tony 2026-07-01). ЗЕРКАЛО клиентского
+// _isMonthToMonth в floor-map-editor.html — правь ОБЕ копии синхронно. Такая
+// лиза НЕ «истекает»: не гейтим биллинг/aging по u.until. Признаки: leaseTerm
+// ∈ {mtm, m2m, 1} ('1'-мес термин катится помесячно; '1' в выпадашке нет —
+// импорт/легаси) ИЛИ конец раньше начала (битые данные). Прод-даты ISO →
+// сравниваем строки YYYY-MM-DD; не-ISO → clause no-op (fail-safe).
+function _isMonthToMonth(u) {
+  if (!u) return false;
+  const t = String(u.leaseTerm || '').trim().toLowerCase();
+  if (t === 'mtm' || t === 'm2m' || t === '1') return true;
+  const s = String(u.leaseStart || u.signed || '').slice(0, 10);
+  const e = String(u.until || u.leaseEnd || '').slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s) && /^\d{4}-\d{2}-\d{2}$/.test(e) && e < s) return true;
+  return false;
+}
+
+const AUTO_INV_KEY_VER = 'v2';
+
+const _runAutoInvoicesHandler = async (opts) => {
+    opts = opts || {};
+    const _targetYm = opts.ym || null;        // ручной backfill за конкретный ym
+    const _forceDryRun = !!opts.forceDryRun;  // не звать Stripe на создание — только собрать список
+    const _ignoreSendDay = !!opts.ym;         // при явном ym игнорируем send-day gate
+    // Частичная отправка: не более N eligible-юнитов за прогон (0 = без лимита).
+    // Уже выставленные пропускаются дедупом → следующий прогон шлёт следующие N.
+    const _limit = (opts.limit != null && +opts.limit > 0) ? Math.floor(+opts.limit) : 0;
     const stateRef = db.doc(`workspaces/${WORKSPACE_ID}/data/state`);
     const snap = await stateRef.get();
     if (!snap.exists) { logger.info('[auto-invoice] no state doc, skipping'); return; }
     const state = snap.data().state || {};
+    // Strip-aware: под settings.syncBuildingsStrip монолит несёт buildings:[] —
+    // реальные здания живут в коллекции. Без гидрации цикл ниже идёт по НУЛЮ
+    // юнитов и счёт не выставляется НИКОМУ (регресс миграции buildings-strip).
+    // No-op при strip off — поведение прежнее.
+    await _rehydrateStateForStripCF(state);
     const cfg = (state.settings && state.settings.autoInvoice) || {};
     // Каскадный gate: workspace ← building ← floor ← unit. Если ни на
     // одном уровне auto-invoice НЕ включён — выходим (быстрый путь
@@ -3562,63 +4859,28 @@ exports.runAutoInvoices = onSchedule(
       logger.info('[auto-invoice] workspace toggle off — walking cascade for per-building/floor/unit overrides');
     }
 
-    // CHECKPOINT — track progress in /workspaces/{ws}/cronProgress/auto-invoice
-    // so a mid-run timeout (540s cap) doesn't leave half the units invoiced
-    // and half not. Each unit gets stamped after success; on next invocation
-    // (whether by cron or operator manual rerun via "Run now"), we skip
-    // anything stamped within the last 24h.
+    // МЁРТВЫЙ CHECKPOINT УДАЛЁН (аудит P2 2026-07-03). Здесь раньше жил
+    // per-unit checkpoint (_shouldProcessUnit / _markUnitProcessed +
+    // globals __autoInv*), задуманный как resume после mid-run timeout.
+    // Он был НЕДОСТИЖИМ: помощники экспонировались в globalThis, но
+    // per-unit цикл ниже их НИКОГДА не вызывал (grep подтверждал только
+    // определения + экспозицию), поэтому newCheckpoint не пополнялся, а
+    // единственная запись шла в самом конце — которую SIGKILL на 540s
+    // теряет ДО срабатывания. Инкрементальные mid-run-штампы завести
+    // аддитивно нельзя без нового Firestore-write на каждый юнит внутри
+    // денежного цикла (лишний failure-surface + затрагивает P0/batch-1
+    // путь), поэтому — удаляем.
+    //
+    // Resume-безопасность УЖЕ обеспечена без чекпоинта: перед выпуском
+    // каждый юнит проверяет durable-штамп `u.stripe.autoSentYm === nextYm`
+    // (см. ~:5078 и mutate-запись ~:5460), который живёт в самом state.
+    // Свежий cron-тик (или ручной Run-now) просто пропускает уже
+    // выставленные юниты по этому штампу — half-run никогда не
+    // дублирует. TIME_BUDGET-abort тоже не нужен: batch уже bounded
+    // (autoSentYm + Stripe-idempotencyKey), недосланные юниты добьёт
+    // следующий тик. Телеметрия последнего запуска пишется в конце
+    // (см. persist ниже, best-effort, не влияет на корректность).
     const checkpointRef = db.doc(`workspaces/${WORKSPACE_ID}/cronProgress/auto-invoice`);
-    let checkpoint;
-    try {
-      const ckSnap = await checkpointRef.get();
-      checkpoint = ckSnap.exists ? (ckSnap.data() || {}) : {};
-    } catch (e) {
-      checkpoint = {};
-    }
-    const stampedRecently = new Set(
-      Object.entries(checkpoint.processed || {})
-        .filter(([, ms]) => Number(ms) > Date.now() - 24 * 60 * 60 * 1000)
-        .map(([id]) => id)
-    );
-    const startTimeMs = Date.now();
-    const TIME_BUDGET_MS = 480 * 1000;   // leave 60s headroom in 540s timeout
-    const newCheckpoint = Object.assign({}, checkpoint.processed || {});
-    let abortedEarly = false;
-
-    // Helper called per-unit. Caller passes `unitKey` (b|f|u format).
-    // Returns true if the unit was processed (or skipped intentionally),
-    // false if the cron should bail out for time / quota reasons.
-    function _shouldProcessUnit(unitKey) {
-      if (stampedRecently.has(unitKey)) {
-        return 'skip-recent';
-      }
-      if (Date.now() - startTimeMs > TIME_BUDGET_MS) {
-        abortedEarly = true;
-        return 'abort-budget';
-      }
-      return 'process';
-    }
-    function _markUnitProcessed(unitKey) {
-      newCheckpoint[unitKey] = Date.now();
-    }
-    // Persisted at the very end so a crash mid-run still leaves progress
-    // in newCheckpoint that we'll write on next successful completion.
-    async function _persistCheckpoint(extra) {
-      try {
-        await checkpointRef.set(Object.assign({
-          processed: newCheckpoint,
-          lastRunAt: admin.firestore.FieldValue.serverTimestamp(),
-          lastRunAbortedEarly: abortedEarly,
-        }, extra || {}));
-      } catch (e) {
-        logger.warn('[auto-invoice] checkpoint write failed: ' + e.message);
-      }
-    }
-    // Expose helpers to the rest of the function via globals so the
-    // existing per-unit loop body (further below) can opt in.
-    globalThis.__autoInvShouldProcess = _shouldProcessUnit;
-    globalThis.__autoInvMarkProcessed = _markUnitProcessed;
-    globalThis.__autoInvPersistCheckpoint = _persistCheckpoint;
 
     const today = new Date();
     // New config: sendBeforeDays = N days BEFORE the 1st of next month.
@@ -3676,12 +4938,33 @@ exports.runAutoInvoices = onSchedule(
       nextYm = `${nm.getUTCFullYear()}-${String(nm.getUTCMonth()+1).padStart(2,'0')}`;
     }
 
-    let sent = 0, skipped = 0, failed = 0;
+    // Ручной backfill override: целимся в конкретный ym (1-е число месяца),
+    // ниже send-day gate игнорируется. Пустой opts (плановый крон) сюда не входит.
+    if (_targetYm && /^\d{4}-\d{2}$/.test(_targetYm)) {
+      const [_by, _bm] = _targetYm.split('-').map(Number);
+      nm = new Date(Date.UTC(_by, _bm - 1, 1));
+      nextYm = _targetYm;
+      logger.info(`[auto-invoice] BACKFILL override → targetYm=${nextYm} ignoreSendDay=${_ignoreSendDay} dryRun=${_forceDryRun}`);
+    }
+    let sent = 0, skipped = 0, failed = 0, dryRunCount = 0;
+    const dryRunActions = [];
+    // b|f|u → итоговый u.stripe отправленных юнитов. Пишем strip-aware через
+    // mutateWorkspaceState в конце (прямой stateRef.set(гидрированного state)
+    // под strip раздул бы монолит зданиями обратно).
+    const _stripePatch = {};
     const stripe = getStripe();
 
     for (const b of state.buildings || []) {
       for (const f of b.floors || []) {
         for (const u of f.units || []) {
+          // Частичная отправка: батч заполнен (sent+dryRun достигли лимита) —
+          // пропускаем остаток дёшево (подхватится следующим прогоном).
+          if (_limit && (sent + dryRunCount) >= _limit) { skipped++; continue; }
+          // Grouped multi-suite lease = ОДИН lease (project memory «Grouped
+          // suites = one lease»). Биллит только head (groupRole==='primary');
+          // не-head участники НЕ получают собственный rent-инвойс. Зеркалит
+          // гейт late-fee-крона.
+          if (u.groupId && u.groupRole !== 'primary') { skipped++; continue; }
           if (u.deletedAt) { skipped++; continue; }
           if (u.status !== 'occupied') { skipped++; continue; }
           // Каскад auto-invoice — зеркалит isAutoInvoiceEnabledFor +
@@ -3750,9 +5033,9 @@ exports.runAutoInvoices = onSchedule(
             if (v) dueDays = v;
           }
           const unitSendDate = new Date(nm.getTime() - beforeDays * 86400_000);
-          if (today.getUTCFullYear() !== unitSendDate.getUTCFullYear()
+          if (!_ignoreSendDay && (today.getUTCFullYear() !== unitSendDate.getUTCFullYear()
            || today.getUTCMonth()    !== unitSendDate.getUTCMonth()
-           || today.getUTCDate()     !== unitSendDate.getUTCDate()) {
+           || today.getUTCDate()     !== unitSendDate.getUTCDate())) {
             skipped++; continue;
           }
           // Already invoiced this cycle? autoSentYm normally short-
@@ -3767,7 +5050,16 @@ exports.runAutoInvoices = onSchedule(
             if (lastId) {
               try {
                 const prev = await stripe.invoices.retrieve(lastId);
-                if (prev && (prev.status === 'void' || prev.status === 'uncollectible' || prev.deleted)) {
+                // $0-ПУСТОЙ артефакт backfill-бага 2026-07: Stripe авто-помечает
+                // $0-инвойс PAID на finalize → он НЕ void/uncollectible/deleted и
+                // штамп ложно блокирует месяц. total===0 && paid && 0 строк =
+                // не настоящий счёт → перевыставляем. ОПОРТУНИСТИЧЕСКИ: надёжная
+                // очистка штампа делается отдельным recovery-onCall.
+                if (prev && Number(prev.total ?? 0) === 0 && prev.status === 'paid'
+                    && (prev.lines?.total_count ?? 0) === 0) {
+                  cycleStillBlocked = false;
+                  logger.info(`[auto-invoice] ${u.id}: prior cycle invoice ${lastId} is a $0 empty artifact; re-issuing`);
+                } else if (prev && (prev.status === 'void' || prev.status === 'uncollectible' || prev.deleted)) {
                   cycleStillBlocked = false;
                   logger.info(`[auto-invoice] ${u.id}: prior cycle invoice ${lastId} is ${prev.status || 'deleted'}; re-issuing`);
                 }
@@ -3797,7 +5089,12 @@ exports.runAutoInvoices = onSchedule(
           // marked Free for a referral but the cron sent an invoice
           // anyway).
           if (u.payments && u.payments[nextYm]
-              && ['paid', 'free', 'waived'].includes(u.payments[nextYm].status)) {
+              && ['paid', 'free', 'waived'].includes(u.payments[nextYm].status)
+              // $0-escape (backfill-баг 2026-07): 'paid' с amount===0 — артефакт
+              // пустого $0-инвойса (webhook записал status:paid, amount:0). Месяц
+              // НЕ закрыт → перевыставляем. free/waived (реальные компы) и paid с
+              // суммой>0 по-прежнему блокируют.
+              && !(u.payments[nextYm].status === 'paid' && Number(u.payments[nextYm].amount) === 0)) {
             skipped++; continue;
           }
           // Multi-month advance prepayment (FIXES_LOG Entry 30) — оператор
@@ -3817,10 +5114,39 @@ exports.runAutoInvoices = onSchedule(
             logger.info(`[auto-invoice] ${u.id}: ${nextYm} covered by advance invoice ${u.payments[nextYm].stripeInvoiceId}; skipping`);
             skipped++; continue;
           }
-          // Lease must be active — don't invoice past leaseEnd
-          if (u.until) {
+          // Lease must be active — don't invoice past leaseEnd. M2M/открытая
+          // лиза не «истекает» → не гейтим по until (иначе битый until 319 скипал июль).
+          if (u.until && !_isMonthToMonth(u)) {
             const until = new Date(u.until + 'T00:00:00Z');
             if (!isNaN(until.getTime()) && until.getTime() < nm.getTime()) { skipped++; continue; }
+          }
+          // Lease must have STARTED (кейс 224/Ruth Tipton: аренда с 1 сентября,
+          // а крон выставил июль — будущим арендаторам счета до месяца
+          // leaseStart не выставляем; первый месяц биллится обычным путём).
+          {
+            const _lsYmGate = String(u.leaseStart || '').slice(0, 7);
+            // Null-leaseStart гейт (аудит P2 2026-07-03): occupied-юнит БЕЗ
+            // валидного ISO leaseStart не биллим вслепую — log + dead-letter,
+            // чтобы после clobber/restore/import (класс Suite 344/414) оператор
+            // увидел причину, а арендатор не получил phantom-счёт.
+            if (!/^\d{4}-\d{2}$/.test(_lsYmGate)) {
+              logger.warn(`[auto-invoice] ${u.id}: missing/non-ISO leaseStart ("${String(u.leaseStart || '')}") — NOT billing ${nextYm}${_forceDryRun ? ' (dry-run: dead-letter suppressed)' : '; dead-letter written'}`);
+              // Dry-run остаётся write-free (аудит-заметка 2026-07-03):
+              // dead-letter пишем только в LIVE — иначе Run-now-предпросмотр
+              // мутирует webhookDeadLetter-коллекцию.
+              if (!_forceDryRun) {
+                await _webhookDeadLetter(`auto-invoice-null-leasestart-${b.id}-${u.id}-${nextYm}`, {
+                  invoiceId: null, unitId: u.id, ym: nextYm,
+                  customerId: (u.stripe && u.stripe.customerId) || null,
+                  eventId: null, reason: 'null-leasestart',
+                  buildingId: b.id, floorId: f.id,
+                  leaseStartRaw: String(u.leaseStart || ''),
+                  handler: 'runAutoInvoices',
+                });
+              }
+              skipped++; continue;
+            }
+            if (nextYm < _lsYmGate) { skipped++; continue; }
           }
 
           // Create the invoice via Stripe
@@ -3843,8 +5169,17 @@ exports.runAutoInvoices = onSchedule(
               const dupQ = `customer:"${customerId}" AND metadata["unitId"]:"${u.id}" `
                          + `AND metadata["purpose"]:"rent" AND metadata["ym"]:"${nextYm}"`;
               const dupRes = await stripe.invoices.search({ query: dupQ, limit: 5 });
-              const liveDup = (dupRes.data || []).find(inv =>
-                !['void', 'uncollectible', 'deleted'].includes(inv.status));
+              const liveDup = (dupRes.data || []).find(inv => {
+                if (['void', 'uncollectible', 'deleted'].includes(inv.status)) return false;
+                // $0-пустой артефакт backfill-бага 2026-07: помечен PAID на
+                // finalize; НЕ должен блокировать перевыставление. ПЕРВИЧНЫЙ
+                // сигнал — total===0 (Search-объект может не разворачивать lines).
+                const total = Number(inv.total ?? inv.amount_due ?? 0);
+                const amtPaid = Number(inv.amount_paid ?? 0);
+                const lineCount = inv.lines?.total_count ?? (inv.lines?.data?.length ?? 0);
+                if (total === 0 && amtPaid === 0 && lineCount === 0) return false;
+                return true;
+              });
               if (liveDup) {
                 logger.info(`[auto-invoice] ${u.id}: rent for ${nextYm} already exists (${liveDup.id}, ${liveDup.status}); skipping cron-create`);
                 skipped++;
@@ -3855,6 +5190,15 @@ exports.runAutoInvoices = onSchedule(
               // proceed. Stripe-level idempotency key still guards
               // against same-day re-fires from cron itself.
               logger.warn(`[auto-invoice] ${u.id}: dup-search failed (${searchErr.message}); proceeding without cross-flow dedupe`);
+            }
+
+            // DRY-RUN: юнит прошёл все гейты и cross-flow dedupe — фиксируем
+            // «что бы отправили» и НЕ создаём инвойс в Stripe.
+            if (_forceDryRun) {
+              dryRunCount++;
+              dryRunActions.push({ unitId: u.id, ym: nextYm, amount: rent, email: u.email });
+              logger.info(`[auto-invoice:dry-run] WOULD send ${nextYm} · $${rent} · ${_maskEmail(u.email)} (${u.id})`); // PII-маск (аудит P2)
+              continue;
             }
 
             // === Phase 5 LIVE: roll-late-fee-into-next-rent (Tony 2026-05-28) ===
@@ -3890,90 +5234,24 @@ exports.runAutoInvoices = onSchedule(
             const description = `Monthly rent — ${nm.toLocaleString('en-US', {month:'long', year:'numeric', timeZone:'UTC'})} · Suite ${u.id}`;
             const due = Math.floor((Date.now() + dueDays * 86400_000) / 1000);
 
-            // Idempotency key: ensures no duplicates even if retry happens
-            const idempotencyKey = `auto-rent-${u.id}-${nextYm}`;
+            // Idempotency key: версионирован (AUTO_INV_KEY_VER, module scope).
+            // Производные (-item/-svc-*/-rollin) конкатенируют сюда и наследуют
+            // сегмент версии → один edit покрывает все Stripe-вызовы и обходит
+            // 24ч-кэш при перевыставлении.
+            const idempotencyKey = `auto-rent-${AUTO_INV_KEY_VER}-${u.id}-${nextYm}`;
 
-            // Invoice item (line)
-            await stripe.invoiceItems.create({
-              customer: customerId,
-              amount: Math.round(rent * 100),
-              currency: 'usd',
-              description,
-              metadata: { unitId: u.id, buildingId: b.id, floorId: f.id, ym: nextYm, purpose: 'rent', source: 'auto' },
-            }, { idempotencyKey: idempotencyKey + '-item' });
+            // === CORE FIX (2026-07 $0-инцидент): зеркалим РАБОЧИЙ manual-путь
+            // createStripeInvoice @1302-1524. Раньше авто-путь создавал PENDING
+            // invoice_items БЕЗ invoice:id, ждал авто-подметания на invoices.create —
+            // в текущем Stripe API этого НЕ происходит → пустой $0. Теперь:
+            // (A) prep; (B) invoice ПЕРВЫМ с 'exclude'+auto_advance:false;
+            // (C-E) каждая строка по invoice:inv.id; (F) явный finalizeInvoice;
+            // (G) условный sendInvoice. Все фичи сохранены.
 
-            // Auto-include monthly additional services as line items
-            // (parking, cleaning, conference room, etc.). Mirrors the
-            // same logic in createStripeInvoice; one-time / hourly /
-            // daily services are not included in the recurring rent
-            // bill.
-            if (Array.isArray(u.additionalServices)) {
-              for (const svc of u.additionalServices) {
-                const freq = svc?.frequency || 'monthly';
-                const amt = +svc?.amount || 0;
-                // Mirror the manual-flow gating: must be active for this
-                // tenant AND opted into auto-invoice AND a positive monthly
-                // amount. Inactive or manual-only services are skipped.
-                if (!svc?.active) continue;
-                if (!svc?.autoInvoice) continue;
-                if (freq !== 'monthly' || amt <= 0) continue;
-                try {
-                  await stripe.invoiceItems.create({
-                    customer: customerId,
-                    amount: Math.round(amt * 100),
-                    currency: 'usd',
-                    description: String(svc.name || 'Additional service').slice(0, 250),
-                    metadata: { unitId: u.id, buildingId: b.id, floorId: f.id, ym: nextYm, purpose: 'service', serviceId: String(svc.id || ''), source: 'auto' },
-                  }, { idempotencyKey: idempotencyKey + '-svc-' + (svc.id || svc.name || '').slice(0, 30) });
-                } catch (svcErr) {
-                  logger.warn(`[runAutoInvoices] service line "${svc.name}" for ${u.id} failed: ${svcErr.message}`);
-                }
-              }
-            }
-
-            // Phase 5 LIVE: roll-in late-fee invoice item. Создаём ДО
-            // invoices.create — Stripe автоматически подцепит pending
-            // invoice_item к новому invoice того же customer'а. Описание
-            // включает оригинальный месяц для прозрачности тенанту.
-            // Idempotency: -rollin суффикс на ключ same as services pattern.
-            // Если invoiceItems.create упал — отключаем void ниже (иначе
-            // получим void standalone без roll-in line = тенант теряет
-            // обязательство).
-            if (_rollInCandidate) {
-              try {
-                const _rollInLabel = new Date(`${_rollInPrevYm}-01T00:00:00Z`)
-                  .toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
-                await stripe.invoiceItems.create({
-                  customer: customerId,
-                  amount: _rollInCandidate.total,
-                  currency: 'usd',
-                  description: `Late fee carry-over from ${_rollInLabel}`,
-                  metadata: {
-                    unitId: u.id, buildingId: b.id, floorId: f.id,
-                    ym: nextYm, purpose: 'late_fee_rollin', source: 'auto',
-                    originalInvoiceId: _rollInCandidate.id,
-                    originalYm: _rollInPrevYm,
-                  },
-                }, { idempotencyKey: idempotencyKey + '-rollin' });
-                logger.info(`[roll-late-fee:live] unit=${u.id} added rollin line amount=${_rollInCandidate.total} cents from ${_rollInCandidate.id}`);
-              } catch (rollErr) {
-                logger.error(`[roll-late-fee:live] unit=${u.id} invoiceItems.create FAILED, skipping roll-in (standalone stays): ${rollErr.message}`);
-                _rollInCandidate = null;
-              }
-            }
-
-            // Custom invoice number with "RA-" prefix marking this as
-            // an auto-generated rent invoice (vs manual "R-").
+            // --- A. PREP (перенесено СЮДА, ДО создания строк) ---
             const autoNumber = buildCustomInvoiceNumber({
-              purpose: 'rent', unitId: u.id, ym: nextYm, auto: true,
+              purpose: 'rent', unitId: u.id, ym: nextYm, auto: true, code: buildingInvoiceCode(b),
             });
-
-            // Auto-charge routing — same as createStripeInvoice. If the
-            // workspace/unit has auto-charge enabled AND the tenant's
-            // Stripe customer has a saved default payment method, bill
-            // automatically (no email). Otherwise fall back to hosted
-            // invoice email with save_default_payment_method so the
-            // next cycle can auto-charge.
             const wsAutoCharge = cfg.autoCharge === true;
             const unitAc = u.autoCharge;
             const acOn = unitAc === 'on' || (unitAc !== 'off' && wsAutoCharge);
@@ -3983,57 +5261,139 @@ exports.runAutoInvoices = onSchedule(
               try {
                 const cust = await stripe.customers.retrieve(customerId);
                 const dpm = cust?.invoice_settings?.default_payment_method;
-                if (dpm) {
-                  acMethod = 'charge_automatically';
-                } else {
-                  acPaymentSettings = { save_default_payment_method: 'on_confirmation' };
-                }
+                if (dpm) { acMethod = 'charge_automatically'; }
+                else { acPaymentSettings = { save_default_payment_method: 'on_confirmation' }; }
               } catch (e) {
                 logger.warn(`[auto-invoice] ${u.id}: customer retrieve failed, using send_invoice — ${e.message}`);
               }
             }
-
-            // Footer parity with the manual createStripeInvoice path —
-            // auto-invoices used to ship without the "Property / Suite /
-            // Landlord" footer block, so tenants saw a slightly different
-            // PDF depending on whether the cron or the operator sent it.
-            // Reads the same workspace landlord settings; defaults match
-            // the manual path exactly.
             const _autoLandlordEmail = String(state.settings?.invoiceLandlordEmail || 'finance@kiwi-rentals.com').trim();
             const _autoLandlordName  = String(state.settings?.invoiceLandlordName  || 'SuitesForAll').trim();
             const _autoMonthLabel = nm.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' });
             const _autoYear = nm.getUTCFullYear();
+            const _acGrace = (state.settings && state.settings.lateFee
+                && Number.isFinite(+state.settings.lateFee.graceDays)) ? +state.settings.lateFee.graceDays : 5;
+            const _acDueSec = Math.floor(Date.UTC(nm.getUTCFullYear(), nm.getUTCMonth(), 1 + _acGrace) / 1000);
+            const _acNowSec = Math.floor(Date.now() / 1000);
+            const _acAbsDue = (_acDueSec > _acNowSec + 120) ? _acDueSec : null;
+            const _acDueClause = (acMethod === 'send_invoice')
+              ? (_acAbsDue ? { due_date: _acAbsDue } : { days_until_due: 0 }) : {};
+            const _acDueFooter = (acMethod === 'send_invoice')
+              ? (_acAbsDue ? `Payment due: ${new Date(_acAbsDue * 1000).toISOString().slice(0, 10)}` : `Payment due: immediately (past due)`)
+              : `Payment due: within ${dueDays} days`;
             const _autoFooter = [
               `Property: ${b.address || b.name || ''}${f.name ? ' · ' + f.name : ''}`,
               `Suite: ${u.id}`,
               `Billing period: ${_autoMonthLabel} ${_autoYear}`,
               `Invoice issued: ${new Date().toISOString().slice(0, 10)}`,
-              `Payment due: within ${dueDays} days`,
+              _acDueFooter,
               `Landlord: ${_autoLandlordName}${_autoLandlordEmail ? ' · ' + _autoLandlordEmail : ''}`,
             ].join(' · ');
 
-            // Invoice
+            // --- B. INVOICE ПЕРВЫМ (зеркало manual @1302-1314). Поле-в-поле как
+            // прежний @4118-4127 ПЛЮС ровно 2 ключа: auto_advance:false и
+            // pending_invoice_items_behavior:'exclude'. НЕ добавляем custom_fields
+            // (авто-PDF без изменений, skeptic #2). ---
             const inv = await stripe.invoices.create({
               customer: customerId,
-              auto_advance: true,
+              auto_advance: false,
               collection_method: acMethod,
-              ...(acMethod === 'send_invoice' ? { days_until_due: dueDays } : {}),
+              ..._acDueClause,
               ...(acPaymentSettings ? { payment_settings: acPaymentSettings } : {}),
-              metadata: { unitId: u.id, buildingId: b.id, floorId: f.id, ym: nextYm, purpose: 'rent', source: 'auto' },
+              pending_invoice_items_behavior: 'exclude',
+              metadata: { unitId: u.id, buildingId: b.id, floorId: f.id, ym: nextYm, purpose: 'rent', source: 'auto', workspaceId: WORKSPACE_ID, auto: '1', suite: String(u.id), billingMonth: nextYm },
               description,
               footer: _autoFooter,
             }, { idempotencyKey });
-            // Apply the custom number AFTER create (Stripe rejects it
-            // on create for send_invoice collection with auto_advance).
             try {
               await stripe.invoices.update(inv.id, { number: autoNumber });
             } catch (e) {
-              logger.warn(`[auto-invoice] ${u.id}: couldn't set number ${autoNumber} — ${e.message}`);
+              // Коллизия номера: $0-двойник из backfill-бага держит тот же
+              // детерминированный RA-номер (удалить/void его нельзя). Ретраим с
+              // суффиксом версии — уникально vs двойник (как ретрай в ручном пути).
+              if (e.code === 'resource_already_exists' || /already.*(exist|set)/i.test(e.message || '')) {
+                const retryNum = `${autoNumber}-${AUTO_INV_KEY_VER}`;
+                try {
+                  await stripe.invoices.update(inv.id, { number: retryNum });
+                  logger.info(`[auto-invoice] ${u.id}: number ${autoNumber} collided; used ${retryNum}`);
+                } catch (e2) {
+                  logger.warn(`[auto-invoice] ${u.id}: number retry ${retryNum} failed — ${e2.message}`);
+                }
+              } else {
+                logger.warn(`[auto-invoice] ${u.id}: couldn't set number ${autoNumber} — ${e.message}`);
+              }
             }
+
+            // --- C. RENT строка по invoice:inv.id (зеркало @1346-1348) ---
+            await stripe.invoiceItems.create({
+              customer: customerId,
+              invoice: inv.id,
+              amount: Math.round(rent * 100),
+              currency: 'usd',
+              description,
+              metadata: { unitId: u.id, buildingId: b.id, floorId: f.id, ym: nextYm, purpose: 'rent', source: 'auto', workspaceId: WORKSPACE_ID, auto: '1', suite: String(u.id), billingMonth: nextYm },
+            }, { idempotencyKey: idempotencyKey + '-item' });
+
+            // --- D. SERVICES loop, каждая по invoice:inv.id (@1378-1380) ---
+            if (Array.isArray(u.additionalServices)) {
+              for (const svc of u.additionalServices) {
+                const freq = svc?.frequency || 'monthly';
+                const amt = +svc?.amount || 0;
+                if (!svc?.active) continue;
+                if (!svc?.autoInvoice) continue;
+                if (freq !== 'monthly' || amt <= 0) continue;
+                try {
+                  await stripe.invoiceItems.create({
+                    customer: customerId,
+                    invoice: inv.id,
+                    amount: Math.round(amt * 100),
+                    currency: 'usd',
+                    description: String(svc.name || 'Additional service').slice(0, 250),
+                    metadata: { unitId: u.id, buildingId: b.id, floorId: f.id, ym: nextYm, purpose: 'service', serviceId: String(svc.id || ''), source: 'auto', workspaceId: WORKSPACE_ID, auto: '1', suite: String(u.id), billingMonth: nextYm },
+                  }, { idempotencyKey: idempotencyKey + '-svc-' + (svc.id || svc.name || '').slice(0, 30) });
+                } catch (svcErr) {
+                  logger.warn(`[runAutoInvoices] service line "${svc.name}" for ${u.id} failed: ${svcErr.message}`);
+                }
+              }
+            }
+
+            // --- E. ROLL-IN late-fee по invoice:inv.id (зеркало @1463-1465).
+            // Failure isolation прежняя: падение create → _rollInCandidate=null
+            // (void standalone ниже НЕ выполнится). Старый комментарий про
+            // «Stripe автоматически подцепит pending invoice_item» УДАЛЁН — он
+            // описывал баг. ---
+            if (_rollInCandidate) {
+              try {
+                const _rollInLabel = new Date(`${_rollInPrevYm}-01T00:00:00Z`)
+                  .toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+                await stripe.invoiceItems.create({
+                  customer: customerId,
+                  invoice: inv.id,
+                  amount: _rollInCandidate.total,
+                  currency: 'usd',
+                  description: `Late fee carry-over from ${_rollInLabel}`,
+                  metadata: {
+                    unitId: u.id, buildingId: b.id, floorId: f.id,
+                    ym: nextYm, purpose: 'late_fee_rollin', source: 'auto', workspaceId: WORKSPACE_ID, auto: '1',
+                    originalInvoiceId: _rollInCandidate.id, originalYm: _rollInPrevYm,
+                  },
+                }, { idempotencyKey: idempotencyKey + '-rollin' });
+                logger.info(`[roll-late-fee:live] unit=${u.id} added rollin line amount=${_rollInCandidate.total} cents from ${_rollInCandidate.id}`);
+              } catch (rollErr) {
+                logger.error(`[roll-late-fee:live] unit=${u.id} invoiceItems.create FAILED, skipping roll-in (standalone stays): ${rollErr.message}`);
+                _rollInCandidate = null;
+              }
+            }
+
+            // --- F. FINALIZE явно (зеркало @1509) — недостающий вызов ---
+            const finalized = await stripe.invoices.finalizeInvoice(inv.id);
+
+            // --- G. SEND только для send_invoice, на finalized.id, обёрнуто (@1518-1524) ---
             if (acMethod === 'send_invoice') {
-              await stripe.invoices.sendInvoice(inv.id);
+              try { await stripe.invoices.sendInvoice(finalized.id); }
+              catch (e) { logger.warn(`[auto-invoice] ${u.id}: sendInvoice failed — ${e.message}`); }
             } else {
-              logger.info(`[auto-invoice] ${u.id}: auto-charging saved card (charge_automatically)`);
+              logger.info(`[auto-invoice] ${u.id}: charge_automatically — card debited on finalize`);
             }
 
             // Phase 5 LIVE: void standalone late-fee после успешной отправки
@@ -4049,7 +5409,7 @@ exports.runAutoInvoices = onSchedule(
                 try {
                   await stripe.invoices.update(_rollInCandidate.id, {
                     metadata: {
-                      rolledIntoInvoiceId: inv.id,
+                      rolledIntoInvoiceId: finalized.id,
                       rolledIntoYm: nextYm,
                       rolledIntoAt: new Date().toISOString(),
                       rolledInBy: 'auto-billing-cron',
@@ -4067,10 +5427,11 @@ exports.runAutoInvoices = onSchedule(
             // Stamp u.stripe so next run skips
             u.stripe = u.stripe || {};
             u.stripe.autoSentYm = nextYm;
-            u.stripe.lastInvoiceId = inv.id;
+            u.stripe.lastInvoiceId = finalized.id;
             u.stripe.lastInvoiceYm = nextYm;
+            _stripePatch[b.id + '|' + f.id + '|' + u.id] = u.stripe;
             sent++;
-            logger.info(`[auto-invoice] sent to ${u.email} (${u.id}) · $${rent} · ${nextYm}`);
+            logger.info(`[auto-invoice] sent to ${_maskEmail(u.email)} (${u.id}) · $${rent} · ${nextYm}`); // PII-маск (аудит P2)
             // Audit (Tony 2026-05-23 Phase 2): per-invoice trail so the Unit
             // Activity tab shows «Auto-invoice sent» events alongside manual
             // sends. Fire-and-forget — never block the cron if audit fails.
@@ -4107,28 +5468,208 @@ exports.runAutoInvoices = onSchedule(
       }
     }
 
-    // Persist updated state (u.stripe stamps)
+    // Persist u.stripe stamps — strip-aware. mutateWorkspaceState ре-стрипит
+    // монолит и зеркалит ИЗМЕНЁННЫЕ здания в под-доки (при strip off — обычная
+    // запись монолита). Прямой stateRef.set(гидрированного state) здесь НЕЛЬЗЯ:
+    // под strip он записал бы buildings обратно в монолит (раздув до ~925КБ) и
+    // разъехался бы с коллекцией зданий.
     if (sent > 0) {
-      state._rev = (state._rev || 0) + 1;
-      await stateRef.set({ state, _rev: state._rev, _updatedAt: admin.firestore.FieldValue.serverTimestamp(), _updatedBy: 'auto-invoice' }, { merge: true });
+      await mutateWorkspaceState((s) => {
+        for (const b of (s.buildings || [])) {
+          for (const f of (b.floors || [])) {
+            for (const u of (f.units || [])) {
+              const _p = _stripePatch[b.id + '|' + f.id + '|' + u.id];
+              if (_p) u.stripe = _p;
+            }
+          }
+        }
+      });
     }
-    // Persist checkpoint — even if we ran the full set this time, the
-    // record of which units we processed in the last 24h means a manual
-    // re-trigger today won't double-fire on units we already invoiced.
+    // Телеметрия последнего запуска (best-effort; НЕ идемпотентность —
+    // ту обеспечивает durable-штамп u.stripe.autoSentYm, см. коммент у
+    // checkpointRef выше). Пишем только сводку для дашборда/алертов; поле
+    // `processed` больше не ведём (мёртвый per-unit checkpoint удалён).
     try {
-      if (typeof __autoInvPersistCheckpoint === 'function') {
-        await __autoInvPersistCheckpoint({
-          totalSent: sent, totalSkipped: skipped, totalFailed: failed,
-        });
-      }
-    } catch {}
-    // If we aborted early due to time budget, log loud so an alert can fire.
-    // The next cron tick (or operator-triggered re-run via a Run Now button)
-    // will pick up where we left off via the checkpoint.
-    if (typeof globalThis.__autoInvShouldProcess === 'function') {
-      // Nothing more to do — checkpoint persisted above.
+      await checkpointRef.set({
+        lastRunAt: admin.firestore.FieldValue.serverTimestamp(),
+        totalSent: sent, totalSkipped: skipped, totalFailed: failed,
+      }, { merge: true });
+    } catch (e) {
+      logger.warn('[auto-invoice] run-telemetry write failed: ' + e.message);
     }
-    logger.info(`[auto-invoice] done · sent=${sent} skipped=${skipped} failed=${failed}`);
+    logger.info(`[auto-invoice] done · sent=${sent} skipped=${skipped} failed=${failed} dryRun=${dryRunCount}${_limit ? ' limit=' + _limit : ''}`);
+    return { sent, skipped, failed, dryRun: dryRunCount, limit: _limit, targetYm: nextYm, sampleActions: dryRunActions.slice(0, 50) };
+};
+
+exports.runAutoInvoices = onSchedule(
+  {
+    schedule: '0 9 * * *',         // 09:00 UTC daily (~5am ET, ~2am PT)
+    timeZone: 'UTC',
+    secrets: [STRIPE_SECRET_KEY],
+    memory: '512MiB',
+    timeoutSeconds: 540,           // 9 min — we could have hundreds of units
+  },
+  async () => { await _runAutoInvoicesHandler({}); }
+);
+
+// Manual trigger / backfill — editor-gated onCall, зеркалит triggerAutoLateFeesNow.
+// Позволяет разослать rent-счета за КОНКРЕТНЫЙ ym (напр. пропущенный, пока
+// strip-крон был сломан) точно той же логикой, что и плановый крон, с dry-run
+// превью. req.data = { ym: 'YYYY-MM', forceDryRun?: bool }.
+exports.triggerAutoInvoicesNow = onCall(
+  { secrets: [STRIPE_SECRET_KEY], timeoutSeconds: 540, memory: '512MiB' },
+  async (req) => {
+    await requireEditor(req.auth);
+    const ym = req.data && req.data.ym ? String(req.data.ym) : null;
+    const forceDryRun = !!(req.data && req.data.forceDryRun);
+    const limit = (req.data && req.data.limit != null) ? +req.data.limit : 0;
+    if (!ym || !/^\d{4}-\d{2}$/.test(ym)) {
+      throw new HttpsError('invalid-argument', 'ym required as "YYYY-MM"');
+    }
+    return await _runAutoInvoicesHandler({ ym, forceDryRun, limit });
+  }
+);
+
+// ===========================================================================
+// ===== Recovery: чистка $0-артефактов backfill-бага =======================
+// Editor-gated onCall. Для указанного ym: (1) находит в Stripe пустые $0/PAID
+// авто-rent-инвойсы (артефакты, когда rent-item не прицеплялся); (2) удаляет
+// болтающиеся pending invoice_items (реальные суммы, не привязанные к инвойсу);
+// (3) снимает штампы u.stripe.autoSentYm/lastInvoiceYm/lastInvoiceId; (4) удаляет
+// $0-платёжки из коллекции payments (их записал webhook на $0-инвойс). ПО
+// УМОЛЧАНИЮ DRY-RUN — мутирует ТОЛЬКО при явном forceDryRun:false.
+// $0/PAID-инвойсы в Stripe НЕ трогаем (void/delete им нельзя; безвредны).
+//   req.data = { ym:'YYYY-MM', forceDryRun?:bool (default true) }
+// ===========================================================================
+exports.recoverAutoZeroInvoices = onCall(
+  { secrets: [STRIPE_SECRET_KEY], timeoutSeconds: 540, memory: '512MiB' },
+  async (req) => {
+    await requireEditor(req.auth);
+    const ym = req.data && req.data.ym ? String(req.data.ym) : null;
+    const forceDryRun = !(req.data && req.data.forceDryRun === false);   // default: dry-run
+    if (!ym || !/^\d{4}-\d{2}$/.test(ym)) {
+      throw new HttpsError('invalid-argument', 'ym required as "YYYY-MM"');
+    }
+    const stripe = getStripe();
+
+    // 1. Пустые $0/PAID авто-rent-инвойсы за ym.
+    const q = `metadata["purpose"]:"rent" AND metadata["ym"]:"${ym}" AND metadata["source"]:"auto"`;
+    const zeros = []; const zeroIds = new Set();
+    let page = null;
+    for (let guard = 0; guard < 50; guard++) {
+      const res = await stripe.invoices.search(page ? { query: q, limit: 100, page } : { query: q, limit: 100 });
+      for (const inv of (res.data || [])) {
+        const total = Number(inv.total ?? 0);
+        const lc = inv.lines?.total_count ?? (inv.lines?.data?.length ?? 0);
+        if (total === 0 && inv.status === 'paid' && lc === 0) {
+          zeros.push({ invoiceId: inv.id, unitId: inv.metadata?.unitId || '', customerId: inv.customer });
+          zeroIds.add(inv.id);
+        }
+      }
+      if (!res.has_more) break;
+      page = res.next_page;
+    }
+
+    // 2. Болтающиеся pending invoice_items у затронутых клиентов.
+    const customers = [...new Set(zeros.map(z => z.customerId).filter(Boolean))];
+    const pendingItems = [];
+    for (const cust of customers) {
+      try {
+        const il = await stripe.invoiceItems.list({ customer: cust, pending: true, limit: 100 });
+        for (const it of (il.data || [])) {
+          const m = it.metadata || {};
+          if (m.ym === ym && m.source === 'auto'
+              && ['rent', 'service', 'late_fee_rollin'].includes(m.purpose) && !it.invoice) {
+            pendingItems.push({ id: it.id, customer: cust, amount: it.amount, unitId: m.unitId || '', purpose: m.purpose });
+          }
+        }
+      } catch (e) { logger.warn(`[recover-zero] pending-list ${cust} failed: ${e.message}`); }
+    }
+
+    // 3. Штампы к очистке (u.stripe.autoSentYm → $0-инвойс).
+    const state = await readWorkspaceState();
+    const stampKeys = new Set(); const stampUnits = [];
+    for (const b of (state.buildings || [])) {
+      for (const f of (b.floors || [])) {
+        for (const u of (f.units || [])) {
+          const st = u.stripe || {};
+          if (st.autoSentYm === ym && st.lastInvoiceId && zeroIds.has(st.lastInvoiceId)) {
+            stampKeys.add(`${b.id}|${f.id}|${u.id}`); stampUnits.push(u.id);
+          }
+        }
+      }
+    }
+
+    // 4. $0-платёжки в коллекции payments (webhook записал status:paid, amount:0).
+    const payDocs = [];
+    try {
+      const psnap = await db.collection(`workspaces/${WORKSPACE_ID}/payments`).get();
+      psnap.forEach((docSnap) => {
+        const x = docSnap.data();
+        if (!x || x.ym !== ym) return;
+        const rec = x.rec || {};
+        if (rec.status === 'paid' && Number(rec.amount) === 0 && rec.stripe && zeroIds.has(rec.stripe.invoiceId)) {
+          payDocs.push({ ref: docSnap.ref, unitId: x.unitId || '' });
+        }
+      });
+    } catch (e) { logger.warn(`[recover-zero] payments-scan failed: ${e.message}`); }
+
+    const plan = {
+      ym, zeroInvoices: zeros.length, danglingPendingItems: pendingItems.length,
+      stampClears: stampUnits.length, payRowClears: payDocs.length,
+      sampleZeroInvoices: zeros.slice(0, 12), samplePendingItems: pendingItems.slice(0, 12),
+      stampUnits: stampUnits.slice(0, 60),
+    };
+
+    if (forceDryRun) {
+      logger.info(`[recover-zero] DRY-RUN ${ym}: zeros=${zeros.length} pending=${pendingItems.length} stamps=${stampUnits.length} payRows=${payDocs.length}`);
+      return { dryRun: true, ...plan };
+    }
+
+    // LIVE (a): удалить болтающиеся pending items.
+    let itemsDeleted = 0;
+    for (const it of pendingItems) {
+      try {
+        await stripe.invoiceItems.del(it.id); itemsDeleted++;
+        try {
+          await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+            action: 'invoice-item.deleted', ts: Date.now(), unitId: it.unitId, itemId: it.id,
+            amount: (it.amount || 0) / 100, actor: 'system:recover-auto-zero',
+            note: `Deleted dangling $0-backfill pending ${it.purpose} item for ${ym}`,
+          });
+        } catch {}
+      } catch (e) { logger.warn(`[recover-zero] del item ${it.id} failed: ${e.message}`); }
+    }
+
+    // LIVE (b): снять штампы (strip-aware; зеркалит здания). Monolith-копия
+    // платёжки чистится тоже (актуально при strip off).
+    if (stampKeys.size || payDocs.length) {
+      await mutateWorkspaceState((s) => {
+        for (const b of (s.buildings || [])) {
+          for (const f of (b.floors || [])) {
+            for (const u of (f.units || [])) {
+              if (stampKeys.has(`${b.id}|${f.id}|${u.id}`) && u.stripe && u.stripe.autoSentYm === ym) {
+                delete u.stripe.autoSentYm; delete u.stripe.lastInvoiceYm; delete u.stripe.lastInvoiceId;
+              }
+              const p = u.payments && u.payments[ym];
+              if (p && p.status === 'paid' && Number(p.amount) === 0 && p.stripe && zeroIds.has(p.stripe.invoiceId)) {
+                delete u.payments[ym];
+              }
+            }
+          }
+        }
+      });
+    }
+
+    // LIVE (c): удалить $0-платёжки из коллекции payments (под strip — источник истины).
+    let payRowsDeleted = 0;
+    for (const pd of payDocs) {
+      try { await pd.ref.delete(); payRowsDeleted++; }
+      catch (e) { logger.warn(`[recover-zero] payment-doc del failed ${pd.unitId}: ${e.message}`); }
+    }
+
+    logger.info(`[recover-zero] LIVE ${ym}: itemsDeleted=${itemsDeleted} stampsCleared=${stampUnits.length} payRowsDeleted=${payRowsDeleted}`);
+    return { dryRun: false, ...plan, itemsDeleted, stampsCleared: stampUnits.length, payRowsDeleted };
   }
 );
 
@@ -4256,6 +5797,12 @@ function _computeOverdueMonths(u, cfg, todayInZoneParts) {
   ));
   const curY = todayInZoneParts.year, curM = todayInZoneParts.month;  // 1-indexed
   const firstYm = _firstTenancyYmServer(u);
+  // Null-leaseStart гейт (аудит P2 2026-07-03; серверное зеркало клиентского
+  // lease-start gate / FIXES_LOG Entry 1): ни валидного leaseStart, ни
+  // _tenantAddedAt → якоря начала аренды НЕТ, просрочку не считаем ВООБЩЕ.
+  // Иначе первый же clobber/restore/import, стёрший даты, дал бы юниту
+  // до 12 месяцев phantom late fees за «месяцы до начала аренды».
+  if (!firstYm) return [];
   const overdueList = [];
   let monthsOwed = 0;
   // Walk oldest → newest in 12-mo window.
@@ -4310,6 +5857,9 @@ async function _runAutoLateFeesHandler(opts) {
     return { sent: 0, skipped: 0, failed: 0, dryRun: 0, mode: 'no-state' };
   }
   const state = snap.data().state || {};
+  // Strip-aware: подтянуть реальные здания+платежи из коллекций, иначе цикл
+  // идёт по НУЛЮ юнитов и авто-пеня не начисляется НИКОМУ. No-op при strip off.
+  await _rehydrateStateForStripCF(state);
   const wsLfCfg = (state.settings && state.settings.lateFee) || {};
 
   // Workspace-wide live gate. Default false → cron логирует но не вызывает
@@ -4361,6 +5911,8 @@ async function _runAutoLateFeesHandler(opts) {
   }
 
   let sent = 0, skipped = 0, failed = 0, dryRunCount = 0;
+  // b|f|u → итоговый u.stripe (lateFeeSent). Пишем strip-aware через mutateWorkspaceState.
+  const _lfStripePatch = {};
   const stripe = liveMode ? getStripe() : null;
   const dryRunActions = []; // [{unitId, ym, fee, base, customerId}]
 
@@ -4394,7 +5946,8 @@ async function _runAutoLateFeesHandler(opts) {
 
         // Lease must still be active(ish) to bill late fees. Ended >30 days
         // ago → skip; collections logic handles old debt elsewhere.
-        if (u.until) {
+        // M2M/открытая лиза не «истекает» → пропускаем гейт (не путать с битым until).
+        if (u.until && !_isMonthToMonth(u)) {
           const until = new Date(u.until + 'T00:00:00Z');
           const todayUtc = new Date(Date.UTC(
             todayInZoneParts.year, todayInZoneParts.month - 1, todayInZoneParts.day
@@ -4403,6 +5956,20 @@ async function _runAutoLateFeesHandler(opts) {
             skipped++;
             continue;
           }
+        }
+
+        // Зеркало null-leaseStart гейта rent-крона (адверсариальный аудит
+        // 2026-07-03, asymmetry-фикс): рент-крон отказывается биллить юнит
+        // без валидного ISO leaseStart (dead-letter в runAutoInvoices), а
+        // _computeOverdueMonths якорится на leaseStart ИЛИ _tenantAddedAt —
+        // без этого гейта юнит с живым _tenantAddedAt, но битым leaseStart
+        // (класс Suite 344/414 после clobber/restore) получал бы пени за
+        // месяцы, которые мы сами отказались выставить. Единый предикат с
+        // рент-кроном: не биллим → не штрафуем.
+        if (!/^\d{4}-\d{2}$/.test(String(u.leaseStart || '').slice(0, 7))) {
+          logger.warn(`[auto-late-fee] ${u.id}: missing/non-ISO leaseStart ("${String(u.leaseStart || '')}") — skipping late fees (mirror of rent-cron null-leaseStart gate)`);
+          skipped++;
+          continue;
         }
 
         // Compute overdue months
@@ -4440,6 +6007,164 @@ async function _runAutoLateFeesHandler(opts) {
 
         for (const o of todoMonths) {
           try {
+            // ── Settled-предикат ЗА пределами леджера (аудит P1 2026-07-03,
+            // класс Suite 417 / Entry 55 server-side). _computeOverdueMonths
+            // видит только u.payments[ym].status; месяц, оплаченный через
+            // Stripe но не дошедший до леджера (webhook-drop, класс Entry 70),
+            // выглядит «просроченным» и получил бы РЕАЛЬНЫЙ штраф уже
+            // заплатившему арендатору. Перед начислением ищем в Stripe сам
+            // rent-инвойс этого ym (паттерн cross-flow dedupe runAutoInvoices:
+            // metadata.ym + purpose=rent): status='paid' с реальной суммой →
+            // SKIP + опортунистический heal леджера (Entry 74: захват rec
+            // ВНУТРИ mutate + _writePaymentV2). Ошибка поиска = fail-closed:
+            // месяц НЕ штрафуем (следующий крон повторит). graceDays/config
+            // логика не тронута — гейт стоит ПОСЛЕ расчёта overdue.
+            {
+              const _mRec = u.payments && u.payments[o.ym];
+              const _mSettledLocal = !!(_mRec && ['paid', 'free', 'waived'].includes(_mRec.status));
+              // Dissent-гейт (адверсариальный аудит 2026-07-03, P1): Stripe
+              // НИКОГДА не откатывает invoice.status='paid' после полного
+              // рефанда или проигранного спора (amount_paid тоже замерзает).
+              // Леджер-статусы 'refunded' (handleChargeRefunded), 'bounced'
+              // (handleChargeDisputeClosed) и 'partial' — авторитетное
+              // НЕСОГЛАСИЕ с замороженным Stripe-'paid': деньги ушли обратно.
+              // Без этого гейта settled-check нашёл бы paid-инвойс → SKIP +
+              // heal перезаписал бы refunded/bounced обратно в 'paid' —
+              // реально неоплаченный месяц навсегда освобождён от пени, а
+              // FINANCIAL_INVARIANTS нарушен (chargeback показан собранным).
+              // Dissent → Stripe не спрашиваем вовсе, месяц идёт в штраф
+              // (= поведение ДО этого диффа).
+              const _mDissent = !!(_mRec && ['refunded', 'bounced', 'partial'].includes(_mRec.status));
+              if (!_mSettledLocal && !_mDissent) {
+                let _paidRent = null;
+                try {
+                  const rentQ = `customer:"${customerId}" AND metadata["unitId"]:"${u.id}" `
+                              + `AND metadata["purpose"]:"rent" AND metadata["ym"]:"${o.ym}" `
+                              + `AND status:"paid"`;
+                  const rentRes = await stripe.invoices.search({ query: rentQ, limit: 5 });
+                  // $0-shell (Entry 70 инвариант 3): paid с amount_paid=0 —
+                  // артефакт, НЕ оплата; месяц им не закрывается.
+                  _paidRent = (rentRes.data || []).find(inv =>
+                    inv.status === 'paid' && Number(inv.amount_paid ?? 0) > 0);
+                } catch (settledErr) {
+                  logger.warn(`[auto-late-fee] ${u.id}/${o.ym}: rent-settled check failed (${settledErr.message}) — fail-closed, NOT fining this month`);
+                  skipped++;
+                  continue;
+                }
+                if (_paidRent) {
+                  logger.warn(`[auto-late-fee] ${u.id}/${o.ym}: rent invoice ${_paidRent.id} is PAID on Stripe but ledger row is '${(_mRec && _mRec.status) || '(none)'}' — SKIP fee + healing ledger (класс Suite 417)`);
+                  // ── Опортунистический heal леджера (Entry 74 паттерн).
+                  // Провал heal'а НЕ отменяет SKIP — штраф не шлём в любом случае.
+                  try {
+                    const invFull = await stripe.invoices.retrieve(_paidRent.id);
+                    // Entry 70 инвариант 2: сумма ренты = ТОЛЬКО rent-line-item'ы
+                    // (на инвойсе может ехать service/late-fee) — не amount_paid.
+                    const rentLineCents = (invFull.lines?.data || [])
+                      .filter((ln) => ln?.metadata?.purpose === 'rent')
+                      .reduce((sum, ln) => sum + (+ln.amount || 0), 0);
+                    if (rentLineCents > 0) {
+                      const healPaidAt = (invFull.status_transitions?.paid_at || Math.floor(Date.now() / 1000)) * 1000;
+                      let healRecForMirror = null;   // Entry 74: захват ВНУТРИ mutate
+                      await mutateWorkspaceState((s) => {
+                        healRecForMirror = null;     // сброс на transaction-retry мутатора
+                        const fh = findUnit(s, {buildingId: b.id, floorId: f.id, unitId: u.id});
+                        if (!fh) return;
+                        fh.unit.payments = fh.unit.payments || {};
+                        const prior = fh.unit.payments[o.ym] || {};
+                        // Гонка с вебхуком: уже settled реальной суммой — не трогаем.
+                        if (prior.status === 'paid' && (+prior.amount || 0) > 0) return;
+                        // Гонка с refund/dispute-вебхуком (P1 2026-07-03): строка
+                        // могла флипнуться в refunded/bounced/partial МЕЖДУ нашим
+                        // внешним чтением и этой транзакцией — heal НЕ воскрешает
+                        // возвращённые деньги обратно в 'paid'.
+                        if (['refunded', 'bounced', 'partial'].includes(prior.status)) return;
+                        const priorHistory = Array.isArray(prior.history) ? prior.history.slice() : [];
+                        if (prior.status) {
+                          priorHistory.push({
+                            ts: new Date().toISOString(),
+                            status: prior.status, amount: prior.amount || 0,
+                            paidVia: prior.paidVia || null,
+                            invoiceId: prior.stripe?.invoiceId || prior.stripeInvoiceId || null,
+                            replacedBy: invFull.id, replacedReason: 'late-fee-cron-heal',
+                          });
+                          while (priorHistory.length > 10) priorHistory.shift();
+                        }
+                        fh.unit.payments[o.ym] = {
+                          status: 'paid',
+                          amount: rentLineCents / 100,
+                          date: new Date(healPaidAt).toISOString().slice(0, 10),
+                          // Спрэд discount-полей (Entry 72) — heal не стирает след скидки.
+                          ..._discountFieldsOf(prior),
+                          ...(priorHistory.length ? { history: priorHistory } : {}),
+                          stripe: {
+                            invoiceId: invFull.id,
+                            chargeId: invFull.charge || null,
+                            hostedInvoiceUrl: invFull.hosted_invoice_url || null,
+                            paidAt: healPaidAt,
+                            linkedVia: 'late-fee-cron-heal',
+                          },
+                        };
+                        // Entry 71: lastInvoiceYm только ВПЕРЁД, назад — никогда.
+                        fh.unit.stripe = fh.unit.stripe || {};
+                        {
+                          const _curStampYm = String(fh.unit.stripe.lastInvoiceYm || '');
+                          if (/^\d{4}-\d{2}$/.test(o.ym) && (!/^\d{4}-\d{2}$/.test(_curStampYm) || o.ym >= _curStampYm)) {
+                            fh.unit.stripe.lastInvoiceId = invFull.id;
+                            fh.unit.stripe.lastInvoiceYm = o.ym;
+                          }
+                        }
+                        healRecForMirror = fh.unit.payments[o.ym];
+                      });
+                      if (healRecForMirror) {
+                        // Entry 70/74: под strip единственная живучая запись —
+                        // payments-коллекция; зеркалим захваченный rec.
+                        try {
+                          const syncState = await _stateIfSyncV2();
+                          if (syncState) {
+                            await _writePaymentV2(b.id, f.id, u.id, o.ym, healRecForMirror);
+                          }
+                        } catch (mirrErr) {
+                          logger.warn(`[auto-late-fee] ${u.id}/${o.ym}: heal mirror-v2 failed: ${mirrErr.message}`);
+                        }
+                        // Синхронизируем in-loop копию юнита: финальный
+                        // _lfStripePatch делает ПОЛНЫЙ replace u.stripe — без
+                        // этого heal-штамп откатился бы назад (Entry 71).
+                        u.payments = u.payments || {};
+                        u.payments[o.ym] = healRecForMirror;
+                        u.stripe = u.stripe || {};
+                        {
+                          const _loopStampYm = String(u.stripe.lastInvoiceYm || '');
+                          if (!/^\d{4}-\d{2}$/.test(_loopStampYm) || o.ym >= _loopStampYm) {
+                            u.stripe.lastInvoiceId = invFull.id;
+                            u.stripe.lastInvoiceYm = o.ym;
+                          }
+                        }
+                        try {
+                          await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+                            ts: admin.firestore.FieldValue.serverTimestamp(),
+                            actor: 'system:auto-late-fee-cron',
+                            action: 'payment.mark-paid',
+                            source: 'cron-heal',
+                            buildingId: b.id, floorId: f.id, unitId: u.id,
+                            ym: o.ym,
+                            amount: healRecForMirror.amount,
+                            invoiceId: invFull.id,
+                            note: `Late-fee cron heal: rent invoice ${invFull.id} PAID on Stripe but ledger was '${(_mRec && _mRec.status) || '(none)'}' — ledger healed, late fee skipped`,
+                          });
+                        } catch {}
+                      }
+                    } else {
+                      logger.warn(`[auto-late-fee] ${u.id}/${o.ym}: paid rent invoice ${_paidRent.id} has no rent-purpose lines — fee skipped, ledger NOT healed (manual attribution)`);
+                    }
+                  } catch (healErr) {
+                    logger.warn(`[auto-late-fee] ${u.id}/${o.ym}: ledger heal failed (fee still skipped): ${healErr.message}`);
+                  }
+                  skipped++;
+                  continue;
+                }
+              }
+            }
+
             // Cross-flow dedupe vs MANUAL sends. createStripeInvoice can
             // also emit purpose='late_fee' invoices (operator clicks
             // "Send late fee" in the unit drawer); without this guard
@@ -4449,13 +6174,49 @@ async function _runAutoLateFeesHandler(opts) {
               const dupQ = `customer:"${customerId}" AND metadata["unitId"]:"${u.id}" `
                          + `AND metadata["purpose"]:"late_fee" AND metadata["ym"]:"${o.ym}"`;
               const dupRes = await stripe.invoices.search({ query: dupQ, limit: 5 });
-              const liveDup = (dupRes.data || []).find(inv =>
-                !['void', 'uncollectible', 'deleted'].includes(inv.status));
+              const liveDup = (dupRes.data || []).find(inv => {
+                if (['void', 'uncollectible', 'deleted'].includes(inv.status)) return false;
+                // $0-пустой артефакт (класс backfill-бага 2026-07, зеркало
+                // rent-cron): Stripe авто-помечает $0-инвойс PAID на finalize —
+                // он НЕ считается выставленным late fee и НЕ должен штамповать
+                // lateFeeSent (иначе ребиллинг заблокирован навсегда).
+                const total = Number(inv.total ?? inv.amount_due ?? 0);
+                const amtPaid = Number(inv.amount_paid ?? 0);
+                const lineCount = inv.lines?.total_count ?? (inv.lines?.data?.length ?? 0);
+                if (total === 0 && amtPaid === 0 && lineCount === 0) return false;
+                return true;
+              });
               if (liveDup) {
+                // Stuck-DRAFT resume (адверсариальный аудит 2026-07-03): с
+                // auto_advance:false transient-провал finalize прошлого прогона
+                // оставляет ДРАФТ с реальной строкой (>$0 — $0-shell отсеян
+                // выше); Stripe сам его НЕ финализирует. Штамповать драфт
+                // нельзя — пеня «выставлена» не была бы никогда, тихо.
+                // Возобновляем: finalize (+send) → штамп финализованного id.
+                // Ошибка resume = fail-closed: без штампа, retry следующим кроном.
+                if (liveDup.status === 'draft') {
+                  try {
+                    const resumed = await stripe.invoices.finalizeInvoice(liveDup.id);
+                    if (resumed.collection_method === 'send_invoice') {
+                      await stripe.invoices.sendInvoice(resumed.id);
+                    }
+                    logger.info(`[auto-late-fee] ${u.id}/${o.ym}: resumed stuck DRAFT ${liveDup.id} → finalized${resumed.collection_method === 'send_invoice' ? '+sent' : ' (auto-charge)'}; stamping`);
+                    u.stripe = u.stripe || {};
+                    u.stripe.lateFeeSent = u.stripe.lateFeeSent || {};
+                    u.stripe.lateFeeSent[o.ym] = resumed.id;
+                    _lfStripePatch[unitKey] = u.stripe;
+                    sent++;
+                  } catch (resumeErr) {
+                    logger.warn(`[auto-late-fee] ${u.id}/${o.ym}: stuck draft ${liveDup.id} resume failed (${resumeErr.message}) — NO stamp, retry next run`);
+                    skipped++;
+                  }
+                  continue;
+                }
                 logger.info(`[auto-late-fee] ${u.id}: late-fee for ${o.ym} already exists (${liveDup.id}, ${liveDup.status}); stamping + skipping`);
                 u.stripe = u.stripe || {};
                 u.stripe.lateFeeSent = u.stripe.lateFeeSent || {};
                 u.stripe.lateFeeSent[o.ym] = liveDup.id;
+                _lfStripePatch[unitKey] = u.stripe;
                 skipped++;
                 continue;
               }
@@ -4465,21 +6226,10 @@ async function _runAutoLateFeesHandler(opts) {
 
             const description = `Late fee — ${o.monthLabel} unpaid · Suite ${u.id}`;
             const dueDays = 0;  // late fees due IMMEDIATELY — penalty за rent, без дополнительного grace
-            const idempotencyKey = `auto-lf-${u.id}-${o.ym}`;
-
-            // Invoice item line
-            await stripe.invoiceItems.create({
-              customer: customerId,
-              amount: Math.round(o.fee * 100),
-              currency: 'usd',
-              description,
-              metadata: {
-                unitId: u.id, buildingId: b.id, floorId: f.id,
-                ym: o.ym, purpose: 'late_fee', source: 'auto',
-                baseAmount: String(o.base),
-                feeType: cfg.type, feeAmount: String(cfg.amount),
-              },
-            }, { idempotencyKey: idempotencyKey + '-item' });
+            // Ключ версионирован (AUTO_INV_KEY_VER, как в rent-cron): invoice-first
+            // меняет параметры invoices.create — старый ключ `auto-lf-…` в
+            // 24ч-кэше Stripe дал бы param-mismatch ошибку при перевыставлении.
+            const idempotencyKey = `auto-lf-${AUTO_INV_KEY_VER}-${u.id}-${o.ym}`;
 
             // Auto-charge routing — same logic as runAutoInvoices. If
             // workspace+unit auto-charge is on AND tenant has a saved
@@ -4522,23 +6272,32 @@ async function _runAutoLateFeesHandler(opts) {
               `Landlord: ${_autoLandlordName}${_autoLandlordEmail ? ' · ' + _autoLandlordEmail : ''}`,
             ].join(' · ');
 
+            // === Invoice-first (аудит P1 2026-07-03, правило №6; зеркало
+            // rent-cron фикса $0-инцидента 2026-07): (B) invoice ПЕРВЫМ с
+            // pending_invoice_items_behavior:'exclude' + auto_advance:false;
+            // (C) строка по invoice:inv.id; (F) явный finalize; (G) send.
+            // Старый порядок (pending item БЕЗ invoice:id → invoices.create с
+            // auto_advance:true) — тот же паттерн, что дал $0-инвойсы в июле:
+            // pending item не подметается текущим Stripe API. ===
             const inv = await stripe.invoices.create({
               customer: customerId,
-              auto_advance: true,
+              auto_advance: false,
               collection_method: acMethod,
               ...(acMethod === 'send_invoice' ? { days_until_due: dueDays } : {}),
               ...(acPaymentSettings ? { payment_settings: acPaymentSettings } : {}),
+              pending_invoice_items_behavior: 'exclude',
               metadata: {
                 unitId: u.id, buildingId: b.id, floorId: f.id,
-                ym: o.ym, purpose: 'late_fee', source: 'auto',
+                ym: o.ym, purpose: 'late_fee', source: 'auto', workspaceId: WORKSPACE_ID, auto: '1',
               },
               description,
               footer: _autoFooter,
             }, { idempotencyKey });
 
             // Custom invoice number — "L-" prefix per PURPOSE_CODE.late_fee
+            // (номер ставится на драфте, ДО finalize — после нельзя).
             const lfNumber = buildCustomInvoiceNumber({
-              purpose: 'late_fee', unitId: u.id, ym: o.ym, auto: false,
+              purpose: 'late_fee', unitId: u.id, ym: o.ym, auto: false, code: buildingInvoiceCode(b),
             });
             try {
               await stripe.invoices.update(inv.id, { number: lfNumber });
@@ -4546,18 +6305,44 @@ async function _runAutoLateFeesHandler(opts) {
               logger.warn(`[auto-late-fee] ${u.id}/${o.ym}: couldn't set number ${lfNumber} — ${e.message}`);
             }
 
+            // Late-fee строка ЯВНО по invoice:inv.id (не pending).
+            await stripe.invoiceItems.create({
+              customer: customerId,
+              invoice: inv.id,
+              amount: Math.round(o.fee * 100),
+              currency: 'usd',
+              description,
+              metadata: {
+                unitId: u.id, buildingId: b.id, floorId: f.id,
+                ym: o.ym, purpose: 'late_fee', source: 'auto', workspaceId: WORKSPACE_ID, auto: '1',
+                baseAmount: String(o.base),
+                feeType: cfg.type, feeAmount: String(cfg.amount),
+              },
+            }, { idempotencyKey: idempotencyKey + '-item' });
+
+            // Явный finalize (auto_advance:false) — для charge_automatically
+            // карта дебетуется на finalize, как в rent-cron.
+            const finalized = await stripe.invoices.finalizeInvoice(inv.id);
+
             if (acMethod === 'send_invoice') {
-              await stripe.invoices.sendInvoice(inv.id);
+              // Ошибку send НЕ глотаем: штамп lateFeeSent пишется ТОЛЬКО после
+              // подтверждённого успеха (инвариант «штамп никогда не движется
+              // назад/вперёд без факта», Entry 71 spirit). При провале send
+              // финализованный инвойс подхватит dup-search следующего прогона
+              // (застампит + skip — дубля не будет).
+              await stripe.invoices.sendInvoice(finalized.id);
             } else {
               logger.info(`[auto-late-fee] ${u.id}/${o.ym}: auto-charging saved card (charge_automatically)`);
             }
 
-            // Stamp — preventing re-billing on next cron tick.
+            // Stamp — ТОЛЬКО после подтверждённого успеха finalize(+send);
+            // per-ym map, назад не движется. Preventing re-billing on next tick.
             u.stripe = u.stripe || {};
             u.stripe.lateFeeSent = u.stripe.lateFeeSent || {};
-            u.stripe.lateFeeSent[o.ym] = inv.id;
+            u.stripe.lateFeeSent[o.ym] = finalized.id;
+            _lfStripePatch[unitKey] = u.stripe;
             sent++;
-            logger.info(`[auto-late-fee] sent to ${u.email} (${u.id}/${o.ym}) · $${o.fee.toFixed(2)} · ${inv.id}`);
+            logger.info(`[auto-late-fee] sent to ${_maskEmail(u.email)} (${u.id}/${o.ym}) · $${o.fee.toFixed(2)} · ${finalized.id}`); // PII-маск (аудит P2)
             // Audit per-fee assessed (Tony Phase 2). Unit Activity tab will
             // show «Late fee assessed» events with amount + ym + invoiceId.
             try {
@@ -4584,17 +6369,21 @@ async function _runAutoLateFeesHandler(opts) {
     }
   }
 
-  // Persist updated state if anything was actually invoiced.
+  // Persist lateFeeSent stamps — strip-aware. mutateWorkspaceState ре-стрипит
+  // монолит и зеркалит изменённые здания в под-доки (при strip off — обычная
+  // запись). Прямой stateRef.set(гидрированного state) под strip раздул бы
+  // монолит зданиями обратно.
   if (sent > 0) {
-    state._rev = (state._rev || 0) + 1;
-    await stateRef.set(
-      {
-        state, _rev: state._rev,
-        _updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        _updatedBy: 'auto-late-fee',
-      },
-      { merge: true }
-    );
+    await mutateWorkspaceState((s) => {
+      for (const b of (s.buildings || [])) {
+        for (const f of (b.floors || [])) {
+          for (const u of (f.units || [])) {
+            const _p = _lfStripePatch[`${b.id}|${f.id}|${u.id}`];
+            if (_p) u.stripe = _p;
+          }
+        }
+      }
+    });
   }
 
   // Persist checkpoint + dry-run summary (capped at 50 actions so the
@@ -4738,6 +6527,19 @@ async function _writeBackupSnapshot({ workspaceId, docId, capturedBy, reason }) 
   }
   const stateDoc = stateSnap.data() || {};
   const stateBody = stateDoc.state || {};
+  // КРИТИЧНО (инцидент 2026-06-09, CLAUDE.md §0.1 «Backups must cover
+  // collections»): под strip-ON монолит несёт buildings:[] — без регидрации
+  // КАЖДЫЙ снапшот хранит ноль данных зданий (и payments живут в коллекции).
+  // Регидрируем тем же strip-aware путём, что и readWorkspaceState: здания
+  // из коллекции + payments вмержены в u.payments. Размер вырастает >800KB →
+  // уходит в существующий chunked-путь (restore его уже умеет).
+  await _rehydrateStateForStripCF(stateBody);
+  // Регидрация глотает свои ошибки (logger.warn) — для БЭКАПА пустые
+  // здания под strip-ON недопустимы: лучше громко упавший крон, чем
+  // месяцы «успешных» бэкапов-пустышек (ровно это и случилось до фикса).
+  if (_stripOnCF(stateBody) && (!Array.isArray(stateBody.buildings) || stateBody.buildings.length === 0)) {
+    throw new Error('Backup rehydrate failed — refusing to write an empty-buildings snapshot under strip-ON');
+  }
   const json = JSON.stringify(stateBody);
   const sizeBytes = Buffer.byteLength(json, 'utf8');
 
@@ -4814,7 +6616,17 @@ async function _writeBackupSnapshot({ workspaceId, docId, capturedBy, reason }) 
     state: stateMinusBuildings,
   });
   await batch.commit();
-  logger.info(`[backup] chunked ${docId} into ${chunks.length} chunks (${sizeBytes}B total)`);
+  // Verify read-back и для chunked-пути (зеркалит inline-верификацию):
+  // пересобираем чанки и сверяем число зданий — тихий partial-write не
+  // должен месяцами выглядеть успешным бэкапом.
+  const reread = await _readBackupSnapshotBody(workspaceId, docId);
+  const gotBuildings = (reread && reread.state && Array.isArray(reread.state.buildings))
+    ? reread.state.buildings.length : -1;
+  if (gotBuildings !== buildings.length) {
+    logger.error(`[backup] CHUNKED VERIFY FAILED for ${docId} — expected ${buildings.length} buildings, got ${gotBuildings}`);
+    throw new Error('Chunked backup verify failed — read-back mismatch');
+  }
+  logger.info(`[backup] chunked ${docId} into ${chunks.length} chunks (${sizeBytes}B total, ${buildings.length} buildings verified)`);
   return { docId, sizeBytes, _rev: stateDoc._rev || 0, chunked: true, chunkCount: chunks.length };
 }
 
@@ -4881,10 +6693,20 @@ async function _pruneOldBackups({ workspaceId, retainDays = 90 }) {
     .limit(450)                        // batch limit headroom (Firestore: 500)
     .get();
   if (snap.empty) return { deleted: 0 };
-  const batch = db.batch();
-  snap.docs.forEach(d => batch.delete(d.ref));
-  await batch.commit();
-  return { deleted: snap.size, hasMore: snap.size === 450 };
+  // КАСКАД: chunked-бэкапы несут сабколлекцию /chunks — Firestore не удаляет
+  // сабколлекции вместе с родителем. Без явной зачистки прюнинг плодит вечных
+  // сирот (после регидрации КАЖДЫЙ снапшот chunked, ~10 чанков на бэкап).
+  // Один батч на бэкап: chunks (≤ десятков) + родитель — всегда < 500 опов.
+  let deleted = 0;
+  for (const d of snap.docs) {
+    const chunkSnap = await db.collection(d.ref.path + '/chunks').select().get();
+    const batch = db.batch();
+    chunkSnap.docs.forEach((c) => batch.delete(c.ref));
+    batch.delete(d.ref);
+    await batch.commit();
+    deleted++;
+  }
+  return { deleted, hasMore: snap.size === 450 };
 }
 
 // Monthly backup-restorability check. Picks a random recent backup
@@ -4917,7 +6739,10 @@ exports.monthlyBackupVerify = onSchedule(
     // ages/sizes over the year.
     const pick = snap.docs[Math.floor(Math.random() * snap.docs.length)];
     const id = pick.id;
-    const body = pick.data() || {};
+    // ЧЕРЕЗ _readBackupSnapshotBody, не pick.data(): chunked-бэкапы (после
+    // регидрации — все частые) держат buildings в сабколлекции; чтение
+    // только главного дока давало бы ложный аларм «buildings empty».
+    const body = (await _readBackupSnapshotBody(WORKSPACE_ID, id)) || {};
     const errors = [];
     if (!body.state) errors.push('no .state field');
     else {
@@ -4987,13 +6812,18 @@ async function _pruneOldFrequentBackups({ workspaceId, retentionHours = FREQUENT
     .get();
   if (snap.empty) return { deleted: 0 };
   const FREQ_ID = /^\d{4}-\d{2}-\d{2}-\d{4}$/;
-  const batch = db.batch();
+  // КАСКАД chunks — см. _pruneOldBackups: сабколлекция не удаляется с
+  // родителем; в типичном прогоне истекает 1 снапшот → 1 батч (~11 опов).
   let n = 0;
-  snap.docs.forEach(d => {
-    if (FREQ_ID.test(d.id)) { batch.delete(d.ref); n++; }
-  });
-  if (n === 0) return { deleted: 0 };
-  await batch.commit();
+  for (const d of snap.docs) {
+    if (!FREQ_ID.test(d.id)) continue;
+    const chunkSnap = await db.collection(d.ref.path + '/chunks').select().get();
+    const batch = db.batch();
+    chunkSnap.docs.forEach((c) => batch.delete(c.ref));
+    batch.delete(d.ref);
+    await batch.commit();
+    n++;
+  }
   return { deleted: n, hasMore: snap.size === 450 };
 }
 
@@ -6477,7 +8307,7 @@ function _unitUnpaidInvoices(u, asOfYm) {
   const startYm = _ymForDate(startD);
   if (!startYm || startYm > asOfYm) return out;
   let endYm = asOfYm;
-  if (u.until) {
+  if (u.until && !_isMonthToMonth(u)) {   // M2M/открытая лиза — не капим по until
     const untilYm = _ymForDate(new Date(u.until));
     if (untilYm && untilYm < endYm) endYm = untilYm;
   }
@@ -6897,7 +8727,7 @@ function _findOldestUnpaidYm(u, txn) {
   // Чаще всего рент платится в текущем или предыдущем месяце.
   const leaseStartIso = u.leaseStart || u.signed || null;
   const leaseStart = leaseStartIso ? new Date(leaseStartIso + 'T00:00:00') : null;
-  const leaseEnd = u.until ? new Date(u.until + 'T00:00:00') : null;
+  const leaseEnd = (u.until && !_isMonthToMonth(u)) ? new Date(u.until + 'T00:00:00') : null;  // M2M — без потолка
   // Сначала смотрим txn-month, потом предыдущий, потом дальше назад.
   // Сходим с того что bank-txn пришла за тот же или прошлый месяц.
   const candidates = [];
@@ -7831,11 +9661,15 @@ exports.confirmBankMatch = onCall(
     // (исходный цикл искал юнит ТОЛЬКО по unitId — building/floor не были в
     // области видимости снаружи). Сбрасываем в начале каждой попытки txn —
     // Firestore транзакции могут повториться при contention.
+    // Entry 70 / audit P0 2026-07-03: сам rec тоже захватываем внутри mutate —
+    // post-mutate re-read под strip рехидрировался из ещё-не-обновлённой
+    // коллекции и молча зеркалил старый rec (или пропускал зеркало).
     let capturedB = null;
     let capturedF = null;
+    let capturedRec = null;
     if (recordPayment) {
       await mutateWorkspaceState((s) => {
-        capturedB = null; capturedF = null;
+        capturedB = null; capturedF = null; capturedRec = null;
         outer: for (const b of s.buildings || []) {
           for (const f of b.floors || []) {
             for (const u of f.units || []) {
@@ -7853,6 +9687,8 @@ exports.confirmBankMatch = onCall(
                 bankTxnId: txnId,
                 confirmedBy: operatorEmail,
               };
+              // Entry 70: захват свежезаписанного rec для зеркала после commit'а.
+              capturedRec = u.payments[ym];
               break outer;
             }
           }
@@ -7870,14 +9706,13 @@ exports.confirmBankMatch = onCall(
     }, { merge: true });
 
     // Phase 1 dual-write — зеркалим bank-confirmed payment в v2-коллекцию.
-    if (recordPayment && capturedB) {
+    // Entry 70 / audit P0 2026-07-03: rec захвачен внутри mutate (capturedRec),
+    // re-read убран — под strip он терял свежую мутацию; gate остаётся.
+    if (recordPayment && capturedB && capturedRec) {
       try {
         const syncState = await _stateIfSyncV2();
         if (syncState) {
-          const f = findUnit(syncState, {buildingId: capturedB, floorId: capturedF, unitId});
-          if (f && f.unit.payments && f.unit.payments[ym]) {
-            await _writePaymentV2(capturedB, capturedF, unitId, ym, f.unit.payments[ym]);
-          }
+          await _writePaymentV2(capturedB, capturedF, unitId, ym, capturedRec);
         }
       } catch (e) {
         logger.warn(`[mirror-v2:bank-feed] ${unitId}/${ym}: ${e.message}`);
@@ -8792,4 +10627,94 @@ exports.getScalingReconcileHistory = onCall(
     return { ok: true, kind, limit, totalFound: all.length, items };
   }
 );
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PropertyPulse read-only export (Option A — docs/integration-recon.md).
+// Сервис-к-сервису HTTPS endpoint: PropertyPulse тянет коворкинг-данные SFA
+// (buildings → floors → units: tenant/company, lease, payments, stripe-указатели)
+// для read-only зеркала у себя. SFA остаётся источником истины; назад ничего.
+//
+// ГАРАНТИИ:
+//  • ЧИСТОЕ ЧТЕНИЕ — переиспользует write-free readWorkspaceState() (strip-aware:
+//    дотягивает здания/платежи из коллекций через .get(), без единой записи).
+//    НИКОГДА не вызывает mutateWorkspaceState и ничего не пишет в Firestore.
+//  • Auth — общий секрет PP_EXPORT_API_KEY (constant-time сравнение), не аноним.
+//  • Версионируется schemaVersion (ppExport.js).
+//  • firestore.rules НЕ меняются: Admin SDK обходит правила, PropertyPulse сам
+//    в Firestore не ходит — только зовёт этот endpoint.
+//  • Существующие функции / stripeWebhook / платёжные пути не тронуты.
+// ═══════════════════════════════════════════════════════════════════════════
+const PP_EXPORT_API_KEY = defineSecret('PP_EXPORT_API_KEY');
+const _ppExport = require('./ppExport');
+
+exports.ppOfficeExport = onRequest(
+  { secrets: [PP_EXPORT_API_KEY], cors: false },
+  async (req, res) => {
+    try {
+      // Только чтение: GET/HEAD. Тело запроса не парсим.
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        res.set('Allow', 'GET, HEAD');
+        res.status(405).json({ error: 'method_not_allowed' });
+        return;
+      }
+      // Сервис-к-сервису auth: общий секрет, constant-time сравнение.
+      // Несконфигурированный секрет → expected '' → checkApiKey всегда deny.
+      let expected = '';
+      try { expected = PP_EXPORT_API_KEY.value() || ''; } catch (_) { expected = ''; }
+      const provided = _ppExport.extractApiKey(req);
+      if (!_ppExport.checkApiKey(provided, expected)) {
+        res.set('WWW-Authenticate', 'Bearer');
+        res.status(401).json({ error: 'unauthorized' });
+        return;
+      }
+      // ЧИСТОЕ ЧТЕНИЕ — strip-aware reader, без единой записи в Firestore.
+      const state = await readWorkspaceState();
+      const dto = _ppExport.ppBuildExportDTO(state, {
+        buildingId: (req.query && req.query.buildingId) ? String(req.query.buildingId) : null,
+        externalId: (req.query && req.query.externalId) ? String(req.query.externalId) : null,
+        excelId: (req.query && req.query.excelId) ? String(req.query.excelId) : null,
+        generatedAt: new Date().toISOString(),
+        workspaceId: WORKSPACE_ID,
+      });
+      if (req.method === 'HEAD') { res.status(200).end(); return; }
+      res.set('Cache-Control', 'no-store');
+      res.status(200).json(dto);
+    } catch (e) {
+      logger.error('[ppOfficeExport]', (e && e.message) || e);
+      res.status(500).json({ error: 'internal_error' });
+    }
+  }
+);
+
+// ─── PropertyPulse webhook-нотификатор (notify + pull) ──────────────────────
+// Сигнал building.changed → PP сам тянет ppOfficeExport?buildingId=…
+// Модуль самодостаточен (свой defineSecret PP_WEBHOOK_SECRET, runtime-конфиг
+// ppWebhookQueue/_config). Пишет ТОЛЬКО в ppWebhookQueue; buildings/payments/
+// монолит/Stripe не трогает. См. docs/pp-webhook-design.md.
+const _ppWebhook = require('./pp-webhook');
+exports.ppNotifyBuildingChanged = _ppWebhook.ppNotifyBuildingChanged;
+exports.ppNotifyPaymentChanged = _ppWebhook.ppNotifyPaymentChanged;
+exports.ppWebhookFlushScheduled = _ppWebhook.ppWebhookFlushScheduled;
+
+// ─── Серверный алерт-триггер регрессий зданий (Ф3 stale-tab-protection) ──────
+// ВТОРОЙ onDocumentWritten на buildings/{bid} (рядом с ppNotifyBuildingChanged).
+// Сравнивает before/after и пишет алерт-док в top-level clobberAlerts при
+// сигнатурах инцидента 2026-06-09 (_savedRev-понижение / падение occupancy /
+// исчезновение code / wipe юнитов). Пишет ТОЛЬКО в clobberAlerts; buildings/
+// payments/монолит/Stripe не трогает; никогда не кидает (retry:false).
+// См. docs/incident-2026-06-09-suite344.md, FIXES_LOG 65/67.
+const _clobberAlert = require('./clobber-alert');
+exports.clobberAlertBuildingWrite = _clobberAlert.clobberAlertBuildingWrite;
+
+// ─── Тест-хуки (ТОЛЬКО под env-флагом) ──────────────────────────────────────
+// Деплой-дискавери firebase никогда не выставляет SFA_TEST_EXPORTS — в проде
+// этих экспортов не существует. Нужны эмуляторным тестам, которые проверяют
+// внутренние функции напрямую (functions/test-harness/test-mirror-savedrev.js).
+if (process.env.SFA_TEST_EXPORTS === '1') {
+  exports._test_mirrorBuildingV2CF = _mirrorBuildingV2CF;
+  exports._test_writeBackupSnapshot = _writeBackupSnapshot;
+  exports._test_readBackupSnapshotBody = _readBackupSnapshotBody;
+  exports._test_pruneOldFrequentBackups = _pruneOldFrequentBackups;
+  exports._test_pruneOldBackups = _pruneOldBackups;
+}
 
