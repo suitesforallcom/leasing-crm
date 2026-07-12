@@ -108355,7 +108355,9 @@ async function _dsReconcileEnvelopes() {
   catch (e) { console.warn('[ds-reconcile] audit log read failed', e); return; }
 
   // Walk audit log, identify 'send' actions, find target unit, push if missing.
-  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;   // last 30d only
+  // 90d (было 30d): конверты, отправленные в июне и потерянные в clobber-
+  // инцидентах, выпадали из 30-дневного окна и не восстанавливались.
+  const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
   const allUnits = (state.buildings || []).flatMap(b => (b.floors || [])
     .flatMap(f => (f.units || []).map(u => ({ u, bId: b.id, fId: f.id }))));
   const unitById = new Map(allUnits.map(x => [x.u.id, x]));
@@ -126532,6 +126534,58 @@ async function _dsPollOnce() {
 // Fetch the combined signed PDF + certificate of completion and stash
 // it in Firebase Storage so it's the durable source of truth (DocuSign
 // free tiers keep docs for a limited time; our copy is ours forever).
+// Восстановление потерянной записи конверта: doc-карточка в u.leaseDocuments
+// хранит envelopeId, но записи в u.leaseEnvelopes нет — потеряна в июньских
+// clobber-инцидентах (FIXES_LOG 65/67) или создана до Entry 22. Тянем детали
+// из DocuSign и восстанавливаем запись с РЕАЛЬНЫМ статусом: чип становится
+// честным, а архивация подписанного PDF — возможной.
+async function _dsReconstructEnvelopeRecord(envelopeId) {
+  let hit = null;
+  for (const b of state.buildings || []) {
+    for (const f of b.floors || []) {
+      for (const u of f.units || []) {
+        const doc = (u.leaseDocuments || []).find(d => d && d.envelopeId === envelopeId);
+        if (doc) { hit = { b, f, u, doc }; break; }
+      }
+      if (hit) break;
+    }
+    if (hit) break;
+  }
+  if (!hit) return null;
+  try {
+    const env = _dsIsJwtMode()
+      ? await _dsCallCF('dsGetEnvelope', { envelopeId })
+      : await docusignFetch(`/envelopes/${envelopeId}`);
+    if (!env || !env.status) return null;
+    const { b, f, u, doc } = hit;
+    const sentAt = env.sentDateTime || env.statusChangedDateTime || new Date().toISOString();
+    const rec = {
+      envelopeId,
+      status: env.status,
+      createdAt: sentAt,
+      sentAt,
+      lastChecked: new Date().toISOString(),
+      completedAt: env.completedDateTime || null,
+      recipientEmail: env?.recipients?.signers?.[0]?.email || u.email || null,
+      recipientName: env?.recipients?.signers?.[0]?.name || u.tenant || null,
+      subject: env.emailSubject || null,
+      mode: 'template',
+      leaseStart: doc.effectiveDate || u.signed || u.leaseStart || null,
+      leaseEnd: doc.expiresAt || u.until || null,
+      rent: +u.contractRent || +u.rent || 0,
+      backfilled: { at: new Date().toISOString(), source: 'doc_record_reconstruct' },
+    };
+    u.leaseEnvelopes = Array.isArray(u.leaseEnvelopes) ? u.leaseEnvelopes : [];
+    u.leaseEnvelopes.push(rec);
+    saveState();
+    console.info('[ds-reconstruct] envelope record restored from lease doc', envelopeId.slice(0, 8), 'status:', env.status);
+    return { b, f, u, env: rec };
+  } catch (e) {
+    console.warn('[ds-reconstruct] failed for', envelopeId, e);
+    return null;
+  }
+}
+
 // Backfill: конверты со status 'completed' но без signedPdfPath — подписанные
 // в период неработавшего поллинга (boot-race до 2026-07-11) или с упавшей
 // архивацией. _leaseCollectPending пропускает терминальные статусы, так что
@@ -126540,6 +126594,7 @@ async function _dsPollOnce() {
 async function _dsBackfillArchives() {
   if (!_dsHasValidToken()) return;
   const todo = [];
+  const seen = new Set();
   for (const b of state.buildings || []) {
     for (const f of b.floors || []) {
       for (const u of f.units || []) {
@@ -126547,8 +126602,20 @@ async function _dsBackfillArchives() {
         for (const env of (u.leaseEnvelopes || [])) {
           if (!env || env.status !== 'completed') continue;
           const envId = env.envelopeId || env.id;
-          if (!envId || env.signedPdfPath) continue;
+          if (!envId || env.signedPdfPath || seen.has(envId)) continue;
+          seen.add(envId);
           todo.push(envId);
+        }
+        // Подписанные doc-карточки с envelopeId, у которых запись конверта
+        // ПОТЕРЯНА (нет в u.leaseEnvelopes) — архиватор реконструирует её
+        // из DocuSign перед скачиванием.
+        for (const doc of (u.leaseDocuments || [])) {
+          if (!doc || !doc.envelopeId || seen.has(doc.envelopeId)) continue;
+          if (doc.status !== 'signed' && !doc.signedAt) continue;
+          const hasEnv = (u.leaseEnvelopes || []).some(e => e && (e.envelopeId || e.id) === doc.envelopeId);
+          if (hasEnv) continue;
+          seen.add(doc.envelopeId);
+          todo.push(doc.envelopeId);
         }
       }
     }
@@ -126564,10 +126631,26 @@ async function _dsBackfillArchives() {
 
 const _dsArchiveInflight = new Set();
 async function _dsArchiveSignedEnvelope(envelopeId) {
-  const found = _leaseFindEnvelope(envelopeId);
-  if (!found) return;
+  let found = _leaseFindEnvelope(envelopeId);
+  if (!found && typeof _dsReconstructEnvelopeRecord === 'function') {
+    // Запись конверта потеряна (июньские clobber-инциденты) — восстановить
+    // из DocuSign по envelopeId с doc-карточки. Раньше здесь был молчаливый
+    // return, и «Signed»-документ навсегда оставался без PDF.
+    found = await _dsReconstructEnvelopeRecord(envelopeId);
+  }
+  if (!found) {
+    console.warn('[ds-archive] no envelope record (and no doc to reconstruct from) for', envelopeId);
+    return;
+  }
   const { b, u, env } = found;
   if (env.signedPdfPath) return;   // already archived
+  // Реконструированная запись может оказаться НЕ completed (например, чип
+  // «Signed» врал из-за застывшего doc.status) — архивировать нечего;
+  // честный статус уже записан, UI перерисуется сам.
+  if (env.status && env.status !== 'completed') {
+    console.info('[ds-archive] envelope', envelopeId.slice(0, 8), 'is', env.status, '— nothing to archive');
+    return;
+  }
   // In-flight guard: boot-backfill и открытие документа могут дёрнуть
   // архивацию одного конверта одновременно — второй вызов не нужен.
   if (_dsArchiveInflight.has(envelopeId)) return;
