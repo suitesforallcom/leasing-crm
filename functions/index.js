@@ -8107,21 +8107,19 @@ exports.dsSendEnvelope = onCall(
       rent:           (envelopeMeta && envelopeMeta.rent != null) ? +envelopeMeta.rent : 0,
     };
 
-    // Transactional state push. Read state, walk to target unit, push
-    // envelope, write state back. Retries automatically on conflict.
-    const stateRef = db.doc(`workspaces/${WORKSPACE_ID}/data/state`);
+    // Transactional state push via the shared strip-aware helper.
+    // mutateWorkspaceState unwraps the {_rev,...,state:{...}} envelope,
+    // rehydrates buildings from the collection when the buildings strip
+    // is on, bumps _rev, and mirrors changed buildings back. The previous
+    // inline transaction did none of that, so on the wrapped production
+    // doc it always threw 'building not found' and the write silently
+    // no-oped — clients ran on the local-push fallback since Entry 22.
     let writeOk = false;
     try {
-      await db.runTransaction(async (tx) => {
-        const snap = await tx.get(stateRef);
-        if (!snap.exists) throw new Error('state document missing');
-        const state = snap.data() || {};
-        const b = (state.buildings || []).find(x => x.id === buildingId);
-        if (!b) throw new Error(`building ${buildingId} not found in state`);
-        const f = (b.floors || []).find(x => x.id === floorId);
-        if (!f) throw new Error(`floor ${floorId} not found in state`);
-        const u = (f.units || []).find(x => x.id === unitId);
-        if (!u) throw new Error(`unit ${unitId} not found in state`);
+      await mutateWorkspaceState((state) => {
+        const found = findUnit(state, { buildingId, floorId, unitId });
+        if (!found) throw new Error(`unit ${buildingId}/${floorId}/${unitId} not found in state`);
+        const u = found.unit;
 
         // Idempotency — if we already wrote this envelope (e.g. retry from
         // the same caller), skip. Caller's audit log entry already exists.
@@ -8143,8 +8141,6 @@ exports.dsSendEnvelope = onCall(
           recipientEmail,
           sentBy: caller.email || caller.uid,
         });
-
-        tx.set(stateRef, state);
       });
       writeOk = true;
     } catch (e) {
