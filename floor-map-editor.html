@@ -8585,6 +8585,33 @@
   .doc-modal-page[contenteditable="true"] { outline: none; }
   .doc-modal-page[contenteditable="true"]:focus { outline: none; }
 
+  /* PDF-режим превью: «бумага в бумаге» не нужна — у PDF-viewer'а свой
+     хром и своя страница. Модалка растягивается почти на весь экран,
+     iframe получает всю её площадь без отступов. !important нужен, чтобы
+     перебить inline max-width:900px на .doc-modal-shell. */
+  #docPreviewModal.pdf-mode .doc-modal-shell {
+    max-width: min(1400px, 96vw) !important;
+    width: 96vw;
+  }
+  #docPreviewModal.pdf-mode .doc-modal-paper {
+    padding: 0;
+    overflow: hidden;
+    background: #38383D;
+  }
+  #docPreviewModal.pdf-mode .doc-modal-page {
+    max-width: none;
+    height: 100%;
+    padding: 0;
+    margin: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent;
+  }
+  #docPreviewModal.pdf-mode .doc-modal-page iframe {
+    height: 100% !important;
+    display: block;
+  }
+
   .doc-modal-footer {
     padding: 12px 22px;
     border-top: 1px solid #E8E5DF;
@@ -124585,11 +124612,19 @@ function showDocPreview(opts) {
   if (titleEl)    titleEl.textContent    = opts.title || 'Document Preview';
   if (subEl)      subEl.textContent      = opts.sub   || 'Read-only preview. Close to return.';
   if (filenameEl) filenameEl.textContent = opts.filename || (opts.title || '') || '';
+  // pdf-mode: широкая модалка без «бумажных» отступов (у PDF-viewer'а свой
+  // хром); HTML-режим сохраняет paper-карточку. Класс ставится по контенту.
+  const modalEl = document.getElementById('docPreviewModal');
+  if (modalEl) modalEl.classList.toggle('pdf-mode', !!opts.pdfUrl);
   if (opts.pdfUrl) {
     // PDF mode — embed the file in an iframe so the operator stays
     // in-app instead of being yanked to a new browser tab. Replace any
-    // previous content (which might have been HTML).
-    const safeUrl = String(opts.pdfUrl).replace(/"/g, '%22');
+    // previous content (which might have been HTML). #view=FitH просит
+    // Chromium-viewer подогнать страницу по ШИРИНЕ (вместо дефолтных
+    // ~75% fit-page); фрагмент после query-параметров Storage валиден,
+    // не-Chromium браузеры его просто игнорируют.
+    const raw = String(opts.pdfUrl);
+    const safeUrl = (raw + (raw.includes('#') ? '' : '#view=FitH')).replace(/"/g, '%22');
     bodyEl.innerHTML = `<iframe src="${safeUrl}" title="${esc(opts.filename || 'Document')}"
       style="width:100%; height:80vh; border:none; background:white;"></iframe>`;
   } else {
