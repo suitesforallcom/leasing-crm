@@ -124593,16 +124593,30 @@ function showDocPreview(opts) {
     bodyEl.innerHTML = `<iframe src="${safeUrl}" title="${esc(opts.filename || 'Document')}"
       style="width:100%; height:80vh; border:none; background:white;"></iframe>`;
   } else {
-    // HTML mode — render directly into the styled .doc-modal-page card.
-    // Strip <script> tags as defense-in-depth even though the source
-    // is operator-authored.
-    // Аудит M10: вместо хрупкого regex-стрипа <script> используем полноценный
-    // DOMParser-санитайзер (убирает script/iframe/object/embed, on*-атрибуты
-    // и javascript:-ссылки) — он уже есть в файле (_uploadTplSanitizeHtml).
+    // HTML mode — render inside a SANDBOXED IFRAME, не в DOM приложения.
+    // Санитайзер сознательно сохраняет <style>-блоки документа (нужны для
+    // docx-fidelity), но вставленные через innerHTML они применялись ко
+    // ВСЕМУ приложению: `body { max-width: 6.5in; margin: 0 auto }` из
+    // lease-шаблона сжимал сайт по ширине (и оставался после закрытия,
+    // если close шёл через generic-фолбэк — см. closeMap). В iframe стили
+    // документа работают только на документ, как и задумано юристом.
+    // Аудит M10: DOMParser-санитайзер (_uploadTplSanitizeHtml) остаётся
+    // как защита от script/iframe/on*-атрибутов; sandbox="" — второй пояс.
     const safeHtml = (typeof _uploadTplSanitizeHtml === 'function')
       ? _uploadTplSanitizeHtml(opts.html || '')
       : (opts.html || '').replace(/<script[\s\S]*?<\/script>/gi, '');
-    bodyEl.innerHTML = safeHtml;
+    const frame = document.createElement('iframe');
+    frame.setAttribute('sandbox', '');   // no scripts, no navigation — read-only
+    frame.title = opts.filename || 'Document';
+    frame.style.cssText = 'width:100%; height:80vh; border:none; background:white;';
+    // Базовые стили идут ПЕРВЫМИ — собственный <style> документа (если есть)
+    // объявлен позже и переопределяет их, сохраняя авторскую вёрстку.
+    frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><style>
+      body { font-family: Georgia, 'Times New Roman', serif; font-size: 14px;
+             line-height: 1.55; color: #111; background: #fff; margin: 24px; }
+    </style></head><body>${safeHtml}</body></html>`;
+    bodyEl.innerHTML = '';
+    bodyEl.appendChild(frame);
   }
   document.getElementById('docPreviewModal').classList.add('active');
 }
@@ -158633,13 +158647,13 @@ function _installUniversalModalCloseButtons() {
     buildingModal:      'closeBuildingModal',
     cropModal:          'closeCropModal',
     rateEditModal:      '_closeRateEditModal',
-    docPreviewModal:    'closeDocPreview',
+    docPreviewModal:    '_closeDocPreview',
     docEditModal:       '_closeDocEditor',
     leaseTemplateModal: '_closeLeaseTemplateModal',
     addLeaseDocModal:   '_closeAddLeaseDocModal',
     addLeaseDocPickerModal: '_closeAddLeaseDocPicker',
     editLeaseDocModal:  '_closeEditLeaseDocModal',
-    detectModal:        'closeDetectModal',
+    detectModal:        'closeDetect',
     stubModal:          'closeStubModal',
     createInvoiceModal: 'closeCreateInvoiceModal',
     reconcileModal:     'closeReconcileModal',
@@ -158647,10 +158661,10 @@ function _installUniversalModalCloseButtons() {
     contractModal:      'closeContractModal',
     promiseModal:       'closePromiseModal',
     lateFeeModal:       'closeLateFeeModal',
-    employeeEditModal:  'closeEmployeeEditModal',
+    employeeEditModal:  'closeEmployeeEdit',
     newTenantOnboardingModal: 'closeNewTenantOnboarding',
-    tourCreditModal:    'closeTourCreditModal',
-    unitInvoiceReportModal: 'closeUnitInvoiceReportModal',
+    tourCreditModal:    'closeTourCredit',
+    unitInvoiceReportModal: 'closeUnitInvoiceReport',
     commissionModal:    'closeCommissionModal',
     commUnitsModal:     'closeCommUnitsModal',
     scopeModal:         'closeScopeModal',
