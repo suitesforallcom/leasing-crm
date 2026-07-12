@@ -31642,8 +31642,26 @@ async function fbActivateWorkspaceSync() {
     // so admins/managers can send leases without each running OAuth in
     // their own browser. No-op for non-eligible roles. Fire-and-forget —
     // the rest of init shouldn't block on a Firestore round-trip.
-    if (typeof _dsSyncInit === 'function') {
-      _dsSyncInit().catch(err => console.warn('[ds-sync] init failed:', err));
+    // Lease polling is chained onto the SAME promise: its gate reads
+    // _dsHasValidToken(), which in JWT mode is only correct after
+    // _dsLoadJwtMode()'s Firestore probe resolves — evaluating the gate
+    // synchronously during init meant polling never started in JWT mode
+    // and envelope statuses froze at 'sent'.
+    {
+      const _dsBootPoll = () => {
+        try {
+          if (typeof _dsStartLeasePolling === 'function' && _dsHasValidToken() && _leaseCollectPending().length > 0) {
+            _dsStartLeasePolling();
+          }
+        } catch (e) { console.warn('[ds-poll-boot]', e); }
+      };
+      if (typeof _dsSyncInit === 'function') {
+        _dsSyncInit()
+          .catch(err => console.warn('[ds-sync] init failed:', err))
+          .then(_dsBootPoll);
+      } else {
+        _dsBootPoll();
+      }
     }
 
     // Prewarm the Team panel cache for admins. The three Firestore
@@ -31685,14 +31703,8 @@ async function fbActivateWorkspaceSync() {
     // and now opened the app on a desktop, the layout follows them.
     fbPullUiPrefs().catch(err => console.warn('[ui-prefs]', err));
 
-    // DocuSign lease polling — start if there are any pending envelopes
-    // on state. Terminal-only state means no-op; tokens missing means
-    // no-op. The loop self-stops once everything is terminal.
-    try {
-      if (typeof _dsStartLeasePolling === 'function' && _dsHasValidToken() && _leaseCollectPending().length > 0) {
-        _dsStartLeasePolling();
-      }
-    } catch (e) { console.warn('[ds-poll-boot]', e); }
+    // DocuSign lease polling now starts via _dsBootPoll above, chained
+    // after _dsSyncInit() so the JWT-mode cache is populated first.
 
     return true;
   } catch (err) {
@@ -93128,8 +93140,9 @@ function _leaseDocResend(docId) {
   const u = currentUnits().find(x => x.id === selectedIds[0]);
   const doc = u?.leaseDocuments?.find(d => d.id === docId);
   if (!doc || !doc.envelopeId) return;
-  if (typeof resendLeaseEnvelope === 'function') {
-    try { resendLeaseEnvelope(u, doc.envelopeId); return; } catch {}
+  // leaseResendEnvelope(envelopeId) confirms + resolves the unit itself.
+  if (typeof leaseResendEnvelope === 'function') {
+    try { leaseResendEnvelope(doc.envelopeId); return; } catch {}
   }
   if (typeof toast === 'function') toast('Resend not available — open Lease tab', 'info');
 }
@@ -93137,9 +93150,9 @@ function _leaseDocVoidEnvelope(docId) {
   const u = currentUnits().find(x => x.id === selectedIds[0]);
   const doc = u?.leaseDocuments?.find(d => d.id === docId);
   if (!doc || !doc.envelopeId) return;
-  if (!confirm(`Cancel this envelope on DocuSign?\n\n"${doc.title}" will be marked as voided. Tenant can no longer sign.`)) return;
-  if (typeof voidLeaseEnvelope === 'function') {
-    try { voidLeaseEnvelope(u, doc.envelopeId); return; } catch {}
+  // No confirm() here — leaseVoidEnvelope prompts for a void reason itself.
+  if (typeof leaseVoidEnvelope === 'function') {
+    try { leaseVoidEnvelope(doc.envelopeId); return; } catch {}
   }
   if (typeof toast === 'function') toast('Void not available', 'error');
 }
@@ -93209,6 +93222,9 @@ function _leaseDocOpenViewer(docId) {
   const u = currentUnits().find(x => x.id === selectedIds[0]);
   const doc = u?.leaseDocuments?.find(d => d.id === docId);
   if (!doc || !u) return;
+  // doc.status is minted once at doc creation and never re-synced for
+  // DocuSign envelopes — the live envelope status is authoritative.
+  const liveStatus = (typeof _leaseDocLiveStatus === 'function') ? _leaseDocLiveStatus(doc, u) : doc.status;
   // PDF first — uploaded signed PDFs and DocuSign-completed envelopes
   // both surface a downloadable URL via _leaseDocPdfUrl. Embed the
   // file in the in-app preview modal so the operator stays put.
@@ -93216,7 +93232,7 @@ function _leaseDocOpenViewer(docId) {
   if (pdfUrl) {
     showDocPreview({
       title: 'Document Preview',
-      sub: doc.status === 'signed' ? 'Signed PDF — read-only.' : 'PDF — read-only.',
+      sub: liveStatus === 'signed' ? 'Signed PDF — read-only.' : 'PDF — read-only.',
       pdfUrl,
       filename: doc.pdfName || `${doc.title || 'Document'}.pdf`,
     });
@@ -93242,7 +93258,13 @@ function _leaseDocOpenViewer(docId) {
   }
   showDocPreview({
     title: 'Document Preview',
-    sub: doc.status === 'signed' ? 'Signed copy — read-only.' : 'Pending — read-only preview.',
+    // liveStatus 'signed' with no PDF yet = completed envelope whose
+    // signed PDF hasn't been archived — the rendered HTML below is the
+    // unsigned local template, so say so instead of claiming a copy.
+    // Terminal statuses (voided/declined/expired) are named, not 'Pending'.
+    sub: liveStatus === 'signed' ? 'Signed — archived PDF pending; showing unsigned template.'
+      : LEASE_TERMINAL.has(liveStatus) ? `${liveStatus.charAt(0).toUpperCase()}${liveStatus.slice(1)} — read-only preview.`
+      : 'Pending — read-only preview.',
     html: rendered,
     filename: doc.title || 'Document',
   });
@@ -99139,8 +99161,16 @@ function _dashNeedsAction(kind, buildingId, floorId, unitId) {
     try {
       if ((kind === 'overdue' || kind === 'due') && typeof stripeResendInvoice === 'function') {
         stripeResendInvoice(u);
-      } else if (kind === 'pending' && typeof resendLeaseEnvelope === 'function') {
-        resendLeaseEnvelope(u);
+      } else if (kind === 'pending' && typeof leaseResendEnvelope === 'function') {
+        // Resend the same envelope that classified the row as 'pending' —
+        // the latest non-terminal one (DocuSign rejects resend on completed/
+        // voided). Dual envelopeId/id keys per FIXES_LOG Entry 17.
+        const env = (typeof _leaseActiveEnvelope === 'function') ? _leaseActiveEnvelope(u) : null;
+        const envId = (env && !LEASE_TERMINAL.has(env.status))
+          ? (env.envelopeId || env.id)
+          : u.currentLeaseEnvelopeId;
+        if (envId) leaseResendEnvelope(envId);
+        else if (typeof toast === 'function') toast('No pending envelope — open the Lease tab to send', 'info');
       } else if (kind === 'pending' && typeof sendLeaseFromPanel === 'function') {
         // Older code paths used this name for the "send/resend" action.
         sendLeaseFromPanel(u);
@@ -105906,7 +105936,7 @@ function _dsBuildInlineLeaseHtml(f, recipientName, recipientEmail) {
   // M/D/YYYY (e.g. "4/21/2026"), so we match that format on the Provider
   // side to avoid a visual mismatch when the Client countersigns.
   const _normMDY = (s) => {
-    if (!s) return new Date().toLocaleDateString('en-US');
+    if (!s) return new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York' });
     const d = new Date(s);
     return isNaN(d.getTime()) ? String(s) : d.toLocaleDateString('en-US');
   };
@@ -116048,7 +116078,10 @@ function _liveLeaseFields(u, overrides) {
   const landlordEmail = wsSettings.email   || '';
   const landlordEntity = ld.provider_entity_type || '';  // "Delaware limited liability company"
   const landlordLegalAddr = ld.provider_legal_address || '';
-  const todayLong     = fmtLongDate(new Date().toISOString().slice(0, 10));
+  // NY calendar day, not UTC — toISOString() after 8pm ET rolled the
+  // preview's landlord_signed_date/execution_date to tomorrow while the
+  // sent envelope (local-time path) still carried today.
+  const todayLong     = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York', year: 'numeric', month: 'long', day: 'numeric' });
   const o = overrides || {};
   // rent: prefer modal-typed override, fall back to unit values
   const rentRaw  = (o.rent != null && o.rent !== '') ? +o.rent : (+u?.contractRent || +u?.rent || 0);
@@ -117028,7 +117061,7 @@ async function _previewLibraryTpl(id) {
     governing_state:       'Florida',
     landlord_name:         '6698 68th Ave Land Trust',
     building_address:      '6698 68th Ave N, Pinellas Park, FL 33781',
-    execution_date:        new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+    execution_date:        new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York', year: 'numeric', month: 'long', day: 'numeric' }),
     tenant_repair_limit:   '500',
     holdover_rate_pct:     '150',
     rent:                  '29,512.00',
@@ -117036,7 +117069,7 @@ async function _previewLibraryTpl(id) {
     term:                  '84',
     lease_start:           'May 1, 2026',
     lease_end:             'April 30, 2033',
-    landlord_signed_date:  new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+    landlord_signed_date:  new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York', year: 'numeric', month: 'long', day: 'numeric' }),
     // Sample-плейсхолдер для floor plan чтобы оператор в template-preview
     // видел ГДЕ карта окажется в реальном договоре. На реальном Suite
     // эту строку перезатирает _buildFloorPlanSvgHtml через _liveLeaseFields.
@@ -122028,7 +122061,8 @@ function _leaseFindEnvelope(envelopeId) {
     for (const f of b.floors || []) {
       for (const u of f.units || []) {
         const arr = Array.isArray(u.leaseEnvelopes) ? u.leaseEnvelopes : [];
-        const env = arr.find(e => e.envelopeId === envelopeId);
+        // FIXES_LOG Entry 17 — envelopeId / id оба валидны.
+        const env = arr.find(e => e && (e.envelopeId || e.id) === envelopeId);
         if (env) return { b, f, u, env };
       }
     }
@@ -122494,7 +122528,10 @@ async function leaseVoidEnvelope(envelopeId) {
 }
 async function leaseRefreshStatus(envelopeId) {
   try {
-    const r = await docusignFetch(`/envelopes/${envelopeId}`);
+    // FIXES_LOG Entry 20 — JWT mode → CF; OAuth fallback below.
+    const r = _dsIsJwtMode()
+      ? await _dsCallCF('dsGetEnvelope', { envelopeId })
+      : await docusignFetch(`/envelopes/${envelopeId}`);
     const hit = _leaseFindEnvelope(envelopeId);
     if (!hit) return;
     const prev = hit.env.status;
@@ -132752,7 +132789,7 @@ async function rrBulkSendLeases() {
       const subject = _dsInterpolate(cfg.defaultSubject, ictx);
       const message = _dsInterpolate(cfg.defaultMessage, ictx);
       const templateId = localStorage.getItem(DS_LS.TEMPLATE) || null;
-      const todayLong = new Date().toLocaleDateString('en-US', {year:'numeric', month:'long', day:'numeric'});
+      const todayLong = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York', year:'numeric', month:'long', day:'numeric'});
       // Signatory's personal name (e.g. "Ann Noel") and title ("Authorized
       // Signatory"). Left blank when unset so the operator notices the
       // signature block is incomplete rather than shipping a doc signed by
@@ -144616,7 +144653,7 @@ function _slBuildPayloadFromForm() {
   if (!email || !/@/.test(email)) { toast('Invalid email', 'error'); return null; }
 
   const templateId = localStorage.getItem(DS_LS.TEMPLATE) || null;
-  const todayLong = new Date().toLocaleDateString('en-US', {year:'numeric', month:'long', day:'numeric'});
+  const todayLong = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York', year:'numeric', month:'long', day:'numeric'});
   const landlordName = (state?.settings?.landlordName || '').trim();
   const landlordTitle = (state?.settings?.landlordTitle || '').trim() || 'Authorized Signatory';
   const leaseStartRaw = u.signed || u.leaseStart || '';
