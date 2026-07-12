@@ -32936,6 +32936,13 @@ async function fbActivateWorkspaceSync() {
             _dsStartLeasePolling();
           }
         } catch (e) { console.warn('[ds-poll-boot]', e); }
+        // Подписанные конверты без заархивированного PDF (подписаны в период
+        // неработавшего поллинга) — подтянуть архивы. Fire-and-forget.
+        try {
+          if (typeof _dsBackfillArchives === 'function') {
+            _dsBackfillArchives().catch(e => console.warn('[ds-archive-backfill]', e));
+          }
+        } catch (e) { console.warn('[ds-archive-backfill]', e); }
       };
       if (typeof _dsSyncInit === 'function') {
         _dsSyncInit()
@@ -97205,6 +97212,20 @@ function _leaseDocOpenViewer(docId) {
     });
     return;
   }
+  // Подписан, но PDF ещё не заархивирован (конверт завершился в период
+  // неработавшего поллинга) — подтягиваем архив прямо сейчас. Когда
+  // придёт, перерисуем карточку; если модалка ещё открыта на этом же
+  // документе — переоткроем её уже с подписанным PDF.
+  if (liveStatus === 'signed' && doc.envelopeId &&
+      typeof _dsArchiveSignedEnvelope === 'function' && _dsHasValidToken()) {
+    _dsArchiveSignedEnvelope(doc.envelopeId).then(() => {
+      try { renderDetail(); } catch {}
+      try {
+        const modal = document.getElementById('docPreviewModal');
+        if (modal?.classList.contains('active')) _leaseDocOpenViewer(docId);
+      } catch {}
+    }).catch(() => {});
+  }
   // HTML body fallback for envelopes / pending docs without a PDF.
   // Resolve HTML to show (priority):
   //   1. doc.bodyTemplate (new) → render against live values
@@ -97229,7 +97250,7 @@ function _leaseDocOpenViewer(docId) {
     // signed PDF hasn't been archived — the rendered HTML below is the
     // unsigned local template, so say so instead of claiming a copy.
     // Terminal statuses (voided/declined/expired) are named, not 'Pending'.
-    sub: liveStatus === 'signed' ? 'Signed — archived PDF pending; showing unsigned template.'
+    sub: liveStatus === 'signed' ? 'Signed — retrieving signed PDF from DocuSign… (showing unsigned template)'
       : LEASE_TERMINAL.has(liveStatus) ? `${liveStatus.charAt(0).toUpperCase()}${liveStatus.slice(1)} — read-only preview.`
       : 'Pending — read-only preview.',
     html: rendered,
@@ -126511,11 +126532,53 @@ async function _dsPollOnce() {
 // Fetch the combined signed PDF + certificate of completion and stash
 // it in Firebase Storage so it's the durable source of truth (DocuSign
 // free tiers keep docs for a limited time; our copy is ours forever).
+// Backfill: конверты со status 'completed' но без signedPdfPath — подписанные
+// в период неработавшего поллинга (boot-race до 2026-07-11) или с упавшей
+// архивацией. _leaseCollectPending пропускает терминальные статусы, так что
+// поллер их НИКОГДА не подберёт — прогоняем явно через _dsArchiveSignedEnvelope
+// (он идемпотентен: signedPdfPath-guard). Пейсинг 1.5s — CF + DocuSign + Storage.
+async function _dsBackfillArchives() {
+  if (!_dsHasValidToken()) return;
+  const todo = [];
+  for (const b of state.buildings || []) {
+    for (const f of b.floors || []) {
+      for (const u of f.units || []) {
+        if (u.deletedAt) continue;
+        for (const env of (u.leaseEnvelopes || [])) {
+          if (!env || env.status !== 'completed') continue;
+          const envId = env.envelopeId || env.id;
+          if (!envId || env.signedPdfPath) continue;
+          todo.push(envId);
+        }
+      }
+    }
+  }
+  if (!todo.length) return;
+  console.info(`[ds-archive-backfill] ${todo.length} signed envelope(s) without archived PDF — fetching`);
+  for (const envId of todo) {
+    try { await _dsArchiveSignedEnvelope(envId); }
+    catch (e) { console.warn('[ds-archive-backfill]', envId, e); }
+    await new Promise(r => setTimeout(r, 1500));
+  }
+}
+
+const _dsArchiveInflight = new Set();
 async function _dsArchiveSignedEnvelope(envelopeId) {
   const found = _leaseFindEnvelope(envelopeId);
   if (!found) return;
   const { b, u, env } = found;
   if (env.signedPdfPath) return;   // already archived
+  // In-flight guard: boot-backfill и открытие документа могут дёрнуть
+  // архивацию одного конверта одновременно — второй вызов не нужен.
+  if (_dsArchiveInflight.has(envelopeId)) return;
+  _dsArchiveInflight.add(envelopeId);
+  try {
+    await _dsArchiveSignedEnvelopeInner(envelopeId, found);
+  } finally {
+    _dsArchiveInflight.delete(envelopeId);
+  }
+}
+async function _dsArchiveSignedEnvelopeInner(envelopeId, { b, u, env }) {
   if (!fbSync?.enabled || !fbSync.storage) {
     console.warn('[ds] storage unavailable — signed PDF not archived yet');
     return;
