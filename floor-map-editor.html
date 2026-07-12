@@ -108311,6 +108311,7 @@ async function _dsReconcileEnvelopes() {
   const allUnits = (state.buildings || []).flatMap(b => (b.floors || [])
     .flatMap(f => (f.units || []).map(u => ({ u, bId: b.id, fId: f.id }))));
   const unitById = new Map(allUnits.map(x => [x.u.id, x]));
+  const unitByPath = new Map(allUnits.map(x => [`${x.bId}|${x.fId}|${x.u.id}`, x]));
   let backfilled = 0;
   const promises = [];
 
@@ -108320,8 +108321,13 @@ async function _dsReconcileEnvelopes() {
     const ts = r.at?.toDate?.()?.getTime?.() || 0;
     if (ts && ts < cutoff) return;
 
-    // Find the unit by audit's unitId (preferred) or fallback to email match.
-    let ctx = r.unitId ? unitById.get(r.unitId) : null;
+    // Suite-ids повторяются между зданиями ('101' есть в каждом) — сначала
+    // точный путь из audit-записи (dsSendEnvelope пишет buildingId/floorId);
+    // id-only и email остаются фолбэками для легаси-строк.
+    let ctx = (r.unitId && r.buildingId && r.floorId)
+      ? unitByPath.get(`${r.buildingId}|${r.floorId}|${r.unitId}`)
+      : null;
+    if (!ctx && r.unitId) ctx = unitById.get(r.unitId);
     if (!ctx && r.recipientEmail) {
       ctx = allUnits.find(x => (x.u.email || '').toLowerCase() === r.recipientEmail.toLowerCase());
     }
@@ -137635,28 +137641,45 @@ async function rrBulkSendLeases() {
         templateId, fields,
         unit: u, // Шаг 5: даём resolver контекст для выбора library-шаблона
       });
+      // Пере-résolve юнита ПОСЛЕ await — CF зеркалит здание до ответа
+      // callable, и listener коллекции buildings мог подменить объект
+      // здания за время ожидания (в bulk-цикле ссылки живут через N*400ms
+      // await'ов); мутации в отвязанный объект молча теряются.
+      const uLive = (() => {
+        const _b = (state.buildings || []).find(x => x.id === b.id);
+        const _f = _b && (_b.floors || []).find(x => x.id === f.id);
+        return (_f && (_f.units || []).find(x => x.id === u.id)) || u;
+      })();
       // FIXES_LOG Entry 22 — JWT-mode CF wrote the envelope on the server
-      // already (transactional state push). Skip the local push to avoid
-      // duplicates. OAuth fallback still needs the local push.
-      u.leaseEnvelopes = u.leaseEnvelopes || [];
+      // already. Конвергентный локальный push с дедупом по envelopeId (см.
+      // _slDoSend): без него локальная копия без конверта могла бы затереть
+      // CF-зеркало здания целиком при saveState(). OAuth fallback по-прежнему
+      // пушит локально сам.
+      uLive.leaseEnvelopes = uLive.leaseEnvelopes || [];
       if (!_dsIsJwtMode()) {
         const nowIso = new Date().toISOString();
-        u.leaseEnvelopes.push({
+        uLive.leaseEnvelopes.push({
           envelopeId: result.envelopeId,
           status: result.status || 'sent',
           createdAt: nowIso, sentAt: nowIso, lastChecked: nowIso,
-          recipientEmail: u.email, recipientName: ictx.name,
+          recipientEmail: uLive.email, recipientName: ictx.name,
           subject, templateId: templateId || null,
           mode: templateId ? 'template' : 'inline',
-          leaseStart: ictx.name && (u.signed || u.leaseStart) || null,
-          leaseEnd: u.until || null,
+          leaseStart: ictx.name && (uLive.signed || uLive.leaseStart) || null,
+          leaseEnd: uLive.until || null,
           rent: ictx.rent,
         });
-      } else if (result.stateWriteOk === false && result.envelopeRecord) {
-        u.leaseEnvelopes.push(result.envelopeRecord);
+      } else if (result.envelopeRecord &&
+                 !uLive.leaseEnvelopes.some(e => e && (e.envelopeId || e.id) === result.envelopeId)) {
+        uLive.leaseEnvelopes.push(result.envelopeRecord);
       }
-      u.currentLeaseEnvelopeId = result.envelopeId;
-      recordOutreach(u, 'note', `Bulk DocuSign lease sent to ${u.email} (envelope ${result.envelopeId})`);
+      uLive.currentLeaseEnvelopeId = result.envelopeId;
+      const _bulkNoted = Array.isArray(uLive.outreach) &&
+        uLive.outreach.some(o => o && o.envelopeId === result.envelopeId);
+      if (!_bulkNoted) {
+        recordOutreach(uLive, 'note', `Bulk DocuSign lease sent to ${uLive.email} (envelope ${result.envelopeId})`,
+          { envelopeId: result.envelopeId, recipientEmail: uLive.email });
+      }
       ok++;
     } catch (err) {
       fail++;
@@ -137669,6 +137692,10 @@ async function rrBulkSendLeases() {
 
   saveState();
   _dsStartLeasePolling();
+  // Belt-and-braces: у bulk-потока (в отличие от _slDoSend) не было
+  // reconcile-подстраховки — потерянная в mirror-гонке запись конверта
+  // оставалась невидимой до следующего sign-in. Fire-and-forget.
+  try { _dsReconcileEnvelopes?.(); } catch {}
   try { updateTopbarLeasePill(); } catch {}
   if (btn) { btn.disabled = false; btn.innerHTML = origLabel; }
   if (fail === 0) {
@@ -150513,7 +150540,7 @@ async function _slDoSend(payload) {
   const origLabel = btn ? btn.innerHTML : '';
   if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Sending…'; }
   try {
-    const { u, b, buildingId, floorId, unitId, email, name, subject, message, templateId, fields } = payload;
+    const { b, buildingId, floorId, unitId, email, name, subject, message, templateId, fields } = payload;
     const result = await docusignSendEnvelope({
       recipientEmail: email,
       recipientName: name,
@@ -150521,8 +150548,18 @@ async function _slDoSend(payload) {
       message,
       templateId,
       fields,
-      unit: u, // Шаг 5: даём resolver контекст для выбора library-шаблона
+      unit: payload.u, // Шаг 5: даём resolver контекст для выбора library-шаблона
     });
+    // Пере-résolve юнита ПОСЛЕ await: CF зеркалит здание до ответа callable,
+    // и listener коллекции buildings мог подменить объект здания во время
+    // ожидания — тогда мутации ниже (Entry-73 renewal-поля, prospect stage)
+    // легли бы в отвязанный объект и молча терялись. Fallback на payload.u,
+    // если юнит исчез (удалён во время отправки).
+    const u = (() => {
+      const _b = (state.buildings || []).find(x => x.id === buildingId);
+      const _f = _b && (_b.floors || []).find(x => x.id === floorId);
+      return (_f && (_f.units || []).find(x => x.id === unitId)) || payload.u;
+    })();
     // FIXES_LOG Entry 73: конверт РЕАЛЬНО отправлен → применяем отложенные
     // renewal-поля СРАЗУ (до снапшота u.leaseEnvelopes ниже, чтобы запись
     // конверта зафиксировала НОВЫЕ даты/ренту). См. _saveAddLeaseDocModal:
@@ -150580,11 +150617,15 @@ async function _slDoSend(payload) {
         leaseEnd: u.until || null,
         rent: +u.contractRent || +u.rent || 0,
       });
-    } else if (result.stateWriteOk === false && result.envelopeRecord) {
-      // Last-resort safety net — CF managed to send the envelope but its
-      // own transaction failed (state doc missing? unit not found?). Push
-      // the CF-provided record locally so the operator sees it; reconcile
-      // can re-sync this entry on next sign-in.
+    } else if (result.envelopeRecord &&
+               !u.leaseEnvelopes.some(e => e && (e.envelopeId || e.id) === result.envelopeId)) {
+      // JWT: конвергентный локальный push НЕЗАВИСИМО от stateWriteOk.
+      // saveState() зеркалит здание целиком (без dirty-tracking) — если бы
+      // локальная копия осталась без конверта и выиграла гонку у listener'а
+      // коллекции buildings, она затёрла бы CF-зеркало, в котором конверт
+      // есть. Дедуп по envelopeId: когда listener уже применил CF-версию,
+      // пуш не дублирует запись. При stateWriteOk=false это же остаётся
+      // last-resort safety net (Entry 22).
       u.leaseEnvelopes.push(result.envelopeRecord);
     }
     u.currentLeaseEnvelopeId = result.envelopeId;
@@ -150593,9 +150634,15 @@ async function _slDoSend(payload) {
     // and-forget; UI updates when it finishes.
     try { _dsReconcileEnvelopes?.(); } catch {}
     // Tag as 'lease' so the Activity Log filter chips can isolate
-    // DocuSign events from generic operator notes.
-    recordOutreach(u, 'lease', `DocuSign lease sent to ${email} (envelope ${result.envelopeId.slice(0,8)}…)`,
-      { envelopeId: result.envelopeId, recipientEmail: email });
+    // DocuSign events from generic operator notes. Дедуп по envelopeId:
+    // CF теперь пишет собственную outreach-запись в серверную копию — если
+    // listener уже применил её, повторный пуш дал бы дубль в Activity Log.
+    const _sentNoted = Array.isArray(u.outreach) &&
+      u.outreach.some(o => o && o.kind === 'lease' && o.envelopeId === result.envelopeId);
+    if (!_sentNoted) {
+      recordOutreach(u, 'lease', `DocuSign lease sent to ${email} (envelope ${result.envelopeId.slice(0,8)}…)`,
+        { envelopeId: result.envelopeId, recipientEmail: email });
+    }
 
     // Phase 2C: auto-advance активного проспекта в lease-sent.
     // Привязываем envelopeId к проспекту, чтобы Phase 2D мог найти его

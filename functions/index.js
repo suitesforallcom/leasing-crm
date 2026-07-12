@@ -9965,18 +9965,25 @@ exports.dsSendEnvelope = onCall(
         u.leaseEnvelopes.push(envelopeRecord);
         u.currentLeaseEnvelopeId = data.envelopeId;
 
-        // Outreach trail so the Activity Log on the unit panel reflects this
-        // send. Same shape the client used to write post-CF.
+        // Outreach trail so the Activity Log on the unit panel reflects
+        // this send. {kind, note, by} is the shape every client renderer
+        // reads (recordOutreach / drawer / Activity Log) — mirror the
+        // discount-ledger writer above, including the 100-entry cap.
         u.outreach = Array.isArray(u.outreach) ? u.outreach : [];
         u.outreach.push({
-          type: 'lease',
           ts: nowIso,
-          text: `DocuSign lease sent to ${recipientEmail} (envelope ${data.envelopeId.slice(0, 8)}…)`,
+          kind: 'lease',
+          note: `DocuSign lease sent to ${recipientEmail} (envelope ${data.envelopeId.slice(0, 8)}…)`,
+          by: caller.email || caller.uid,
+          byEmail: caller.email || null,
           envelopeId: data.envelopeId,
           recipientEmail,
-          sentBy: caller.email || caller.uid,
         });
-      });
+        while (u.outreach.length > 100) u.outreach.shift();
+      // rethrowMirrorFailure — под strip запись живёт в зеркале коллекции;
+      // упавший mirror без этого флага вернул бы writeOk=true при реально
+      // потерянной записи, и клиентский fallback-push не включился бы.
+      }, { rethrowMirrorFailure: true });
       writeOk = true;
     } catch (e) {
       logger.error('[docusign:state-write] failed', { envelopeId: data.envelopeId, unitId, error: e.message });
