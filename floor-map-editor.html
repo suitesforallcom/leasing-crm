@@ -29695,6 +29695,7 @@ async function fbLoadSdk() {
     GoogleAuthProvider: authMod.GoogleAuthProvider,
     signInWithEmailAndPassword: authMod.signInWithEmailAndPassword,
     createUserWithEmailAndPassword: authMod.createUserWithEmailAndPassword,
+    sendEmailVerification: authMod.sendEmailVerification,   // security audit 2026-07-16
     updateProfile: authMod.updateProfile,
     signOut: authMod.signOut,
     // Firestore
@@ -58782,6 +58783,19 @@ async function authSubmitForm(evt) {
     if (tab === 'signup') {
       const cred = await sdk.createUserWithEmailAndPassword(auth, email, password);
       if (name) await sdk.updateProfile(cred.user, { displayName: name });
+      // Security audit 2026-07-16: email/password signups previously never
+      // verified the address, so members permanently had email_verified=false
+      // — which is why the firestore.rules allowlist/root privilege branches
+      // could not require a verified email (would lock these users out).
+      // Send a verification email now (non-blocking — sign-in still proceeds;
+      // the address gate on the allowlist onboarding path activates once
+      // verified). Google sign-in is verified by definition.
+      try {
+        if (typeof sdk.sendEmailVerification === 'function') {
+          await sdk.sendEmailVerification(cred.user);
+          try { if (typeof toast === 'function') toast('✉ Verification email sent — please confirm your address.', 'info'); } catch {}
+        }
+      } catch (ve) { console.warn('[auth] sendEmailVerification failed:', ve?.message || ve); }
     } else {
       await sdk.signInWithEmailAndPassword(auth, email, password);
     }

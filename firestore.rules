@@ -113,10 +113,20 @@ service cloud.firestore {
                         && request.resource.data.get('archived', false) != true
                         && (
                           isRootAdmin()
+                          // email/domain onboarding now requires a VERIFIED email
+                          // (app sends sendEmailVerification on password signup as
+                          // of 2026-07-16; Google is verified by definition). This
+                          // closes: attacker signs up (password, unverified) as
+                          // victim@allowlisted-domain and self-onboards with the
+                          // domain role. Both allowlists are currently EMPTY so no
+                          // existing member is affected; the gate applies to future
+                          // allowlist-driven onboarding only.
                           || (request.auth.token.email != null
+                              && request.auth.token.get('email_verified', false) == true
                               && exists(/databases/$(database)/documents/workspaces/$(wid)/emailAllowlist/$(request.auth.token.email.lower()))
                               && request.resource.data.role == get(/databases/$(database)/documents/workspaces/$(wid)/emailAllowlist/$(request.auth.token.email.lower())).data.role)
                           || (request.auth.token.email != null
+                              && request.auth.token.get('email_verified', false) == true
                               && exists(/databases/$(database)/documents/workspaces/$(wid)/domainAllowlist/$(request.auth.token.email.lower().split('@')[1]))
                               && request.resource.data.role == get(/databases/$(database)/documents/workspaces/$(wid)/domainAllowlist/$(request.auth.token.email.lower().split('@')[1])).data.role)
                         );
