@@ -349,7 +349,14 @@ async function _persist(db, params, extracted) {
 const extractLeaseSignedDate = onCall(async (req) => {
   const db = admin.firestore();
 
-  await _requireMember(req.auth, db);
+  // Security audit 2026-07-16: member-gate is not enough — a 'viewer' could
+  // burn paid AI-provider credits on demand AND mutate lease data in the
+  // money-bearing state doc. Gate to editor roles (same set isEditor allows
+  // to write state; root admin short-circuits inside _requireMember).
+  const _caller = await _requireMember(req.auth, db);
+  if (!['admin', 'manager', 'mapeditor'].includes(_caller.role)) {
+    throw new HttpsError('permission-denied', 'Your role cannot run AI extraction');
+  }
 
   const {buildingId, floorId, unitId, leaseDocId} = req.data || {};
   if (!buildingId || !floorId || !unitId || !leaseDocId) {

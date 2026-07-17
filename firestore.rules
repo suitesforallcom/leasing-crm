@@ -23,6 +23,11 @@ service cloud.firestore {
     function isRootAdmin() {
       return request.auth != null
         && request.auth.token.email != null
+        // Security audit 2026-07-16: require a VERIFIED email before granting
+        // the hardcoded-owner shortcut, so a password signup using the owner's
+        // address (unverified) cannot impersonate root. Owner signs in with
+        // Google (email_verified always true) — verified live, non-breaking.
+        && request.auth.token.get('email_verified', false) == true
         && request.auth.token.email.lower() in ['tony@al-en.com'];
     }
 
@@ -90,7 +95,31 @@ service cloud.firestore {
       // (bootstrap). Admins can create/update/delete any member doc.
       match /members/{uid} {
         allow read:   if isMember(wid) || (request.auth != null && request.auth.uid == uid);
-        allow create: if request.auth != null && request.auth.uid == uid;
+        // ── CRITICAL security fix (2026-07-16 audit) ───────────────────────
+        // Previously: `allow create: if request.auth != null && auth.uid == uid`
+        // validated ONLY the doc id, NOT the `role` field — so ANY authenticated
+        // principal (including the app's own anonymous fallback) could
+        // setDoc('members/<theirUid>', {role:'admin'}) and take over the entire
+        // workspace + all financial data + secrets. The elaborate self-UPDATE
+        // hardening below never applied because nothing guarded CREATE.
+        // Now: a self-created role must be either the hardcoded root admin, or
+        // EXACTLY the role an admin pre-authorized in emailAllowlist/
+        // domainAllowlist — mirroring the trusted self-update allowlist branch
+        // below (and, like it, deliberately WITHOUT an email_verified gate so
+        // password-onboarded members aren't locked out). All 7 existing member
+        // docs already exist → they use the UPDATE path and are unaffected;
+        // this only forces NEW members through the intended allowlist path.
+        allow create: if request.auth != null && request.auth.uid == uid
+                        && request.resource.data.get('archived', false) != true
+                        && (
+                          isRootAdmin()
+                          || (request.auth.token.email != null
+                              && exists(/databases/$(database)/documents/workspaces/$(wid)/emailAllowlist/$(request.auth.token.email.lower()))
+                              && request.resource.data.role == get(/databases/$(database)/documents/workspaces/$(wid)/emailAllowlist/$(request.auth.token.email.lower())).data.role)
+                          || (request.auth.token.email != null
+                              && exists(/databases/$(database)/documents/workspaces/$(wid)/domainAllowlist/$(request.auth.token.email.lower().split('@')[1]))
+                              && request.resource.data.role == get(/databases/$(database)/documents/workspaces/$(wid)/domainAllowlist/$(request.auth.token.email.lower().split('@')[1])).data.role)
+                        );
         allow update: if isAdmin(wid)
                         || (request.auth != null && request.auth.uid == uid
                             && (
@@ -310,7 +339,11 @@ service cloud.firestore {
       // activity for each employee). Write: ONLY own uid (no impersonation).
       match /sessions/{uid} {
         allow read:  if isMember(wid);
-        allow write: if request.auth != null && request.auth.uid == uid;
+        // Security audit 2026-07-16: also require workspace membership — a
+        // non-member (or anonymous) principal could otherwise spam heartbeat
+        // docs. Read is already member-gated so no exfiltration, but this
+        // closes the junk-write vector. Legit writer is the member's own tab.
+        allow write: if isMember(wid) && request.auth.uid == uid;
       }
 
       // Per-payment documents (SCALING Phase 1 — см. SCALING_PLAN.md).
