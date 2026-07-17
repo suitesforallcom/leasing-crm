@@ -5523,7 +5523,18 @@ const _runAutoInvoicesHandler = async (opts) => {
           for (const f of (b.floors || [])) {
             for (const u of (f.units || [])) {
               const _p = _stripePatch[b.id + '|' + f.id + '|' + u.id];
-              if (_p) u.stripe = _p;
+              if (_p) {
+                // Re-audit 2026-07-16 (deferred #2): MERGE only the stamps this
+                // cron owns onto the FRESH in-tx u.stripe, instead of whole-
+                // replacing it with the stale pre-run snapshot. The old
+                // `u.stripe = _p` clobbered any webhook that touched u.stripe
+                // (lastChargeFailure / moveInRent / depositInvoice / a newer
+                // lastInvoiceYm) during the multi-minute run.
+                u.stripe = u.stripe || {};
+                if (_p.autoSentYm)    u.stripe.autoSentYm    = _p.autoSentYm;
+                if (_p.lastInvoiceId) u.stripe.lastInvoiceId = _p.lastInvoiceId;
+                if (_p.lastInvoiceYm) u.stripe.lastInvoiceYm = _p.lastInvoiceYm;
+              }
             }
           }
         }
@@ -6423,7 +6434,24 @@ async function _runAutoLateFeesHandler(opts) {
         for (const f of (b.floors || [])) {
           for (const u of (f.units || [])) {
             const _p = _lfStripePatch[`${b.id}|${f.id}|${u.id}`];
-            if (_p) u.stripe = _p;
+            if (_p) {
+              // Re-audit 2026-07-16 (deferred #2): merge cron-owned stamps onto
+              // fresh u.stripe (см. runAutoInvoices). lateFeeSent — per-ym MAP:
+              // сливаем записи, НЕ заменяем всю карту (параллельный manual/
+              // webhook мог добавить другие ym). lastInvoice — forward-only.
+              u.stripe = u.stripe || {};
+              if (_p.lateFeeSent) {
+                u.stripe.lateFeeSent = u.stripe.lateFeeSent || {};
+                Object.assign(u.stripe.lateFeeSent, _p.lateFeeSent);
+              }
+              if (_p.lastInvoiceId && _p.lastInvoiceYm) {
+                const _cur = String(u.stripe.lastInvoiceYm || '');
+                if (!/^\d{4}-\d{2}$/.test(_cur) || _p.lastInvoiceYm >= _cur) {
+                  u.stripe.lastInvoiceId = _p.lastInvoiceId;
+                  u.stripe.lastInvoiceYm = _p.lastInvoiceYm;
+                }
+              }
+            }
           }
         }
       }
