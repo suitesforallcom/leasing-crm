@@ -108592,6 +108592,32 @@ async function connectDocuSign() {
   if (template) localStorage.setItem(DS_LS.TEMPLATE, template);
   else localStorage.removeItem(DS_LS.TEMPLATE);
 
+  // Deferred-audit #3 (2026-07-16): non-blocking EXISTENCE check for the
+  // template UUID via the deployed-but-previously-unused dsListTemplates CF.
+  // Format is validated above; this catches a well-formed but NON-EXISTENT
+  // template id BEFORE it fails at send time. Fires only on explicit save
+  // (not silent), only in JWT mode, only when we got the COMPLETE list
+  // (total <= returned, ≤100), and stays silent on any CF error / partial
+  // list — never blocks the save.
+  if (template && !opts.silent && typeof _dsCallCF === 'function'
+      && typeof _dsIsJwtMode === 'function' && _dsIsJwtMode()) {
+    (async () => {
+      try {
+        const res = await _dsCallCF('dsListTemplates', {});
+        const list = Array.isArray(res?.templates) ? res.templates : [];
+        const total = +res?.total || list.length;
+        if (total <= list.length) {
+          const found = list.some(t => String(t?.templateId || '').toLowerCase() === template.toLowerCase());
+          if (!found && typeof toast === 'function') {
+            toast('⚠ Saved — but this Template ID was not found in your DocuSign account. Verify it, or leave the field blank to use the inline lease.', 'error');
+          } else if (found && typeof toast === 'function') {
+            toast('✓ DocuSign template verified', 'success');
+          }
+        }
+      } catch (e) { console.warn('[ds-template-verify]', e?.message || e); }
+    })();
+  }
+
   // Delegate all business-field persistence (workflow, landlord identity,
   // sender overrides) to the shared helper so the bottom "Save changes"
   // button can reuse exactly the same save logic without running OAuth.
