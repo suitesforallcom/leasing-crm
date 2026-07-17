@@ -18,7 +18,13 @@
 // v2 (2026-05-12): фиксим протекание старого кэша HTML, который раздавал
 // устаревшую логику heal депозит-штампов. Стратегия HTML переключена с
 // stale-while-revalidate на network-first ниже.
-const CACHE_NAME = 'sfa-shell-v2';
+// v3 (2026-07-16): SW no longer intercepts CROSS-ORIGIN GETs. The Firebase
+// SDK loads via dynamic import() from www.gstatic.com; the old code sent that
+// through the cache-first branch, whose catch returns an EMPTY 503 on any
+// network hiccup — which surfaces as "Failed to fetch dynamically imported
+// module" and bricks Firebase init until a hard reload. Cross-origin now goes
+// straight to the browser (native fetch + retry), so a blip is recoverable.
+const CACHE_NAME = 'sfa-shell-v3';
 const APP_SHELL = ['/', '/manifest.webmanifest'];
 
 self.addEventListener('install', (event) => {
@@ -65,6 +71,15 @@ self.addEventListener('fetch', (event) => {
     'docusign.net',
   ];
   if (NEVER_CACHE.some(host => url.hostname.includes(host))) return;
+  // Cross-origin GETs (Firebase SDK on www.gstatic.com, fonts, other CDNs)
+  // MUST pass straight to the browser. If we intercept them, our cache-first
+  // catch below returns an empty 503 on any network blip — and for an ES
+  // module loaded via dynamic import() that becomes a hard "Failed to fetch
+  // dynamically imported module", so the whole app fails to initialize until
+  // a hard reload. We never cached cross-origin responses anyway (the cache.put
+  // below is gated on same-origin), so letting the browser handle them natively
+  // costs nothing and makes transient failures self-heal on a normal reload.
+  if (url.origin !== location.origin) return;
   // HTML: network-first. Свежий код деплоя должен попадать к пользователю
   // СРАЗУ — раньше стояло stale-while-revalidate, и кэш раздавал старый
   // JS, который успевал испортить облачный state до прихода свежего HTML.

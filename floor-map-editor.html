@@ -31724,9 +31724,33 @@ function _computeUnitFillImpl(u, mode) {
     // the same saturation register, and reads as clearly different
     // from the warm cream-green occupied tint (#E3F6EE).
     const SETTLED_GREEN = '#A7F3D0';
+    // Lease-гард (2026-07-16, Suite 224): если лиза юнита начинается ПОЗЖЕ
+    // просматриваемого месяца, тенант за этот месяц ничего не должен — все
+    // его инвойсы это АВАНСОВЫЙ move-in биллинг будущего месяца (first-month
+    // rent / deposit, отправленные заранее). Ни синий «invoice sent · unpaid»,
+    // ни settled-green для такого месяца не осмыслены — пропускаем оба
+    // вычисления и падаем в обычную lease-палитру. Дополняет (не заменяет)
+    // гейт по lastInvoiceYm: не все отправители штампуют lastInvoiceYm, и не
+    // все инвойсы несут metadata.ym (created-date fallback матчил сентябрьский
+    // move-in счёт на июльскую плитку).
+    const _leaseNotStartedInYm = (ymSel) => {
+      if (typeof toIsoDate !== 'function') return false;
+      const _ls = toIsoDate(u.leaseStart || u.signed || '').slice(0, 7);
+      return !!(_ls && _ls > ymSel);
+    };
     const _paymentExplicitFill = (() => {
       if (u.status !== 'occupied') return null;
       const ym = (typeof getPaymentViewYm === 'function') ? getPaymentViewYm() : _todayYm();
+      // Месяц ДО старта лизы: депозит оплачен → SETTLED_GREEN («onboarded,
+      // ready» — Tony 2026-05-22/07-16: 118 был ярко-зелёным от оплаченных
+      // move-in инвойсов и должен таким остаться; 224/250 с оплаченным
+      // депозитом — тоже зелёные, а не lease-палитра). Депозит НЕ оплачен →
+      // null → lease-палитра (lavender/neutral), синего не будет (гард в
+      // isPaymentBlue ниже). Вердикт депозита стабилен благодаря
+      // терминальному disk-штампу в _isDepositPaid.
+      if (_leaseNotStartedInYm(ym)) {
+        return (typeof _isDepositPaid === 'function' && _isDepositPaid(u)) ? SETTLED_GREEN : null;
+      }
       const localStatus = u.payments?.[ym]?.status;
       if (localStatus === 'paid' || localStatus === 'free' || localStatus === 'waived') return SETTLED_GREEN;
       // Stripe-side check via _invoicesCache for paid status (covers
@@ -31759,7 +31783,13 @@ function _computeUnitFillImpl(u, mode) {
       // подъехавший _invoicesCache потом перекрасит точно (invCacheKey меняется
       // → memo сбрасывается).
       if (typeof _todayYm === 'function' && ym === _todayYm()
-          && u.stripe?.lastInvoiceId && typeof _loadInvoiceBucketDisk === 'function') {
+          && u.stripe?.lastInvoiceId && typeof _loadInvoiceBucketDisk === 'function'
+          // Гейт по месяцу (2026-07-16, Suite 224): lastInvoiceId — это ПОСЛЕДНИЙ
+          // отправленный инвойс, а не обязательно инвойс текущего месяца. У
+          // future-лизы (старт 1 сентября) последний инвойс = сентябрьская
+          // рента, и без гейта июльская карта красилась от чужого месяца.
+          // Legacy-штампы без lastInvoiceYm сохраняют старое поведение.
+          && (!u.stripe.lastInvoiceYm || u.stripe.lastInvoiceYm === ym)) {
         if (_loadInvoiceBucketDisk()[u.stripe.lastInvoiceId] === 'paid') return SETTLED_GREEN;
       }
       return null;
@@ -31768,6 +31798,10 @@ function _computeUnitFillImpl(u, mode) {
     const isPaymentBlue = (() => {
       if (u.status !== 'occupied') return false;
       const ym = (typeof getPaymentViewYm === 'function') ? getPaymentViewYm() : _todayYm();
+      // Тот же lease-гард, что в _paymentExplicitFill: лиза ещё не началась
+      // в просматриваемом месяце → авансовые move-in инвойсы не должны
+      // красить этот месяц синим (Suite 224: сентябрьская рента красила июль).
+      if (_leaseNotStartedInYm(ym)) return false;
       // 'free' / 'waived' / 'paid' all already returned SETTLED_GREEN
       // above — only "no invoice" or actively-unpaid statuses reach
       // this point. Unpaid (open/past_due/etc.) → blue.
@@ -31808,7 +31842,11 @@ function _computeUnitFillImpl(u, mode) {
       // месяца из sfa_inv_buckets через u.stripe.lastInvoiceId — синий до того,
       // как подъедет Stripe-кэш. Только для ТЕКУЩЕГО месяца.
       if (typeof _todayYm === 'function' && ym === _todayYm()
-          && u.stripe?.lastInvoiceId && typeof _loadInvoiceBucketDisk === 'function') {
+          && u.stripe?.lastInvoiceId && typeof _loadInvoiceBucketDisk === 'function'
+          // Тот же месячный гейт, что в _paymentExplicitFill выше — не красим
+          // текущий месяц синим от инвойса ДРУГОГО месяца (сентябрьская
+          // move-in рента красила июльскую плитку Suite 224 в blue).
+          && (!u.stripe.lastInvoiceYm || u.stripe.lastInvoiceYm === ym)) {
         const _b = _loadInvoiceBucketDisk()[u.stripe.lastInvoiceId];
         if (['open', 'past_due', 'pending', 'sent', 'overdue', 'late'].includes(_b)) return true;
       }
@@ -32584,6 +32622,9 @@ async function fbBootstrap() {
     fbUpdateStatusBadge();
     const sdk = await fbLoadSdk();
     fbSync.sdk = sdk;
+    // SDK fetch succeeded — clear the transient-failure auto-reload budget so a
+    // future hiccup gets a fresh set of retries (see the catch below).
+    try { sessionStorage.removeItem('_fbBootReloads'); } catch {}
     fbSync.app = sdk.initializeApp(cfg);
     fbSync.auth = sdk.getAuth(fbSync.app);
     // Long-polling вместо дефолтного WebChannel-стрима: устойчиво к
@@ -32608,7 +32649,25 @@ async function fbBootstrap() {
     return true;
   } catch (err) {
     console.error('[fb] bootstrap failed:', err);
-    showLoginScreen('Could not initialize Firebase: ' + (err.message || err));
+    // A transient gstatic / network hiccup fails the dynamic import of the
+    // Firebase SDK ("Failed to fetch dynamically imported module"). A full page
+    // reload re-runs the import with a clean module map and almost always
+    // succeeds — which is exactly what operators were doing by hand (several
+    // manual reloads). Auto-reload up to twice so it self-heals. sessionStorage
+    // caps the burst to avoid an infinite reload loop when gstatic is genuinely
+    // unreachable (offline / blocked by an extension), where we fall through to
+    // the real, actionable error. The counter is cleared on any successful load.
+    const _msg = String((err && err.message) || err || '');
+    const _looksLikeSdkFetch = /dynamically imported module|Failed to fetch|Load failed|NetworkError|error loading|importing a module/i.test(_msg);
+    let _reloads = 0;
+    try { _reloads = +sessionStorage.getItem('_fbBootReloads') || 0; } catch {}
+    if (_looksLikeSdkFetch && _reloads < 2) {
+      try { sessionStorage.setItem('_fbBootReloads', String(_reloads + 1)); } catch {}
+      showLoginScreen('Reconnecting to the server… the app will retry automatically.');
+      setTimeout(() => { try { location.reload(); } catch {} }, 1500);
+      return false;
+    }
+    showLoginScreen('Could not initialize Firebase: ' + _msg);
     return false;
   }
 }
@@ -82979,7 +83038,7 @@ function _renderUnitInvoiceHistory(u) {
   );
   if (!hasCurrentTenant) {
     return `
-      <div class="upv2-section-title" style="display: flex; align-items: center; justify-content: space-between;">
+      <div class="upv2-section-title" style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; row-gap: 8px; column-gap: 10px;">
         <span>Invoice history</span>
         <button type="button" class="upv2-inv-report-btn" onclick="openUnitInvoiceReport()" title="Open detailed report — vacant unit shows historical invoices from prior tenants">${_rdIc('chart', 14)}Open report →</button>
       </div>
@@ -83006,9 +83065,9 @@ function _renderUnitInvoiceHistory(u) {
       try { _fetchUnitInvoicesFromStripe(u, { rerender: true }); } catch {}
     }
     return `
-      <div class="upv2-section-title" style="display: flex; align-items: center; justify-content: space-between;">
+      <div class="upv2-section-title" style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; row-gap: 8px; column-gap: 10px;">
         <span>Invoice history</span>
-        <div style="display: flex; gap: 6px;">
+        <div style="display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end;">
           ${ctxArgs ? `<button type="button" class="upv2-inv-report-btn" onclick="_invoiceHistoryRefresh(${ctxArgs})" title="Pull latest invoices from Stripe">${_rdIc('refresh', 13)}Refresh</button>` : ''}
           <button type="button" class="upv2-inv-report-btn" onclick="openUnitInvoiceReport()" title="Open detailed report with KPIs and per-tenant breakdown">${_rdIc('chart', 14)}Open report →</button>
         </div>
@@ -83044,9 +83103,9 @@ function _renderUnitInvoiceHistory(u) {
       try { _fetchUnitInvoicesFromStripe(u, { rerender: true }); } catch {}
     }
     return `
-      <div class="upv2-section-title" style="display: flex; align-items: center; justify-content: space-between;">
+      <div class="upv2-section-title" style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; row-gap: 8px; column-gap: 10px;">
         <span>Invoice history</span>
-        <div style="display: flex; gap: 6px;">
+        <div style="display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end;">
           ${ctxArgs ? `<button type="button" class="upv2-inv-report-btn" onclick="_invoiceHistoryRefresh(${ctxArgs})" title="Pull latest invoices from Stripe">${_rdIc('refresh', 13)}Refresh</button>` : ''}
           ${ctxArgs ? `<button type="button" class="upv2-inv-report-btn" onclick="_openInvoiceBrowser(${ctxArgs})" title="Browse all Stripe invoices and link manually">${_rdIc('search', 13)}Browse all</button>` : ''}
           <button type="button" class="upv2-inv-report-btn" onclick="openUnitInvoiceReport()" title="Open detailed report with KPIs and per-tenant breakdown">${_rdIc('chart', 14)}Open report →</button>
@@ -83271,7 +83330,7 @@ function _renderUnitInvoiceHistory(u) {
       </details>`;
   };
   return `
-    <div class="upv2-section-title" style="display: flex; align-items: center; justify-content: space-between;">
+    <div class="upv2-section-title" style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; row-gap: 8px; column-gap: 10px;">
       <span>Invoice history <span style="color: var(--rd-text3); font-weight: 500;">(${rows.length})</span></span>
       <button type="button" class="upv2-inv-report-btn" onclick="openUnitInvoiceReport()" title="Open detailed report with KPIs and per-tenant breakdown">${_rdIc('chart', 14)}Open report →</button>
     </div>
@@ -91004,11 +91063,75 @@ async function _aeSendForSignature() {
       }],
     };
 
-    const dsResult = await docusignFetch('/envelopes', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
+    // FIXES_LOG (2026-07-16): addendum send was OAuth-browser-direct ONLY.
+    // docusignFetch needs an access token in localStorage; in JWT mode
+    // (production — server-held DocuSign credentials, no browser token) the
+    // stale-token refresh dies with a raw "Failed to fetch" and the addendum
+    // could never send. It only ever worked while a leftover OAuth token was
+    // still fresh. Route through the same dsSendEnvelope CF the lease path
+    // uses — it POSTs the payload to /envelopes verbatim, so the custom
+    // addendum HTML goes through unchanged. OAuth stays as the fallback.
+    const _aeBId  = _aeCtx.sourceBuilding?.id || null;   // source & target share the building
+    const _aeTFId = _aeCtx.targetFloor?.id || null;
+    const _aeSFId = _aeCtx.sourceFloor?.id || null;
+    const _aeSUId = source.id, _aeTUId = target.id;
+    let dsResult;
+    if (typeof _dsIsJwtMode === 'function' && _dsIsJwtMode()
+        && typeof _dsCallCF === 'function' && _aeBId && _aeTFId) {
+      dsResult = await _dsCallCF('dsSendEnvelope', {
+        payload,
+        recipientEmail: recipient,
+        unitId: _aeTUId,
+        buildingId: _aeBId,
+        floorId: _aeTFId,
+        envelopeMeta: {
+          recipientName: tenantName,
+          subject,
+          mode: 'inline-addendum',
+          leaseStart: effDate || null,
+          rent: finalRent || 0,
+        },
+      });
+    } else {
+      dsResult = await docusignFetch('/envelopes', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+    }
     if (!dsResult || !dsResult.envelopeId) throw new Error('No envelopeId in DocuSign response');
+
+    // ── Race guard (2026-07-16, workflow-verified) ──────────────────────
+    // The CF COMMITS its server-side state write (envelope onto the target
+    // unit) BEFORE the callable returns, and the buildings listener applies
+    // incoming docs as a WHOLE-OBJECT swap — no merge, no rev gate. If we
+    // mutate unit objects before that swap lands, the swap replaces them and
+    // the tenant move is silently lost while the success toast still shows
+    // (observed live: «Updated from remote (rev 32263)» wiped a 242→227
+    // move). A tenant move exists ONLY client-side — no server copy, no
+    // reconcile — so one lost write is total loss. Therefore: when the CF
+    // reports a successful state write, WAIT until its envelope record is
+    // visible in local state — that proves the swap already happened and
+    // freshly re-resolved objects are safe to mutate. Bounded at 10s so a
+    // dead listener can't hang the flow.
+    const _aeFresh = (fId, uId, fallback) => {
+      const _b = (state.buildings || []).find(x => x.id === _aeBId);
+      const _f = _b && (_b.floors || []).find(x => x.id === fId);
+      return (_f && (_f.units || []).find(x => x.id === uId)) || fallback;
+    };
+    const _aeHasEnvelope = (u2) => !!(u2 && Array.isArray(u2.leaseEnvelopes)
+      && u2.leaseEnvelopes.some(e => e && (e.envelopeId === dsResult.envelopeId || e.id === dsResult.envelopeId)));
+    if (dsResult.stateWriteOk) {
+      const _t0 = Date.now();
+      while (Date.now() - _t0 < 10000) {
+        if (_aeHasEnvelope(_aeFresh(_aeTFId, _aeTUId, null))) break;
+        await new Promise(r => setTimeout(r, 250));
+      }
+      if (!_aeHasEnvelope(_aeFresh(_aeTFId, _aeTUId, null))) {
+        console.warn('[addendum] CF envelope record not seen locally after 10s — proceeding on current refs');
+      }
+    }
+    const srcLive = _aeFresh(_aeSFId, _aeSUId, source);
+    const tgtLive = _aeFresh(_aeTFId, _aeTUId, target);
 
     // Envelope ушёл — теперь сохраняем record и выполняем move. Если move
     // упадёт после успешной отправки envelope — envelope становится "orphan"
@@ -91016,7 +91139,7 @@ async function _aeSendForSignature() {
     // void-нуть его в DocuSign UI. Шанс этого мал, потому что валидация
     // _performTenantMove совпадает с проверками wizard'а, но guard всё равно есть.
     const record = _aeBuildLeaseDocRecord('pending', dsResult.envelopeId);
-    const moveRes = _performTenantMove(source, target, {
+    const moveRes = _performTenantMove(srcLive, tgtLive, {
       effectiveDate: _aeCtx.effectiveDate,
       newRent: _aeCtx.newRent,
     });
@@ -91026,12 +91149,34 @@ async function _aeSendForSignature() {
       closeAddendumEditor();
       return;
     }
-    target.leaseDocuments = Array.isArray(target.leaseDocuments) ? target.leaseDocuments : [];
-    target.leaseDocuments.push(record);
+    tgtLive.leaseDocuments = Array.isArray(tgtLive.leaseDocuments) ? tgtLive.leaseDocuments : [];
+    tgtLive.leaseDocuments.push(record);
+    // Re-add the CF's envelope record AFTER the move — _performTenantMove
+    // assigns target.leaseEnvelopes from the source unit's slice, which would
+    // otherwise drop the addendum envelope the CF just recorded on the target.
+    if (dsResult.envelopeRecord) {
+      tgtLive.leaseEnvelopes = Array.isArray(tgtLive.leaseEnvelopes) ? tgtLive.leaseEnvelopes : [];
+      if (!_aeHasEnvelope(tgtLive)) tgtLive.leaseEnvelopes.push(dsResult.envelopeRecord);
+      tgtLive.currentLeaseEnvelopeId = dsResult.envelopeId;
+    }
     if (typeof saveState === 'function') saveState();
     if (typeof renderAll === 'function') renderAll();
     closeAddendumEditor();
     if (typeof toast === 'function') toast(`✓ Addendum sent to ${recipient} · ${moveRes.summary}`, 'success');
+    // Post-flight: verify the move survived the next listener tick. If a late
+    // snapshot still wiped it (unrelated concurrent writer, dead-listener
+    // edge), tell the operator LOUDLY instead of leaving a silent success —
+    // the recovery is one click: re-run the wizard with «Save draft + move».
+    const _aeTenantName = tenantName;
+    setTimeout(() => {
+      try {
+        const t = _aeFresh(_aeTFId, _aeTUId, null);
+        const moved = t && (t.tenant || t.company) && t.status === 'occupied';
+        if (!moved && typeof toast === 'function') {
+          toast(`⚠ Move ${_aeTenantName} → Suite ${_aeTUId} may not have saved — open the unit and re-run via "Save draft + move" if it's still empty`, 'error');
+        }
+      } catch {}
+    }, 6000);
   } catch (e) {
     console.error('[addendum send] failed:', e);
     if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = '📧 Send for signature →'; }
@@ -94331,6 +94476,42 @@ function _moveInInvoicePill(s, invoiceId, graceOverdue) {
 // Returning true from any branch means the deposit is settled — used
 // by every surface (right-panel pill, Move-in card, deposit field
 // chip, map color etc) so they all agree.
+// Cache-scan deposit verdict (2026-07-16, live-verified on Suites 224/250).
+// КОРЕНЬ всех «мигающих депозитов»: paid-вердикт зависел от per-unit ШТАМПОВ
+// (u.stripe.depositInvoice / payments.deposit), которые heal'ы пишут в память,
+// а remote building-swap'ы (rev-шторм ~каждые 30с) стирают — вердикт мигал
+// paid ↔ awaiting на каждом ре-рендере. На Suites 224/250 штампы вовсе
+// отсутствовали, хотя ОПЛАЧЕННЫЙ deposit-инвойс лежал в кэше Stripe (панель
+// Move-in его видела — отсюда расхождение поверхностей). Этот сканер читает
+// кэш инвойсов НАПРЯМУЮ — module-level переменная + localStorage переживают
+// любые свапы. Скоуп по customerId/email ТЕКУЩЕГО тенанта обязателен: по
+// unitId в кэше лежат и счета ПРЕЖНИХ арендаторов (у 224 найден чужой
+// past_due за июль) — их paid-депозит не должен засчитываться новому.
+function _depositPaidFromCache(u) {
+  if (!u || !u.id) return null;
+  let rows = null;
+  try {
+    if (typeof _invRowsForUnit === 'function') rows = _invRowsForUnit(u.id) || [];
+    else if (typeof _invoicesCache !== 'undefined' && Array.isArray(_invoicesCache)) {
+      rows = _invoicesCache.filter(r => String(r?.unitId || r?.metadata?.unitId || '') === String(u.id));
+    }
+  } catch {}
+  if (!rows || !rows.length) return null;
+  const custId = u.stripe?.customerId || null;
+  const email = String(u.email || '').trim().toLowerCase();
+  if (!custId && !email) return null;
+  for (const r of rows) {
+    if (!r || r.bucket !== 'paid') continue;
+    const purpose = (r.metadata && r.metadata.purpose) || r.purpose || '';
+    if (purpose !== 'deposit') continue;
+    const rowCust = r.customerId || null;
+    const rowEmail = String(r.customerEmail || '').trim().toLowerCase();
+    const belongs = (custId && rowCust && rowCust === custId) || (email && rowEmail && rowEmail === email);
+    if (belongs) return r.id || null;
+  }
+  return null;
+}
+
 function _isDepositPaid(u) {
   if (!u) return false;
   if (typeof _unitLeaseHead === 'function') u = _unitLeaseHead(u);
@@ -94339,7 +94520,27 @@ function _isDepositPaid(u) {
   const di = u.stripe?.depositInvoice;
   if (di?.status === 'paid') return true;
   if (di?.invoiceId && typeof _lookupInvoiceBucket === 'function') {
-    if (_lookupInvoiceBucket(di.invoiceId) === 'paid') return true;
+    // paid принимаем от bucket-lookup'а ИЛИ от терминального localStorage-
+    // штампа — см. комментарий в _unitDepositStatus (фикс мигания: in-memory
+    // штамп затирали remote building-swap'ы, диск они не трогают).
+    const _diskPaid = (typeof _loadInvoiceBucketDisk === 'function')
+      && _loadInvoiceBucketDisk()[di.invoiceId] === 'paid';
+    if (_lookupInvoiceBucket(di.invoiceId) === 'paid' || _diskPaid) {
+      di.status = 'paid';
+      if (typeof _stampInvoiceBucketPaidDisk === 'function') _stampInvoiceBucketPaidDisk(di.invoiceId);
+      return true;
+    }
+  }
+  // Штампов нет вовсе (Suites 224/250: оплаченный deposit-инвойс лежит в
+  // кэше, но на юнит так и не был заштампован) → скан кэша по клиенту
+  // текущего тенанта. Найден paid → лечим штамп + терминальная запись на
+  // диск, чтобы вердикт пережил remote-swap'ы.
+  const _cacheDepId = (typeof _depositPaidFromCache === 'function') ? _depositPaidFromCache(u) : null;
+  if (_cacheDepId) {
+    u.stripe = u.stripe || {};
+    u.stripe.depositInvoice = Object.assign({}, u.stripe.depositInvoice, { invoiceId: _cacheDepId, status: 'paid' });
+    if (typeof _stampInvoiceBucketPaidDisk === 'function') _stampInvoiceBucketPaidDisk(_cacheDepId);
+    return true;
   }
   return false;
 }
@@ -97042,14 +97243,30 @@ function _renderLeaseDocCard(doc, u, b, f, editOn) {
   }
   if (doc.source === 'docusign' && liveStatus === 'pending' && _hasEdit) {
     actions.push(`<button type="button" class="rd-btn2" onclick="event.stopPropagation(); _leaseDocResend('${esc(doc.id)}')" title="Send a reminder to the tenant">${_rdIc('mail', 13)}Resend</button>`);
-    actions.push(`<button type="button" class="rd-btn2 rd-btn-danger" onclick="event.stopPropagation(); _leaseDocVoidEnvelope('${esc(doc.id)}')" title="Void this envelope on DocuSign">Cancel</button>`);
+    actions.push(`<button type="button" class="rd-btn2 rd-btn-danger" onclick="event.stopPropagation(); _leaseDocVoidEnvelope('${esc(doc.id)}')" title="Void this envelope on DocuSign — cancels it so the recipient can no longer sign">Voided</button>`);
+  }
+  // Terminal DocuSign lease (voided / declined / expired) → the envelope is
+  // dead and can't be revived. Offer a prominent «Send new» right on the card
+  // so the operator can dispatch a replacement without hunting for the generic
+  // «+ Add document» menu. Mirrors the legacy sandy card's supersede button
+  // (openSendLeaseModal); the new send writes a fresh envelopeId, so it won't
+  // collide with — or resurrect — this voided record. Without this, the timeline
+  // view left a voided card with only Open/Edit/Delete and no obvious way to
+  // send the next lease.
+  if (doc.source === 'docusign' && _hasEdit
+      && (liveStatus === 'voided' || liveStatus === 'declined' || liveStatus === 'expired')) {
+    actions.push(`<button type="button" class="rd-btn2" onclick="event.stopPropagation(); openSendLeaseModal('${esc(b.id)}','${esc(f.id)}','${esc(u.id)}')" title="Send a new lease envelope to the tenant — supersedes this ${esc(liveStatus)} one" style="background:#ca8a04; border-color:#ca8a04; color:#fff;">${_rdIc('sign', 13)}Send new</button>`);
   }
   if (_hasEdit) {
     actions.push(`<button type="button" class="rd-btn2" onclick="event.stopPropagation(); _openEditLeaseDocModal('${esc(doc.id)}')" title="Edit the title, dates, rent change, or notes">${_rdIc('pencil', 13)}Edit details</button>`);
     if (doc.source === 'docusign') {
       actions.push(`<button type="button" class="rd-btn2" onclick="event.stopPropagation(); _openLeaseTemplateModal('${esc(doc.type)}', 'unit', { unitId: '${esc(u.id)}' })" title="Edit the ${esc(meta.label.toLowerCase())} template for Suite ${esc(u.id)}">${_rdIc('pencil', 13)}Edit template</button>`);
     }
-    actions.push(`<span class="lease-doc-spacer"></span><button type="button" class="rd-btn2 rd-btn-danger" onclick="event.stopPropagation(); _leaseDocDelete('${esc(doc.id)}')" title="Remove this document" aria-label="Delete">${_rdIc('trash', 14)}</button>`);
+    // Trash / delete-card action removed at operator request (Tony 2026-07-16):
+    // the local-only «remove card» was confusing next to the DocuSign «Voided»
+    // action (operators expected it to cancel the envelope too). A lease is now
+    // retired only via «Voided» (real DocuSign void); a fresh one via «Send new».
+    // _leaseDocDelete() is left defined but no longer wired to any button.
   }
 
   // Wrap the card in an editor-opener click target (only when the
@@ -97135,6 +97352,23 @@ function _leaseDocDelete(docId) {
   const doc = u?.leaseDocuments?.find(d => d.id === docId);
   if (!doc) return;
   if (!confirm(`Remove "${doc.title}" from the documents list?\n\nThis only deletes the local record. The PDF / envelope on DocuSign or Storage is not touched.`)) return;
+  // Tombstone the backing source BEFORE removing the card. _ensureLeaseDocuments
+  // runs on every render and re-materializes a 'lease' card from any envelope in
+  // u.leaseEnvelopes[] (or u.signedPdf) that has no matching doc — so without a
+  // tombstone, deleting a DocuSign-backed «Awaiting signature» card had ZERO
+  // visible effect: the envelope stays (by design — see the confirm text) and the
+  // next render rebuilt the card from it. We keep the envelope / PDF untouched and
+  // only suppress its auto-migration back into the documents list. A fresh
+  // send/void creates a new envelopeId, which is not tombstoned.
+  if (doc.envelopeId) {
+    if (!Array.isArray(u.leaseDocsDismissedEnvelopes)) u.leaseDocsDismissedEnvelopes = [];
+    if (!u.leaseDocsDismissedEnvelopes.includes(doc.envelopeId)) u.leaseDocsDismissedEnvelopes.push(doc.envelopeId);
+  }
+  const _dismissPath = doc.pdfStoragePath || doc.pdfUrl || '';
+  if (_dismissPath) {
+    if (!Array.isArray(u.leaseDocsDismissedPaths)) u.leaseDocsDismissedPaths = [];
+    if (!u.leaseDocsDismissedPaths.includes(_dismissPath)) u.leaseDocsDismissedPaths.push(_dismissPath);
+  }
   u.leaseDocuments = u.leaseDocuments.filter(d => d.id !== docId);
   // Recompute active rent in case we removed an amendment.
   _leaseDocSyncContractRent(u);
@@ -98448,6 +98682,15 @@ function _performTenantMove(source, target, opts) {
     }
   }
   const movingDeposit = sourcePayments.deposit || null;
+  // Deposit-paid verdict computed от ВСЕХ маркеров (manual payments.deposit,
+  // stripe.depositInvoice stamp, invoice-cache bucket) ДО каких-либо мутаций.
+  // Наблюдённый кейс (242→227, 2026-07-16): source показывал депозит как
+  // оплаченный, но ни payments.deposit, ни depositInvoice-штампа на нём к
+  // моменту переезда не оказалось (штамп мог быть вычищен heal'ом после
+  // оплаты) — target унаследовал deposit-сумму БЕЗ paid-маркера и навсегда
+  // застрял в «Awaiting Deposit». Verdict ниже конвертируется в явную
+  // payments.deposit-запись на target, если ни один маркер не переехал сам.
+  const _srcDepositPaid = (typeof _isDepositPaid === 'function') ? _isDepositPaid(source) : false;
 
   // ── Snapshot source tenancy в history (BEFORE clearing) ───────────
   source.tenantHistory = source.tenantHistory || [];
@@ -98517,6 +98760,19 @@ function _performTenantMove(source, target, opts) {
     target.payments[ym] = movingPayments[ym];
   }
   if (movingDeposit) target.payments.deposit = movingDeposit;
+  // Belt: депозит «всегда едет с тенантом». Если source был paid по ЛЮБОМУ
+  // маркеру, а на target не переехала ни одна запись (movingDeposit пуст и
+  // depositInvoice-штамп скопировать нечего) — пишем явный paid-рекорд,
+  // чтобы target не регрессировал в «Awaiting Deposit» на оплаченном депозите.
+  if (_srcDepositPaid && !target.payments.deposit) {
+    target.payments.deposit = {
+      status: 'paid',
+      amount: +source.deposit || 0,
+      paidVia: 'carried',
+      note: `Deposit carried from Suite ${source.id} (relocation)`,
+      recordedAt: new Date().toISOString(),
+    };
+  }
 
   // Pro-rated target invoice для cutoff month — только если effective
   // date НЕ 1-е число. На target до сих пор не было платежей за этот
@@ -108323,13 +108579,32 @@ async function _dsLoadJwtMode() {
 }
 // Generic CF caller — wraps fbSync.sdk.httpsCallable with a tighter error
 // surface. Returns the .data field directly so callers don't have to unwrap.
-async function _dsCallCF(name, args) {
+async function _dsCallCF(name, args, opts) {
   if (!fbSync?.enabled || !fbSync.sdk?.httpsCallable || !fbSync.functions) {
     throw new Error('Cloud Functions SDK not ready — reload page');
   }
-  const fn = fbSync.sdk.httpsCallable(fbSync.functions, name);
-  const res = await fn(args || {});
-  return res?.data ?? res;
+  // Cap the call so a stalled network (or a cold-starting CF) can't hang the UI
+  // forever. Clicking «Voided» / «Resend» awaits this; with no timeout a dropped
+  // connection left the action pending indefinitely with no error — the "page
+  // froze after Voided" report. Pass the SDK's own timeout so the underlying
+  // request is actually aborted, and race a manual timer as a belt-and-suspenders
+  // in case the SDK promise never settles. 30s tolerates cold starts + the
+  // DocuSign round-trip while still failing fast on a genuine hang.
+  const timeoutMs = (opts && opts.timeoutMs) || 30000;
+  const fn = fbSync.sdk.httpsCallable(fbSync.functions, name, { timeout: timeoutMs });
+  let _timer;
+  const timeout = new Promise((_, reject) => {
+    _timer = setTimeout(
+      () => reject(new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s — check your connection and try again`)),
+      timeoutMs + 2000
+    );
+  });
+  try {
+    const res = await Promise.race([fn(args || {}), timeout]);
+    return res?.data ?? res;
+  } finally {
+    clearTimeout(_timer);
+  }
 }
 
 // ============================================================
@@ -110925,6 +111200,12 @@ function _ensureLeaseDocuments(u) {
   // Migrate envelopes → documents. Each envelope becomes a 'lease' doc.
   // Operator can re-type later (e.g. mark one as Renewal) via the inline
   // edit menu once that's wired.
+  // Tombstones written by _leaseDocDelete — envelopes / PDF paths the operator
+  // explicitly removed from the documents list. We must NOT re-migrate these,
+  // otherwise deletion of a DocuSign-backed card is undone on the next render.
+  const dismissedEnv   = new Set(Array.isArray(u.leaseDocsDismissedEnvelopes) ? u.leaseDocsDismissedEnvelopes : []);
+  const dismissedPaths = new Set(Array.isArray(u.leaseDocsDismissedPaths) ? u.leaseDocsDismissedPaths : []);
+
   const envelopes = Array.isArray(u.leaseEnvelopes) ? u.leaseEnvelopes : [];
   for (const env of envelopes) {
     // Writer пишет `envelopeId`; legacy данные могли использовать `id`.
@@ -110932,7 +111213,7 @@ function _ensureLeaseDocuments(u) {
     // в leaseDocuments, и Lease tab показывал «No lease documents yet» даже
     // после успешной отправки envelope'а (FIXES_LOG Entry 17).
     const envId = env && (env.envelopeId || env.id);
-    if (!envId || haveEnvIds.has(envId)) continue;
+    if (!envId || haveEnvIds.has(envId) || dismissedEnv.has(envId)) continue;
     const doc = {
       id: _leaseDocId(),
       type: 'lease',
@@ -110954,7 +111235,7 @@ function _ensureLeaseDocuments(u) {
   // Migrate signedPdf → document (only one such field exists).
   if (u.signedPdf && (u.signedPdf.url || u.signedPdf.storagePath)) {
     const path = u.signedPdf.storagePath || u.signedPdf.url;
-    if (!havePaths.has(path)) {
+    if (!havePaths.has(path) && !dismissedPaths.has(path)) {
       u.leaseDocuments.push({
         id: _leaseDocId(),
         type: 'lease',
@@ -120263,8 +120544,24 @@ function _liveLeaseFields(u, overrides) {
   // sent envelope (local-time path) still carried today.
   const todayLong     = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York', year: 'numeric', month: 'long', day: 'numeric' });
   const o = overrides || {};
-  // rent: prefer modal-typed override, fall back to unit values
-  const rentRaw  = (o.rent != null && o.rent !== '') ? +o.rent : (+u?.contractRent || +u?.rent || 0);
+  // rent: prefer modal-typed override, fall back to unit values.
+  // The override may arrive ALREADY money-formatted ("$1,350") when a caller
+  // passes a fully-built field set through `liveOverrides` — every send/preview
+  // path does exactly this: _slBuildPayloadFromForm / the inline sender build
+  // fields.rent = fmtMoney(...) = "$1,350", then docusignSendEnvelope hands that
+  // object to _resolveLeaseTemplate({ liveOverrides: fields }), which re-invokes
+  // this function. A bare `+"$1,350"` is NaN, and fmtMoney(NaN) prints "$0" —
+  // that is precisely how a real $1,350 rent went out to the client (and to
+  // DocuSign) as $0 while the preview's field table still showed $1,350.
+  // Strip $ , and whitespace before coercing, and fall back to the unit value
+  // when the override can't be parsed so we NEVER silently emit $0.
+  const _parseMoneyLoose = (v) => {
+    if (v == null || v === '') return NaN;
+    const n = Number(String(v).replace(/[$,\s]/g, ''));
+    return Number.isFinite(n) ? n : NaN;
+  };
+  const _oRent   = _parseMoneyLoose(o.rent);
+  const rentRaw  = Number.isFinite(_oRent) ? _oRent : (+u?.contractRent || +u?.rent || 0);
   const startRaw = o.lease_start || u?.leaseStart || '';
   const endRaw   = o.lease_end   || u?.until      || '';
   return Object.assign({
@@ -125551,8 +125848,20 @@ function _leaseActiveEnvelope(u) {
     const tz = new Date(z.sentAt || z.createdAt || 0).getTime();
     return tz - ta;
   });
-  const live = sorted.find(e => !LEASE_TERMINAL.has(e.status) || e.status === 'completed');
-  return live || sorted[0];
+  // The NEWEST envelope reflects the unit's current lease state. We must NOT
+  // skip past a newer voided/declined/expired envelope to reach an older, still
+  // 'sent' one — that older envelope is superseded. Doing so made a unit whose
+  // latest lease was voided still read as «Awaiting Signature» on a zombie prior
+  // send (the header pill is driven by _unitLeaseStatus → this function).
+  // Exception: a 'completed' (signed) lease is a hard fact — if the newest
+  // attempt is dead but an earlier envelope was signed, that signed lease still
+  // governs the unit, so surface it.
+  const newest = sorted[0];
+  if (LEASE_TERMINAL.has(newest.status) && newest.status !== 'completed') {
+    const completed = sorted.find(e => e.status === 'completed');
+    if (completed) return completed;
+  }
+  return newest;
 }
 function _leaseHasCompleted(u) {
   // A lease is "on file" if ANY of:
@@ -125765,7 +126074,18 @@ function _unitDepositStatus(u) {
     return { state: 'paid', color: '#16a34a', opacity: 1.0, label: 'Deposit paid' };
   }
   const bucket = _lookupInvoiceBucket(di.invoiceId);
-  if (bucket === 'paid')     return { state: 'paid',    color: '#16a34a', opacity: 1.0, label: 'Deposit paid' };
+  // «paid» терминален: принимаем его от bucket-lookup'а ИЛИ от localStorage-
+  // карты (куда _stampInvoiceBucketPaidDisk фиксирует каждый увиденный paid).
+  // In-memory штамп di.status затирался remote building-swap'ами каждые пару
+  // минут (rev-шторм) — поэтому вердикт дополнительно закрепляется на диске,
+  // который swap'ы не трогают. Это и есть фикс мигания paid ↔ awaiting.
+  const _diskPaid = (typeof _loadInvoiceBucketDisk === 'function')
+    && _loadInvoiceBucketDisk()[di.invoiceId] === 'paid';
+  if (bucket === 'paid' || _diskPaid) {
+    di.status = 'paid';                                   // in-memory (до следующего swap)
+    if (typeof _stampInvoiceBucketPaidDisk === 'function') _stampInvoiceBucketPaidDisk(di.invoiceId);
+    return { state: 'paid',    color: '#16a34a', opacity: 1.0, label: 'Deposit paid' };
+  }
   if (bucket === 'past_due') return { state: 'overdue', color: '#6b7280', opacity: 1.0, label: 'Deposit invoice overdue' };
   if (bucket === 'void')     return { state: 'none',    color: '#94a3b8', opacity: 0.35, label: 'Deposit invoice voided' };
   if (bucket === 'uncollectible') return { state: 'overdue', color: '#6b7280', opacity: 1.0, label: 'Deposit uncollectible' };
@@ -140018,6 +140338,24 @@ function _loadInvoiceBucketDisk() {
   } catch { _invoiceBucketDisk = {}; }
   return _invoiceBucketDisk;
 }
+// Terminal-paid stamp (2026-07-16, deposit flicker root fix). «paid» —
+// ТЕРМИНАЛЬНОЕ состояние инвойса (paid никогда не откатывается в open;
+// void бывает только у неоплаченных). Как только ЛЮБОЙ источник увидел
+// paid — фиксируем это в localStorage-карте bucket'ов. localStorage не
+// трогают remote building-swap'ы (в отличие от in-memory штампов на
+// юните, которые wholesale-подмена объектов затирала каждые пару минут
+// при rev-шторме) — поэтому вердикт «депозит оплачен» перестаёт зависеть
+// от фазы кэша и не мигает paid ↔ awaiting между ре-рендерами.
+function _stampInvoiceBucketPaidDisk(invoiceId) {
+  if (!invoiceId) return;
+  try {
+    const map = _loadInvoiceBucketDisk();
+    if (map[invoiceId] === 'paid') return;
+    map[invoiceId] = 'paid';
+    localStorage.setItem(INV_BUCKET_LS_KEY, JSON.stringify(map));
+  } catch {}
+}
+window._stampInvoiceBucketPaidDisk = _stampInvoiceBucketPaidDisk;
 // localStorage cap to prevent unbounded growth — over years of operation
 // the bucket map could otherwise reach 10K+ invoice IDs (each ~30 bytes
 // = 300KB), eventually hitting the 5MB localStorage quota and breaking
