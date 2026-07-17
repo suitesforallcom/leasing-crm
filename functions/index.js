@@ -133,7 +133,13 @@ async function _isRootAdmin(email) {
 async function requireEditor(auth) {
   if (!auth) throw new HttpsError('unauthenticated', 'Sign in required');
   const email = (auth.token?.email || '').toLowerCase();
-  if (ROOT_ADMINS.includes(email)) return {role: 'admin', email};
+  // Аудит 2026-07-16 (security): root-admin по email принимаем только если
+  // провайдер НЕ пометил адрес неверифицированным (незверифицированный
+  // password-аккаунт с чужим email не должен наследовать root-роль).
+  // Google OAuth всегда даёт email_verified=true; отсутствие клейма не
+  // блокирует (не-lockout), явный false — блокирует шорткат (дальше юзер
+  // проверяется как обычный member).
+  if (ROOT_ADMINS.includes(email) && auth.token?.email_verified !== false) return {role: 'admin', email};
   const memberRef = db.doc(`workspaces/${WORKSPACE_ID}/members/${auth.uid}`);
   const snap = await memberRef.get();
   if (!snap.exists) throw new HttpsError('permission-denied', 'Not a workspace member');
@@ -389,36 +395,61 @@ async function _stateIfSyncV2() {
 }
 
 // Точечная запись одного per-payment дока. Caller уже проверил gate.
+// Аудит 2026-07-16 (error-swallowing): под strip коллекция payments —
+// ЕДИНСТВЕННОЕ долговременное хранилище платежа. Раньше сбой записи
+// глотался warn'ом, событие вебхука помечалось 'done' и Stripe больше
+// не ретраил — оплаченная рента навсегда не доходила до леджера (тенанта
+// даннили за оплаченный месяц). Теперь: 3 внутренних ретрая с бэкоффом,
+// затем THROW — money-колбэки пробрасывают его, вебхук отвечает 500, и
+// штатный retry-протокол ('processing' → attempts≤6 → dead-letter) чинит
+// транзиент сам, а персистентный сбой попадает в dead-letter с алертом.
 async function _writePaymentV2(buildingId, floorId, unitId, ym, rec) {
-  try {
-    const key = `${buildingId}__${unitId}__${ym}`;
-    const ref = db.doc(`workspaces/${WORKSPACE_ID}/payments/${key}`);
-    await ref.set({
-      _schema: 'v2',
-      buildingId: buildingId || '',
-      floorId: floorId || '',
-      unitId,
-      ym,
-      rec: rec || {},
-      _mirroredAt: admin.firestore.FieldValue.serverTimestamp(),
-      _mirroredBy: 'cloud-function',
-    });
-  } catch (e) {
-    logger.warn(`[mirror-v2:write] ${buildingId}/${unitId}/${ym}: ${e.message}`);
+  const key = `${buildingId}__${unitId}__${ym}`;
+  const ref = db.doc(`workspaces/${WORKSPACE_ID}/payments/${key}`);
+  const payload = {
+    _schema: 'v2',
+    buildingId: buildingId || '',
+    floorId: floorId || '',
+    unitId,
+    ym,
+    rec: rec || {},
+    _mirroredAt: admin.firestore.FieldValue.serverTimestamp(),
+    _mirroredBy: 'cloud-function',
+  };
+  let lastErr = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await ref.set(payload);
+      return;
+    } catch (e) {
+      lastErr = e;
+      logger.warn(`[mirror-v2:write] attempt ${attempt + 1} failed ${buildingId}/${unitId}/${ym}: ${e.message}`);
+      await new Promise((r) => setTimeout(r, 500 * Math.pow(4, attempt)));
+    }
   }
+  logger.error(`[mirror-v2:write] EXHAUSTED ${buildingId}/${unitId}/${ym}: ${lastErr && lastErr.message}`);
+  throw lastErr || new Error('payment mirror write failed');
 }
 
 // Точечное удаление одного per-payment дока. Только по явному событию
 // (move-out / undo / explicit delete) — НИКОГДА по diff'у (см. v1 incident
 // 2026-05-30, SCALING_PLAN_v2.md §0). Caller уже проверил gate.
 async function _deletePaymentV2(buildingId, unitId, ym) {
-  try {
-    const key = `${buildingId}__${unitId}__${ym}`;
-    const ref = db.doc(`workspaces/${WORKSPACE_ID}/payments/${key}`);
-    await ref.delete();
-  } catch (e) {
-    logger.warn(`[mirror-v2:del] ${buildingId}/${unitId}/${ym}: ${e.message}`);
+  const key = `${buildingId}__${unitId}__${ym}`;
+  const ref = db.doc(`workspaces/${WORKSPACE_ID}/payments/${key}`);
+  let lastErr = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await ref.delete();
+      return;
+    } catch (e) {
+      lastErr = e;
+      logger.warn(`[mirror-v2:del] attempt ${attempt + 1} failed ${buildingId}/${unitId}/${ym}: ${e.message}`);
+      await new Promise((r) => setTimeout(r, 500 * Math.pow(4, attempt)));
+    }
   }
+  logger.error(`[mirror-v2:del] EXHAUSTED ${buildingId}/${unitId}/${ym}: ${lastErr && lastErr.message}`);
+  throw lastErr || new Error('payment mirror delete failed');
 }
 
 // ─── Discount-метаданные на строке леджера u.payments[ym] ────────────────
@@ -815,6 +846,12 @@ exports.ensureStripeCustomer = onCall(
 exports.createStripeInvoice = onCall(
   {secrets: [STRIPE_SECRET_KEY]},
   async (req) => {
+    // Аудит 2026-07-16 (security): auth ДО rate-limit'а. Раньше счётчик
+    // /rateLimits/ws_{hour} инкрементился до requireEditor — аноним мог
+    // ~100 вызовами в час выжигать лимит и блокировать выставление счетов
+    // всем легитимным операторам (DoS почти бесплатно). Метрим только
+    // аутентифицированных редакторов.
+    await requireEditor(req.auth);
     // RATE LIMIT — guard against runaway scripts / accidental loops in
     // operator UI. Two tiers:
     //   1. Per-(unit, ym) hard cap: at most N invoices per 24h. Stops
@@ -3585,7 +3622,8 @@ async function handleInvoiceVoided(invoice, eventType) {
         await _writePaymentV2(buildingId, floorId, unitId, ym, voidedRecForMirror);
       }
     } catch (e) {
-      logger.warn(`[mirror-v2:invoice-voided] ${invoice.id}: ${e.message}`);
+      logger.error(`[mirror-v2:invoice-voided] ${invoice.id}: ${e.message}`);
+      throw e; // аудит 2026-07-16 — retry-протокол вебхука
     }
   }
   logger.info(`[stripe] invoice ${invoice.id} marked ${newStatus} for ${unitId}/${ym || '-'}`);
@@ -3689,7 +3727,8 @@ async function handleChargeRefunded(charge) {
         await _writePaymentV2(buildingId, floorId, unitId, ym, refundRecForMirror);
       }
     } catch (e) {
-      logger.warn(`[mirror-v2:charge-refunded] ${charge.id}: ${e.message}`);
+      logger.error(`[mirror-v2:charge-refunded] ${charge.id}: ${e.message}`);
+      throw e; // аудит 2026-07-16 — retry-протокол вебхука
     }
   }
   logger.info(`[stripe] charge ${charge.id} refunded $${refundedAmt} for invoice ${invoiceId}`);
@@ -3918,7 +3957,8 @@ async function handleChargeDisputeClosed(dispute, eventId) {
         await _writePaymentV2(buildingId, floorId, unitId, ym, bouncedRecForMirror);
       }
     } catch (e) {
-      logger.warn(`[mirror-v2:dispute-lost] ${dispute.id || chargeId}: ${e.message}`);
+      logger.error(`[mirror-v2:dispute-lost] ${dispute.id || chargeId}: ${e.message}`);
+      throw e; // аудит 2026-07-16 — retry-протокол вебхука
     }
   }
   // Audit — проигранный chargeback это громкое денежное событие.
@@ -4482,7 +4522,9 @@ async function handleInvoicePaid(invoice, eventId) {
       }
     }
   } catch (e) {
-    logger.warn(`[mirror-v2:invoice-paid] ${invoice.id}: ${e.message}`);
+    // Аудит 2026-07-16: пробрасываем — вебхук 500-ит, Stripe ретраит (протокол 'processing'/attempts), персистентный сбой уходит в dead-letter вместо тихой потери оплаты.
+    logger.error(`[mirror-v2:invoice-paid] ${invoice.id}: ${e.message}`);
+    throw e;
   }
   logger.info(`[stripe] ✓ paid: ${unitId}/${ym} via invoice ${invoice.id} ($${amount})`);
 }
@@ -9991,6 +10033,27 @@ exports.dsSendEnvelope = onCall(
       // can reconcile via _dsReconcileEnvelopes on the client. We do NOT throw
       // here because the envelope physically went out (email reaching tenant);
       // throwing would mislead the operator into thinking nothing happened.
+    }
+
+    // Аудит 2026-07-16 (functions-audit): server-authoritative flat-doc бэкап
+    // envelope-записи. Раньше при сбое building-зеркала запись не жила НИГДЕ
+    // на сервере (под strip коллекция зданий — единственный дом leaseEnvelopes),
+    // а bumped _rev тут же затирал клиентскую копию → «лиза ушла, но юнита
+    // envelope нет» → повторная отправка → тенант получал ДВА договора. Этот
+    // плоский док (idempotent по envelopeId, вне транзакции состояния) даёт
+    // _dsReconcileEnvelopes серверный источник для восстановления даже когда
+    // зеркало упало и запись потерялась из зданий. Best-effort — не валит send.
+    try {
+      await db.doc(`workspaces/${WORKSPACE_ID}/docusign_envelopes/${data.envelopeId}`).set({
+        _schema: 'v1',
+        envelopeId: data.envelopeId,
+        buildingId, floorId, unitId,
+        record: envelopeRecord,
+        stateWriteOk: writeOk,
+        _writtenAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    } catch (e2) {
+      logger.warn(`[docusign:flat-doc] ${data.envelopeId}: ${e2.message}`);
     }
 
     await _dsAudit('send', caller, {

@@ -777,13 +777,15 @@ exports.hubspotSyncNow = onCall(
 exports.hubspotGetData = onCall(
   { timeoutSeconds: 30 },
   async (request) => {
-    // Auth check intentionally relaxed — Pulse's firebase-bridge.js
-    // uses a separate app instance ('pulse-bridge') and the auth state
-    // doesn't reliably propagate from floor-map (different IndexedDB
-    // storage key per app name). The data returned is operational
-    // (counts, emails of staff, meeting titles) — no financial PII.
-    // Page-level gate exists in pulse.html (redirects to floor-map
-    // if no sfa_v5_state in localStorage).
+    // Аудит 2026-07-16 (security): onCall — публичный HTTPS URL; «page-level
+    // gate» в pulse.html не является границей безопасности, и CRM-данные
+    // (почты сотрудников, встречи, сделки) отдавались ЛЮБОМУ анонимному
+    // вызову из интернета. Минимальный гейт: авторизованный Firebase-юзер.
+    // Pulse-bridge должен пробрасывать auth (signInWithCustomToken/共 login);
+    // если его сессия не аутентифицируется — чинить bridge, а не снимать гейт.
+    if (!request.auth || !request.auth.uid) {
+      throw new HttpsError('unauthenticated', 'Sign in required');
+    }
     const snap = await db.doc(`workspaces/${WORKSPACE_ID}/data/hubspot`).get();
     if (!snap.exists) return { hubspotData: null };
     const raw = snap.data().hubspotData || null;
