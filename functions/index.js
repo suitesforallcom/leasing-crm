@@ -927,7 +927,9 @@ exports.createStripeInvoice = onCall(
       // tell at a glance whether a human or the system sent it.
       auto,
     } = req.data || {};
-    await requireEditor(req.auth);
+    // Re-audit 2026-07-16: requireEditor уже вызван в начале хендлера (до
+    // rate-limit'а, security-фикс). Дублирующий вызов удалён — лишний
+    // Firestore-read members-дока на каждый инвойс.
 
     const invPurpose = purpose || 'rent';
     // Validate idempotency key shape — Stripe accepts any string up to

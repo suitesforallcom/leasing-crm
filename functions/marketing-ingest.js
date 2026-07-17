@@ -215,7 +215,14 @@ exports.marketingIngest = onRequest(
  */
 exports.marketingGetData = require('firebase-functions/v2/https').onCall(
   { timeoutSeconds: 30 },
-  async () => {
+  async (request) => {
+    // Re-audit 2026-07-16 (security): onCall — публичный HTTPS URL; раньше
+    // отдавал маркетинг-данные (ad-аккаунты, кампании, дневной spend, email
+    // оператора) ЛЮБОМУ анониму из интернета. Sibling дыры hubspotGetData,
+    // которую первый проход пропустил. Минимальный гейт — авторизованный юзер.
+    if (!request || !request.auth || !request.auth.uid) {
+      throw new HttpsError('unauthenticated', 'Sign in required');
+    }
     const snap = await db.doc(`workspaces/${WORKSPACE_ID}/data/marketing`).get();
     if (!snap.exists) return { marketingData: null };
     const raw = snap.data();
