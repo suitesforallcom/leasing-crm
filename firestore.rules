@@ -389,9 +389,18 @@ service cloud.firestore {
         // user action (deleteBuilding → _mirrorBuildingDeleteV2), not the
         // every-save mirror clobber vector, so it only needs isEditor (a delete
         // has no incoming doc / _savedRev to compare).
+        // Security audit 2026-07-16: bound the FORWARD jump too. The monotonic
+        // guard alone let an editor write _savedRev:1e15, permanently locking
+        // out every real save (rev in the hundreds) for that building — a
+        // one-write self-DoS of the money-save path. Legit client writes are
+        // ALWAYS existing+1 (floor-map-editor.html:35066 rv=(appliedRev|0)+1;
+        // a stale tab writes < existing and is already rejected by the '>='
+        // clause), so a +1000 ceiling never blocks a real write but rejects the
+        // absurd jump. CF writes use the Admin SDK (bypass rules), unaffected.
         allow create, update: if isEditor(wid) && (
                        resource == null
-                       || request.resource.data.get('_savedRev', 0) >= resource.data.get('_savedRev', 0)
+                       || (request.resource.data.get('_savedRev', 0) >= resource.data.get('_savedRev', 0)
+                           && request.resource.data.get('_savedRev', 0) <= resource.data.get('_savedRev', 0) + 1000)
                      );
         allow delete: if isEditor(wid);
       }
