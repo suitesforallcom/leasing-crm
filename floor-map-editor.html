@@ -30949,8 +30949,14 @@ async function uploadMediaBlob(blob, category, ext) {
   }
   const path = storagePathFor(category, ext);
   const ref = fbSync.sdk.storageRef(fbSync.storage, path);
+  // Аудит 2026-07-16 (error-swallowing): без таймаута Storage SDK ретраит до
+  // ~10 минут — модалка Record Payment замерзала на плохом Wi-Fi без ошибки
+  // и выхода. 90с хватает на 25MB PDF по медленной сети; дальше — честная
+  // ошибка, оператор повторяет попытку.
+  const _uploadTimeout = (ms) => new Promise((_, rej) => setTimeout(
+    () => rej(new Error(`Upload timed out after ${Math.round(ms/1000)}s — check your connection and try again`)), ms));
   try {
-    await fbSync.sdk.uploadBytes(ref, blob, { contentType });
+    await Promise.race([fbSync.sdk.uploadBytes(ref, blob, { contentType }), _uploadTimeout(90000)]);
   } catch (err) {
     // Translate Firebase Storage's cryptic "Permission denied" into
     // an actionable message — this almost always means the file
@@ -34308,24 +34314,68 @@ const repo = (() => {
     return typeof syncV2Enabled === 'function' && syncV2Enabled()
       && typeof fbSync !== 'undefined' && fbSync && fbSync.enabled && fbSync.sdk && fbSync.db;
   }
-  function _mirrorSet(buildingId, floorId, unitId, ym, rec) {
+  // ── Write-ahead outbox (аудит 2026-07-16, error-swallowing) ────────────
+  // Раньше setDoc/deleteDoc были fire-and-forget с console.warn — под strip
+  // коллекция payments это ЕДИНСТВЕННОЕ долговременное хранилище платежей,
+  // и один упавший write (permission, offline, закрытая вкладка) молча терял
+  // запись о деньгах, при этом «✓ Payment recorded» тост показывался всегда.
+  // Теперь: операция СНАЧАЛА пишется в localStorage-outbox (переживает
+  // reload), затем выполняется; успех удаляет её из outbox, сбой оставляет —
+  // дренер ретраит каждые 60с и на старте, оператор видит warning-тост
+  // (троттлинг 60с). Last-write-wins по ключу ym — поздняя операция по тому
+  // же месяцу законно замещает раннюю.
+  const PAY_OUTBOX_LS = 'sfa_pay_outbox_v1';
+  let _outboxToastAt = 0;
+  function _outboxLoad() { try { return JSON.parse(localStorage.getItem(PAY_OUTBOX_LS)) || {}; } catch { return {}; } }
+  function _outboxSave(m) { try { localStorage.setItem(PAY_OUTBOX_LS, JSON.stringify(m)); } catch {} }
+  function _outboxRemove(key) { const m = _outboxLoad(); if (key in m) { delete m[key]; _outboxSave(m); } }
+  function _outboxNotify(err) {
+    console.warn('[repo.outbox] payment mirror write failed — queued for retry:', err?.message || err);
+    if (Date.now() - _outboxToastAt > 60000) {
+      _outboxToastAt = Date.now();
+      try { if (typeof toast === 'function') toast('⚠ Payment sync delayed — retrying automatically. Do not re-enter the payment.', 'error'); } catch {}
+    }
+  }
+  function _outboxAttempt(key) {
     if (!_mirrorReady()) return;
+    const op = _outboxLoad()[key];
+    if (!op) return;
     try {
       const { sdk, db } = fbSync;
-      const ref = sdk.doc(db, 'workspaces', WORKSPACE_ID, 'payments', _payKeyV2(buildingId, unitId, ym));
-      sdk.setDoc(ref, {
-        _schema: 'v2', buildingId: buildingId || '', floorId: floorId || '',
-        unitId, ym, rec: rec || {}, _mirroredAt: sdk.serverTimestamp(),
-      }).catch(e => console.warn('[repo.mirrorSet]', e?.message || e));
-    } catch (e) { console.warn('[repo.mirrorSet]', e?.message || e); }
+      const ref = sdk.doc(db, 'workspaces', WORKSPACE_ID, 'payments', key);
+      const p = (op.kind === 'del')
+        ? sdk.deleteDoc(ref)
+        : sdk.setDoc(ref, {
+            _schema: 'v2', buildingId: op.buildingId, floorId: op.floorId,
+            unitId: op.unitId, ym: op.ym, rec: op.rec || {}, _mirroredAt: sdk.serverTimestamp(),
+          });
+      p.then(() => _outboxRemove(key)).catch(e => _outboxNotify(e));
+    } catch (e) { _outboxNotify(e); }
+  }
+  function _outboxDrain() {
+    if (!_mirrorReady()) return;
+    const m = _outboxLoad();
+    for (const k of Object.keys(m)) _outboxAttempt(k);
+  }
+  try { setInterval(() => { try { _outboxDrain(); } catch {} }, 60000); } catch {}
+  // Стартовый дренаж — как только Firestore готов (мог остаться хвост от
+  // прошлой сессии/вкладки, закрытой до завершения записи).
+  try { setTimeout(() => { try { _outboxDrain(); } catch {} }, 12000); } catch {}
+  function _mirrorSet(buildingId, floorId, unitId, ym, rec) {
+    if (!_mirrorReady()) return;
+    const key = _payKeyV2(buildingId, unitId, ym);
+    const m = _outboxLoad();
+    m[key] = { kind: 'set', buildingId: buildingId || '', floorId: floorId || '', unitId, ym, rec: rec || {}, at: Date.now() };
+    _outboxSave(m);
+    _outboxAttempt(key);
   }
   function _mirrorDel(buildingId, floorId, unitId, ym) {
     if (!_mirrorReady()) return;
-    try {
-      const { sdk, db } = fbSync;
-      sdk.deleteDoc(sdk.doc(db, 'workspaces', WORKSPACE_ID, 'payments', _payKeyV2(buildingId, unitId, ym)))
-        .catch(e => console.warn('[repo.mirrorDel]', e?.message || e));
-    } catch (e) { console.warn('[repo.mirrorDel]', e?.message || e); }
+    const key = _payKeyV2(buildingId, unitId, ym);
+    const m = _outboxLoad();
+    m[key] = { kind: 'del', buildingId: buildingId || '', floorId: floorId || '', unitId, ym, at: Date.now() };
+    _outboxSave(m);
+    _outboxAttempt(key);
   }
   // Phase 1 backfill: однократно записать ВСЕ платежи из state в коллекцию
   // (building-aware, _schema:'v2'). Тяжёлая (сотни setDoc, батчами по 50) —
@@ -59833,7 +59883,7 @@ function _teamRowHtml(r, dupSet) {
         ${roleSelect}
         ${roleBadge}
         <div class="team-actions">
-          <button class="team-action-btn danger" onclick="fbRemoveEmailInvite('${esc(r.email)}')" title="Revoke">Remove</button>
+          <button class="team-action-btn danger" onclick="fbRemoveEmailInvite(decodeURIComponent('${encodeURIComponent(r.email)}'))" title="Revoke">Remove</button>
         </div>
       </div>`;
   }
@@ -59953,7 +60003,7 @@ async function renderMembersPanel() {
                 <div class="mem-email">Pre-authorized · role applies on sign-in</div>
               </div>
               ${roleSelect}
-              <button class="mem-revoke" onclick="fbRemoveEmailInvite('${esc(a.email)}')">Remove</button>
+              <button class="mem-revoke" onclick="fbRemoveEmailInvite(decodeURIComponent('${encodeURIComponent(a.email)}'))">Remove</button>
             </div>`;
         }).join('');
       }
@@ -62841,12 +62891,20 @@ async function stackingSendReminders(buildingId, btn) {
 
   if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
   let sent = 0, failed = 0;
-  for (const { u } of remindable) {
+  // Race guard (аудит 2026-07-16): как в agingBulkSendReminders — refs собраны
+  // до цикла, свап за время await отвязывает их; мутируем свежий объект.
+  const _freshU = (fId, uId, fallback) => {
+    const _b = (state.buildings || []).find(x => x.id === buildingId);
+    const _f = _b && (_b.floors || []).find(x => x.id === fId);
+    return (_f && (_f.units || []).find(x => x.id === uId)) || fallback;
+  };
+  for (const { u: u0, f: f0 } of remindable) {
     try {
-      const payload = u.stripe?.lastInvoiceId
-        ? { invoiceId: u.stripe.lastInvoiceId }
-        : { customerId: u.stripe.customerId };
+      const payload = u0.stripe?.lastInvoiceId
+        ? { invoiceId: u0.stripe.lastInvoiceId }
+        : { customerId: u0.stripe.customerId };
       const res = await fn(payload);
+      const u = _freshU(f0?.id, u0.id, u0);
       const sentInvoiceId = res?.data?.invoiceId || u.stripe?.lastInvoiceId;
       if (res?.data?.autoDiscovered && sentInvoiceId) {
         u.stripe = u.stripe || {};
@@ -77270,7 +77328,7 @@ function renderDetail() {
                figure (an earlier ⋯→Edit flow only surfaced Proforma
                here, leading operators to think the BIG number on the
                card was reverting after Save). -->
-          <div class="field"><label>Monthly rent $ <span style="color:var(--muted); font-weight:400;" title="What this tenant actually pays — independent from the proforma asking rate">ⓘ tenant pays</span></label><input type="number" id="fContractRentSpec" value="${u.contractRent||0}" ${ro}></div>
+          <div class="field"><label>Monthly rent $ <span style="color:var(--muted); font-weight:400;" title="What this tenant actually pays — independent from the proforma asking rate">ⓘ tenant pays</span></label><input type="number" id="fContractRentSpec" value="${u.contractRent||0}" oninput="try{_syncDepositToRent()}catch{};try{_updateProrateBox()}catch{}" ${ro}></div>
           <div class="field"><label>Proforma Rent $ <span style="color:var(--muted); font-weight:400;" title="Market / asking rent — unit-scoped, doesn't change with tenants">ⓘ market rate</span></label><input type="number" id="fRent" value="${u.rent||0}" ${ro}></div>
           <div class="field"><label>$/ft²/year <span style="color:var(--muted); font-weight:400;">(derived)</span></label><input type="number" step="0.01" id="fRate" value="${u.rate||0}" ${ro}></div>
         </div>
@@ -77663,8 +77721,8 @@ function renderDetail() {
                Deposit lives here too now that the duplicate header
                block was removed — same edit surface, just collapsed
                by default (rarely changes after onboarding). -->
-          <div class="field"><label>Monthly rent $ <span style="color:var(--muted); font-weight:400;" title="What this tenant actually pays — independent from the proforma asking rate">ⓘ tenant pays</span></label><input type="number" id="fContractRentSpec" value="${u.contractRent||0}" ${ro}></div>
-          <div class="field"><label>Security deposit $ <span style="color:var(--muted); font-weight:400;" title="Held by landlord. Returned at move-out less any deductions. Verify deposit invoice payment in Invoice History below.">ⓘ tenant pays</span></label><input type="number" id="fDepositSpec" value="${u.deposit||0}" ${ro}></div>
+          <div class="field"><label>Monthly rent $ <span style="color:var(--muted); font-weight:400;" title="What this tenant actually pays — independent from the proforma asking rate">ⓘ tenant pays</span></label><input type="number" id="fContractRentSpec" value="${u.contractRent||0}" oninput="try{_syncDepositToRent()}catch{};try{_updateProrateBox()}catch{}" ${ro}></div>
+          <div class="field"><label>Security deposit $ <span style="color:var(--muted); font-weight:400;" title="Held by landlord. Returned at move-out less any deductions. Verify deposit invoice payment in Invoice History below.">ⓘ tenant pays</span></label><input type="number" id="fDepositSpec" value="${u.deposit||0}" oninput="try{_onDepositManualEdit()}catch{};try{_updateProrateBox()}catch{}" ${ro}></div>
           <div class="field"><label>Proforma Rent $ <span style="color:var(--muted); font-weight:400;" title="Market / asking rent — unit-scoped, doesn't change with tenants">ⓘ market rate</span></label><input type="number" id="fRent" value="${u.rent||0}" ${ro}></div>
           <div class="field"><label>$/ft²/year <span style="color:var(--muted); font-weight:400;">(derived)</span></label><input type="number" step="0.01" id="fRate" value="${u.rate||0}" ${ro}></div>
         </div>
@@ -81869,7 +81927,14 @@ function _dismissLateFee(unitId, ym) {
     at: new Date().toISOString(),
   };
   saveState();
-  fbPushNow().catch(()=>{});
+  // Аудит 2026-07-16 (Suite-304 class): push может «успешно» скипнуться
+  // (follower-вкладка / conflict) при уже показанном success-тосте — другой
+  // девайс тогда всё равно шлёт пеню. Проверяем результат и честно предупреждаем.
+  fbPushNow().then(r => {
+    if (r && r.ok === false && typeof toast === 'function') {
+      toast(`⚠ Waiver may not have synced (${r.reason || 'push skipped'}) — re-save from the editing tab`, 'error');
+    }
+  }).catch(e => { console.warn('[latefee-waive push]', e); try { toast('⚠ Waiver sync failed — retry', 'error'); } catch {} });
   toast('Late fee waived', 'success');
   renderDetail();
 }
@@ -82039,7 +82104,13 @@ async function _sendInvoiceWithLateFees(unitId, totalFee, opts) {
     });
     if (u.lateFeeInvoices.length > 50) u.lateFeeInvoices = u.lateFeeInvoices.slice(0, 50);
     saveState();
-    fbPushNow().catch(()=>{});
+    // Аудит 2026-07-16: billed-dedup штамп обязан синкнуться — иначе другой
+    // девайс продублирует пеню тенанту. Результат push проверяем.
+    fbPushNow().then(r => {
+      if (r && r.ok === false && typeof toast === 'function') {
+        toast(`⚠ Late-fee record may not have synced (${r.reason || 'push skipped'}) — verify before re-sending`, 'error');
+      }
+    }).catch(e => console.warn('[latefee-stamp push]', e));
     // В bulk-context сиквенс UI-toast'ов и renderDetail() не нужен — caller сам
     // делает агрегированный toast в конце. renderDetail без открытого drawer'а
     // может бросить ошибку (зависит от currentUnits/currentBuilding, которые в
@@ -88542,10 +88613,20 @@ function _renderProrateBox(u) {
 function _updateProrateBox() {
   const host = document.getElementById('prorateBox');
   if (!host) return;
-  const rent = +document.getElementById('fContractRent')?.value || 0;
-  const deposit = +document.getElementById('fDeposit')?.value || 0;
+  // Аудит 2026-07-16 (dead-ui): форма рендерит fContractRentSpec/fDepositSpec —
+  // старые plain-id читались как 0, и Move-in карточка ПРОПАДАЛА при правке
+  // даты старта/срока (rent<=0 → _renderProrateBox возвращает ''). Spec-id
+  // первично, plain — legacy-фолбэк на случай старых разметок.
+  const rent = +(document.getElementById('fContractRentSpec')?.value ?? document.getElementById('fContractRent')?.value) || 0;
+  const deposit = +(document.getElementById('fDepositSpec')?.value ?? document.getElementById('fDeposit')?.value) || 0;
   const startIso = document.getElementById('fLeaseStart')?.value || '';
-  const shimU = { contractRent: rent, deposit, leaseStart: startIso };
+  // Сопутствующий баг (тот же аудит): голый шим без status/stripe-штампов
+  // всегда резался гардом _shouldShowMoveInCard (требует status==='occupied')
+  // — наследуем реальный выбранный юнит, чтобы карточка рендерилась с живыми
+  // бейджами статусов инвойсов; DOM-значения поверх.
+  const baseU = (typeof currentUnits === 'function' && Array.isArray(selectedIds) && selectedIds.length === 1)
+    ? currentUnits().find(x => x.id === selectedIds[0]) : null;
+  const shimU = Object.assign({}, baseU || { status: 'occupied' }, { contractRent: rent, deposit, leaseStart: startIso });
   host.innerHTML = _renderProrateBox(shimU);
 }
 
@@ -88556,8 +88637,12 @@ function _updateProrateBox() {
 // while respecting that deposit amounts sometimes differ (2-month for
 // high-risk tenants, $0 for corporate leases, etc.).
 function _syncDepositToRent() {
-  const rentEl = document.getElementById('fContractRent');
-  const depEl  = document.getElementById('fDeposit');
+  // Аудит 2026-07-16 (dead-ui): фича «deposit = 1 месяц аренды» была полностью
+  // мертва — читала удалённые plain-id И не имела ни одного вызова (oninput-
+  // проводка потерялась при редизайне формы). Id переведены на Spec, проводка
+  // восстановлена на рендере Spec-инпутов.
+  const rentEl = document.getElementById('fContractRentSpec') || document.getElementById('fContractRent');
+  const depEl  = document.getElementById('fDepositSpec') || document.getElementById('fDeposit');
   const hint   = document.getElementById('fDepositHint');
   if (!rentEl || !depEl) return;
   const rent = +rentEl.value || 0;
@@ -88577,7 +88662,7 @@ function _syncDepositToRent() {
 // User typed directly into the deposit field — clear the auto-fill
 // flag so future rent changes don't clobber their custom value.
 function _onDepositManualEdit() {
-  const depEl = document.getElementById('fDeposit');
+  const depEl = document.getElementById('fDepositSpec') || document.getElementById('fDeposit');
   const hint  = document.getElementById('fDepositHint');
   if (depEl) depEl.dataset.autoFilled = '';
   if (hint) hint.textContent = 'Custom — won\'t auto-sync';
@@ -88817,6 +88902,16 @@ async function _sendMoveInDirect(mode, btn) {
   // badges, modal) pick up the send lock.
   try { renderDetail(); } catch {}
 
+  // Race guard (аудит 2026-07-16): stripeCreateInvoice — многосекундный
+  // await, за это время CF-зеркало здания свапает объекты; штампы
+  // moveInRent/depositInvoice в отвязанный ref терялись → карточка снова
+  // показывала NOT SENT, а повторный клик отправлял тенанту ДУБЛЬ счёта.
+  // Все штампы пишем в свежий объект, разрезолвленный ПОСЛЕ await.
+  const _freshU = () => {
+    const _b = (state.buildings || []).find(x => x.id === b.id);
+    const _f = _b && (_b.floors || []).find(x => x.id === f.id);
+    return (_f && (_f.units || []).find(x => x.id === u.id)) || u;
+  };
   const sendRent = async () => {
     const p = _computeProrate(rent, startIso);
     const startDate = new Date(startIso + 'T00:00:00');
@@ -88834,10 +88929,11 @@ async function _sendMoveInDirect(mode, btn) {
       emailOverride: u.email,
       tenantNameOverride: (u.tenant || u.company || ''),
     });
-    u.stripe = u.stripe || {};
-    u.stripe.lastInvoiceId = res.invoiceId;
-    u.stripe.lastInvoiceYm = ym;
-    u.stripe.moveInRent = {
+    const uL = _freshU();               // race guard — см. комментарий выше
+    uL.stripe = uL.stripe || {};
+    uL.stripe.lastInvoiceId = res.invoiceId;
+    uL.stripe.lastInvoiceYm = ym;
+    uL.stripe.moveInRent = {
       invoiceId: res.invoiceId, ym,
       amount,                   // record what we ACTUALLY sent — so UI can
                                 // flag mismatch if the operator edits rent later
@@ -88869,8 +88965,9 @@ async function _sendMoveInDirect(mode, btn) {
       emailOverride: u.email,
       tenantNameOverride: (u.tenant || u.company || ''),
     });
-    u.stripe = u.stripe || {};
-    u.stripe.depositInvoice = {
+    const uL = _freshU();               // race guard — см. комментарий выше
+    uL.stripe = uL.stripe || {};
+    uL.stripe.depositInvoice = {
       invoiceId: res.invoiceId,
       amount: deposit,
       sentAt: new Date().toISOString(),
@@ -94582,6 +94679,41 @@ function _stampPointsToDeposit(u, invoiceId) {
   return false;
 }
 
+// Cache-scan rent verdict (аудит 2026-07-16, volatile-verdicts). Штампы
+// moveInRent/lastInvoiceId стираются building-свапами (rev-шторм ~30с) —
+// 'stripe-paid' месяцы мигали в unpaid по всем денежным поверхностям, и
+// пеня могла быть посчитана И ОТПРАВЛЕНА за реально оплаченный месяц
+// (_sendInvoiceWithLateFees гейтится этим же вердиктом). Скан кэша Stripe
+// от штампов не зависит: paid-инвойс за (unitId, ym) со скоупом по
+// customerId/email ТЕКУЩЕГО тенанта (чужие счета прежних арендаторов не
+// засчитываются), депозиты исключены, ym-матч только точный по metadata
+// (created-date фолбэк здесь запрещён — он приписывал чужие месяцы).
+function _rentPaidRowFromCache(u, ym) {
+  if (!u || !u.id || !ym) return null;
+  let rows = null;
+  try {
+    if (typeof _invRowsForUnit === 'function') rows = _invRowsForUnit(u.id) || [];
+    else if (typeof _invoicesCache !== 'undefined' && Array.isArray(_invoicesCache)) {
+      rows = _invoicesCache.filter(r => String(r?.unitId || r?.metadata?.unitId || '') === String(u.id));
+    }
+  } catch {}
+  if (!rows || !rows.length) return null;
+  const custId = u.stripe?.customerId || null;
+  const email = String(u.email || '').trim().toLowerCase();
+  if (!custId && !email) return null;
+  for (const r of rows) {
+    if (!r || r.bucket !== 'paid') continue;
+    const purpose = (r.metadata && r.metadata.purpose) || r.purpose || '';
+    if (purpose === 'deposit') continue;
+    const rYm = r.ym || (r.metadata && r.metadata.ym) || null;
+    if (rYm !== ym) continue;
+    const rowCust = r.customerId || null;
+    const rowEmail = String(r.customerEmail || '').trim().toLowerCase();
+    if ((custId && rowCust && rowCust === custId) || (email && rowEmail && rowEmail === email)) return r;
+  }
+  return null;
+}
+
 function _isMonthSettled(u, ym) {
   if (!u || !ym) return null;
   if (typeof _unitLeaseHead === 'function') u = _unitLeaseHead(u);
@@ -94607,6 +94739,8 @@ function _isMonthSettled(u, ym) {
       return 'stripe-paid';
     }
   }
+  // Штампы отсутствуют/стёрты свапом — кэш-скан по (unitId, ym, клиент).
+  if (_rentPaidRowFromCache(u, ym)) return 'stripe-paid';
   return null;
 }
 
@@ -94632,7 +94766,10 @@ function _stripePaidRowForYm(u, ym) {
       && _lookupInvoiceBucket(u.stripe.lastInvoiceId) === 'paid') {
     return _lookupInvoiceRow(u.stripe.lastInvoiceId) || null;
   }
-  return null;
+  // Кэш-скан фолбэк (аудит 2026-07-16): без него «собранные» суммы на
+  // дашборде/графике/Schedule E прыгали между amountPaid и контрактной
+  // рентой при каждом стирании штампов свапом.
+  return _rentPaidRowFromCache(u, ym);
 }
 
 // Реально собранная сумма stripe-paid месяца: amountPaid → total → null
@@ -95187,12 +95324,15 @@ function _flushUnitInputsToState(u) {
   if (tel !== null && tel !== (u.tel || '')) u.tel = tel;
   const leaseStart = readTrim('fLeaseStart');
   if (leaseStart) u.leaseStart = leaseStart;
-  const deposit = readTrim('fDeposit');
+  // Аудит 2026-07-16 (dead-ui): форма рендерит Spec-id — старый plain-id
+  // возвращал null, и НАБРАННЫЕ, но не сохранённые правки rent/deposit
+  // молча не попадали в отправляемый инвойс (уходила старая сумма).
+  const deposit = readTrim('fDepositSpec') ?? readTrim('fDeposit');
   if (deposit !== null && deposit !== '') {
     const n = +deposit;
     if (!isNaN(n) && n !== u.deposit) u.deposit = n;
   }
-  const rent = readTrim('fContractRent');
+  const rent = readTrim('fContractRentSpec') ?? readTrim('fContractRent');
   if (rent !== null && rent !== '') {
     const n = +rent;
     if (!isNaN(n) && n !== u.contractRent) u.contractRent = n;
@@ -98797,6 +98937,43 @@ function _performTenantMove(source, target, opts) {
     }
   }
 
+  // ── Ledger sync (аудит 2026-07-16, error-swallowing №2) ────────────────
+  // Под strip коллекция workspaces/{ws}/payments — ЕДИНСТВЕННОЕ долговременное
+  // хранилище платежей, а переезд мутировал только in-memory maps: на source
+  // платежи «воскресали» из коллекции при следующем building-свапе, на target
+  // перенесённые/pro-rated записи пропадали после reload, и крон пени (читает
+  // коллекцию) штрафовал реально оплаченные месяцы. Пишем перенос через DAO
+  // (setPayment/deletePayment → write-ahead outbox с ретраями): target
+  // получает свои доки, все доки source-ключей удаляются (история тенанта
+  // уже заснапшочена в tenantHistory выше).
+  try {
+    const _bfOf = (unit) => {
+      for (const b of (state.buildings || []))
+        for (const f of (b.floors || []))
+          if ((f.units || []).some(x => x === unit)) return { bId: b.id, fId: f.id };
+      return null;
+    };
+    if (typeof repo !== 'undefined' && repo && typeof repo.setPayment === 'function') {
+      const _tbf = _bfOf(target);
+      if (_tbf) {
+        const _movedYms = new Set(Object.keys(movingPayments));
+        if (target.payments.deposit !== undefined) _movedYms.add('deposit');
+        if (proration && target.payments[proration.cutoffYM] !== undefined) _movedYms.add(proration.cutoffYM);
+        for (const ym of _movedYms) {
+          if (target.payments[ym] !== undefined) {
+            repo.setPayment(_tbf.bId, _tbf.fId, target.id, ym, target.payments[ym], { unit: target, save: false });
+          }
+        }
+      }
+      const _sbf = _bfOf(source);
+      if (_sbf) {
+        for (const ym of Object.keys(sourcePayments)) {
+          repo.deletePayment(_sbf.bId, _sbf.fId, source.id, ym, { unit: source, save: false });
+        }
+      }
+    }
+  } catch (e) { console.warn('[move:ledger-sync]', e?.message || e); }
+
   // Stripe routing / billing prefs — едут с тенантом
   if (source.stripeBillingContact) target.stripeBillingContact = source.stripeBillingContact;
   else delete target.stripeBillingContact;
@@ -99446,8 +99623,10 @@ function _unitHasTenantData(u) {
   const email   = inEdit ? v('fEmail')   : (u.email   || '').trim();
   const tel     = inEdit ? v('fTel')     : (u.tel     || u.phone || '').trim();
   const leaseStart = inEdit ? v('fLeaseStart') : (u.leaseStart || u.signed || '');
-  const rent    = inEdit ? +v('fContractRent') : +u.contractRent;
-  const deposit = inEdit ? +v('fDeposit')      : +u.deposit;
+  // Аудит 2026-07-16 (dead-ui): в edit-режиме plain-id читались как 0, и юнит
+  // «без данных» — move-out модалка (причина + snapshot-to-history) пропускалась.
+  const rent    = inEdit ? (+v('fContractRentSpec') || +v('fContractRent')) : +u.contractRent;
+  const deposit = inEdit ? (+v('fDepositSpec')      || +v('fDeposit'))      : +u.deposit;
   return !!(
     tenant || company || email || tel ||
     leaseStart || u.until ||
@@ -108665,10 +108844,20 @@ async function _dsReconcileEnvelopes() {
     promises.push((async () => {
       try {
         const env = await _dsCallCF('dsGetEnvelope', { envelopeId: r.envelopeId });
+        // Race guard (аудит 2026-07-16): за время await building-свап мог
+        // заменить объект юнита — backfill в отвязанный ref молча терялся, и
+        // «Recovered N sent leases» тост врал. Re-resolve по пути из ctx;
+        // дубль-чек повторяем на СВЕЖЕМ объекте (свап мог уже принести запись).
+        const uLive = (() => {
+          const _b = (state.buildings || []).find(x => x.id === ctx.bId);
+          const _f = _b && (_b.floors || []).find(x => x.id === ctx.fId);
+          return (_f && (_f.units || []).find(x => x.id === u.id)) || u;
+        })();
+        if ((uLive.leaseEnvelopes || []).some(e => e && (e.envelopeId === r.envelopeId || e.id === r.envelopeId))) return;
         const sentAt = env?.sentDateTime || env?.statusChangedDateTime || (r.at?.toDate?.()?.toISOString?.()) || new Date().toISOString();
         const recipient = env?.recipients?.signers?.[0] || {};
-        u.leaseEnvelopes = u.leaseEnvelopes || [];
-        u.leaseEnvelopes.push({
+        uLive.leaseEnvelopes = uLive.leaseEnvelopes || [];
+        uLive.leaseEnvelopes.push({
           envelopeId: r.envelopeId,
           status: env?.status || r.status || 'sent',
           createdAt: sentAt,
@@ -108679,14 +108868,14 @@ async function _dsReconcileEnvelopes() {
           subject: env?.emailSubject || null,
           sentBy: r.callerEmail || null,
           mode: 'template',
-          leaseStart: u.signed || u.leaseStart || null,
-          leaseEnd: u.until || null,
-          rent: +u.contractRent || +u.rent || 0,
+          leaseStart: uLive.signed || uLive.leaseStart || null,
+          leaseEnd: uLive.until || null,
+          rent: +uLive.contractRent || +uLive.rent || 0,
           backfilled: { at: new Date().toISOString(), source: 'audit_log_reconcile' },
         });
-        u.currentLeaseEnvelopeId = r.envelopeId;
-        u.outreach = u.outreach || [];
-        u.outreach.push({
+        uLive.currentLeaseEnvelopeId = r.envelopeId;
+        uLive.outreach = uLive.outreach || [];
+        uLive.outreach.push({
           type: 'lease',
           ts: sentAt,
           text: `DocuSign lease sent to ${r.recipientEmail || 'recipient'} (envelope ${r.envelopeId.slice(0, 8)}… — backfilled)`,
@@ -111018,6 +111207,12 @@ ${sigBlock()}
 }
 
 async function docusignGetEnvelope(envelopeId) {
+  // Аудит 2026-07-16 (jwt-gaps): единственный docusignFetch-хелпер без
+  // JWT-ветки — заряженная ловушка класса аддендум-бага: в JWT-режиме
+  // (прод) любой будущий вызов умирал бы с 'Not connected to DocuSign'.
+  if (typeof _dsIsJwtMode === 'function' && _dsIsJwtMode()) {
+    return await _dsCallCF('dsGetEnvelope', { envelopeId });
+  }
   return await docusignFetch(`/envelopes/${envelopeId}`);
 }
 
@@ -124943,7 +125138,9 @@ function showDocPreview(opts) {
     // Chromium-viewer подогнать страницу по ШИРИНЕ (вместо дефолтных
     // ~75% fit-page); фрагмент после query-параметров Storage валиден,
     // не-Chromium браузеры его просто игнорируют.
-    const raw = String(opts.pdfUrl);
+    // Аудит 2026-07-16 (xss): scheme-гард обязателен — iframe с javascript:-URL
+    // исполняется в origin приложения; экранирование кавычек схему не блокирует.
+    const raw = (typeof _safeHttpUrl === 'function') ? _safeHttpUrl(String(opts.pdfUrl)) : String(opts.pdfUrl);
     const safeUrl = (raw + (raw.includes('#') ? '' : '#view=FitH')).replace(/"/g, '%22');
     bodyEl.innerHTML = `<iframe src="${safeUrl}" title="${esc(opts.filename || 'Document')}"
       style="width:100%; height:80vh; border:none; background:white;"></iframe>`;
@@ -126793,9 +126990,16 @@ async function _dsPollOnce() {
     const byId = new Map(remote.map(e => [e.envelopeId, e]));
     let changed = false;
     const toArchive = [];
-    for (const { u, env } of pending) {
-      const r = byId.get(env.envelopeId);
+    for (const { u: u0, env: env0 } of pending) {
+      const r = byId.get(env0.envelopeId);
       if (!r) continue;
+      // Race guard (аудит 2026-07-16): pending собран ДО await — building-свап
+      // за время вызова отвязывает {u, env}, и completed-переход + prospect
+      // автопромоушен терялись при уже показанном 🎉 тосте. Re-resolve из
+      // живого state по envelopeId.
+      const _hit = (typeof _leaseFindEnvelope === 'function') ? _leaseFindEnvelope(env0.envelopeId) : null;
+      const u = (_hit && _hit.u) || u0;
+      const env = (_hit && _hit.env) || env0;
       const newStatus = r.status;
       env.lastChecked = new Date().toISOString();
       if (newStatus && newStatus !== env.status) {
@@ -127014,28 +127218,41 @@ async function _dsArchiveSignedEnvelopeInner(envelopeId, { b, u, env }) {
       blob = await res.blob();
     }
     const { url: pdfUrl, storagePath } = await uploadMediaBlob(blob, 'leases', 'pdf');
-    env.signedPdfPath = storagePath;
-    env.signedPdfUrl = pdfUrl;
-    env.archivedAt = new Date().toISOString();
+    // Race guard (аудит 2026-07-16): download+upload — многосекундные await'ы,
+    // building-свап успевал заменить объекты; storagePath писался в отвязанный
+    // env и НЕ персистился → orphan-blob в Storage + вечный re-download/re-upload
+    // на каждом поллинге. Re-resolve юнит и envelope из живого state.
+    const uL = (() => {
+      const _b = (state.buildings || []).find(x => x.id === b.id);
+      for (const _f of (_b?.floors || [])) {
+        const hit = (_f.units || []).find(x => x.id === u.id);
+        if (hit) return hit;
+      }
+      return u;
+    })();
+    const envL = (uL.leaseEnvelopes || []).find(e => e && (e.envelopeId === envelopeId || e.id === envelopeId)) || env;
+    envL.signedPdfPath = storagePath;
+    envL.signedPdfUrl = pdfUrl;
+    envL.archivedAt = new Date().toISOString();
     // Mirror the signed date + PDF onto the unit itself so the Signed
     // Status row shows "Signed on {date} · DocuSign" without having to
     // walk the envelope list each render.
-    if (env.completedAt && !u.signed) {
-      u.signed = env.completedAt.slice(0, 10);
+    if (envL.completedAt && !uL.signed) {
+      uL.signed = envL.completedAt.slice(0, 10);
     }
-    u.signedPdf = {
+    uL.signedPdf = {
       url: pdfUrl, storagePath,
       uploadedAt: new Date().toISOString(),
-      uploadedBy: env.recipientEmail || 'DocuSign',
+      uploadedBy: envL.recipientEmail || 'DocuSign',
       source: 'docusign',
-      envelopeId: env.envelopeId,
+      envelopeId: envL.envelopeId,
     };
     // Hybrid-state guard — DocuSign envelope completed = lease active.
-    if (typeof _normalizeUnitStatusForSignedLease === 'function') _normalizeUnitStatusForSignedLease(u);
+    if (typeof _normalizeUnitStatusForSignedLease === 'function') _normalizeUnitStatusForSignedLease(uL);
     // Bridge: once archived, an envelope becomes an in-force lease contract.
     // Kept idempotent so re-archive (e.g. manual "Archive PDF" click) doesn't
     // create duplicates. Non-blocking — bridge errors only warn.
-    try { contractEnsureFromEnvelope(b, u, env); } catch (e) { console.warn('[contract-bridge]', e); }
+    try { contractEnsureFromEnvelope(b, uL, envL); } catch (e) { console.warn('[contract-bridge]', e); }
     saveState();
     toast('📄 Signed lease PDF archived', 'success');
     recordOutreach(u, 'note', `Signed lease PDF archived (envelope ${envelopeId.slice(0,8)}…)`);
@@ -136935,11 +137152,21 @@ function buildRentRollFilters() {
   // Building default: saved selection if any; otherwise auto-scope to the
   // currently open building so users see only their property first.
   const savedBuildings = Array.isArray(last?.buildings) ? last.buildings : null;
-  const defaultBuilding = savedBuildings !== null
+  let defaultBuilding = savedBuildings !== null
     ? savedBuildings.filter(id => state.buildings.some(b => b.id === id))
     : (state.ui.currentBuildingId && state.buildings.some(b => b.id === state.ui.currentBuildingId)
        ? [state.ui.currentBuildingId]
        : []);
+  // Живой аудит 2026-07-16: сохранённый фильтр ДРУГОГО здания давал пустую
+  // таблицу «No units match» при явно открытом текущем здании (оператор видит
+  // Bay Vista, фильтр молча стоит на Pinellas Park). Если активное здание не
+  // входит в сохранённый скоуп — пересбрасываем на активное: принцип
+  // наименьшего удивления сильнее залипшей настройки.
+  const _curB = state.ui.currentBuildingId;
+  if (_curB && defaultBuilding.length > 0 && !defaultBuilding.includes(_curB)
+      && state.buildings.some(b => b.id === _curB)) {
+    defaultBuilding = [_curB];
+  }
 
   buildMultiSelect('rrBuildingMS',
     state.buildings.map(b => ({ value: b.id, label: buildingLabel(b) })),
@@ -145917,21 +146144,40 @@ async function agingBulkSendReminders() {
 
   let sent = 0, failed = 0;
   const fn = stripeCallable('stripeResendInvoice');
+  // Race guard (аудит 2026-07-16): targets разрезолвлены ДО цикла — во время
+  // await'ов building-свап отвязывает объекты, и 'reminded'-статусы + outreach
+  // молча терялись для всех юнитов после свапа (A/R показывал «не напомнено»
+  // при реально отправленных письмах). Ids фиксируем до await по object
+  // identity, мутируем свежий объект после.
+  const _bfIds = (unit) => {
+    for (const b of (state.buildings || []))
+      for (const f of (b.floors || []))
+        if ((f.units || []).some(x => x === unit)) return { bId: b.id, fId: f.id, uId: unit.id };
+    return null;
+  };
+  const _freshBy = (ids, fallback) => {
+    if (!ids) return fallback;
+    const b = (state.buildings || []).find(x => x.id === ids.bId);
+    const f = b && (b.floors || []).find(x => x.id === ids.fId);
+    return (f && (f.units || []).find(x => x.id === ids.uId)) || fallback;
+  };
   for (const t of remindable) {
+    const _ids = _bfIds(t.u);
     try {
       const payload = t.u.stripe?.lastInvoiceId
         ? { invoiceId: t.u.stripe.lastInvoiceId }
         : { customerId: t.u.stripe.customerId };
       const res = await fn(payload);
-      const sentInvoiceId = res?.data?.invoiceId || t.u.stripe?.lastInvoiceId;
+      const uL = _freshBy(_ids, t.u);
+      const sentInvoiceId = res?.data?.invoiceId || uL.stripe?.lastInvoiceId;
       // Backfill local cache so future reminders take the fast path.
       if (res?.data?.autoDiscovered && sentInvoiceId) {
-        t.u.stripe = t.u.stripe || {};
-        t.u.stripe.lastInvoiceId = sentInvoiceId;
+        uL.stripe = uL.stripe || {};
+        uL.stripe.lastInvoiceId = sentInvoiceId;
       }
-      recordOutreach(t.u, 'reminder', `Stripe reminder sent for invoice ${sentInvoiceId || '?'}`);
-      if (!t.u.collectionStatus || t.u.collectionStatus === 'normal') {
-        t.u.collectionStatus = 'reminded';
+      recordOutreach(uL, 'reminder', `Stripe reminder sent for invoice ${sentInvoiceId || '?'}`);
+      if (!uL.collectionStatus || uL.collectionStatus === 'normal') {
+        uL.collectionStatus = 'reminded';
       }
       sent++;
     } catch (err) {
@@ -154972,8 +155218,11 @@ function _mpmSendReferralRemainderInvoice(amount) {
           // Override amount + memo for the partial-rent referral case.
           const amtField = document.getElementById('ciAmount');
           if (amtField) amtField.value = amount;
-          const memoField = document.getElementById('ciMemo');
-          if (memoField) memoField.value = `Rent balance after referral credit (${ym})`;
+          // Аудит 2026-07-16: поле называется ciDesc (ciMemo не существует) —
+          // мемо префилл молча не срабатывал, тенант получал счёт на
+          // нестандартную сумму без объяснения.
+          const memoField = document.getElementById('ciDesc') || document.getElementById('ciMemo');
+          if (memoField) { memoField.value = `Rent balance after referral credit (${ym})`; try { if (typeof ciRenderPreview === 'function') ciRenderPreview(); } catch {} }
         } catch (e) { console.warn('[mpm:referral-invoice]', e); }
       }, 100);
     }, 200);
