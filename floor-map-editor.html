@@ -25535,6 +25535,10 @@
     <div class="field">
       <label>Lease end <span style="color:var(--muted); font-weight:400;">(auto from start + term — editable)</span></label>
       <input type="date" id="qatLeaseEnd" onchange="_qatAutoDetectTerm()">
+      <!-- Подсказка «как посчитан конец»: реагирует на смену start/term
+           (конвенция «через N месяцев, до конца месяца») и честно помечает
+           ручную дату как Custom вместо округления до «12 months». -->
+      <div class="field-hint-row" id="qatLeaseEndHint" style="color: var(--muted); display: none;"></div>
     </div>
     <div class="field-row">
       <div class="field">
@@ -92919,10 +92923,19 @@ function _qatRecalcEnd() {
   if (term === 'mtm') {
     endEl.value = '';
     endEl.disabled = true;
+    _qatSetEndHint('Month-to-month — no fixed end date.');
     return;
   }
   endEl.disabled = false;
-  if (!start || !term) return;
+  // Custom-term (оператор сам выставил дату окончания, см. _qatAutoDetectTerm):
+  // смена start НЕ перетирает ручную дату — только обновляем подсказку.
+  if (typeof term === 'string' && term.startsWith('custom:')) {
+    _qatSetEndHint(_qatEndHintFor(start, endEl.value, null));
+    return;
+  }
+  // Стандартный term выбран → dynamic-опции («Custom — …») больше не нужны.
+  Array.from(termEl.options).forEach(o => { if (o.dataset.dynamic === '1' && !o.selected) termEl.removeChild(o); });
+  if (!start || !term) { _qatSetEndHint(''); return; }
   const months = +term;
   if (!Number.isFinite(months) || months <= 0) return;
   const d = new Date(start + 'T00:00:00');
@@ -92930,6 +92943,42 @@ function _qatRecalcEnd() {
   d.setMonth(d.getMonth() + months);
   d.setDate(new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate());
   endEl.value = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  _qatSetEndHint(_qatEndHintFor(start, endEl.value, months));
+}
+
+// Подсказка под Lease end. months — выбранный стандартный term (число) или
+// null для ручной (custom) даты. Объясняет конвенцию приложения: конец =
+// через N месяцев, до последнего дня того месяца (неполный первый месяц
+// пропорционируется, последний месяц всегда полный — так биллинг не
+// выставляет «хвост»); поэтому смена дня старта внутри месяца конец не
+// двигает, смена месяца — двигает.
+function _qatEndHintFor(startIso, endIso, months) {
+  if (!startIso || !endIso) return '';
+  const fmt = (iso) => { const d = new Date(iso + 'T00:00:00'); return isNaN(d.getTime()) ? iso : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); };
+  const s = new Date(startIso + 'T00:00:00'), e = new Date(endIso + 'T00:00:00');
+  if (isNaN(s.getTime()) || isNaN(e.getTime())) return '';
+  if (e < s) return '⚠ Lease end is before lease start.';
+  // Точная длительность (включительно): e + 1 день − s → «11 mo 25 d».
+  const e1 = new Date(e.getTime()); e1.setDate(e1.getDate() + 1);
+  let m = (e1.getFullYear() - s.getFullYear()) * 12 + (e1.getMonth() - s.getMonth());
+  const anchor = new Date(s.getTime()); anchor.setMonth(s.getMonth() + m);
+  if (anchor > e1) { m--; anchor.setMonth(s.getMonth() + m); }
+  const dd = Math.round((e1.getTime() - anchor.getTime()) / 86400000);
+  const span = `${m} mo${dd ? ' ' + dd + ' d' : ''}`;
+  if (months != null) {
+    const startsOn1st = s.getDate() === 1;
+    const endsMonthEnd = e.getDate() === new Date(e.getFullYear(), e.getMonth() + 1, 0).getDate();
+    if (startsOn1st) return `${months} months from ${fmt(startIso)} → through ${fmt(endIso)}.`;
+    if (!endsMonthEnd) return `${months} months from ${fmt(startIso)} → through ${fmt(endIso)} (exactly ${span}).`;
+    return `${months} months from ${fmt(startIso)} → through ${fmt(endIso)} (partial first month + ${months} full months; leases end on the last day of the month). Changing the start day within the same month keeps this end date.`;
+  }
+  return `Custom end date — ${span} from ${fmt(startIso)}. Pick a term above to recompute automatically.`;
+}
+function _qatSetEndHint(text) {
+  const el = document.getElementById('qatLeaseEndHint');
+  if (!el) return;
+  el.textContent = text || '';
+  el.style.display = text ? '' : 'none';
 }
 
 // Auto-prorate preview for the Quick Add Tenant modal. Reads lease-start
@@ -92974,28 +93023,38 @@ function _qatAutoDetectTerm() {
   });
   const start = startEl.value;
   const end   = endEl.value;
-  if (!start || !end) return;
-  const months = (typeof _addLeaseDocMonthsBetween === 'function')
-    ? _addLeaseDocMonthsBetween(start, end)
-    : null;
-  if (months == null || months <= 0) return;
-  const monthsStr = String(months);
-  const standard = ['6', '12', '18', '24', '36', '60'];
-  if (standard.includes(monthsStr)) {
-    termEl.value = monthsStr;
+  if (!start || !end) { _qatSetEndHint(''); return; }
+  if (typeof _addLeaseDocMonthsBetween !== 'function') return;
+  // Строгий матч: конец попадает в конвенцию (конец месяца / годовщина /
+  // годовщина − 1) → это честные «N months». Иначе — Custom: раньше
+  // произвольная дата округлялась до ближайших месяцев и в дропдауне
+  // оставалось «12 months», хотя срок уже не 12 (Tony 2026-08-15: «когда
+  // меняешь дату окончания — 12 months должно исчезать»).
+  const exact = _addLeaseDocMonthsBetween(start, end, { strict: true });
+  const mtmOpt = Array.from(termEl.options).find(o => o.value === 'mtm');
+  const inject = (value, label) => {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    opt.dataset.dynamic = '1';
+    if (mtmOpt) termEl.insertBefore(opt, mtmOpt); else termEl.appendChild(opt);
+    termEl.value = value;
+  };
+  if (exact != null && exact > 0) {
+    const monthsStr = String(exact);
+    const standard = ['6', '12', '18', '24', '36', '60'];
+    if (standard.includes(monthsStr)) termEl.value = monthsStr;
+    else inject(monthsStr, `${exact} months`);
+    _qatSetEndHint(_qatEndHintFor(start, end, exact));
     return;
   }
-  // Inject a dynamic option so the dropdown shows the actual term
-  // instead of falling back to "— Select —" or 12.
-  const opt = document.createElement('option');
-  opt.value = monthsStr;
-  opt.textContent = `${months} months`;
-  opt.dataset.dynamic = '1';
-  // Insert before the "mtm" option for natural ordering.
-  const mtmOpt = Array.from(termEl.options).find(o => o.value === 'mtm');
-  if (mtmOpt) termEl.insertBefore(opt, mtmOpt);
-  else        termEl.appendChild(opt);
-  termEl.value = monthsStr;
+  // Custom end date. value = 'custom:<N>' (N — округлённые месяцы для
+  // u.leaseTerm; saveQuickAddTenant нормализует), label показывает дату,
+  // чтобы стандартные «12 months» не выглядели выбранными.
+  const rounded = _addLeaseDocMonthsBetween(start, end) || 0;
+  const fmt = (iso) => { const d = new Date(iso + 'T00:00:00'); return isNaN(d.getTime()) ? iso : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); };
+  inject(`custom:${rounded}`, `Custom — ends ${fmt(end)}${rounded ? ` (~${rounded} mo)` : ''}`);
+  _qatSetEndHint(_qatEndHintFor(start, end, null));
 }
 
 // Keep deposit in sync with rent — common convention is 1 month's rent.
@@ -93049,7 +93108,16 @@ async function saveQuickAddTenant() {
   const email = val('qatEmail');
   const tel = val('qatTel');
   const leaseStart = val('qatLeaseStart');
-  const term = val('qatTerm');
+  // 'custom:<N>' — оператор выставил дату окончания вручную (см.
+  // _qatAutoDetectTerm); в u.leaseTerm пишем округлённые месяцы N (или ''),
+  // а сама дата уходит в u.until из qatLeaseEnd ниже.
+  let term = val('qatTerm');
+  if (typeof term === 'string' && term.startsWith('custom:')) {
+    const n = +term.slice(7);
+    // Ручная дата всегда задаёт какой-то срок — минимум 1 месяц для записи
+    // (сама точная дата хранится в u.until).
+    term = String(Number.isFinite(n) && n > 0 ? n : 1);
+  }
   const leaseEndManual = val('qatLeaseEnd');
   const rent = +val('qatRent') || 0;
   const deposit = +val('qatDeposit') || 0;
@@ -125514,7 +125582,11 @@ function _addLeaseDocRecalcEnd() {
 // as 12 months. Anniversary − 1 day (Dec 1 → Nov 30 next year), the
 // legacy right-panel convention, is recognized as 12 months too via
 // the day-1 special case.
-function _addLeaseDocMonthsBetween(startIso, endIso) {
+// opts.strict — вернуть N ТОЛЬКО если конец попадает в одну из конвенций
+// (правила 1–3: конец месяца / годовщина / годовщина − 1 день). Для
+// «произвольной» даты (правило 4 — округление по 30.44 дня) в strict-режиме
+// возвращаем null — UI показывает «Custom», а не округлённые «12 months».
+function _addLeaseDocMonthsBetween(startIso, endIso, opts) {
   if (!startIso || !endIso) return null;
   // Defensive normalization: most callers feed ISO from <input type="date">,
   // but the self-healing leaseTerm migration reads raw seed values that may
@@ -125554,7 +125626,8 @@ function _addLeaseDocMonthsBetween(startIso, endIso) {
   }
   // 4. Fallback for anything else: round by avg-month days. This covers
   //    cases where end-day doesn't fit a clean convention (operator
-  //    picked an unusual end date manually).
+  //    picked an unusual end date manually). В strict-режиме — null.
+  if (opts && opts.strict) return null;
   const days = (e.getTime() - s.getTime()) / 86400000;
   return Math.max(0, Math.round(days / 30.4375));
 }
