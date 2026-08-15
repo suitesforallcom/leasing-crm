@@ -6,7 +6,7 @@
 <title>SuitesForAll — Floor Plan Manager</title>
 <!-- Sentry release tag — заполняется на deploy (см. scripts/stamp-release.sh).
      Если тут содержимое "DEV" — значит файл смотрят локально, не из Hosting. -->
-<meta name="sfa-release" content="9a759b1871ed">
+<meta name="sfa-release" content="d5e85b312815">
 <!-- Sentry — мониторинг JS-ошибок в проде (loader script, async).
      Загружается через CDN; конфигурируется ниже через Sentry.onLoad().
      Создан 2026-05-06: проект suitesforall в kiwi-rentals.sentry.io.
@@ -93701,6 +93701,10 @@ function _findDepositInvoiceInCache(u) {
     const meta = r.metadata || {};
     const isDepositDesc = /\bdeposit\b/.test(descLC) || meta.purpose === 'deposit';
     if (!isDepositDesc) continue;
+    // Void'нутый / черновой счёт — не живое обязательство: нельзя
+    // реконструировать из него штамп «open» (2026-08-15: после удаления
+    // арендатора его voided-депозит вернулся на юнит следующему жильцу).
+    if (r.bucket === 'void' || r.bucket === 'draft' || r.status === 'void') continue;
 
     // Сильный suite-сигнал: metadata.unitId authoritative (ставим сами).
     // Описание — слабее, но полезно для счетов из Stripe dashboard.
@@ -93809,6 +93813,8 @@ function _findRentInvoiceInCache(u, ym) {
     const isDepositDesc = /\bdeposit\b/.test(descLC) || meta.purpose === 'deposit';
     if (isDepositDesc) continue;
     if (meta.purpose === 'service') continue;
+    // Void'нутый / черновой счёт — не живое обязательство (см. deposit-finder).
+    if (r.bucket === 'void' || r.bucket === 'draft' || r.status === 'void') continue;
 
     const metaSuiteMatch = meta.unitId && String(meta.unitId).toLowerCase() === suiteId;
     const descSuiteMatch = descLC.includes(`suite ${suiteId}`);
