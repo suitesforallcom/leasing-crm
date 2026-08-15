@@ -120163,11 +120163,12 @@ const LEASE_FL_RESIDENTIAL_HTML = `<!DOCTYPE html>
 
 <h2>3. RENT.</h2>
 <p>Tenant shall pay to Landlord the sum of <span class="fill">{{rent}}</span> per month as Rent for the Term of the Agreement. Due date for Rent payment shall be the 1st day of each calendar month and shall be considered advance payment for that month. Weekends and holidays do not delay or excuse Tenant's obligation to timely pay rent.</p>
+<p>Rent and all other sums due under this Florida Lease Agreement shall be paid electronically through the online invoice and payment link provided by Landlord (ACH bank transfer or debit/credit card), or by such other electronic method as Landlord may designate in writing. Landlord does not accept payment by check (personal, business, or cashier's).</p>
 <ol class="alpha">
   <li><b>Delinquent Rent.</b> If not paid on the 1st, Rent shall be considered overdue and delinquent on the 2nd day of each calendar month. If Tenant fails to timely pay any month's rent, Tenant will pay Landlord a late charge of <span class="fill">\${{res_late_fee_per_day}}</span> per day until rent is paid in full. If Landlord receives the monthly rent by the 3rd day of the month, Landlord will waive the late charges for that month. Any waiver of late charges under this paragraph will not affect or diminish any other right or remedy Landlord may exercise for Tenant's failure to timely pay rent.</li>
   <li><b>Prorated Rent.</b> In the event that the Commencement Date is not the 1st of the calendar month, Rent payment remitted on the Commencement Date shall be prorated based on a 30-day period.</li>
-  <li><b>Returned Checks.</b> In the event that any payment by Tenant is returned for insufficient funds ("NSF") or if Tenant stops payment, Tenant will pay <span class="fill">\${{nsf_fee}}</span> to Landlord for each such check, plus late charges, as described above, until Landlord has received payment. Furthermore, Landlord may require in writing that Tenant pay all future Rent payments by cash, money order, or cashier's check.</li>
-  <li><b>Order in which funds are applied.</b> Landlord will apply all funds received from Tenant first to any non-rent obligations of Tenant including late charges, returned check charges, charge-backs for repairs, brokerage fees, and periodic utilities, then to rent, regardless of any notations on a check.</li>
+  <li><b>Returned or Failed Payments.</b> In the event that any payment by Tenant is returned, reversed, or declined for insufficient funds ("NSF"), a failed bank debit, a chargeback, or a stopped payment, Tenant will pay <span class="fill">\${{nsf_fee}}</span> to Landlord for each such failed payment, plus late charges, as described above, until Landlord has received payment. Furthermore, Landlord may require in writing that Tenant make all future Rent payments by ACH bank transfer only.</li>
+  <li><b>Order in which funds are applied.</b> Landlord will apply all funds received from Tenant first to any non-rent obligations of Tenant including late charges, returned or failed payment charges, charge-backs for repairs, brokerage fees, and periodic utilities, then to rent, regardless of any notation or memo accompanying the payment.</li>
   <li><b>Rent Increases.</b> There will be no rent increases through the Termination Date. If this lease is renewed automatically on a month to month basis, Landlord may increase the rent during the renewal period by providing written notice to Tenant that becomes effective the month following the 30th day after the notice is provided.</li>
 </ol>
 
@@ -120194,7 +120195,7 @@ const LEASE_FL_RESIDENTIAL_HTML = `<!DOCTYPE html>
     </ol>
   </li>
 </ol>
-<p>If deductions exceed the security deposit, Tenant will pay to Landlord the excess within ten days after Landlord makes written demand. The security deposit will be applied first to any non-rent items, including late charges, returned check charges, repairs, brokerage fees, and periodic utilities, then to any unpaid rent.</p>
+<p>If deductions exceed the security deposit, Tenant will pay to Landlord the excess within ten days after Landlord makes written demand. The security deposit will be applied first to any non-rent items, including late charges, returned or failed payment charges, repairs, brokerage fees, and periodic utilities, then to any unpaid rent.</p>
 
 <h2>5. USE OF PREMISES.</h2>
 <p>The Premises shall be used and occupied solely by Tenant and Tenant's immediate family, consisting of <span class="fill">{{occupants}}</span>, exclusively, as a private single family dwelling, and no part of the Premises shall be used at any time during the term of this Florida Lease Agreement by Tenant for the purpose of carrying on any business, profession, or trade of any kind, or for any purpose other than as a private single family dwelling. Tenant shall not allow any other person, other than Tenant's immediate family or transient relatives and friends who are guests of Tenant, to use or occupy the Premises without first obtaining Landlord's written consent to such use. Tenant shall comply with any and all laws, ordinances, rules and orders of any and all governmental or quasi-governmental authorities affecting the cleanliness, use, occupancy and preservation of the Premises.</p>
@@ -120371,7 +120372,7 @@ const LEASE_TEMPLATE_LIBRARY_BUILTINS = [
   {
     id: 'tpl_fl_residential_lease',
     name: 'Florida Residential Lease Agreement',
-    description: 'Standard Florida residential (apartment) lease — fixed term, month-to-month hold-over, per-day late charge, no pets / waterbeds. Every blank auto-fills from the unit, building and Lease defaults; DocuSign anchors for the tenant signature.',
+    description: 'Standard Florida residential (apartment) lease — fixed term, month-to-month hold-over, per-day late charge, electronic payments only (no checks), no pets / waterbeds. Every blank auto-fills from the unit, building and Lease defaults; DocuSign anchors for the tenant signature.',
     type: 'static',
     generator: null,
     html: LEASE_FL_RESIDENTIAL_HTML,
