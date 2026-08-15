@@ -98890,6 +98890,9 @@ function moveOutCurrentTenant(u) {
   const _voidStartMs = (typeof _tenantTenureStartMs === 'function')
     ? _tenantTenureStartMs(u)
     : (u.leaseStart ? new Date(u.leaseStart + 'T00:00:00').getTime() : null);
+  // DocuSign-конверты ушедшего арендатора: снапшот в историю + тумбстоуны +
+  // очистка указателей (синхронно); список открытых — для фонового void ниже.
+  const _openEnvIds = _leaseDetachEnvelopesForMoveOut(u, u.tenantHistory[u.tenantHistory.length - 1]);
   // Clear current tenant fields. Keep the unit's layout (sqft, rate,
   // window, sink, etc.) intact — those belong to the unit, not the
   // tenant.
@@ -98941,6 +98944,10 @@ function moveOutCurrentTenant(u) {
   // this tenant so the Invoices table doesn't keep dunning a
   // non-tenant. Errors are logged + summarized via toast inside.
   _voidTenantOpenInvoices(u, _voidEmail, _voidStartMs).catch(e => console.warn('[move-out:void:bg]', e));
+  // Fire-and-forget — void the departed tenant's OPEN DocuSign envelopes
+  // (арендатора нет — подписывать нечего; иначе конверт живёт на DocuSign
+  // и может быть подписан «в пустоту»).
+  _voidTenantOpenEnvelopes(_openEnvIds, `Suite ${u.id}`, name).catch(e => console.warn('[move-out:void-envelope:bg]', e));
 }
 
 // ============================================================================
@@ -102596,6 +102603,13 @@ function submitMoveOut() {
   const _voidStartMs = (typeof _tenantTenureStartMs === 'function')
     ? _tenantTenureStartMs(u)
     : (u.leaseStart ? new Date(u.leaseStart + 'T00:00:00').getTime() : null);
+  const _moTenantName = u.tenant || u.company || '';
+  // DocuSign-конверты ушедшего арендатора: снапшот в запись истории (mode
+  // 'history'), тумбстоуны, очистка карточек/указателей — синхронно; список
+  // открытых конвертов — для фонового void ниже (в ОБОИХ режимах: даже при
+  // hard-delete конверт не должен остаться подписываемым).
+  const _openEnvIds = _leaseDetachEnvelopesForMoveOut(
+    u, (mode === 'history' && Array.isArray(u.tenantHistory)) ? u.tenantHistory[u.tenantHistory.length - 1] : null);
   // In both modes — clear the current fields. Includes the newer
   // tenant-scoped fields (address, docs, onboarding marker) so the
   // unit comes back as a clean slate for the next tenant.
@@ -102623,10 +102637,11 @@ function submitMoveOut() {
     delete u.stripe._sendingDepositAt;
     u.stripe.autoPayEnabled = false;
   }
-  // Drop DocuSign envelopes + any uploaded signed PDF from the previous
-  // tenancy. Envelopes themselves stay on DocuSign (operator can void
-  // there manually); we just lose our local pointer so the next tenant
-  // doesn't inherit "Awaiting signature — <prior name>".
+  // Конверты DocuSign уже сняты выше (_leaseDetachEnvelopesForMoveOut:
+  // снапшот в историю + тумбстоуны + очистка указателей; открытые
+  // void'ятся фоново после saveState). Раньше здесь просто обнулялся
+  // массив — конверт оставался живым на DocuSign, а reconcile из
+  // audit-лога возвращал его следующему арендатору.
   u.leaseEnvelopes = [];
   delete u.signedPdf;
   // If delete mode — also wipe previous history (hard clean)
@@ -102650,6 +102665,8 @@ function submitMoveOut() {
   if (mode !== 'delete') {
     _voidTenantOpenInvoices(u, _voidEmail, _voidStartMs).catch(e => console.warn('[move-out:void:bg]', e));
   }
+  // Open DocuSign envelopes of the departed tenant — void in BOTH modes.
+  _voidTenantOpenEnvelopes(_openEnvIds, `Suite ${u.id}`, _moTenantName).catch(e => console.warn('[move-out:void-envelope:bg]', e));
   const msg = mode === 'delete'
     ? `Suite ${u.id} cleared (${reasonLabel})`
     : `Suite ${u.id} — tenant moved to history (${reasonLabel})`;
@@ -109222,6 +109239,10 @@ async function _dsReconcileEnvelopes() {
     const { u } = ctx;
     const envs = Array.isArray(u.leaseEnvelopes) ? u.leaseEnvelopes : [];
     if (envs.some(e => e && (e.envelopeId === r.envelopeId || e.id === r.envelopeId))) return;
+    // Тумбстоун: конверт снят с юнита сознательно (move-out/delete tenant или
+    // удалённая карточка) — НЕ воскрешать следующему арендатору. Тот же
+    // список уважает _ensureLeaseDocuments.
+    if (Array.isArray(u.leaseDocsDismissedEnvelopes) && u.leaseDocsDismissedEnvelopes.includes(r.envelopeId)) return;
 
     // Missing — pull full envelope details from CF and backfill.
     promises.push((async () => {
@@ -109237,6 +109258,8 @@ async function _dsReconcileEnvelopes() {
           return (_f && (_f.units || []).find(x => x.id === u.id)) || u;
         })();
         if ((uLive.leaseEnvelopes || []).some(e => e && (e.envelopeId === r.envelopeId || e.id === r.envelopeId))) return;
+        // Тумбстоун мог появиться за время await (move-out в другой вкладке).
+        if (Array.isArray(uLive.leaseDocsDismissedEnvelopes) && uLive.leaseDocsDismissedEnvelopes.includes(r.envelopeId)) return;
         const sentAt = env?.sentDateTime || env?.statusChangedDateTime || (r.at?.toDate?.()?.toISOString?.()) || new Date().toISOString();
         const recipient = env?.recipients?.signers?.[0] || {};
         uLive.leaseEnvelopes = uLive.leaseEnvelopes || [];
@@ -128309,6 +128332,79 @@ async function leaseVoidEnvelope(envelopeId) {
     toast('Void failed: ' + (err.message || err), 'error');
   }
 }
+// ==== Move-out / delete tenant: конверты DocuSign ушедшего арендатора ======
+// Проблема (Tony, 2026-08-15): после удаления арендатора его открытый конверт
+// оставался «живым» на DocuSign, а фоновый _dsReconcileEnvelopes (backfill из
+// audit-лога) возвращал его на юнит уже СЛЕДУЮЩЕМУ арендатору («Awaiting
+// signature — <прежнее имя>»). Закрываем класс в два шага:
+//   1) синхронно, внутри move-out (до saveState): снапшот конвертов и
+//      их doc-карточек в запись tenantHistory, тумбстоуны на envelopeId
+//      (u.leaseDocsDismissedEnvelopes — их уже уважает _ensureLeaseDocuments,
+//      теперь и reconcile), убрать «sent»-карточки Lease documents этих
+//      конвертов, обнулить leaseEnvelopes + currentLeaseEnvelopeId;
+//   2) фоново (fire-and-forget, как _voidTenantOpenInvoices для Stripe):
+//      void всех ОТКРЫТЫХ конвертов на DocuSign — арендатора больше нет,
+//      подписывать нечего. Завершённые/уже void'нутые не трогаем.
+// Возвращает список envelopeId, которые надо void'нуть.
+function _leaseDetachEnvelopesForMoveOut(u, historyEntry) {
+  if (!u) return [];
+  const envs = Array.isArray(u.leaseEnvelopes) ? u.leaseEnvelopes.filter(Boolean) : [];
+  const ids  = envs.map(e => e.envelopeId || e.id).filter(Boolean);
+  // 1) снапшот в историю (компактно — без тяжёлых полей)
+  if (historyEntry && envs.length) {
+    historyEntry.leaseEnvelopes = envs.map(e => ({
+      envelopeId: e.envelopeId || e.id || null, status: e.status || null,
+      sentAt: e.sentAt || null, completedAt: e.completedAt || null,
+      recipientEmail: e.recipientEmail || null, recipientName: e.recipientName || null,
+    }));
+  }
+  // 2) тумбстоуны — reconcile / ensureLeaseDocuments не вернут их следующему арендатору
+  if (ids.length) {
+    if (!Array.isArray(u.leaseDocsDismissedEnvelopes)) u.leaseDocsDismissedEnvelopes = [];
+    for (const id of ids) if (!u.leaseDocsDismissedEnvelopes.includes(id)) u.leaseDocsDismissedEnvelopes.push(id);
+  }
+  // 3) doc-карточки DocuSign этих конвертов (кроме подписанных — это уже
+  //    архивный документ прошлого арендатора, его показывает Files/история)
+  if (Array.isArray(u.leaseDocuments) && ids.length) {
+    const idSet = new Set(ids);
+    const stale = u.leaseDocuments.filter(d => d && d.source === 'docusign' && idSet.has(d.envelopeId) && d.status !== 'signed');
+    if (stale.length) {
+      if (historyEntry) historyEntry.leaseDocuments = stale.map(d => ({ id: d.id || null, kind: d.kind || null, title: d.title || null, status: d.status || null, envelopeId: d.envelopeId || null, createdAt: d.createdAt || null }));
+      u.leaseDocuments = u.leaseDocuments.filter(d => !stale.includes(d));
+    }
+  }
+  // 4) указатели текущей лизы
+  u.leaseEnvelopes = [];
+  delete u.currentLeaseEnvelopeId;
+  // 5) что void'ить: только открытые (completed/voided/declined — не трогаем)
+  const OPEN = new Set(['created', 'sent', 'delivered', 'correcting']);
+  return envs.filter(e => OPEN.has(String(e.status || 'sent').toLowerCase())).map(e => e.envelopeId || e.id).filter(Boolean);
+}
+
+async function _voidTenantOpenEnvelopes(envelopeIds, unitLabel, tenantName) {
+  if (!Array.isArray(envelopeIds) || !envelopeIds.length) return;
+  const reason = `Tenant ${tenantName || ''} moved out of ${unitLabel || 'the suite'} — lease cancelled`.replace(/\s+/g, ' ').trim();
+  let ok = 0, fail = 0;
+  for (const envelopeId of envelopeIds) {
+    try {
+      if (_dsIsJwtMode()) {
+        await _dsCallCF('dsVoid', { envelopeId, reason });
+      } else {
+        await docusignFetch(`/envelopes/${envelopeId}`, { method: 'PUT', body: JSON.stringify({ status: 'voided', voidedReason: reason }) });
+      }
+      ok++;
+    } catch (e) {
+      fail++;
+      console.warn('[move-out:void-envelope]', envelopeId, (e && e.message) || e);
+    }
+  }
+  try {
+    if (fail) toast(`⚠ Could not void ${fail} DocuSign envelope${fail === 1 ? '' : 's'} of the previous tenant — cancel manually in DocuSign`, 'warning');
+    else if (ok) toast(`⊘ Voided ${ok} open DocuSign lease${ok === 1 ? '' : 's'} of the previous tenant`, 'info');
+  } catch {}
+  try { updateTopbarLeasePill(); } catch {}
+}
+
 async function leaseRefreshStatus(envelopeId) {
   try {
     // FIXES_LOG Entry 20 — JWT mode → CF (dsGetEnvelope); OAuth fallback otherwise.
