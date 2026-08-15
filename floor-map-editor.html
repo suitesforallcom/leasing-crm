@@ -68415,11 +68415,9 @@ function onAuTermChange() {
   }
   const n = parseInt(term);
   if (isNaN(n)) return;
-  const d = new Date(start + 'T00:00:00');
-  if (isNaN(d.getTime())) return;
-  d.setMonth(d.getMonth() + n);
-  d.setDate(new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate());
-  endEl.value = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  // Единая конвенция (см. _leaseEndFromStartTerm).
+  const iso = _leaseEndFromStartTerm(start, n);
+  if (iso) endEl.value = iso;
 }
 
 function closeAddUnitModal() {
@@ -68516,15 +68514,10 @@ function saveAddUnitModal(opts) {
   if (!until && leaseStart && leaseTerm && leaseTerm !== 'mtm') {
     const n = parseInt(leaseTerm);
     if (!isNaN(n)) {
-      // End-of-month convention — match onTermChange / onAuTermChange /
-      // _addLeaseDocRecalcEnd so every surface produces the same end
-      // date for the same (start, term) input.
-      const d = new Date(leaseStart + 'T00:00:00');
-      if (!isNaN(d.getTime())) {
-        d.setMonth(d.getMonth() + n);
-        d.setDate(new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate());
-        until = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-      }
+      // Единая конвенция — match onTermChange / onAuTermChange /
+      // _addLeaseDocRecalcEnd / Quick Add so every surface produces the
+      // same end date for the same (start, term) input (см. _leaseEndFromStartTerm).
+      until = _leaseEndFromStartTerm(leaseStart, n) || until;
     }
   }
 
@@ -92938,11 +92931,10 @@ function _qatRecalcEnd() {
   if (!start || !term) { _qatSetEndHint(''); return; }
   const months = +term;
   if (!Number.isFinite(months) || months <= 0) return;
-  const d = new Date(start + 'T00:00:00');
-  if (isNaN(d.getTime())) return;
-  d.setMonth(d.getMonth() + months);
-  d.setDate(new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate());
-  endEl.value = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  // Единая конвенция (см. _leaseEndFromStartTerm).
+  const iso = _leaseEndFromStartTerm(start, months);
+  if (!iso) return;
+  endEl.value = iso;
   _qatSetEndHint(_qatEndHintFor(start, endEl.value, months));
 }
 
@@ -93169,13 +93161,10 @@ async function saveQuickAddTenant() {
   if (leaseEndManual) {
     u.until = leaseEndManual;
   } else if (term && term !== 'mtm') {
-    const months = +term;
-    if (months > 0) {
-      const start = new Date(leaseStart + 'T00:00:00');
-      start.setMonth(start.getMonth() + months);
-      start.setDate(new Date(start.getFullYear(), start.getMonth() + 1, 0).getDate());
-      u.until = start.toISOString().slice(0, 10);
-    }
+    // Единая конвенция (см. _leaseEndFromStartTerm) — та же дата, что
+    // показывал _qatRecalcEnd в форме.
+    const iso = _leaseEndFromStartTerm(leaseStart, term);
+    if (iso) u.until = iso;
   }
 
   // Stamp "new tenant" marker so the 30-day map overlay picks it up
@@ -121545,18 +121534,21 @@ function _liveLeaseFields(u, overrides) {
     // аренды (та же формула, что security_deposit_amount, но с '$').
     security_deposit:      fmtMoney((+u?.deposit > 0) ? +u.deposit : rentRaw),
     // termination_date — конец аренды; если until/override пустые, но есть
-    // старт + срок в месяцах — считаем start + term − 1 день (форма
-    // проспекта задаёт term_months, а не дату окончания).
+    // старт + срок в месяцах — считаем по единой конвенции приложения
+    // (_leaseEndFromStartTerm: конец месяца через N мес.; старт 1-го —
+    // ровно N полных месяцев), чтобы документ совпадал с u.until из форм.
     termination_date:      (() => {
       if (endRaw) return fmtLongDate(endRaw);
       const tm = +((o.term != null && o.term !== '') ? o.term : (u?.leaseTerm || 0));
       if (!startRaw || !(tm > 0)) return '';
+      // startRaw может прийти уже отформатированным ("August 27, 2026") из
+      // liveOverrides — нормализуем через Date → ISO.
       const s = String(startRaw);
       const d = new Date(s.length <= 10 ? s + 'T00:00:00' : s);
       if (isNaN(d.getTime())) return '';
-      d.setMonth(d.getMonth() + tm);
-      d.setDate(d.getDate() - 1);
-      return d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+      const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const end = (typeof _leaseEndFromStartTerm === 'function') ? _leaseEndFromStartTerm(iso, tm) : '';
+      return end ? fmtLongDate(end) : '';
     })(),
     // occupants — §5 «Tenant's immediate family, consisting of …»: явное
     // поле юнита, иначе сам арендатор.
@@ -125550,17 +125542,37 @@ function _addLeaseDocRecalcEnd() {
   const term  = termEl.value;
   if (!start) return;
   if (!term || term === 'mtm') return;
-  const months = +term;
-  if (!Number.isFinite(months) || months <= 0) return;
-  const d = new Date(start + 'T00:00:00');
-  if (isNaN(d.getTime())) return;
-  d.setMonth(d.getMonth() + months);
-  // End-of-month: snap to the last day of the anniversary month.
+  // Единая конвенция (см. _leaseEndFromStartTerm): конец месяца через N мес.,
+  // для старта 1-го — ровно N полных месяцев.
+  const iso = _leaseEndFromStartTerm(start, term);
+  if (iso) expEl.value = iso;
+}
+
+// ЕДИНАЯ конвенция конца аренды по (start, N месяцев) — используется всеми
+// поверхностями (unit-панель onTermChange, Add Unit, Add Document, Quick Add
+// Tenant, termination_date в шаблонах), чтобы один и тот же ввод давал одну
+// и ту же дату:
+//   старт НЕ 1-го числа → последний день месяца (start + N):
+//       27 авг 2026 + 12 → 31 авг 2027 (неполный первый месяц + N полных;
+//       биллинг выставляет полные календарные месяцы, «хвоста» нет)
+//   старт 1-го числа    → последний день месяца (start + N − 1):
+//       1 окт 2026 + 12 → 30 сен 2027 (ровно N полных месяцев; Jan 1 → Dec 31 = 12)
+// Обратная функция — _addLeaseDocMonthsBetween (правило 1: day-1 → monthDiff+1),
+// т.е. detect(recalc(start, N)) === N для любого старта. До 2026-08-15 старт
+// 1-го давал N+1 полных месяцев (Jan 1 + 12 → Jan 31 next year), а старт
+// 29–31-го переполнял setMonth (31 авг + 6 → 3 мар → 31 мар вместо 28 фев).
+// Возвращает ISO 'YYYY-MM-DD' или '' если вход невалиден.
+function _leaseEndFromStartTerm(startIso, months) {
+  const n = +months;
+  if (!startIso || !Number.isFinite(n) || n <= 0) return '';
+  const iso = (typeof toIsoDate === 'function') ? (toIsoDate(startIso) || String(startIso)) : String(startIso);
+  const d = new Date(iso.slice(0, 10) + 'T00:00:00');
+  if (isNaN(d.getTime())) return '';
+  const startsOn1st = d.getDate() === 1;
+  d.setDate(1);                                          // без overflow при setMonth
+  d.setMonth(d.getMonth() + n - (startsOn1st ? 1 : 0));
   d.setDate(new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate());
-  const yyyy = d.getFullYear();
-  const mm   = String(d.getMonth() + 1).padStart(2, '0');
-  const dd   = String(d.getDate()).padStart(2, '0');
-  expEl.value = `${yyyy}-${mm}-${dd}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 // Compute whole months between two ISO dates using the END-OF-MONTH
@@ -137517,14 +137529,11 @@ function onTermChange() {
   }
   const n = parseInt(term);
   if (!isNaN(n)) {
-    // End-of-month convention: end = last day of the month at
-    // (start + N months). Matches the modal's _addLeaseDocRecalcEnd
-    // and the operator's accounting-style "full months only" intuition.
-    // Example: 11/01/2025 + 18mo → 05/01/2027 → end of May = 05/31/2027.
-    const d = new Date(start + 'T00:00:00');
-    d.setMonth(d.getMonth() + n);
-    d.setDate(new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate());
-    endEl.value = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    // Единая конвенция (см. _leaseEndFromStartTerm): конец месяца через
+    // N мес.; для старта 1-го — ровно N полных месяцев (Jan 1 + 12 → Dec 31).
+    // Совпадает с _addLeaseDocRecalcEnd / Add Unit / Quick Add Tenant.
+    const iso = _leaseEndFromStartTerm(start, n);
+    if (iso) endEl.value = iso;
     // Also live-refresh the prorate calculator when lease start shifted
     try { _updateProrateBox(); } catch {}
   }
