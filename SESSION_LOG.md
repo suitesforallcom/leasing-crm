@@ -21,6 +21,10 @@ Format:
 
 ---
 
+## 2026-08-15
+
+- 🆕 `ec0026a` **Per-building default lease template — вкладка «Lease Template» в Edit Building.** Новое поле `b.defaultLeaseTemplateId` (аддитивно, без правил/CF); каскад резолвера теперь unit → floor → **building** → workspace (`_resolveLeaseTemplate` Шаг 3b, оба DocuSign send-flow + Add Document); helpers `_findBuildingByUnit` / `_leaseTplInheritedFor`; бейдж `building` в unit drawer, честные подписи «Currently: …» в пикерах и Floor Actions. Проверено: parse-check, Node-тест резолвера 9/9, локальный стенд в браузере. ⚠️ **НЕ задеплоено** — Firebase-креды истекли (`firebase login --reauth` нужен от Tony); meta уже проштампована `ec0026a6cce0`, деплой = `firebase login --reauth && firebase deploy --only hosting`.
+
 ## 2026-07-03
 
 - 🔧 `32bae15` **Аудит Партия 2 (клиент) В ПРОДЕ** — свип _isMonthSettled по ~12 денежным поверхностям (Stripe-paid больше не красные, Schedule E не занижает выручку, MOVE-OUT не шлёт заплативших коллекторам), Entry-73 гейты (amendment/upload/kind=lease на занятом юните + очистка _slPendingRenewal), listener-heal ×3, тихие мутации в draft, (u.tenant||u.company)/EQ-1/getLateFeeConfig/_isMonthToMonth конвенции, UX-честность. Ревью: 0 money/regression дефектов. Deployed (meta `32bae15eae00`).
