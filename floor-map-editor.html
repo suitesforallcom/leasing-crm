@@ -98953,7 +98953,7 @@ function moveOutCurrentTenant(u) {
   // Fire-and-forget — void the departed tenant's OPEN DocuSign envelopes
   // (арендатора нет — подписывать нечего; иначе конверт живёт на DocuSign
   // и может быть подписан «в пустоту»).
-  _voidTenantOpenEnvelopes(_openEnvIds, `Suite ${u.id}`, name).catch(e => console.warn('[move-out:void-envelope:bg]', e));
+  _voidTenantOpenEnvelopes(u, _openEnvIds, `Suite ${u.id}`, name).catch(e => console.warn('[move-out:void-envelope:bg]', e));
 }
 
 // ============================================================================
@@ -102672,7 +102672,7 @@ function submitMoveOut() {
     _voidTenantOpenInvoices(u, _voidEmail, _voidStartMs).catch(e => console.warn('[move-out:void:bg]', e));
   }
   // Open DocuSign envelopes of the departed tenant — void in BOTH modes.
-  _voidTenantOpenEnvelopes(_openEnvIds, `Suite ${u.id}`, _moTenantName).catch(e => console.warn('[move-out:void-envelope:bg]', e));
+  _voidTenantOpenEnvelopes(u, _openEnvIds, `Suite ${u.id}`, _moTenantName).catch(e => console.warn('[move-out:void-envelope:bg]', e));
   const msg = mode === 'delete'
     ? `Suite ${u.id} cleared (${reasonLabel})`
     : `Suite ${u.id} — tenant moved to history (${reasonLabel})`;
@@ -109209,6 +109209,9 @@ async function _dsCallCF(name, args, opts) {
 // transaction-write — e.g. unit not in state at write time).
 async function _dsReconcileEnvelopes() {
   if (!fbSync?.enabled || !fbSync.sdk?.collection || !_dsIsJwtMode()) return;
+  // Сначала — отложенные void'ы ушедших арендаторов (u.leaseEnvelopesVoidPending):
+  // иначе backfill ниже мог бы вернуть на юнит конверт, который надо было закрыть.
+  try { await _dsSweepPendingEnvelopeVoids(); } catch (e) { console.warn('[ds-reconcile] pending-void sweep failed', e); }
   const col = fbSync.sdk.collection(fbSync.db, 'workspaces', WORKSPACE_ID, 'docusign_log');
   let snap;
   try { snap = await fbSync.sdk.getDocs(col); }
@@ -109646,23 +109649,38 @@ async function docusignFetch(path, opts = {}) {
   let token = localStorage.getItem(DS_LS.ACCESS);
   if (!token) throw new Error('Not connected to DocuSign');
   const exp = +localStorage.getItem(DS_LS.EXPIRES) || 0;
-  // Auto-refresh when <60s left
+  // Auto-refresh when <60s left. Bounded (20s): refresh делает Firestore-pull
+  // токенов + OAuth-запрос — без лимита при плохой сети «Sending…» висит
+  // бесконечно (2026-08-15).
   if (exp < Date.now() + 60_000) {
-    token = await _dsRefreshAccess();
+    token = await Promise.race([
+      _dsRefreshAccess(),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('DocuSign token refresh timed out (20s) — check connection / reconnect DocuSign')), 20000)),
+    ]);
   }
   const env = localStorage.getItem(DS_LS.ENV) || 'demo';
   const base = localStorage.getItem(DS_LS.BASE_URI) || _dsDefaultBase(env);
   const acct = localStorage.getItem(DS_LS.ACCT);
   const url = `${base}/restapi/v2.1/accounts/${acct}${path}`;
-  const res = await fetch(url, {
-    ...opts,
-    headers: {
-      'Authorization': 'Bearer ' + token,
-      'Accept': 'application/json',
-      'Content-Type': 'application/json',
-      ...(opts.headers || {}),
-    },
-  });
+  // 30s abort — тот же потолок, что у _dsCallCF (JWT-ветка).
+  const _ac = (typeof AbortController === 'function') ? new AbortController() : null;
+  const _t = _ac ? setTimeout(() => _ac.abort(), 30000) : null;
+  let res;
+  try {
+    res = await fetch(url, {
+      ...opts,
+      ...(_ac ? { signal: _ac.signal } : {}),
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        ...(opts.headers || {}),
+      },
+    });
+  } catch (e) {
+    if (e && e.name === 'AbortError') throw new Error('DocuSign request timed out (30s) — check your connection and try again');
+    throw e;
+  } finally { if (_t) clearTimeout(_t); }
   if (!res.ok) {
     const txt = await res.text().catch(()=>'');
     throw new Error(`DocuSign ${res.status}: ${txt.slice(0, 300)}`);
@@ -109855,6 +109873,14 @@ async function docusignSendEnvelope({
   // FIXES_LOG Entry 22 (2026-05-18) — pass unit context so CF can
   // server-authoritatively push the envelope into state.leaseEnvelopes
   // (avoids the follower-tab silent-loss class of bugs).
+  // Гонка с пробой JWT-режима (2026-08-15): если _dsLoadJwtMode ещё не
+  // завершилась (undefined) — отправка ушла бы в OAuth-ветку («Not connected
+  // to DocuSign» / зависание на Firestore-pull токенов). Дожидаемся пробы,
+  // но не дольше 8 с.
+  if (window._dsJwtModeCache === undefined && typeof _dsLoadJwtMode === 'function') {
+    try { await Promise.race([_dsLoadJwtMode(), new Promise(r => setTimeout(r, 8000))]); } catch {}
+  }
+  console.info('[send-lease] mode', _dsIsJwtMode() ? 'jwt/CF' : 'oauth/browser', '| jwtCache=', window._dsJwtModeCache, '| doc bytes=', (payload.documents && payload.documents[0] && payload.documents[0].documentBase64 || '').length, '| template=', payload.templateId || 'inline');
   if (_dsIsJwtMode()) {
     const b = (typeof currentBuilding === 'function') ? currentBuilding() : null;
     const f = (typeof currentFloor    === 'function') ? currentFloor()    : null;
@@ -128382,33 +128408,88 @@ function _leaseDetachEnvelopesForMoveOut(u, historyEntry) {
   // 4) указатели текущей лизы
   u.leaseEnvelopes = [];
   delete u.currentLeaseEnvelopeId;
-  // 5) что void'ить: только открытые (completed/voided/declined — не трогаем)
+  // 5) что void'ить: только открытые (completed/voided/declined — не трогаем).
+  //    Пишем их в персистентную очередь u.leaseEnvelopesVoidPending — если
+  //    фоновый void не пройдёт (офлайн, CF-сбой, закрытая вкладка), его
+  //    доделает _dsSweepPendingEnvelopeVoids при следующей загрузке.
   const OPEN = new Set(['created', 'sent', 'delivered', 'correcting']);
-  return envs.filter(e => OPEN.has(String(e.status || 'sent').toLowerCase())).map(e => e.envelopeId || e.id).filter(Boolean);
+  const openIds = envs.filter(e => OPEN.has(String(e.status || 'sent').toLowerCase())).map(e => e.envelopeId || e.id).filter(Boolean);
+  if (openIds.length) {
+    if (!Array.isArray(u.leaseEnvelopesVoidPending)) u.leaseEnvelopesVoidPending = [];
+    for (const id of openIds) if (!u.leaseEnvelopesVoidPending.includes(id)) u.leaseEnvelopesVoidPending.push(id);
+  }
+  return openIds;
 }
 
-async function _voidTenantOpenEnvelopes(envelopeIds, unitLabel, tenantName) {
-  if (!Array.isArray(envelopeIds) || !envelopeIds.length) return;
-  const reason = `Tenant ${tenantName || ''} moved out of ${unitLabel || 'the suite'} — lease cancelled`.replace(/\s+/g, ' ').trim();
-  let ok = 0, fail = 0;
-  for (const envelopeId of envelopeIds) {
-    try {
-      if (_dsIsJwtMode()) {
-        await _dsCallCF('dsVoid', { envelopeId, reason });
-      } else {
-        await docusignFetch(`/envelopes/${envelopeId}`, { method: 'PUT', body: JSON.stringify({ status: 'voided', voidedReason: reason }) });
-      }
-      ok++;
-    } catch (e) {
-      fail++;
-      console.warn('[move-out:void-envelope]', envelopeId, (e && e.message) || e);
+// Void одного конверта. true = закрыт (или уже был закрыт на DocuSign —
+// «invalid status» считаем успехом: конверт уже voided/completed/declined).
+async function _dsVoidEnvelopeQuiet(envelopeId, reason) {
+  try {
+    if (_dsIsJwtMode()) {
+      await _dsCallCF('dsVoid', { envelopeId, reason });
+    } else {
+      await docusignFetch(`/envelopes/${envelopeId}`, { method: 'PUT', body: JSON.stringify({ status: 'voided', voidedReason: reason }) });
+    }
+    return true;
+  } catch (e) {
+    const msg = String((e && e.message) || e || '');
+    if (/ENVELOPE_INVALID_STATUS|already (voided|completed)|is voided|is completed|ENVELOPE_CANNOT_VOID/i.test(msg)) return true;
+    console.warn('[ds:void-quiet]', envelopeId, msg);
+    return false;
+  }
+}
+
+// Убрать id из очереди pending-void'ов на СВЕЖЕМ объекте юнита (после await
+// building-свап мог подменить объект — ищем по id здания/этажа/юнита).
+function _dsClearPendingVoid(unitRef, envelopeId) {
+  if (!unitRef) return false;
+  let changed = false;
+  for (const b of (state.buildings || [])) for (const f of (b.floors || [])) for (const u of (f.units || [])) {
+    if (u !== unitRef && u.id !== unitRef.id) continue;
+    if (Array.isArray(u.leaseEnvelopesVoidPending) && u.leaseEnvelopesVoidPending.includes(envelopeId)) {
+      u.leaseEnvelopesVoidPending = u.leaseEnvelopesVoidPending.filter(x => x !== envelopeId);
+      if (!u.leaseEnvelopesVoidPending.length) delete u.leaseEnvelopesVoidPending;
+      changed = true;
     }
   }
+  return changed;
+}
+
+async function _voidTenantOpenEnvelopes(u, envelopeIds, unitLabel, tenantName) {
+  if (!Array.isArray(envelopeIds) || !envelopeIds.length) return;
+  const reason = `Tenant ${tenantName || ''} moved out of ${unitLabel || 'the suite'} — lease cancelled`.replace(/\s+/g, ' ').trim();
+  let ok = 0, fail = 0, changed = false;
+  for (const envelopeId of envelopeIds) {
+    if (await _dsVoidEnvelopeQuiet(envelopeId, reason)) { ok++; if (_dsClearPendingVoid(u, envelopeId)) changed = true; }
+    else fail++;
+  }
+  if (changed) { try { saveState(); } catch {} }
   try {
-    if (fail) toast(`⚠ Could not void ${fail} DocuSign envelope${fail === 1 ? '' : 's'} of the previous tenant — cancel manually in DocuSign`, 'warning');
+    if (fail) toast(`⚠ Could not void ${fail} DocuSign envelope${fail === 1 ? '' : 's'} of the previous tenant — will retry on next load`, 'warning');
     else if (ok) toast(`⊘ Voided ${ok} open DocuSign lease${ok === 1 ? '' : 's'} of the previous tenant`, 'info');
   } catch {}
   try { updateTopbarLeasePill(); } catch {}
+}
+
+// Ретрай отложенных void'ов (u.leaseEnvelopesVoidPending) — вызывается из
+// _dsReconcileEnvelopes при загрузке (JWT-режим). Закрывает случаи: void при
+// move-out не прошёл; move-out сделан на старом коде (до 2026-08-15) и конверт
+// осиротел. Тихий: тост только если реально что-то void'нули.
+async function _dsSweepPendingEnvelopeVoids() {
+  if (!fbSync?.enabled || !_dsIsJwtMode()) return 0;
+  const jobs = [];
+  for (const b of (state.buildings || [])) for (const f of (b.floors || [])) for (const u of (f.units || [])) {
+    if (!Array.isArray(u.leaseEnvelopesVoidPending) || !u.leaseEnvelopesVoidPending.length) continue;
+    for (const id of u.leaseEnvelopesVoidPending.slice()) jobs.push({ u, id, label: `Suite ${u.id}` });
+  }
+  if (!jobs.length) return 0;
+  let done = 0, changed = false;
+  for (const j of jobs) {
+    if (await _dsVoidEnvelopeQuiet(j.id, `Tenant moved out of ${j.label} — lease cancelled`)) { done++; if (_dsClearPendingVoid(j.u, j.id)) changed = true; }
+  }
+  if (changed) { try { saveState(); } catch {} }
+  if (done) { try { toast(`⊘ Voided ${done} stale DocuSign lease${done === 1 ? '' : 's'} of moved-out tenant${done === 1 ? '' : 's'}`, 'info'); } catch {} try { updateTopbarLeasePill(); } catch {} }
+  return done;
 }
 
 async function leaseRefreshStatus(envelopeId) {
@@ -152104,7 +152185,15 @@ function openSendLeaseModal(buildingId, floorId, unitId) {
   if (template) {
     info.innerHTML = `Using DocuSign template <code>${esc(template.slice(0, 8))}…</code> (advanced mode) — positional Text tabs will be filled by tabLabel.${workflow}`;
   } else {
-    info.innerHTML = `<b>Inline mode</b> — a full Kiwi Rentals Office Services Agreement will be generated on the fly with every value typed into the flowing prose. DocuSign only collects the Client's signature and date.${workflow}`;
+    // Имя реально выбранного шаблона (unit → floor → building → workspace),
+    // а не жёстко зашитый Kiwi — для апартаментов уходит FL Residential.
+    let _tplName = 'Kiwi Rentals Office Services Agreement', _tplSrc = '';
+    try {
+      const r = _resolveLeaseTemplate(u, 'lease', { asRawTemplate: true });
+      if (r && r.tpl && r.tpl.name) { _tplName = r.tpl.name; _tplSrc = r.source || ''; }
+    } catch (e) {}
+    const _srcLabel = ({ 'library-unit': 'suite pick', 'library-floor': 'floor default', 'library-building': 'building default', 'library-default': 'workspace default', unit: 'suite override', workspace: 'workspace template', generated: 'built-in' })[_tplSrc] || '';
+    info.innerHTML = `<b>Inline mode</b> — <b>${esc(_tplName)}</b>${_srcLabel ? ` <span style="color:var(--muted);">(${esc(_srcLabel)})</span>` : ''} will be generated on the fly with every value filled in. DocuSign only collects the tenant's signature and date.${workflow}`;
   }
   document.getElementById('sendLeaseModal').classList.add('active');
 }
@@ -152221,6 +152310,10 @@ async function _slDoSend(payload) {
   if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Sending…'; }
   try {
     const { b, buildingId, floorId, unitId, email, name, subject, message, templateId, fields } = payload;
+    // Диагностика «Sending… висит» (2026-08-15): фиксируем старт/финиш с
+    // таймингом — по консоли сразу видно, где ждали.
+    const _t0 = Date.now();
+    console.info('[send-lease] start', { unit: unitId, building: buildingId, to: email, jwtCache: window._dsJwtModeCache, online: navigator.onLine });
     const result = await docusignSendEnvelope({
       recipientEmail: email,
       recipientName: name,
@@ -152338,6 +152431,7 @@ async function _slDoSend(payload) {
 
     saveState();
     closeSendLeaseModal();
+    console.info('[send-lease] ok', result && result.envelopeId, 'in', Date.now() - _t0, 'ms');
     toast(`✓ Lease sent to ${email}`, 'success');
     // Kick off polling so status flips (delivered, completed) show up
     // automatically without the user having to refresh.
