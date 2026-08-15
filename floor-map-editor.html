@@ -8101,9 +8101,10 @@
     display: inline-block; padding: 2px 8px; border-radius: 6px;
     font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
   }
-  .lease-tpl-src-unit    { background: var(--rd-green-soft); color: var(--rd-green); }
-  .lease-tpl-src-floor   { background: var(--rd-blue-soft); color: var(--rd-blue-link); }
-  .lease-tpl-src-default { background: #e7e7e3; color: var(--rd-text2); }
+  .lease-tpl-src-unit     { background: var(--rd-green-soft); color: var(--rd-green); }
+  .lease-tpl-src-floor    { background: var(--rd-blue-soft); color: var(--rd-blue-link); }
+  .lease-tpl-src-building { background: var(--rd-accent-soft); color: var(--rd-accent-ink); }
+  .lease-tpl-src-default  { background: #e7e7e3; color: var(--rd-text2); }
   .lease-tpl-change-btn {
     background: #fff; border: 1px solid var(--rd-border-strong); border-radius: 8px;
     padding: 6px 12px; font-size: 12.5px; font-weight: 600; color: var(--rd-text);
@@ -21419,6 +21420,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
         Billing Rules <span class="bm-tab-count" id="bmTabCountBilling">—</span>
       </button>
+      <button type="button" class="bm-tab" data-bm-tab="leasetpl" id="bmTabLeaseTpl" title="Default lease template used when sending Lease documents for suites in this building">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+        Lease Template <span class="bm-tab-count" id="bmTabCountLeaseTpl">—</span>
+      </button>
     </div>
 
     <!-- OVERVIEW TAB -->
@@ -21845,6 +21850,38 @@
         <div class="br-run-hint">
           Dry-run is read-only — it shows what would happen if auto-invoice / auto-late-fee fired right now for this building. Nothing is sent to tenants until you click Run inside the preview.
         </div>
+      </div>
+    </div>
+
+    <!-- LEASE TEMPLATE TAB — building-level default lease template.
+         Каскад: workspace default → this building → floor → suite. Выбор
+         хранится в b.defaultLeaseTemplateId, пишется по Save (как и все
+         поля Overview) — draft живёт в bmDraftLeaseTemplateId. -->
+    <div class="bm-tab-content" data-bm-tab="leasetpl">
+      <div class="bm-section" style="padding-bottom:0;">
+        <div class="br-inherit-banner">
+          <span class="br-inherit-icon">↘</span>
+          <span>
+            <b>Inheritance:</b> workspace default → <b>this building</b> → individual floors → individual suites.
+            A floor or suite with its own pick keeps it — this setting only covers suites that inherit.
+            <a href="#" onclick="event.preventDefault(); closeBuildingModal(); openSettings('templates'); return false;">Manage templates →</a>
+          </span>
+        </div>
+      </div>
+
+      <div class="bm-section">
+        <div class="bm-section-label">
+          Default lease template
+          <span class="bm-section-hint" id="bmLeaseTplHint">Inherits workspace default</span>
+        </div>
+        <div class="field">
+          <label>Template used when sending a new Lease document for suites in this building</label>
+          <select id="bmLeaseTplSelect" onchange="bmOnLeaseTplChange()"></select>
+          <div class="addr-ac-hint" id="bmLeaseTplNote">Pick a template from the library. Leave on "Inherit" to keep using the workspace default.</div>
+        </div>
+        <!-- Карточка эффективного шаблона: имя + бейджи + Preview -->
+        <div class="bm-list" id="bmLeaseTplCard"></div>
+        <div id="bmLeaseTplOverridesNote" style="margin-top:8px; font-size:11.5px; color:var(--muted); line-height:1.45;"></div>
       </div>
     </div>
 
@@ -64372,6 +64409,10 @@ let bmDraftBillingRules = { paused: false, autoInvoice: null, lateFee: null };
 let bmDraftFloorBillingRules = {};
 // Когда юзер открывает per-floor sub-modal, сюда кладём id редактируемого этажа.
 let brfeEditingFloorId = null;
+// Lease Template tab draft — id библиотечного lease-шаблона для этого здания
+// ('' = наследовать workspace default). Коммитится в b.defaultLeaseTemplateId
+// только по Save (Cancel откатывает, как и все поля Overview).
+let bmDraftLeaseTemplateId = '';
 
 const UTILITY_TYPES = [
   'Electricity', 'Water', 'Gas', 'Internet',
@@ -64423,6 +64464,7 @@ function openAddBuilding() {
   bmDraftFileMeta   = {};
   bmDraftFileFolders = [];
   _bmFilesCurrentPath = '/';
+  bmDraftLeaseTemplateId = '';   // новое здание наследует workspace default
   document.getElementById('bmTitle').textContent = 'Add New Building';
   document.getElementById('bmSubtitle').textContent = 'Fill in the Overview tab to create the building. Other tabs can be filled later.';
   document.getElementById('bmAddr').value = '';
@@ -64528,6 +64570,8 @@ function openEditBuilding(bid) {
       bmDraftFloorBillingRules[f.id] = deepClone(f.billingRulesOverride);
     }
   }
+  // Lease Template — building-level default (строка-id или '' = inherit).
+  bmDraftLeaseTemplateId = (typeof b.defaultLeaseTemplateId === 'string') ? b.defaultLeaseTemplateId : '';
   document.getElementById('bmTitle').textContent = 'Edit Building';
   document.getElementById('bmSubtitle').textContent = `Editing "${buildingLabel(b)}". Changes apply on Save (per-floor billing overrides save immediately — Cancel won't undo those).`;
   document.getElementById('bmAddr').value = b.address || '';
@@ -64782,6 +64826,7 @@ function renderBmAllTabs() {
   renderBmFilesList();
   renderBmAssignedManagerSelect();
   renderBmBillingRulesTab();
+  renderBmLeaseTplTab();
   renderBmTabCounts();
 }
 
@@ -65292,6 +65337,12 @@ function renderBmTabCounts() {
     }
     const el = document.getElementById('bmTabCountBilling');
     if (el) el.textContent = n > 0 ? String(n) : '—';
+  }
+  // Lease Template tab badge: '—' = наследует workspace default,
+  // '✓' = у здания свой шаблон.
+  {
+    const el = document.getElementById('bmTabCountLeaseTpl');
+    if (el) el.textContent = bmDraftLeaseTemplateId ? '✓' : '—';
   }
 }
 
@@ -65879,6 +65930,116 @@ function closeBuildingModal() {
   // Reset readonly state so the next open (especially from the pencil, which
   // is direct-to-edit) starts in normal editable mode.
   document.getElementById('bmModalContent')?.classList.remove('bm-readonly');
+}
+
+// ====== Lease Template tab ==============================================
+// Building-level default lease template (b.defaultLeaseTemplateId).
+// Читает/пишет ТОЛЬКО bmDraftLeaseTemplateId — до Save state не мутируется
+// (§0.2 п.3). Резолв при отправке: unit → floor → building → workspace
+// (_resolveLeaseTemplate, Шаг 3b).
+
+// Сколько этажей / сьютов этого здания имеют СВОЙ выбор шаблона (их
+// building-default не затрагивает). Только для подсказки в UI.
+function _bmLeaseTplOverrideCounts() {
+  const out = { floors: 0, units: 0 };
+  if (!editingBuildingId) return out;
+  const b = (state.buildings || []).find(x => x.id === editingBuildingId);
+  if (!b) return out;
+  for (const f of (b.floors || [])) {
+    if (f && f.defaultLeaseTemplateId) out.floors++;
+    for (const u of (f.units || [])) {
+      if (u && u.leaseTemplateId) out.units++;
+    }
+  }
+  return out;
+}
+
+function renderBmLeaseTplTab() {
+  const sel = document.getElementById('bmLeaseTplSelect');
+  if (!sel) return;
+  const lib = (typeof _getLeaseLibrary === 'function') ? _getLeaseLibrary() : [];
+  const wsDefault = (typeof _getDefaultLeaseTpl === 'function') ? _getDefaultLeaseTpl() : null;
+  const cur = bmDraftLeaseTemplateId || '';
+  const curTpl = (cur && typeof _findLeaseTpl === 'function') ? _findLeaseTpl(cur) : null;
+
+  // Опции: Inherit + библиотека (built-in первыми — так отдаёт _getLeaseLibrary).
+  const opts = [];
+  opts.push(`<option value="">— Inherit workspace default (currently: ${esc(wsDefault?.name || '—')}) —</option>`);
+  for (const t of lib) {
+    const tag  = t.isBuiltIn ? 'built-in' : 'custom';
+    const kind = t.type === 'generated' ? 'generated' : 'static';
+    opts.push(`<option value="${esc(t.id)}"${t.id === cur ? ' selected' : ''}>${esc(t.name)} · ${tag} · ${kind}</option>`);
+  }
+  // Указатель на шаблон, которого больше нет в библиотеке (удалён/скрыт):
+  // показываем явно и НЕ теряем значение — Save сохранит как было, пока
+  // оператор сам не выберет другое. В send-flow такой указатель просто
+  // пропускается (каскад идёт к workspace default).
+  if (cur && !curTpl) {
+    opts.push(`<option value="${esc(cur)}" selected>⚠ Missing template (${esc(cur)}) — falls back to workspace default</option>`);
+  }
+  sel.innerHTML = opts.join('');
+  sel.value = cur;
+
+  const hint = document.getElementById('bmLeaseTplHint');
+  if (hint) {
+    hint.textContent = curTpl
+      ? 'Building override active'
+      : (cur ? 'Override points to a missing template' : 'Inherits workspace default');
+  }
+
+  // Карточка эффективного шаблона (то, что реально уйдёт в DocuSign для
+  // сьютов без своего/этажного выбора) + Preview.
+  const eff  = curTpl || wsDefault;
+  const card = document.getElementById('bmLeaseTplCard');
+  if (card) {
+    if (!eff) {
+      card.innerHTML = '<div class="bm-list-empty">No lease templates in the library — add one in Settings → Templates.</div>';
+    } else {
+      const srcBadge = curTpl
+        ? '<span class="lease-tpl-badge" style="background:#EFEBFD; color:#3D3BE8;">Building override</span>'
+        : '<span class="lease-tpl-badge" style="background:#F4F2EE; color:#6B665C;">Workspace default</span>';
+      const typeBadge = eff.type === 'generated'
+        ? '<span class="lease-tpl-badge" style="background:#FEF3C7; color:#92400E;">generated</span>'
+        : '<span class="lease-tpl-badge" style="background:#DBEAFE; color:#1E40AF;">static</span>';
+      const originBadge = eff.isBuiltIn
+        ? '<span class="lease-tpl-badge" style="background:#F3F4F6; color:#374151;">built-in</span>'
+        : '<span class="lease-tpl-badge" style="background:#E3F6EE; color:#065F46;">custom</span>';
+      card.innerHTML = `
+        <div class="bm-list-row" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <span style="font-size:18px;">📄</span>
+          <div style="flex:1; min-width:180px;">
+            <div style="font-weight:600; color:var(--text);">${esc(eff.name)}</div>
+            <div style="font-size:11.5px; color:var(--muted); margin-top:2px;">${esc(eff.description || 'Lease template')}</div>
+            <div style="margin-top:6px; display:flex; gap:4px; flex-wrap:wrap;">${srcBadge}${typeBadge}${originBadge}</div>
+          </div>
+          <button type="button" class="lease-tpl-edit" onclick="_previewLibraryTpl('${esc(eff.id)}')" style="background:var(--surface); color:var(--text);">👁 Preview</button>
+        </div>`;
+    }
+  }
+
+  // Заметка про этажи/сьюты со своим выбором (они этим полем не управляются).
+  const note = document.getElementById('bmLeaseTplOverridesNote');
+  if (note) {
+    const c = _bmLeaseTplOverrideCounts();
+    if (!editingBuildingId) {
+      note.textContent = 'Applies to every suite of the new building until a floor or suite picks its own template.';
+    } else if (c.floors === 0 && c.units === 0) {
+      note.textContent = 'No floor or suite in this building has its own template pick — this setting covers all of them.';
+    } else {
+      const parts = [];
+      if (c.floors) parts.push(`${c.floors} floor${c.floors === 1 ? '' : 's'}`);
+      if (c.units)  parts.push(`${c.units} suite${c.units === 1 ? '' : 's'}`);
+      note.textContent = `${parts.join(' and ')} in this building already have their own template pick — those are not affected. Change them via Floor actions / the suite's Lease tab.`;
+    }
+  }
+}
+
+function bmOnLeaseTplChange() {
+  const sel = document.getElementById('bmLeaseTplSelect');
+  if (!sel) return;
+  bmDraftLeaseTemplateId = sel.value || '';
+  renderBmLeaseTplTab();
+  renderBmTabCounts();
 }
 
 // ====== Billing Rules tab ===============================================
@@ -67264,6 +67425,10 @@ function saveBuildingModal() {
         delete b.billingRulesOverride;
       }
     }
+    // Lease Template — building-level default (вкладка «Lease Template»).
+    // Пустая строка = inherit → поле удаляем, чтобы не таскать '' в Firestore.
+    if (bmDraftLeaseTemplateId) b.defaultLeaseTemplateId = bmDraftLeaseTemplateId;
+    else delete b.defaultLeaseTemplateId;
     b.totalFloors = Math.max(...numbers);
     b.floors = newFloors.sort((a, c) => (a.number || 999) - (c.number || 999));
     // Per-floor billing rule overrides — записываем после b.floors=newFloors,
@@ -67502,6 +67667,8 @@ function saveBuildingModal() {
     // ADD ↔ EDIT не теряло организации)
     ...(bmDraftFileMeta && Object.keys(bmDraftFileMeta).length ? { fileMeta: JSON.parse(JSON.stringify(bmDraftFileMeta)) } : {}),
     ...(bmDraftFileFolders && bmDraftFileFolders.length ? { fileFolders: bmDraftFileFolders.slice() } : {}),
+    // Building-level default lease template (вкладка «Lease Template»); нет = inherit.
+    ...(bmDraftLeaseTemplateId ? { defaultLeaseTemplateId: bmDraftLeaseTemplateId } : {}),
     totalFloors: Math.max(...numbers),
     floors: bmDraftFloors
       .slice().sort((a, c) => (a.number||0) - (c.number||0))
@@ -96679,6 +96846,11 @@ function _renderLeaseDocumentsTimeline(u, editOn) {
       const t = _findLeaseTpl(f.defaultLeaseTemplateId);
       if (t) { activeTpl = t; source = 'floor'; }
     }
+    // Building-level default (Edit Building → Lease Template) — между floor и workspace.
+    if (!activeTpl && b && b.defaultLeaseTemplateId && typeof _findLeaseTpl === 'function') {
+      const t = _findLeaseTpl(b.defaultLeaseTemplateId);
+      if (t) { activeTpl = t; source = 'building'; }
+    }
     if (!activeTpl && typeof _getDefaultLeaseTpl === 'function') {
       activeTpl = _getDefaultLeaseTpl();
     }
@@ -96687,7 +96859,9 @@ function _renderLeaseDocumentsTimeline(u, editOn) {
       ? '<span class="lease-tpl-src lease-tpl-src-unit" title="Pinned to this suite">unit</span>'
       : source === 'floor'
         ? '<span class="lease-tpl-src lease-tpl-src-floor" title="Inherited from floor default — change via Floor actions">floor</span>'
-        : '<span class="lease-tpl-src lease-tpl-src-default" title="Workspace default — change in Settings → Templates">default</span>';
+        : source === 'building'
+          ? '<span class="lease-tpl-src lease-tpl-src-building" title="Inherited from building default — change in Edit Building → Lease Template">building</span>'
+          : '<span class="lease-tpl-src lease-tpl-src-default" title="Workspace default — change in Settings → Templates">default</span>';
     const changeBtn = (typeof canEdit === 'function' && canEdit())
       ? `<button type="button" class="lease-tpl-change-btn" onclick="_openUnitLeaseTplPicker('${bId}','${fId}','${uId}')" title="Pick a different lease template for this suite">Change</button>`
       : '';
@@ -96791,7 +96965,7 @@ function _openUnitLeaseTplPicker(bId, fId, uId) {
   modal.dataset.bid = bId;
   modal.dataset.fid = fId;
   modal.dataset.uid = uId;
-  _renderUnitLeaseTplPickerBody(u);
+  _renderUnitLeaseTplPickerBody(u, f, b);
   modal.classList.add('active');
 }
 
@@ -96800,13 +96974,23 @@ function _closeUnitLeaseTplPicker() {
   if (modal) modal.classList.remove('active');
 }
 
-function _renderUnitLeaseTplPickerBody(u) {
+function _renderUnitLeaseTplPickerBody(u, f, b) {
   const body = document.getElementById('unitLeaseTplPickerBody');
   if (!body) return;
   const lib = (typeof _getLeaseLibrary === 'function') ? _getLeaseLibrary() : [];
   const currentId = u.leaseTemplateId || null;
-  const defaultTpl = (typeof _getDefaultLeaseTpl === 'function') ? _getDefaultLeaseTpl() : null;
-  const defaultName = esc(defaultTpl?.name || '—');
+  // Что реально унаследует сьют без своего выбора: floor → building →
+  // workspace (раньше подпись всегда показывала workspace default, даже
+  // когда этаж/здание задали свой — оператор видел не тот шаблон).
+  const _f = f || ((typeof _findFloorByUnit === 'function') ? _findFloorByUnit(u, b) : null);
+  const _b = b || ((typeof _findBuildingByUnit === 'function') ? _findBuildingByUnit(u) : null);
+  const inh = (typeof _leaseTplInheritedFor === 'function')
+    ? _leaseTplInheritedFor(_f, _b)
+    : { tpl: (typeof _getDefaultLeaseTpl === 'function') ? _getDefaultLeaseTpl() : null, source: 'default' };
+  const defaultName = esc(inh.tpl?.name || '—');
+  const inhLabel = inh.source === 'floor' ? 'floor default'
+                 : inh.source === 'building' ? 'building default'
+                 : 'workspace default';
   const inheritRow = `
     <button type="button" class="lease-tpl-pick-row ${currentId ? '' : 'lease-tpl-pick-active'}"
             onclick="_pickUnitLeaseTpl(null)"
@@ -96814,8 +96998,8 @@ function _renderUnitLeaseTplPickerBody(u) {
       <div style="display:flex; align-items:center; gap:10px;">
         <span style="font-size:18px;">↺</span>
         <div>
-          <div style="font-weight:600; color:#111;">Use workspace default</div>
-          <div style="font-size:12px; color:#6b7280; margin-top:2px;">Currently: ${defaultName}</div>
+          <div style="font-weight:600; color:#111;">Use inherited default</div>
+          <div style="font-size:12px; color:#6b7280; margin-top:2px;">Currently: ${defaultName} <span style="color:#9ca3af;">(${inhLabel})</span></div>
         </div>
         ${currentId ? '' : '<span style="margin-left:auto; color:#3b82f6; font-weight:600; font-size:13px;">✓ Active</span>'}
       </div>
@@ -96876,7 +97060,7 @@ function _pickUnitLeaseTpl(tplId) {
     try { _addLeaseDocRefreshBodyStatus(); } catch (e) { /* безопасно проглатываем */ }
   }
   if (typeof toast === 'function') {
-    toast(tplId ? 'Lease template assigned to this suite' : 'Reset to workspace default', 'success');
+    toast(tplId ? 'Lease template assigned to this suite' : 'Reset to inherited default (floor / building / workspace)', 'success');
   }
 }
 
@@ -96914,6 +97098,47 @@ function _findFloorByUnit(u, b) {
   return null;
 }
 
+// === Building-level lease template ===
+// Здание по юниту — зеркало _findFloorByUnit: сначала object-reference
+// (защита от коллизий suite-id между зданиями), затем fallback по id.
+// Нужен резолверу и UI-бейджам, у которых на входе только `u`.
+function _findBuildingByUnit(u) {
+  if (!u) return null;
+  const blds = state.buildings || [];
+  for (const _b of blds) {
+    for (const f of (_b.floors || [])) {
+      if ((f.units || []).some(x => x === u)) return _b;
+    }
+  }
+  if (!u.id) return null;
+  for (const _b of blds) {
+    for (const f of (_b.floors || [])) {
+      if ((f.units || []).some(x => x && x.id === u.id)) return _b;
+    }
+  }
+  return null;
+}
+
+// Что унаследует юнит БЕЗ собственного выбора (u.leaseTemplateId):
+//   floor.defaultLeaseTemplateId → building.defaultLeaseTemplateId →
+//   workspace default (_getDefaultLeaseTpl).
+// Возвращает { tpl, source: 'floor'|'building'|'default' }; tpl может быть
+// null только если библиотека пуста. Указатель на удалённый/скрытый шаблон
+// пропускается (как и в _resolveLeaseTemplate) — каскад идёт дальше.
+// Только чтение — для подписей «Currently: …» в пикерах и бейджах.
+function _leaseTplInheritedFor(f, b) {
+  if (f && f.defaultLeaseTemplateId && typeof _findLeaseTpl === 'function') {
+    const t = _findLeaseTpl(f.defaultLeaseTemplateId);
+    if (t) return { tpl: t, source: 'floor' };
+  }
+  if (b && b.defaultLeaseTemplateId && typeof _findLeaseTpl === 'function') {
+    const t = _findLeaseTpl(b.defaultLeaseTemplateId);
+    if (t) return { tpl: t, source: 'building' };
+  }
+  const wd = (typeof _getDefaultLeaseTpl === 'function') ? _getDefaultLeaseTpl() : null;
+  return { tpl: wd || null, source: 'default' };
+}
+
 // Обновить надпись «Current floor default: …» в Floor Actions popover.
 function _refreshFloorLeaseTplCurrent() {
   const node = document.getElementById('floorLeaseTplCurrent');
@@ -96927,9 +97152,15 @@ function _refreshFloorLeaseTplCurrent() {
       return;
     }
   }
-  const wd = (typeof _getDefaultLeaseTpl === 'function') ? _getDefaultLeaseTpl() : null;
-  node.innerHTML = 'Floor default: <em>inherited (workspace)</em><br>' +
-                   '<span style="color:var(--muted); font-size:10px;">→ ' + esc(wd?.name || '—') + '</span>';
+  // Без floor-override этаж наследует building default (если задан в Edit
+  // Building → Lease Template), иначе workspace default.
+  const cb = (typeof currentBuilding === 'function') ? currentBuilding() : null;
+  const inh = (typeof _leaseTplInheritedFor === 'function')
+    ? _leaseTplInheritedFor(null, cb)
+    : { tpl: (typeof _getDefaultLeaseTpl === 'function') ? _getDefaultLeaseTpl() : null, source: 'default' };
+  const inhLabel = inh.source === 'building' ? 'building' : 'workspace';
+  node.innerHTML = 'Floor default: <em>inherited (' + inhLabel + ')</em><br>' +
+                   '<span style="color:var(--muted); font-size:10px;">→ ' + esc(inh.tpl?.name || '—') + '</span>';
 }
 
 // Открыть picker для floor-default ИЛИ для bulk-apply.
@@ -97000,7 +97231,7 @@ function _renderFloorLeaseTplPickerBody(f, mode) {
       <div style="display:flex; align-items:center; gap:10px;">
         <span style="font-size:18px;">↺</span>
         <div>
-          <div style="font-weight:600; color:#111;">Inherit workspace default</div>
+          <div style="font-weight:600; color:#111;">Inherit building / workspace default</div>
           <div style="font-size:12px; color:#6b7280; margin-top:2px;">No floor-level override</div>
         </div>
         ${currentId ? '' : '<span style="margin-left:auto; color:#3b82f6; font-weight:600; font-size:13px;">✓ Active</span>'}
@@ -113908,10 +114139,23 @@ function _openLeaseDraftModal(bId, fId, uId, pId) {
   // Гарантируем что у проспекта есть p.leaseDraft (schema migration).
   const draft = _ldEnsureDraft(ctx.p);
 
-  // Если шаблон ещё не выбран — подставляем default из библиотеки.
-  // Оператор всё равно может сменить через дропдаун в форме слева.
+  // Если шаблон ещё не выбран — подставляем эффективный дефолт для этого
+  // сьюта: unit pick → floor default → building default → workspace default
+  // (тот же каскад, что и в _resolveLeaseTemplate при отправке). Раньше
+  // брался только workspace default. Оператор всё равно может сменить
+  // через дропдаун в форме слева.
   if (!draft.templateId) {
-    const defaultTpl = (typeof _getDefaultLeaseTpl === 'function') ? _getDefaultLeaseTpl() : null;
+    let defaultTpl = null;
+    try {
+      const _u = ctx.u;
+      if (_u && _u.leaseTemplateId && typeof _findLeaseTpl === 'function') defaultTpl = _findLeaseTpl(_u.leaseTemplateId);
+      if (!defaultTpl && typeof _leaseTplInheritedFor === 'function') {
+        const _b = (state.buildings || []).find(x => x.id === bId) || null;
+        const _f = _b ? ((_b.floors || []).find(x => x.id === fId) || null) : null;
+        defaultTpl = _leaseTplInheritedFor(_f, _b).tpl;
+      }
+    } catch (e) { defaultTpl = null; }
+    if (!defaultTpl && typeof _getDefaultLeaseTpl === 'function') defaultTpl = _getDefaultLeaseTpl();
     if (defaultTpl) draft.templateId = defaultTpl.id;
   }
 
@@ -119590,11 +119834,13 @@ const LEASE_TEMPLATE_DEFAULTS = {
 // (state.settings.leaseTemplates.lease + per-unit overrides). Теперь —
 // именованная библиотека: state.settings.leaseTemplateLibrary[]. Каждый
 // юнит может ссылаться на конкретный шаблон через u.leaseTemplateId,
-// этаж — через f.defaultLeaseTemplateId, workspace —
+// этаж — через f.defaultLeaseTemplateId, здание — через
+// b.defaultLeaseTemplateId (Edit Building → Lease Template), workspace —
 // state.settings.defaultLeaseTemplateId. Resolution order:
 //   unit.leaseTemplateOverrides.lease (legacy ad-hoc)  ← всё ещё работает
 //   → unit.leaseTemplateId
 //   → floor.defaultLeaseTemplateId
+//   → building.defaultLeaseTemplateId
 //   → state.settings.defaultLeaseTemplateId
 //   → built-in Kiwi Rentals (generator-type)
 // Шаг 1A не трогает UI и не меняет существующие пути отправки —
@@ -120350,6 +120596,9 @@ function _ldSubstituteMergeTokens(html, fields, recipientName, recipientEmail, o
 
 // Resolve which template should be used for a unit + kind:
 //   1. per-unit override   (u.leaseTemplateOverrides[kind])
+//   1b. kind='lease': library pointers — u.leaseTemplateId →
+//       floor.defaultLeaseTemplateId → building.defaultLeaseTemplateId
+//       (Шаги 2 / 3 / 3b ниже)
 //   2. workspace template  (state.settings.leaseTemplates[kind])
 //   3. for kind='lease' → fall back to the FULL Kiwi Rentals lease
 //      generated by _dsBuildInlineLeaseHtml(...) — that's the real
@@ -120420,6 +120669,34 @@ function _resolveLeaseTemplate(u, kind, opts) {
           }
         } catch (e) {
           console.warn('[lease-resolve] library-floor render failed:', e);
+        }
+      }
+    }
+  }
+  // Шаг 3b: building-level дефолт (b.defaultLeaseTemplateId — Edit Building
+  // → вкладка «Lease Template»). Между floor и workspace: этаж/юнит со своим
+  // выбором его перекрывают, здания без поля ведут себя как раньше.
+  // Указатель на удалённый шаблон → _findLeaseTpl=null → каскад продолжается.
+  if (kind === 'lease' && u && typeof _findBuildingByUnit === 'function') {
+    const bld = _findBuildingByUnit(u);
+    if (bld && bld.defaultLeaseTemplateId && typeof _findLeaseTpl === 'function') {
+      const libTpl = _findLeaseTpl(bld.defaultLeaseTemplateId);
+      if (libTpl) {
+        try {
+          const fields = opts.asRawTemplate
+            ? _placeholderLeaseFields()
+            : _liveLeaseFields(u || {}, opts.liveOverrides);
+          const recipientName  = opts.asRawTemplate ? '{{tenant_name}}'  : (u?.tenant || u?.company || '(Tenant)');
+          const recipientEmail = opts.asRawTemplate ? '{{tenant_email}}' : (u?.email || '');
+          const html = _renderLeaseTemplateById(libTpl.id, fields, recipientName, recipientEmail, !!opts.asRawTemplate);
+          if (html) {
+            return {
+              source: 'library-building',
+              tpl: { name: libTpl.name, html, _libraryId: libTpl.id, _libraryType: libTpl.type },
+            };
+          }
+        } catch (e) {
+          console.warn('[lease-resolve] library-building render failed:', e);
         }
       }
     }
@@ -121606,7 +121883,7 @@ function renderLeaseTemplatesList() {
       <div style="display:flex; align-items:center; justify-content:space-between; margin: 4px 2px 8px 2px;">
         <div>
           <div style="font-weight:600; font-size:13px; color:var(--text);">📚 Lease library (${lib.length})</div>
-          <div style="font-size:11px; color:var(--muted); margin-top:2px;">Multiple lease agreement variants. Workspace default is sent unless a unit / floor specifies its own.</div>
+          <div style="font-size:11px; color:var(--muted); margin-top:2px;">Multiple lease agreement variants. Workspace default is sent unless a unit / floor / building specifies its own (building: Edit Building → Lease Template).</div>
         </div>
         <div style="display:inline-flex; gap:6px;">
           <button type="button" class="int-btn" onclick="_openUploadTplModal()" title="Upload a lease template (.docx, .pdf, .txt, .html, or paste text). Uploaded templates are locked — only commercial fields can change.">📤 Upload template</button>
@@ -125462,6 +125739,20 @@ function _addLeaseDocRefreshBodyStatus() {
       badgeEl.style.color      = '#3D3BE8';
       badgeEl.style.border     = '1px solid #C4BCFA';
       textEl.textContent = 'applies to every suite (no override)';
+    } else if (source === 'library-floor') {
+      // Этажный дефолт (Floor actions → Set floor default lease template)
+      badgeEl.textContent = 'Floor default';
+      badgeEl.style.background = '#E8F4FD';
+      badgeEl.style.color      = '#0284C7';
+      badgeEl.style.border     = '1px solid #BAE0F7';
+      textEl.textContent = 'inherited from this floor’s default template';
+    } else if (source === 'library-building') {
+      // Дефолт здания (Edit Building → Lease Template)
+      badgeEl.textContent = 'Building default';
+      badgeEl.style.background = '#EEF0FE';
+      badgeEl.style.color      = '#4338CA';
+      badgeEl.style.border     = '1px solid #DFE2FC';
+      textEl.textContent = 'inherited from this building’s default template';
     } else {
       // generated (Kiwi Rentals built-in) or default stub
       badgeEl.textContent = 'Built-in default';
