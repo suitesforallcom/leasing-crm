@@ -1357,6 +1357,41 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   } catch (e) { say('bad', 'проверка QR упала: ' + e.message); bad++; }
 }
 
+/* ---- 7r. Депозит зеркалит аренду, пока его не тронули ----
+       Просьба оператора: вводишь аренду — депозит подставляется таким же,
+       но правится. Живой DOM: рендер шага условий + настоящие input-события. ---- */
+{
+  try {
+    S.lease = null; S.sheet = 'lease';
+    const ids0 = { buildingId: 'b1', floorId: 'f1', unitId: '302' };   // фикстура: свободный юнит без депозита
+    S.sheetPayload = ids0; S.sheetArg = ids0; S.payload = ids0;
+    // прогоняем мастер до шага условий через его собственное состояние
+    lease.render(ctx());                                  // step 1 — инициализация L
+    const L = S.lease;
+    if (!L) { say('bad', 'мастер лизы не создал состояние'); bad++; }
+    else {
+      L.step = 3; L.name = 'T'; L.email = 't@x.co'; L.unitId = '302'; L.buildingId = 'b1'; L.floorId = 'f1';
+      L.rent = ''; L.deposit = ''; L.depTouched = false;
+      document.getElementById('sheetBody').innerHTML = lease.render(ctx());
+      await new Promise(r => setTimeout(r, 60));           // биндеры на setTimeout(0)
+      const rentI = document.getElementById('lsRent'), depI = document.getElementById('lsDep');
+      if (!rentI || !depI) { say('bad', 'поля аренды/депозита не найдены на шаге условий'); bad++; }
+      else {
+        rentI.value = '1500'; rentI.dispatchEvent(new Event('input', { bubbles: true }));
+        const mirrored = depI.value === '1500' && String(L.deposit) === '1500';
+        depI.value = '750'; depI.dispatchEvent(new Event('input', { bubbles: true }));
+        rentI.value = '2000'; rentI.dispatchEvent(new Event('input', { bubbles: true }));
+        const held = depI.value === '750' && String(L.deposit) === '750' && L.depTouched === true;
+        if (!mirrored) { say('bad', 'депозит не зеркалит ввод аренды'); bad++; }
+        else if (!held) { say('bad', 'после ручной правки депозита зеркало не отключилось'); bad++; }
+        else say('ok', 'депозит зеркалит аренду и отпускается после ручной правки');
+      }
+      document.getElementById('sheetBody').innerHTML = '';
+      S.lease = null; S.sheet = null;
+    }
+  } catch (e) { say('bad', 'проверка зеркала депозита упала: ' + e.message); bad++; }
+}
+
 /* ---- 8. план на НАСТОЯЩЕЙ геометрии прода (tests/fixtures/plan-geometry.json)
        Синтетический этаж из одного квадрата ничего не доказывает: беда с
        подписями вылезает только на реальных узких и Г-образных формах. ---- */

@@ -468,7 +468,19 @@ function step3(ctx, L, hit) {
   const end = endOf(ctx, L);
   const tpl = resolveTpl(snap, u, hit.floor, hit.building);
   const t0 = termsOf(L, u);
-  const rent = t0.rent, dep = t0.deposit;
+  const rent = t0.rent;
+  // Предзаполнение депозита: если он нигде не задан (ни в черновике, ни на
+  // юните) и оператор его не трогал — показываем РАВНЫМ аренде (правило
+  // портфеля: депозит = месячная аренда). Вписанный ноль остаётся нулём
+  // (termsOf), ручная правка живёт своей жизнью (L.depTouched).
+  let dep = t0.deposit;
+  if (!L.depTouched && String(L.deposit ?? '') === '' && !(+u.deposit > 0) && +rent > 0) {
+    dep = rent;
+    // ВАЖНО: не только показать — записать в черновик, иначе на подпись ушло
+    // бы 0 (termsOf читает L.deposit). depTouched НЕ ставим: зеркало с арендой
+    // продолжает работать, пока оператор не поправит депозит сам.
+    L.deposit = String(rent);
+  }
   return (L.err ? errCard(L) : '')
     + '<div class="field"><label>Template</label><div class="picked"><span class="doc">' + I.doc + '</span>'
     + '<span class="mid"><span class="t">' + esc(tpl.name) + '</span><span class="s">' + esc(tpl.where)
@@ -567,6 +579,17 @@ function bindRecap(ctx, L, hit) {
       inp.dataset.recap = '1';
       inp.addEventListener('input', () => {
         L[key] = inp.value;
+        // Депозит ЗЕРКАЛИТ аренду, пока оператор не тронул его сам (просьба
+        // 2026-08-16: «вводишь стоимость аренды — депозит подставляется таким
+        // же, но чтобы можно было исправить»). У портфеля депозит = месячная
+        // аренда почти всегда (201: 3000/3000, 204: 4000/4000, 338: 350/350).
+        // Ручная правка депозита (ветка ниже) отключает зеркало навсегда для
+        // этого черновика — дальше он живёт своей жизнью.
+        if (key === 'rent' && !L.depTouched) {
+          const dep = document.getElementById('lsDep');
+          if (dep) { dep.value = inp.value; L.deposit = inp.value; }
+        }
+        if (key === 'deposit') L.depTouched = true;
         try { box.innerHTML = recapHtml(ctx, L, hit); }
         catch (e) { console.error('[m] recap failed:', e); }
       });
