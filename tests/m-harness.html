@@ -165,6 +165,46 @@ for (const [name, mod] of Object.entries(SHEETS)) {
 }
 S.sheet = null;
 
+/* ---- 1b. СТИЛЬ РАЗОБРАН ЦЕЛИКОМ, и классы самой оболочки на месте ----------
+   Слепое пятно, которое стоило сломанного таб-бара в проде: проверка ниже
+   смотрит только классы из РАЗМЕТКИ МОДУЛЕЙ, а .tabbar / .app / .sheet живут
+   в самом m.html. Осиротевший хвост правила (удалили строку селектора, а его
+   вторую строку — нет) заставляет парсер проглотить СЛЕДУЮЩЕЕ правило: файл
+   читается глазами как корректный, а правило исчезает. Ловим двумя способами:
+   считаем правила и требуем наличия каркасных классов. */
+{
+  const sheet = document.getElementById('appcss');
+  let parsed = [];
+  try { parsed = [...sheet.sheet.cssRules]; } catch (e) { parsed = []; }
+  const sels = parsed.map(r => r.selectorText || '@rule').join(' | ');
+  // Сколько ПРАВИЛ в исходнике: считаем строки, начинающиеся с селектора и
+  // содержащие «{». Точное совпадение не требуется — важно, что ничего не
+  // пропало целиком.
+  const SKELETON = ['.app', '.scroll', '.tabbar', '.tab', '.sheet', '.sheet-foot', '.gate', '.topbar'];
+  const missing = SKELETON.filter(c => !sels.includes(c + '{') && !sels.includes(c + ' ') && !sels.includes(c + ',')
+    && !new RegExp('\\' + c + '(?=[\\s,:\\[{]|$)').test(sels));
+  if (!parsed.length) { say('bad', 'стиль приложения вообще не разобрался'); bad++; }
+  else if (missing.length) { say('bad', `каркасные классы пропали из разобранного CSS: ${missing.join(', ')}`); bad++; }
+  else say('ok', `стиль разобран целиком (${parsed.length} правил), каркас на месте`);
+
+  // Осиротевший хвост: строка с объявлениями и закрывающей скобкой, но без
+  // селектора и не являющаяся продолжением правила из предыдущей строки.
+  const cssSrc = sheet.textContent.split('\n');
+  const orphans = [];
+  for (let i = 0; i < cssSrc.length; i++) {
+    const line = cssSrc[i].trim();
+    if (!line || line.startsWith('/*') || line.startsWith('*') || line.startsWith('@')) continue;
+    if (!line.endsWith('}') || line.includes('{')) continue;         // не «хвост» правила
+    const prev = (cssSrc[i - 1] || '').trim();
+    // Законный хвост — продолжение правила: предыдущая строка открыла блок и не закрыла.
+    const prevOpens = prev.includes('{') && !prev.endsWith('}');
+    const prevIsAlsoTail = prev && !prev.includes('{') && !prev.endsWith('}') && !prev.startsWith('/*');
+    if (!prevOpens && !prevIsAlsoTail) orphans.push(`${i + 1}: ${line.slice(0, 60)}`);
+  }
+  if (orphans.length) { say('bad', `осиротевшие хвосты CSS (парсер съест следующее правило): ${orphans.join(' · ')}`); bad++; }
+  else say('ok', 'осиротевших хвостов в CSS нет');
+}
+
 /* ---- 2. каждый использованный класс существует в CSS (ловит потерянные блоки) ---- */
 const cssText = [...document.styleSheets].flatMap(s => { try { return [...s.cssRules].map(r => r.cssText); } catch { return []; } }).join('\n');
 const used = new Set();
