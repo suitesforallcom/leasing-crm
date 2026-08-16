@@ -92,6 +92,10 @@ const snap = {
         // полигон + общая зона: обе ветки отрисовки должны работать
         u('446', { tenant: 'Poly Tenant', points: [[270,10],[390,10],[390,100],[330,100],[330,60],[270,60]] }),
         u('STAIR-4', { type: 'stairs', tenant: '', status: 'vacant', x: 140, y: 110, w: 60, h: 90 }),
+        // Нарочно маленькая: её подпись НЕ помещается читаемо в обычном виде и
+        // обязана появиться в увеличенном. Так проверяется, что зум реально
+        // меняет порог, а не просто растягивает картинку.
+        u('449', { tenant: '', status: 'vacant', tenantContact: '', email: '', tel: '', rent: 400, x: 214, y: 110, w: 26, h: 18 }),
       ] },
     ] },
     { id: 'b2', name: 'Second Building', address: '1 Main St', code: 'SEC', floors: [{ id: 'f1', name: '1', units: [u('100')] }] },
@@ -436,6 +440,74 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   if (!/No email on this unit/i.test(h)) { say('bad', 'юнит без почты не предупреждён на форме счёта'); bad++; }
   else say('ok', 'юнит без почты предупреждён прямо на форме');
   S.inv = null; S.sheet = null; S.sheetPayload = null; S.sheetArg = null; S.payload = null;
+}
+
+/* ---- 4i. напоминание, отмена договора, поиск по всем зданиям, типы на плане ---- */
+{
+  // напоминание доступно ТОЛЬКО когда есть живой счёт и он не оплачен
+  const withInv = Object.assign({}, snap, { invoicesAvailable: true });
+  S.tab = 'payments'; S.q = ''; S.filter = 'all'; S.limit = 0;
+  const ph = payments.render(ctx());
+  painted.push(ph);
+  if (!/data-act="remind"[^>]*data-inv="in_1U4mHY/.test(ph)) { say('bad', 'нет кнопки напоминания у неоплаченной строки'); bad++; }
+  else say('ok', 'у неоплаченной строки со счётом есть кнопка Remind');
+  // у строки без счёта кнопки быть не должно — напоминать не о чем
+  const remindCount = (ph.match(/data-act="remind"/g) || []).length;
+  const overdueCount = (ph.match(/data-s="overdue"/g) || []).length;
+  if (remindCount >= overdueCount) { say('bad', `кнопок напоминания ${remindCount} при ${overdueCount} просрочках — есть без счёта`); bad++; }
+  else say('ok', 'напоминание только там, где есть выставленный счёт');
+  // напоминание НИКОГДА не создаёт новый счёт
+  const src = await (await fetch('../m/ui/payments.js?v=' + Date.now())).text();
+  const remindBody = src.slice(src.indexOf('async function remind('), src.indexOf('/* ---------- поиск'));
+  if (/createStripeInvoice/.test(remindBody)) { say('bad', 'напоминание способно выставить НОВЫЙ счёт'); bad++; }
+  else say('ok', 'напоминание не может выставить новый счёт');
+
+  // поиск: нет в текущем здании → показываем найденное в остальных
+  S.q = 'Second'; S.searchAll = false;
+  const sh = payments.render(ctx());
+  painted.push(sh);
+  if (!/Found in other buildings/.test(sh)) { say('bad', 'поиск не предлагает найденное в других зданиях'); bad++; }
+  else say('ok', 'поиск сам показывает совпадения из других зданий');
+  S.q = '';
+
+  // карточка юнита: неподписанный договор виден и его можно отменить
+  const withEnv = JSON.parse(JSON.stringify(units[1]));
+  withEnv.leaseEnvelopes = [{ envelopeId: 'env_x', status: 'sent', recipientEmail: 'a@b.co', sentAt: '2026-08-10' }];
+  snap.buildings[0].floors[0].units[1] = withEnv;
+  snap.unitsIndex['b1|301'].unit = withEnv;
+  S.sheet = 'unit';
+  const uid = { buildingId: 'b1', floorId: 'f1', unitId: '301' };
+  S.sheetPayload = uid; S.sheetArg = uid; S.payload = uid;
+  const uh = unit.render(ctx());
+  painted.push(uh);
+  if (!/Lease awaiting signature/.test(uh)) { say('bad', 'неподписанный договор не показан в карточке'); bad++; }
+  else say('ok', 'неподписанный договор виден в карточке юнита');
+  if (!/data-act="voidenv"[^>]*data-env="env_x"/.test(uh)) { say('bad', 'нет кнопки отмены договора'); bad++; }
+  else say('ok', 'договор можно отменить с телефона');
+  // viewer отменять не может
+  const vh = unit.render(Object.assign(ctx(), { canSend: () => false }));
+  if (/data-act="voidenv"/.test(vh)) { say('bad', 'viewer видит кнопку отмены договора'); bad++; }
+  else say('ok', 'viewer не может отменить договор');
+  snap.buildings[0].floors[0].units[1] = units[1];
+  snap.unitsIndex['b1|301'].unit = units[1];
+  S.sheet = null; S.sheetPayload = null; S.sheetArg = null; S.payload = null;
+
+  // план: у общих зон подпись типа, у сдаваемых — номер
+  S.tab = 'plan'; S.planFloor = 'f4';
+  const plh = plan.render(ctx());
+  painted.push(plh);
+  if (!/STAIRS/.test(plh)) { say('bad', 'на плане нет подписи типа общей зоны'); bad++; }
+  else say('ok', 'общие зоны на плане подписаны типом (как на десктопе)');
+  // зум обязан ПОКАЗЫВАТЬ БОЛЬШЕ, иначе кнопка бессмысленна
+  const nFit = (plh.match(/<text/g) || []).length;
+  S.planZoom = true;
+  const plz = plan.render(ctx());
+  painted.push(plz);
+  const nZoom = (plz.match(/<text/g) || []).length;
+  if (nZoom <= nFit) { say('bad', `зум не добавил подписей (${nFit} → ${nZoom})`); bad++; }
+  else say('ok', `зум показывает больше подписей (${nFit} → ${nZoom})`);
+  S.planZoom = false;
+  S.tab = 'home'; S.planFloor = null;
 }
 
 /* ---- 5. каждое data-act действие кто-то обрабатывает (ловит тупики) ---- */

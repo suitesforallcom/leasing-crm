@@ -177,6 +177,41 @@ function provShort(v) {
   return SOURCE_TEXT[raw.toLowerCase()] || (raw.charAt(0).toUpperCase() + raw.slice(1));
 }
 
+/**
+ * Напоминание об уже выставленном счёте. НЕ создаёт новый счёт — повторяет
+ * письмо по существующему (stripeResendInvoice). Второй счёт за тот же месяц
+ * был бы реальным инцидентом, поэтому здесь нет ни одной ветки, которая может
+ * его выставить.
+ *
+ * Кнопка гасится сразу и навсегда для этого счёта в этой сессии: повторные
+ * нажатия шлют арендатору письмо за письмом, а обратной кнопки нет.
+ */
+async function remind(ctx, el) {
+  const id = el && el.getAttribute('data-inv');
+  if (!id) return;
+  const S = ctx.S || {};
+  S.reminded = S.reminded || {};
+  const key = 'inv:' + id;
+  if (S.reminded[key]) return;                       // уже напоминали — молча выходим
+  if (typeof ctx.callCF !== 'function') { ctx.toast('Not connected to the server yet'); return; }
+  S.reminded[key] = 'sending';
+  el.setAttribute('disabled', '');
+  el.textContent = 'Sending…';
+  try {
+    await ctx.callCF('stripeResendInvoice', { invoiceId: id }, { timeoutMs: 30000 });
+    S.reminded[key] = 'sent';
+    el.textContent = 'Reminded';
+    ctx.toast('Reminder emailed');
+  } catch (e) {
+    // Отказ — снимаем отметку: оператор должен иметь возможность повторить.
+    delete S.reminded[key];
+    el.removeAttribute('disabled');
+    el.textContent = 'Remind';
+    const msg = String((e && (e.message || e.code)) || 'failed');
+    ctx.toast(/permission|denied|editor/i.test(msg) ? 'Your role cannot send reminders' : 'Reminder failed — ' + msg);
+  }
+}
+
 /* ---------- поиск ---------- */
 /* Прощаем: регистр, ведущие нули в сьюте, форматирование телефона,
    компанию вместо человека, одну опечатку в слове от 4 букв. */
@@ -225,13 +260,39 @@ function answerRow(ctx, r, ym, showBuilding, fIdx) {
   const verdictTxt = (v && (v.detail || v.label)) || labelOf(ctx, st);
   /* Имена атрибутов — как в оболочке (app.js builtin: d.id / d.b / d.floor),
      чтобы клик отработал одинаково и через наш handle, и через встроенный. */
-  return '<button class="arow" data-act="unit" data-b="' + esc(r.b && r.b.id) + '"'
+  const row = '<button class="arow" data-act="unit" data-b="' + esc(r.b && r.b.id) + '"'
     + ' data-floor="' + esc(r.f && r.f.id) + '" data-id="' + esc(u.id) + '">'
     + '<span class="astat" data-s="' + esc(st) + '">' + (STATUS_ICON[st] || I.dash) + '</span>'
     + '<span class="amain"><span class="aname">' + esc(name) + '</span>'
     + '<span class="await">' + esc(sub) + '</span></span>'
     + '<span class="aright"><span class="aamt">' + m$(ctx, amt) + '</span>'
     + '<span class="averdict" data-s="' + esc(st) + '">' + esc(verdictTxt) + '</span></span></button>';
+
+  // Напоминание в одно касание — прямо в списке неоплаченных. Работает ТОЛЬКО
+  // когда есть живой счёт: напоминать не о чем, если счёт ещё не выставлен.
+  // Отправляем повтор существующего (stripeResendInvoice), а не новый счёт.
+  const live = liveUnpaidInvoice(ctx, u, ym);
+  if (!live || !isUnpaid(ctx, st)) return row;
+  const maySend = (typeof ctx.canSend !== 'function') || ctx.canSend();
+  if (!maySend) return row;
+  const sentKey = 'inv:' + live.id;
+  const done = ctx.S && ctx.S.reminded && ctx.S.reminded[sentKey];
+  return '<div class="arow-wrap">' + row
+    + '<button class="arow-act" data-act="remind" data-inv="' + esc(live.id) + '"'
+    + ' data-u="' + esc(u.id) + '"' + (done ? ' disabled' : '')
+    + ' aria-label="' + esc('Remind ' + name + ' about invoice ' + (live.number || live.id)) + '">'
+    + (done ? 'Reminded' : 'Remind') + '</button></div>';
+}
+
+/** Живой (не оплаченный, не убитый) счёт за месяц — то, о чём можно напомнить. */
+function liveUnpaidInvoice(ctx, u, ym) {
+  try {
+    const head = ctx.money.leaseHead ? ctx.money.leaseHead(u, ctx.snap) : u;
+    const r = ctx.money.liveInvoiceFor ? ctx.money.liveInvoiceFor(head, 'rent', ym, ctx.snap) : null;
+    if (!r) return null;
+    const b = r.bucket || r.status;
+    return (b === 'paid') ? null : r;
+  } catch (e) { return null; }
 }
 
 /* ---------- здание целиком ---------- */
@@ -359,9 +420,27 @@ export function render(ctx) {
         h += '<button class="more-link" data-act="showmore">Show more (' + (hits.length - page.length) + ')</button>';
       }
     } else {
+      // Пусто в текущем здании — НЕ тупик: ищем в остальных сами и показываем
+      // найденное здесь же. Прежде оператор упирался в «никто не подходит» и
+      // должен был догадаться нажать «искать везде».
+      const elsewhere = [];
+      if (b && !searchAll) {
+        for (const r of collect(blds)) {
+          if (r.b === b) continue;
+          const sc = matchScore(r, q, qd, toks);
+          if (sc) { r._sc = sc; elsewhere.push(r); }
+        }
+        elsewhere.sort((a, c) => c._sc - a._sc);
+      }
       h += '<div class="empty">Nobody matches “' + esc(S.q) + '”'
-        + (b && !searchAll ? ' in ' + esc(scopeName) : '') + '.</div>'
-        + (b && !searchAll ? '<button class="more-link" data-act="searchall">Search all buildings too</button>' : '');
+        + (b && !searchAll ? ' in ' + esc(scopeName) : '') + '.</div>';
+      if (elsewhere.length) {
+        h += '<div class="card-h" style="padding-top:6px"><h3>Found in other buildings</h3>'
+          + '<span class="ch-sub">' + elsewhere.length + '</span></div>'
+          + elsewhere.slice(0, PAGE).map(r => answerRow(ctx, r, ym, true, -1)).join('');
+      }
+      h += (b && !searchAll && !elsewhere.length
+        ? '<button class="more-link" data-act="searchall">Search all buildings too</button>' : '');
     }
     h += '</div><div style="height:10px"></div>';
     return h;
@@ -436,6 +515,7 @@ export function render(ctx) {
    удалённый listener подменяет здание целиком. */
 export function handle(act, el, ctx) {
   const S = ctx.S || {};
+  if (act === 'remind') { remind(ctx, el); return true; }
   if (act === 'unit') {
     ctx.openSheet('unit', {
       buildingId: el.getAttribute('data-b') || null,

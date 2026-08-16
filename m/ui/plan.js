@@ -37,6 +37,26 @@ function todayYm() {
 }
 const isRentable = (u) => !!u && !u.archivedAt && u.rentable !== false && (!u.type || u.type === 'office');
 
+/* Словарь типов 1:1 с десктопом (TYPE_LABELS, MONO:27027). Там все общие зоны
+   залиты ОДНИМ серым (COMMON_GREY #EBE8E2), а различаются подписью внутри
+   фигуры — повторяем это, а не выдумываем свою палитру типов.
+   Свои типы воркспейса (settings.customUnitTypes) подхватываем из настроек. */
+const TYPE_LABELS = {
+  kitchen: 'Kitchen', storage: 'Storage', toilet: 'Restroom', conf: 'Conference',
+  mechanical: 'Mechanical', stairs: 'Stairs', elevator: 'Elevator', atrium: 'Atrium',
+  hallway: 'Hallway', restroom: 'Restroom', conference: 'Conference',
+};
+function typeLabel(u, snap) {
+  const k = String((u && u.type) || '').trim();
+  if (!k || k === 'office') return '';
+  const custom = (snap && snap.settings && snap.settings.customUnitTypes) || [];
+  if (Array.isArray(custom)) {
+    const hit = custom.find(t => t && t.key === k && t.label);
+    if (hit) return String(hit.label);
+  }
+  return TYPE_LABELS[k] || (k.charAt(0).toUpperCase() + k.slice(1).replace(/_/g, ' '));
+}
+
 function stOf(ctx, u, ym) {
   try {
     const s = ctx.money.uiStatus(u, ym, ctx.snap);
@@ -90,7 +110,7 @@ function currentFloor(ctx, b) {
 }
 
 /* ---------- сам план ---------- */
-function planSvg(ctx, b, f, ym) {
+function planSvg(ctx, b, f, ym, zoom) {
   const units = Array.isArray(f && f.units) ? f.units : [];
   const outline = f && f.outline ? shapeOf(f.outline) : null;
 
@@ -111,9 +131,12 @@ function planSvg(ctx, b, f, ym) {
   const vx = bb.x0 - pad, vy = bb.y0 - pad;
   const vw = (bb.x1 - bb.x0) + pad * 2, vh = (bb.y1 - bb.y0) + pad * 2;
 
-  // Порог читаемости считаем В ЭКРАННЫХ пикселях: план ужимается по ширине
-  // до ~360px, поэтому единицы viewBox сами по себе ничего не говорят.
-  const scale = 360 / vw;
+  // Порог читаемости считаем В ЭКРАННЫХ пикселях: план ужимается по ширине,
+  // поэтому единицы viewBox сами по себе ничего не говорят. В увеличенном виде
+  // SVG шире (см. .plan-wrap.zoom .plan-svg), и подписей должно стать БОЛЬШЕ —
+  // иначе кнопка «Zoom in» не даёт того, ради чего её жмут.
+  const renderPx = zoom ? 360 * 2.2 : 360;
+  const scale = renderPx / vw;
   const MIN_PX = 7;
 
   let body = '';
@@ -146,16 +169,19 @@ function planSvg(ctx, b, f, ym) {
       ? '<rect x="' + s.x + '" y="' + s.y + '" width="' + s.w + '" height="' + s.h + '" rx="' + (vw / 900) + '"' + attrs + '/>'
       : '<polygon points="' + s.pts.map(p => p[0] + ',' + p[1]).join(' ') + '"' + attrs + '/>';
 
-    if (!rentable) continue;
     const [cx, cy] = centerOf(s);
     const [w, h] = sizeOf(s);
-    const txt = String(u.id);
+    // Сдаваемому — номер сьюта, общей зоне — тип, как на десктопе.
+    const txt = rentable ? String(u.id) : typeLabel(u, ctx.snap).toUpperCase();
+    if (!txt) continue;
     // Кегль подбираем так, чтобы номер ПОМЕЩАЛСЯ: по высоте — доля фигуры,
     // по ширине — исходя из ширины моноширинного знака (~0.62 кегля).
-    const fs = Math.min(h * 0.38, w / (txt.length * 0.72));
+    const fs = Math.min(h * (rentable ? 0.38 : 0.24), w / (txt.length * (rentable ? 0.72 : 0.66)));
     if (fs * scale < MIN_PX) continue;                 // не влезает читаемо — не рисуем
     labels.push('<text x="' + cx + '" y="' + (cy + fs * 0.35) + '" text-anchor="middle"'
-      + ' font-size="' + fs + '" font-weight="700" fill="var(--plan-ink)"'
+      + ' font-size="' + fs + '" font-weight="' + (rentable ? 700 : 600) + '"'
+      + ' fill="var(--plan-' + (rentable ? 'ink' : 'ink-soft') + ')"'
+      + (rentable ? '' : ' letter-spacing="' + (fs * 0.06) + '"')
       + ' pointer-events="none" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">'
       + esc(txt) + '</text>');
   }
@@ -189,7 +215,7 @@ export function render(ctx) {
   if (!f) return h + '<div class="empty">This building has no floors yet.</div>';
 
   const big = !!S.planZoom;
-  h += '<div class="plan-wrap' + (big ? ' zoom' : '') + '" id="planWrap">' + planSvg(ctx, b, f, ym) + '</div>';
+  h += '<div class="plan-wrap' + (big ? ' zoom' : '') + '" id="planWrap">' + planSvg(ctx, b, f, ym, big) + '</div>';
   h += '<div class="chips" style="padding-top:2px">'
     + '<button class="fchip" data-act="planzoom" aria-pressed="' + big + '">'
     + (big ? I.zoomOut + ' Fit to screen' : I.zoom + ' Zoom in') + '</button>'

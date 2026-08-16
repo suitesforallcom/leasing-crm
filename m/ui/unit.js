@@ -265,6 +265,7 @@ export function render(ctx) {
      оператор прочитает сумму как цену одного сьюта и назовёт арендатору не то
      число. Ту же оговорку делает лист счёта. --- */
   h += groupNote(ctx, u);
+  h += pendingLeases(ctx, u);
 
   /* --- факты --- */
   const balance = isSettled(st) ? 0 : amount;
@@ -369,6 +370,31 @@ function orgName(ctx) {
   return String(st.companyName || st.landlordName || 'SuitesForAll').trim() || 'SuitesForAll';
 }
 
+/**
+ * Неподписанные конверты договора на этом юните — и кнопка отмены.
+ * Показываем только живые: completed/voided/declined отменять нечего.
+ * До этого висящий договор можно было отменить только с компьютера.
+ */
+function pendingLeases(ctx, u) {
+  const list = Array.isArray(u && u.leaseEnvelopes) ? u.leaseEnvelopes : [];
+  const dead = { completed: 1, voided: 1, declined: 1 };
+  const open = list.filter(e => e && e.envelopeId && !dead[String(e.status || '').toLowerCase()]);
+  if (!open.length) return '';
+  const maySend = (typeof ctx.canSend !== 'function') || ctx.canSend();
+  return open.map((e) => {
+    const who = e.recipientEmail || e.recipientName || 'the tenant';
+    const when = e.sentAt ? dLong(ctx, String(e.sentAt).slice(0, 10)) : '';
+    return '<div class="arow-wrap"><span class="arow" style="cursor:default">'
+      + '<span class="astat" data-s="invoiced">' + I.doc + '</span>'
+      + '<span class="amain"><span class="aname">Lease awaiting signature</span>'
+      + '<span class="await">' + esc([who, String(e.status || 'sent'), when].filter(Boolean).join(' · ')) + '</span></span></span>'
+      + (maySend
+        ? '<button class="arow-act" data-act="voidenv" data-env="' + esc(e.envelopeId) + '"'
+          + ' data-who="' + esc(who) + '">Cancel</button>'
+        : '') + '</div>';
+  }).join('');
+}
+
 /** Строка «одна лиза на N сьютов» — только когда сьютов действительно больше одного. */
 function groupNote(ctx, u) {
   let g = [];
@@ -382,6 +408,57 @@ function groupNote(ctx, u) {
   return '<div class="hintline" style="margin:-8px 0 12px;color:var(--ink-2)">'
     + 'One lease covers ' + ids.length + ' suites (' + esc(shown) + ') — the amount above is for the whole lease, '
     + 'not this suite alone.' + esc(billed) + '</div>';
+}
+
+/**
+ * Напоминание об уже выставленном счёте (stripeResendInvoice). Ни одна ветка
+ * здесь не может выставить НОВЫЙ счёт — это принципиально.
+ */
+async function remindNow(ctx, el) {
+  const id = el && el.getAttribute('data-inv');
+  if (!id) { ctx.toast('No open invoice to remind about'); return; }
+  if (typeof ctx.callCF !== 'function') { ctx.toast('Not connected to the server yet'); return; }
+  const S = ctx.S || {};
+  S.reminded = S.reminded || {};
+  if (S.reminded['inv:' + id]) { ctx.toast('Already reminded in this session'); return; }
+  el.setAttribute('disabled', ''); el.textContent = 'Sending…';
+  try {
+    await ctx.callCF('stripeResendInvoice', { invoiceId: id }, { timeoutMs: 30000 });
+    S.reminded['inv:' + id] = 'sent';
+    ctx.toast('Reminder emailed');
+  } catch (e) {
+    const m = String((e && (e.message || e.code)) || 'failed');
+    ctx.toast(/permission|denied|editor/i.test(m) ? 'Your role cannot send reminders' : 'Reminder failed — ' + m);
+  }
+  el.removeAttribute('disabled');
+  if (typeof ctx.refresh === 'function') { try { ctx.refresh(); } catch (_) { /* сеть */ } }
+}
+
+/**
+ * Отмена неподписанного конверта DocuSign (dsVoid).
+ * Действие необратимое и видимое арендатору (DocuSign шлёт письмо об отзыве),
+ * поэтому спрашиваем подтверждение с НАЗВАНИЕМ адресата — «вы уверены?» без
+ * имени слишком легко подтвердить не глядя.
+ */
+async function voidEnvelope(ctx, el) {
+  const id = el && el.getAttribute('data-env');
+  const who = (el && el.getAttribute('data-who')) || 'the tenant';
+  if (!id) return;
+  if (typeof ctx.callCF !== 'function') { ctx.toast('Not connected to the server yet'); return; }
+  const ok = confirm('Cancel the lease sent to ' + who + '?\n\nDocuSign will tell them it was withdrawn, '
+    + 'and the link will stop working. This cannot be undone.');
+  if (!ok) return;
+  el.setAttribute('disabled', ''); el.textContent = 'Cancelling…';
+  try {
+    await ctx.callCF('dsVoid', { envelopeId: id, reason: 'Cancelled from the phone by the operator' }, { timeoutMs: 30000 });
+    ctx.toast('Lease cancelled');
+  } catch (e) {
+    const m = String((e && (e.message || e.code)) || 'failed');
+    ctx.toast(/permission|denied/i.test(m) ? 'Your role cannot cancel leases' : 'Could not cancel — ' + m);
+    el.removeAttribute('disabled'); el.textContent = 'Cancel';
+    return;
+  }
+  if (typeof ctx.refresh === 'function') { try { ctx.refresh(); } catch (_) { /* сеть */ } }
 }
 
 export function handle(act, el, ctx) {
@@ -398,11 +475,13 @@ export function handle(act, el, ctx) {
     return true;
   }
   if (act === 'remind') {
-    if (!ids) return true;
-    /* Не новый счёт: режим напоминания по уже существующему. */
-    ctx.openSheet('invoice', Object.assign({ mode: 'remind', invoiceId: el.getAttribute('data-inv') || null }, ids));
+    // Повтор существующего счёта, НЕ новый. Прежде эта кнопка открывала лист
+    // счёта с mode:'remind', которого в листе никогда не было — то есть вела
+    // к форме нового счёта. Второй счёт за тот же месяц — реальный инцидент.
+    remindNow(ctx, el);
     return true;
   }
+  if (act === 'voidenv') { voidEnvelope(ctx, el); return true; }
   if (act === 'startlease') {
     if (!ids) return true;
     ctx.openSheet('lease', ids);
