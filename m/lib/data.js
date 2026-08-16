@@ -281,6 +281,28 @@ async function bootstrapMember(user) {
     return { rejected: true, reason: (e && e.code) || 'read-failed', email, message: 'Could not verify your access (' + ((e && e.code) || (e && e.message) || 'error') + '). Try again, or ask an admin to check your membership.' };
   }
 }
+/* ── Фото документов арендатора ── Storage-SDK грузится ЛЕНИВО при первой
+   загрузке (бут не тяжелеет). Путь и форма записи 1:1 с десктопным
+   uploadDocumentAsIs → tenantDocs, чтобы панель Files видела оба источника. */
+let _stSdk = null;
+async function _storage() {
+  if (_stSdk) return _stSdk;
+  const st = await import(`${FB_CDN}/${FB_SDK_VERSION}/firebase-storage.js`);
+  _stSdk = { getStorage: st.getStorage, ref: st.ref, uploadBytes: st.uploadBytes, getDownloadURL: st.getDownloadURL };
+  return _stSdk;
+}
+export async function uploadTenantDoc(blob, fileName) {
+  if (!S.app || !S.user) throw new Error('Not signed in');
+  const safe = String(fileName || 'doc.jpg').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 80);
+  const storagePath = 'workspaces/' + WORKSPACE_ID + '/tenantDocs/' + Date.now().toString(36) + '-' + safe;
+  const st = await _storage();
+  const r = st.ref(st.getStorage(S.app), storagePath);
+  await st.uploadBytes(r, blob, { contentType: blob.type || 'image/jpeg' });
+  const url = await st.getDownloadURL(r);
+  return { url, storagePath, fileName: safe, mime: blob.type || 'image/jpeg', size: blob.size,
+           addedAt: Date.now(), addedBy: (S.user && S.user.email) || null };
+}
+
 export async function signOut() {
   try { localStorage.setItem('sfa_signout_at', String(Date.now())); } catch {}   // MONO:58903 — кросс-табный сигнал
   try { localStorage.removeItem(cacheKey()); } catch {}

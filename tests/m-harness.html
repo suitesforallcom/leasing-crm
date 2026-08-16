@@ -1392,6 +1392,54 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   } catch (e) { say('bad', 'проверка зеркала депозита упала: ' + e.message); bad++; }
 }
 
+/* ---- 7s. Фото прав: автообрезка находит карту, слоты в мастере, payload ----
+       Детектор — чистая функция, гоняем на СИНТЕТИЧЕСКОЙ карте: тёмный фон
+       с шумом + светлая «карточка» с полосками в известном месте. ---- */
+{
+  try {
+    const V7s = '?v=' + Date.now();
+    const idp = await import('../m/lib/idphoto.js' + V7s);
+    const cw = 360, ch = 270;
+    const cnv = document.createElement('canvas'); cnv.width = cw; cnv.height = ch;
+    const g = cnv.getContext('2d', { willReadFrequently: true });
+    g.fillStyle = '#2A2A2E'; g.fillRect(0, 0, cw, ch);                 // тёмный стол
+    for (let i = 0; i < 500; i++) {                                     // лёгкий шум фона
+      g.fillStyle = 'rgba(255,255,255,0.03)';
+      g.fillRect(Math.random() * cw, Math.random() * ch, 2, 2);
+    }
+    const card = { x: 70, y: 60, w: 220, h: 139 };                      // карта ~1.58
+    g.fillStyle = '#E8E4DA'; g.fillRect(card.x, card.y, card.w, card.h);
+    g.fillStyle = '#5B6470';                                            // «строки» на карте
+    for (let i = 0; i < 5; i++) g.fillRect(card.x + 14, card.y + 18 + i * 22, card.w - 60, 8);
+    g.fillStyle = '#8A93A5'; g.fillRect(card.x + 14, card.y + 14, 52, 62); // «фото»
+    const img = g.getImageData(0, 0, cw, ch);
+    const box = idp.detectCardBox(img.data, cw, ch);
+    const ix = Math.max(box.x, card.x), iy = Math.max(box.y, card.y);
+    const ax = Math.min(box.x + box.w, card.x + card.w), ay = Math.min(box.y + box.h, card.y + card.h);
+    const inter = Math.max(0, ax - ix) * Math.max(0, ay - iy);
+    const iou = inter / (box.w * box.h + card.w * card.h - inter);
+    if (iou < 0.6) { say('bad', `детектор не нашёл карту: IoU ${iou.toFixed(2)} (бокс ${JSON.stringify(box)})`); bad++; }
+    else say('ok', `автообрезка находит карту (IoU ${iou.toFixed(2)}, conf ${box.confidence.toFixed(2)})`);
+    const snapped = idp.snapToCardAspect(box, cw, ch);
+    const ar = snapped.w / snapped.h;
+    if (Math.abs(ar - idp.CARD_ASPECT) > 0.03 && snapped.w < cw) { say('bad', `прижим к формату карты дал ${ar.toFixed(2)}`); bad++; }
+    else say('ok', 'кроп прижат к формату ID-карты (1.586)');
+
+    // слоты в мастере (шаг «кто подписывает», новая тенанси)
+    S.lease = null; S.sheet = 'lease';
+    S.sheetPayload = null; S.sheetArg = null; S.payload = null;
+    lease.render(ctx());
+    const L7 = S.lease; L7.step = 2; L7.who = 'new';
+    L7.unitId = '302'; L7.buildingId = 'b1'; L7.floorId = 'f1';   // свободный юнит фикстуры — иначе render сбросит на шаг 1
+    const r2 = lease.render(ctx());
+    const slots = (r2.match(/data-dl="(front|back)"/g) || []).length;
+    if (slots !== 2) { say('bad', `слотов фото прав: ${slots}, ожидалось 2`); bad++; }
+    else if (!/capture="environment"/.test(r2)) { say('bad', 'input без capture — камера не откроется сразу'); bad++; }
+    else say('ok', 'два слота фото прав с камерой на шаге «кто подписывает»');
+    S.lease = null; S.sheet = null;
+  } catch (e) { say('bad', 'проверка фото прав упала: ' + e.message); bad++; }
+}
+
 /* ---- 8. план на НАСТОЯЩЕЙ геометрии прода (tests/fixtures/plan-geometry.json)
        Синтетический этаж из одного квадрата ничего не доказывает: беда с
        подписями вылезает только на реальных узких и Г-образных формах. ---- */

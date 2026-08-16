@@ -10107,12 +10107,37 @@ function _dsSanitizeTenancy(t) {
   if (leaseStart && leaseEnd && leaseEnd < leaseStart) {
     throw new HttpsError('invalid-argument', 'tenancy.leaseEnd is before leaseStart');
   }
+  // Фото документов (права с телефона): ТОЛЬКО ссылки на наш Storage.
+  // Путь обязан лежать в workspaces/<ws>/tenantDocs/ — чужой путь/URL отсекается.
+  const docs = [];
+  if (Array.isArray(t.tenantDocs)) {
+    if (t.tenantDocs.length > 4) throw new HttpsError('invalid-argument', 'too many tenantDocs');
+    for (const d of t.tenantDocs) {
+      if (!d || typeof d !== 'object') continue;
+      const storagePath = str(d.storagePath, 220, 'tenantDocs.storagePath');
+      const url = str(d.url, 600, 'tenantDocs.url');
+      if (!/^workspaces\/[A-Za-z0-9_-]+\/tenantDocs\/[A-Za-z0-9._-]+$/.test(storagePath)) {
+        throw new HttpsError('invalid-argument', 'tenantDocs.storagePath is outside tenantDocs/');
+      }
+      if (!/^https:\/\/firebasestorage\.googleapis\.com\//.test(url)) {
+        throw new HttpsError('invalid-argument', 'tenantDocs.url is not Firebase Storage');
+      }
+      const kind = str(d.kind, 20, 'tenantDocs.kind');
+      if (!['dl-front', 'dl-back', 'doc'].includes(kind)) throw new HttpsError('invalid-argument', 'tenantDocs.kind');
+      const size = +d.size || 0;
+      if (size < 0 || size > 25 * 1024 * 1024) throw new HttpsError('invalid-argument', 'tenantDocs.size');
+      docs.push({ kind, url, storagePath, fileName: str(d.fileName, 90, 'tenantDocs.fileName'),
+        mime: str(d.mime, 60, 'tenantDocs.mime') || 'image/jpeg', size, addedAt: Date.now() });
+    }
+  }
+  // (docs собраны выше)
   return {
     tenant, company, email,
     tel: str(t.tel, 40, 'tel'),
     leaseStart, leaseEnd,
     contractRent: money(t.contractRent, 'contractRent'),
     deposit: money(t.deposit, 'deposit'),
+    tenantDocs: docs,
   };
 }
 
@@ -10238,6 +10263,14 @@ exports.dsSendEnvelope = onCall(
           // u.rent, которую менять нельзя: это запрашиваемая цена юнита).
           if (safeTenancy.contractRent > 0) u.contractRent = safeTenancy.contractRent;
           if (safeTenancy.deposit > 0) u.deposit = safeTenancy.deposit;
+          // Фото документов (права с телефона) — к юниту, в тот же массив,
+          // который читает панель Files десктопа и скрепка у имени.
+          if (Array.isArray(safeTenancy.tenantDocs) && safeTenancy.tenantDocs.length) {
+            u.tenantDocs = (Array.isArray(u.tenantDocs) ? u.tenantDocs : [])
+              .concat(safeTenancy.tenantDocs.map((d) => Object.assign({}, d, {
+                addedBy: (caller && caller.email) || null,
+              })));
+          }
           // Пересчёт производной ставки $/ft²/yr (аудит 2026-08-16): запись
           // contractRent без пересчёта оставляла stale rate (формула — как в
           // монолите :75747: monthly*12/sqft, contract бьёт proforma u.rent).

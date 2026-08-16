@@ -435,6 +435,7 @@ function step2(ctx, L) {
     // Биндер ДО return — иначе он недостижим (первая версия правки именно так
     // и не работала: кнопка по-прежнему не загоралась по вводу).
     bindFootFields(ctx, L, [['name', 'lsName'], ['email', 'lsEmail'], ['phone', 'lsPhone'], ['company', 'lsCompany']]);
+    bindDlSlots(ctx, L);
     return h
       + '<div class="field"><label>Full name</label><input class="val" id="lsName" placeholder="Elliot Reyes"'
       + ' autocomplete="off" value="' + esc(L.name) + '"></div>'
@@ -445,7 +446,8 @@ function step2(ctx, L) {
       + ' placeholder="(727) 555-0134" autocomplete="off" value="' + esc(L.phone) + '">'
       + '<div class="hintline">Printed on the lease. Saved to the unit in the full version.</div></div>'
       + '<div class="field"><label>Company <span style="text-transform:none;letter-spacing:0">(optional)</span></label>'
-      + '<input class="val" id="lsCompany" placeholder="Reyes Design" autocomplete="off" value="' + esc(L.company) + '"></div>';
+      + '<input class="val" id="lsCompany" placeholder="Reyes Design" autocomplete="off" value="' + esc(L.company) + '"></div>'
+      + dlBlock(L);
   }
   const seen = new Set();
   const people = (snap.units || []).filter((e) => {
@@ -548,6 +550,64 @@ function keepQueryVisible(inp) {
  * оставался серым, пока он не переключит вкладку и не вернётся (тогда
  * срабатывал readForm). Слушаем ввод и просим оболочку перерисовать подвал.
  */
+/* Права водительские — две стороны, с телефона. Снимок обрезается и
+   выравнивается сам (m/lib/idphoto.js, чистый canvas), грузится в Storage
+   сразу; в договор уходят только ссылки. Слот можно переснять или убрать. */
+function dlBlock(L) {
+  const dl = L.dl || (L.dl = {});
+  const slot = (side, label) => {
+    const d = dl[side];
+    if (dl[side + 'Busy']) {
+      return '<div class="picked"><span class="doc">' + I.doc + '</span><span class="mid">'
+        + '<span class="t">' + label + '</span><span class="s">Processing the photo…</span></span></div>';
+    }
+    if (d && d.url) {
+      return '<div class="picked"><img src="' + esc(d.thumb || '') + '" alt="" style="width:56px;height:36px;'
+        + 'object-fit:cover;border-radius:6px;border:1px solid var(--line)">'
+        + '<span class="mid"><span class="t">' + label + ' ✓</span><span class="s">'
+        + (d.detected === false ? 'Cropped to full frame — check it looks right' : 'Auto-cropped') + ' · '
+        + Math.max(1, Math.round((d.size || 0) / 1024)) + ' KB</span></span>'
+        + '<button class="chg" data-act="lease:dlretake" data-side="' + side + '">Retake</button></div>';
+    }
+    return '<label class="picked" style="cursor:pointer"><span class="doc">' + I.doc + '</span>'
+      + '<span class="mid"><span class="t">' + label + '</span>'
+      + '<span class="s">Take a photo — it is cropped automatically</span></span>'
+      + '<input type="file" accept="image/*" capture="environment" data-dl="' + side + '"'
+      + ' style="position:absolute;width:1px;height:1px;opacity:0"></label>';
+  };
+  return '<div class="field"><label>Driver\u2019s license <span style="text-transform:none;letter-spacing:0">'
+    + '(optional)</span></label>' + slot('front', 'Front side') + slot('back', 'Back side')
+    + (dl.err ? '<div class="hintline" style="color:var(--bad)">' + esc(dl.err) + '</div>' : '') + '</div>';
+}
+function bindDlSlots(ctx, L) {
+  setTimeout(() => {
+    for (const inp of document.querySelectorAll('input[data-dl]')) {
+      if (inp.dataset.bound) continue;
+      inp.dataset.bound = '1';
+      inp.addEventListener('change', async () => {
+        const side = inp.getAttribute('data-dl');
+        const file = inp.files && inp.files[0];
+        if (!file) return;
+        const dl = L.dl || (L.dl = {});
+        dl[side + 'Busy'] = true; dl.err = null;
+        if (typeof ctx.refresh === 'function') ctx.refresh();
+        try {
+          const p = await ctx.idphoto.processIdPhoto(file);
+          const up = await ctx.uploadDoc(p.blob, 'dl-' + side + '.jpg');
+          dl[side] = { kind: 'dl-' + side, url: up.url, storagePath: up.storagePath,
+            fileName: up.fileName, mime: up.mime, size: up.size,
+            thumb: p.thumb, detected: p.detected };
+        } catch (e) {
+          console.error('[m] dl photo failed:', e);
+          dl.err = 'Could not process the photo — try again with the card on a dark table.';
+        }
+        dl[side + 'Busy'] = false;
+        if (typeof ctx.refresh === 'function') ctx.refresh();
+      });
+    }
+  }, 0);
+}
+
 function bindFootFields(ctx, L, fields) {
   setTimeout(() => {
     for (const [key, id] of fields) {
@@ -759,6 +819,11 @@ export function handle(act, el, ctx) {
   const S = ctx.S || {}, L = st(ctx);
   readForm(L);                                     // введённое сохраняем ДО любой перерисовки
   if (act === 'lease:close') { S.lease = null; ctx.closeSheet(); return true; }
+  if (act === 'lease:dlretake') {
+    const side = el.getAttribute('data-side');
+    if (L.dl) { delete L.dl[side]; L.dl.err = null; }
+    return true;
+  }
   if (act === 'lease:invoice') {
     // Юнит только что стал занятым — лист счёта откроется уже с арендатором,
     // нужным назначением и суммой из условий договора.
@@ -890,6 +955,11 @@ async function send(ctx, L) {
         tenant: name, company: L.company || '', email, tel: L.phone || '',
         leaseStart: L.start || '', leaseEnd: end || '',
         contractRent: rent, deposit: terms.deposit,
+        // Фото прав уже в Storage — в аренду уходят только ссылки; сервер
+        // валидирует пути и кладёт в u.tenantDocs (панель Files на десктопе).
+        tenantDocs: [L.dl && L.dl.front, L.dl && L.dl.back].filter(Boolean)
+          .map((d) => ({ kind: d.kind, url: d.url, storagePath: d.storagePath,
+            fileName: d.fileName, mime: d.mime, size: d.size })),
       },
     }, { timeoutMs: 30000 });
     const r = (res && res.envelopeId === undefined && res.data) ? res.data : (res || {});

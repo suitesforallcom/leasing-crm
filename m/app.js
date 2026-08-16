@@ -13,9 +13,10 @@
    деплой гарантированно доезжает. */
 const _V = (() => { try { return new URL(import.meta.url).searchParams.get('v') || ''; } catch (e) { return ''; } })();
 const _q = _V ? ('?v=' + _V) : '';
-const [data, money, fmt, home, payments, unit, lease, invoice, switcher, plan] = await Promise.all([
+const [data, money, fmt, home, payments, unit, lease, invoice, switcher, plan, idphoto] = await Promise.all([
   './lib/data.js', './lib/money.js', './lib/format.js', './ui/home.js', './ui/payments.js',
   './ui/unit.js', './ui/lease.js', './ui/invoice.js', './ui/switcher.js', './ui/plan.js',
+  './lib/idphoto.js',
 ].map((m) => import(m + _q)));
 const { initApp, subscribe, getSnapshot, refresh, callCF } = data;
 
@@ -122,6 +123,7 @@ function ctx(){
     S, snap, money, fmt, callCF,
     building: curBld(),
     go, openSheet, closeSheet, toast,
+    idphoto, uploadDoc: data.uploadTenantDoc,
     setScope,                       // менять здание можно ТОЛЬКО так (один владелец состояния)
     canSend,                        // право отправлять деньги/договоры — одна проверка на все экраны
     // Перерисовать ТОЛЬКО подвал листа. Нужно модулям, у которых кнопка внизу
