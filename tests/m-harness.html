@@ -231,6 +231,72 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   S.lease = null; S.sheet = null;
 }
 
+/* ---- 4d. экран заселения: три строки со статусами и отправка из них ---- */
+{
+  S.lease = null; S.inv = null;
+  S.sheet = 'lease'; S.sheetPayload = null; S.sheetArg = null; S.payload = null;
+  lease.render(ctx());                                  // создаёт S.lease
+  S.lease.done = { envelopeId: 'env_1', status: 'sent', stateWriteOk: true, email: 'a@b.co',
+    suite: 'Suite 440', tenant: 'Elliot Reyes', buildingId: 'b1', floorId: 'f4', unitId: '440',
+    leaseStart: '2026-09-01' };
+  const h = lease.render(ctx());
+  painted.push(h, lease.foot(ctx()));
+  const rows = ['Lease', 'Security deposit', 'First rent'].filter(t => h.includes(t));
+  if (rows.length !== 3) { say('bad', `экран заселения показывает ${rows.length}/3 строк`); bad++; }
+  else say('ok', 'экран заселения: договор, депозит и первая рента на одном экране');
+  if (!h.includes('September 2026')) { say('bad', 'первая рента без месяца начала договора'); bad++; }
+  else say('ok', 'первая рента подписана месяцем начала договора');
+  // депозит и рента ещё не отправлены → у обоих кнопка Send
+  const sends = (h.match(/data-act="lease:invoice"/g) || []).length;
+  if (sends !== 2) { say('bad', `кнопок отправки ${sends}, ожидалось 2`); bad++; }
+  else say('ok', 'у неотправленных строк есть кнопка Send');
+
+  // отправка депозита открывает лист счёта с назначением и обратным адресом
+  let opened = null;
+  const spy = () => Object.assign(ctx(), { openSheet: (n, p) => { opened = { n, p }; } });
+  lease.handle('lease:invoice', { getAttribute: () => 'deposit' }, spy());
+  if (!(opened && opened.n === 'invoice' && opened.p.preset === 'deposit'
+        && opened.p.unitId === '440' && opened.p.returnTo === 'lease' && opened.p.slot === 'deposit')) {
+    say('bad', 'Send депозита открывает не тот лист: ' + JSON.stringify(opened && opened.p)); bad++;
+  } else say('ok', 'Send депозита открывает счёт с назначением и возвратом сюда');
+  if (!S.lease) { say('bad', 'состояние мастера потеряно — возвращаться будет некуда'); bad++; }
+  else say('ok', 'состояние экрана заселения переживает уход в счёт');
+
+  // рента открывается за месяц начала договора
+  opened = null;
+  lease.handle('lease:invoice', { getAttribute: () => 'rent' }, spy());
+  if (!(opened && opened.p.preset === 'rent' && opened.p.ym === '2026-09')) {
+    say('bad', 'первая рента не за месяц начала договора: ' + JSON.stringify(opened && opened.p)); bad++;
+  } else say('ok', 'первая рента открывается за 2026-09');
+
+  // после отправки строка становится отмеченной, кнопки Send у неё больше нет
+  S.lease.done.sent = { deposit: { id: 'in_dep', number: 'D-440', total: 1700, bucket: 'open' } };
+  const h2 = lease.render(ctx());
+  painted.push(h2);
+  const sends2 = (h2.match(/data-act="lease:invoice"/g) || []).length;
+  if (sends2 !== 1) { say('bad', `после отправки депозита кнопок ${sends2}, ожидалась 1`); bad++; }
+  else say('ok', 'отправленная строка теряет кнопку и показывает статус');
+  if (!h2.includes('D-440')) { say('bad', 'номер отправленного счёта не показан'); bad++; }
+  else say('ok', 'в строке виден номер счёта');
+  // единицы: 1700 — это ДОЛЛАРЫ. $170,000 означало бы, что кто-то смешал центы.
+  if (!h2.includes('$1,700') || h2.includes('$170,000')) { say('bad', 'сумма счёта в строке — не в долларах'); bad++; }
+  else say('ok', 'сумма в строке заселения в долларах');
+
+  // лист счёта принимает переданные параметры и возвращает назад
+  S.inv = null; S.sheet = 'invoice';
+  S.sheetPayload = { buildingId: 'b1', floorId: 'f4', unitId: '440', preset: 'deposit', returnTo: 'lease', slot: 'deposit' };
+  S.sheetArg = S.sheetPayload; S.payload = S.sheetPayload;
+  painted.push(invoice.render(ctx()));
+  if (!(S.inv && S.inv.preset === 'deposit' && S.inv.returnTo === 'lease')) {
+    say('bad', 'лист счёта проигнорировал переданные параметры'); bad++;
+  } else say('ok', 'лист счёта открывается с назначением и помнит, куда вернуться');
+  let back = null;
+  invoice.handle('inv:close', null, Object.assign(ctx(), { openSheet: (n) => { back = n; }, closeSheet: () => { back = 'closed'; } }));
+  if (back !== 'lease') { say('bad', 'закрытие счёта не вернуло на экран заселения: ' + back); bad++; }
+  else say('ok', 'закрытие счёта возвращает на экран заселения');
+  S.lease = null; S.inv = null; S.sheet = null; S.sheetPayload = null; S.sheetArg = null; S.payload = null;
+}
+
 /* ---- 5. каждое data-act действие кто-то обрабатывает (ловит тупики) ---- */
 {
   const acts = new Set();
@@ -284,6 +350,17 @@ if (want) {
     // ?preset=service — посмотреть лист счёта с каталогом услуг.
     const preset = new URLSearchParams(location.search).get('preset');
     if (preset && want === 'invoice') { S.inv = null; mod.render(ctx()); if (S.inv) S.inv.preset = preset; }
+    // ?done=1 — экран заселения после отправки договора (&sent=deposit — с уже
+    // отправленным депозитом, чтобы видеть обе строки в разных состояниях).
+    if (want === 'lease' && new URLSearchParams(location.search).get('done')) {
+      mod.render(ctx());
+      S.lease.done = { envelopeId: 'env_1', status: 'sent', stateWriteOk: true, email: 'elliot@example.com',
+        suite: 'Suite 440', tenant: 'Elliot Reyes', buildingId: 'b1', floorId: 'f4', unitId: '440',
+        leaseStart: '2026-09-01' };
+      if (new URLSearchParams(location.search).get('sent') === 'deposit') {
+        S.lease.done.sent = { deposit: { id: 'in_dep', number: 'D-CEN-440', total: 900, bucket: 'open' } };
+      }
+    }
     document.getElementById(isSheet ? 'sheetBody' : 'screen').innerHTML = mod.render(ctx());
     const foot = document.getElementById('sheetFoot');
     foot.innerHTML = (isSheet && typeof mod.foot === 'function') ? (mod.foot(ctx()) || '') : '';

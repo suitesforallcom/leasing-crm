@@ -402,6 +402,29 @@ function _liveInvoiceForYm(u, ym, snap) {
   return best;
 }
 
+/**
+ * Живой счёт заданного назначения — для ЭКРАНОВ, не для вердикта.
+ * Нужен экрану заселения: «депозит уже выставлен?», «первая рента ушла?».
+ * Правила те же, что у дедупа в листе счёта: void/uncollectible/draft — слот
+ * свободен; депозит дедупится БЕЗ месяца (один на юнит), остальное — по ym.
+ * purpose: 'rent' | 'deposit' | 'late_fee' | 'custom'. ym нужен всем, кроме депозита.
+ */
+export function liveInvoiceFor(unit, purpose, ym, snap) {
+  const want = String(purpose || 'rent');
+  let best = null;
+  for (const r of _rowsForUnit(unit && unit.id, snap)) {
+    if (!r) continue;
+    const b = r.bucket || r.status;
+    if (b === 'void' || b === 'uncollectible' || b === 'refunded' || b === 'draft') continue;
+    if (((r.metadata && r.metadata.purpose) || r.purpose || 'rent') !== want) continue;
+    if (want !== 'deposit') {
+      if ((r.ym || (r.metadata && r.metadata.ym) || null) !== ym) continue;
+    }
+    if (!best || b === 'past_due') best = r;
+  }
+  return best;
+}
+
 // ── Per-month classification — зеркало _computeUnitMoneyImpl :80432 (по ym) ──
 function _classify(u0, ym, snap) {
   const out = { status: 'vacant', amount: 0, settle: { v: null, via: 'none', id: null },

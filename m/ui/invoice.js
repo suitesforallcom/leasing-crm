@@ -55,6 +55,14 @@ function payloadOf(ctx) {                 // имя ключа payload'а обо
     buildingId: p.buildingId || p.bid || parts[0] || null,
     unitId: p.unitId || p.uid || parts[1] || null,
     floorId: p.floorId || p.fid || null,
+    // Открытие с уже выбранным назначением: после отправки договора оператор
+    // идёт за первой рентой и депозитом, и незачем заставлять его тыкать
+    // пресет заново.
+    preset: p.preset || null,
+    ym: p.ym || null,
+    // Открыт с экрана заселения: туда же и вернёмся, отметив строку.
+    returnTo: p.returnTo || null,
+    slot: p.slot || null,
   };
 }
 function repaint(ctx) {
@@ -119,8 +127,12 @@ function st(ctx) {
   if (!L || (seed && L._seed !== seed)) {
     L = S.inv = {
       _seed: seed, buildingId: (p && p.buildingId) || null, unitId: (p && p.unitId) || null,
-      floorId: (p && p.floorId) || null, preset: 'rent', ym: todayYm(), amount: '', days: 14, memo: '',
+      floorId: (p && p.floorId) || null,
+      preset: (p && p.preset) || 'rent',
+      ym: (p && p.ym) || todayYm(),
+      amount: '', days: 14, memo: '',
       idem: newKey(), confirmDup: null, busy: false, err: null, done: null, svcId: null, q: '',
+      returnTo: (p && p.returnTo) || null, slot: (p && p.slot) || null,
     };
   }
   return L;
@@ -606,7 +618,15 @@ export function handle(act, el, ctx) {
   const S = ctx.S || {}, L = st(ctx);
   readForm(L);                                      // введённое сохраняем ДО перерисовки
   if (act === 'inv:noop') return true;
-  if (act === 'inv:close') { S.inv = null; ctx.closeSheet(); return true; }
+  if (act === 'inv:close') {
+    const back = L.returnTo;
+    S.inv = null;
+    // Пришли с экрана заселения — возвращаемся туда, а не в пустоту: там
+    // оператор видит, что осталось отправить.
+    if (back === 'lease' && S.lease && S.lease.done) { ctx.openSheet('lease'); return true; }
+    ctx.closeSheet();
+    return true;
+  }
   // Сброс должен ПЕРЕЖИТЬ payload: иначе st() тут же вернёт тот же (пропавший)
   // юнит и «Pick someone else» окажется тупиком.
   if (act === 'inv:reset') { S.inv = null; const N = st(ctx); N.unitId = null; N.done = null; N.err = null; return true; }
@@ -711,6 +731,19 @@ async function send(ctx, L, hit, isDup) {
       amount: (typeof r.amount === 'number' ? r.amount / 100 : amount),   // ответ в ЦЕНТАХ
       tel,
     };
+    // Экран заселения ждёт факт отправки СРАЗУ, не дожидаясь синхронизации
+    // Stripe-кэша. Пишем ровно то, что вернул сервер — ничего не выдумываем.
+    const S = ctx.S || {};
+    if (L.slot && S.lease && S.lease.done) {
+      S.lease.done.sent = S.lease.done.sent || {};
+      S.lease.done.sent[L.slot] = {
+        id: r.invoiceId || '', number: r.number || '',
+        // ДОЛЛАРЫ: строки снимка (normRow в data.js) тоже в долларах, а ответ CF
+        // приходит в центах. Смешать единицы здесь — показать $90,000 вместо $900.
+        total: (typeof r.amount === 'number' ? r.amount / 100 : amount),
+        status: 'open', bucket: 'open', hostedUrl: r.hostedUrl || '',
+      };
+    }
     if (typeof ctx.refresh === 'function') { try { ctx.refresh(); } catch (e) { /* сеть */ } }
     if (typeof ctx.toast === 'function') ctx.toast('Invoice sent');
   } catch (e) {

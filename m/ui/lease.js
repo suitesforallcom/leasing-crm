@@ -485,20 +485,85 @@ function errCard(L) {
   return '<div class="verdict" data-s="overdue" style="align-items:flex-start"><span class="vi">' + I.alert + '</span>'
     + '<span><span class="vt">Not sent</span><span class="vs">' + esc(L.err.msg) + '</span></span></div>';
 }
-function doneBody(L) {
+/**
+ * Экран заселения: договор, депозит, первая рента — и статус каждого СРАЗУ.
+ * Статус берём из двух источников: то, что отправили в этой сессии (мгновенно,
+ * без ожидания синхронизации), и живой счёт из снимка (переживает перезаход).
+ * Ничего не «оптимистично»: строка становится отправленной только по факту.
+ */
+function moveInRows(ctx, L) {
+  const d = L.done || {};
+  const hit = d.unitId ? findUnit(ctx.snap || {}, d.buildingId, d.unitId) : null;
+  const u = hit && hit.unit;
+  const sent = d.sent || {};
+  const live = (purpose, ym) => {
+    try { return ctx.money && ctx.money.liveInvoiceFor ? ctx.money.liveInvoiceFor(u, purpose, ym, ctx.snap) : null; }
+    catch (e) { return null; }
+  };
+  const rentYm = String(d.leaseStart || '').slice(0, 7) || null;
+  const rentAmt = u ? (+u.contractRent || +u.rent || 0) : 0;
+  const depAmt = u ? (+u.deposit || rentAmt) : 0;
+  return [
+    { key: 'lease', title: 'Lease', icon: I.doc,
+      doneText: 'Sent to ' + (d.email || '') + ' · awaiting signature', row: null, always: true },
+    { key: 'deposit', title: 'Security deposit', icon: I.send, amount: depAmt,
+      row: sent.deposit || live('deposit', null) },
+    { key: 'rent', title: rentYm ? 'First rent · ' + monthLabel(rentYm) : 'First rent', icon: I.send, amount: rentAmt,
+      row: sent.rent || live('rent', rentYm) },
+  ];
+}
+function monthLabel(ym) {
+  const M = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const i = (+String(ym).slice(5, 7) || 1) - 1;
+  return (M[i] || '') + ' ' + String(ym).slice(0, 4);
+}
+function invStateText(ctx, r) {
+  if (!r) return '';
+  const b = r.bucket || r.status || 'open';
+  // total ВСЕГДА в долларах: и строки снимка, и запись об отправке приведены
+  // к одной единице на входе. Угадывать единицу по величине суммы нельзя —
+  // $1,200,000 годовой аренды не отличить от 12 000 центов.
+  const amt = (+r.total > 0) ? usd(ctx, +r.total) : '';
+  const word = b === 'paid' ? 'paid' : b === 'past_due' ? 'sent · past due' : 'sent · awaiting payment';
+  return [r.number || '', amt, word].filter(Boolean).join(' · ');
+}
+
+function doneBody(ctx, L) {
   const d = L.done;
-  return '<div class="done"><div class="ring">' + I.check + '</div><h3>Lease sent</h3>'
-    + '<p>DocuSign emailed it for signature</p></div>'
-    + '<div class="recap" style="margin-top:14px"><div><span>Envelope</span>'
-    + '<b style="word-break:break-all">' + esc(d.envelopeId || '—') + '</b></div>'
-    + '<div><span>Sent to</span><b style="word-break:break-all">' + esc(d.email) + '</b></div>'
-    + '<div><span>Status</span><b>' + esc(d.status || 'sent') + '</b></div></div>'
-    + '<div class="whatnext">' + I.info + '<span>Signature status appears under More. '
-    + (d.stateWriteOk
-      ? (d.suite ? esc(d.suite) + ' is now leased to ' + esc(d.tenant || d.email) + ' — you can invoice it right away.'
-                 : 'The unit already carries this envelope.')
-      : 'The envelope went out, but the server could not record it on the unit — open the full version once to '
-      + 'reconcile before sending another.') + '</span></div>';
+  let h = '<div class="done"><div class="ring">' + I.check + '</div><h3>Lease sent</h3>'
+    + '<p>' + (d.suite ? esc(d.suite) + ' is now leased to ' + esc(d.tenant || d.email)
+                       : 'DocuSign emailed it for signature') + '</p></div>';
+
+  if (!d.stateWriteOk) {
+    h += '<div class="verdict" data-s="overdue" style="align-items:flex-start;margin-top:14px">'
+      + '<span class="vi">' + I.alert + '</span><span><span class="vt">Recorded only partly</span>'
+      + '<span class="vs">The envelope went out, but the server could not record it on the unit. '
+      + 'Open the full version once to reconcile before sending anything else.</span></span></div>'
+      + '<div class="recap" style="margin-top:12px"><div><span>Envelope</span>'
+      + '<b style="word-break:break-all">' + esc(d.envelopeId || '—') + '</b></div></div>';
+    return h;
+  }
+
+  h += '<div style="font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);'
+    + 'font-weight:700;margin:16px 0 8px">Move-in checklist</div>';
+
+  for (const r of moveInRows(ctx, L)) {
+    const done = !!(r.always || r.row);
+    const detail = r.always ? r.doneText : (r.row ? invStateText(ctx, r.row) : (r.amount > 0 ? usd(ctx, r.amount) + ' — not sent yet' : 'not sent yet'));
+    h += '<div class="act-row" style="cursor:default">'
+      + '<span class="astat" style="background:' + (done ? 'var(--good-soft,#E7F5EE)' : 'var(--sunk)') + ';'
+      + 'color:' + (done ? 'var(--good,#0F8B5F)' : 'var(--ink-3)') + '">' + (done ? I.check : r.icon) + '</span>'
+      + '<span class="amain"><span class="aname">' + esc(r.title) + '</span>'
+      + '<span class="await">' + esc(detail) + '</span></span>'
+      + (done ? '' : '<button class="fchip" data-act="lease:invoice" data-p="' + esc(r.key) + '"'
+          + ' style="border-color:var(--accent);color:var(--accent)">Send</button>')
+      + '</div>';
+  }
+
+  h += '<div class="whatnext" style="margin-top:12px">' + I.info
+    + '<span>Signature status appears under More. Sending an invoice opens the invoice sheet with the amount '
+    + 'already filled in, and brings you straight back here.</span></div>';
+  return h;
 }
 
 /* ---- публичный API --------------------------------------------------------- */
@@ -510,7 +575,7 @@ export function render(ctx) {
   let h = '<div class="sheet-h"><div><h3>Send a lease</h3><p>'
     + (L.done ? 'Done' : 'Step ' + L.step + ' of 3 · ' + sub) + '</p></div>'
     + '<button class="x-btn" data-act="lease:close" aria-label="Close">✕</button></div>';
-  if (L.done) return h + doneBody(L);
+  if (L.done) return h + doneBody(ctx, L);
   h += '<div class="steps">' + [1, 2, 3].map((i) => '<span class="step" data-on="' + (i <= L.step ? 1 : 0)
     + '"></span>').join('') + '</div>';
   if (L.unitId && !hit) {
@@ -526,13 +591,9 @@ export function render(ctx) {
 export function foot(ctx) {
   const L = st(ctx);
   const hit = L.unitId ? findUnit(ctx.snap || {}, L.buildingId, L.unitId) : null;
-  if (L.done) {
-    // Ровно тот шаг, который оператор делает следующим: договор ушёл, юнит
-    // теперь занят — значит можно брать депозит и первую ренту не отходя.
-    return (L.done.stateWriteOk
-        ? '<button class="big-btn ghost" data-act="lease:invoice">' + I.send + 'Invoice</button>' : '')
-      + '<button class="big-btn" data-act="lease:close">Done</button>';
-  }
+  // Отправка депозита и первой ренты живёт в строках экрана заселения —
+  // там же, где виден их статус. Внизу остаётся только выход.
+  if (L.done) return '<button class="big-btn" data-act="lease:close">Done</button>';
   if (hit && isOccupied(hit.unit)) {
     return '<button class="big-btn ghost" data-act="lease:reset">' + I.left + '</button>'
       + '<button class="big-btn" data-act="lease:openunit">Open the unit</button>';
@@ -561,11 +622,22 @@ export function handle(act, el, ctx) {
   readForm(L);                                     // введённое сохраняем ДО любой перерисовки
   if (act === 'lease:close') { S.lease = null; ctx.closeSheet(); return true; }
   if (act === 'lease:invoice') {
-    // Юнит только что стал занятым — лист счёта откроется уже с арендатором.
+    // Юнит только что стал занятым — лист счёта откроется уже с арендатором,
+    // нужным назначением и суммой из условий договора.
+    // S.lease НЕ обнуляем: с листа счёта возвращаемся на этот же экран, где
+    // строка уже будет отмечена отправленной.
     const d = L.done || {};
-    S.lease = null;
-    if (d.buildingId && d.unitId) ctx.openSheet('invoice', { buildingId: d.buildingId, floorId: d.floorId, unitId: d.unitId });
-    else ctx.closeSheet();
+    const preset = el && el.getAttribute('data-p') === 'deposit' ? 'deposit' : 'rent';
+    S.inv = null;                                  // не тащим предыдущий черновик счёта
+    if (!d.buildingId || !d.unitId) return true;
+    ctx.openSheet('invoice', {
+      buildingId: d.buildingId, floorId: d.floorId, unitId: d.unitId,
+      preset,
+      // Рента за ПЕРВЫЙ месяц договора, а не за текущий: договор часто
+      // начинается со следующего месяца, и счёт за август тут был бы ошибкой.
+      ym: preset === 'rent' ? (String(d.leaseStart || '').slice(0, 7) || null) : null,
+      returnTo: 'lease', slot: preset,
+    });
     return true;
   }
   if (act === 'lease:reset') { S.lease = null; const N = st(ctx); N.step = 1; N.unitId = null; return true; }
@@ -690,6 +762,7 @@ async function send(ctx, L) {
       stateWriteOk: r.stateWriteOk !== false, email,
       suite, tenant: name,
       buildingId, floorId, unitId,
+      leaseStart: L.start || '',
     };
     if (typeof ctx.refresh === 'function') { try { ctx.refresh(); } catch (e) { /* сеть */ } }
     if (typeof ctx.toast === 'function') ctx.toast('Lease sent to ' + email);
