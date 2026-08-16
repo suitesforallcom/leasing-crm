@@ -1,0 +1,45 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pulse-static",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "-y",
+        "http-server",
+        "/Users/diskc/Documents/Claude/Projects/Office map/.claude/worktrees/modest-curie-8a50ad",
+        "-p",
+        "5577",
+        "-c-1",
+        "--cors"
+      ],
+      "port": 5577
+    },
+    {
+      "name": "fme-root",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "-y",
+        "http-server",
+        "/Users/diskc/Documents/Claude/Projects/Office map",
+        "-p",
+        "5599",
+        "-c-1",
+        "--cors"
+      ],
+      "port": 5599
+    },
+    {
+      "name": "m-harness",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8087",
+        "--bind",
+        "127.0.0.1"
+      ],
+      "port": 8087
+    }
+  ]
+}

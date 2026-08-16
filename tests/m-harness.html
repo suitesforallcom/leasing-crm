@@ -1,0 +1,195 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>m/ render harness</title>
+<!--
+  Стенд рендера мобильного клиента. Firebase не нужен: UI-модули — чистые
+  функции от ctx, поэтому подставляем синтетический снимок и прогоняем каждый
+  экран и каждый лист. Ловит ровно то, что не ловят parse-check и unit-тесты:
+  падение внутри render(), пустой экран, класс без CSS.
+  Живёт в tests/ намеренно: firebase.json игнорирует tests/** при деплое, значит
+  отладочная страница НЕ попадает в прод. Открывать так:
+    <статический сервер в корне репозитория>/tests/m-harness.html
+    ?view=home|payments|unit|lease|invoice|switcher  — показать экран целиком
+    &unit=302                                       — другой юнит
+-->
+<!-- Настоящий стиль приложения тянем из m.html на лету: копия здесь разошлась бы
+     с продом, и проверка «класс без CSS» перестала бы что-либо значить. -->
+<script>
+  document.write('<style id="appcss"></style>');
+  fetch('../m.html').then(r => r.text()).then(t => {
+    const m = t.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
+    document.getElementById('appcss').textContent = m ? m[1] : '';
+    window.__cssReady = true;
+  }).catch(() => { window.__cssReady = 'failed'; });
+</script>
+<style>
+  /* Debug-стили держим ВНУТРИ #log: заданные на body шрифт и цвет наследовались
+     приложением, и экран выглядел не так, как выглядит в проде. */
+  body { margin:0; background:#111; }
+  #log { padding:12px; white-space:pre-wrap; font:13px ui-monospace,monospace; color:#ddd; }
+  .ok { color:#4ade80 } .bad { color:#f87171 } .warn { color:#fbbf24 }
+  /* ?view=home|payments|unit|lease|invoice|switcher — показать экран целиком,
+     в размер телефона. Без параметра стенд остаётся текстовым отчётом. */
+  #stage { position:fixed; left:-9999px; top:0; width:390px; }
+  body.visual #log { display:none }
+  body.visual { background:#fff }
+  body.visual #stage { position:static; width:390px; margin:0 auto; min-height:100vh; }
+</style>
+<div id="log">running…</div>
+<div id="stage"><div class="app"><div id="screen"></div><div id="sheetBody"></div><div id="sheetFoot"></div></div></div>
+
+<script type="module">
+/* Динамический импорт с меткой времени. Статический import кэшируется в module
+   map браузера, и после правки модуля стенд молча показывал СТАРЫЙ код —
+   проверка, которая врёт, хуже отсутствующей. */
+const V = '?v=' + Date.now();
+const [money, fmt, home, payments, unit, lease, invoice, switcher] = await Promise.all([
+  import('../m/lib/money.js' + V), import('../m/lib/format.js' + V),
+  import('../m/ui/home.js' + V), import('../m/ui/payments.js' + V), import('../m/ui/unit.js' + V),
+  import('../m/ui/lease.js' + V), import('../m/ui/invoice.js' + V), import('../m/ui/switcher.js' + V),
+]);
+
+// Стиль подтягивается асинхронно — без ожидания проверка классов даст ложную тревогу.
+for (let i = 0; i < 100 && !window.__cssReady; i++) await new Promise(r => setTimeout(r, 30));
+
+const out = [];
+const say = (cls, s) => out.push(`<span class="${cls}">${cls === 'ok' ? '  ok ' : cls === 'bad' ? 'FAIL ' : 'warn '}</span>${s}`);
+let bad = 0;
+
+/* ---- синтетический снимок: занятый/просроченный/пустой юнит + инвойсы ---- */
+const YM = '2026-08';
+const u = (id, over) => Object.assign({
+  id, type: 'office', status: 'occupied', tenant: 'Acme LLC', tenantContact: 'Jane Roe',
+  email: 'jane@acme.test', tel: '7275551234', rent: 2400, deposit: 2400,
+  leaseStart: '2025-01-01', leaseEnd: '2026-12-31', payments: {},
+}, over || {});
+const units = [
+  u('300', { payments: { [YM]: { status: 'paid', paidAt: '2026-08-03' } } }),
+  u('301', { stripe: { lastInvoiceYm: YM, lastInvoiceId: 'in_1U4mHY2nq2bZh3q62SEa9jp4' } }),
+  u('302', { tenant: '', status: 'vacant', tenantContact: '', email: '', tel: '' }),
+  u('303', { tenant: "O'Brien & Sons <Ltd>", tenantContact: "O'Brien" }),
+];
+const snap = {
+  buildings: [
+    { id: 'b1', name: '4355 Central Ave', address: '4355 Central Ave', code: 'CEN', floors: [{ id: 'f1', name: '3', units }] },
+    { id: 'b2', name: 'Second Building', address: '1 Main St', code: 'SEC', floors: [{ id: 'f1', name: '1', units: [u('100')] }] },
+  ],
+  invoices: [{ id: 'in_1U4mHY2nq2bZh3q62SEa9jp4', number: 'R-CEN-301-2026-08', status: 'open', bucket: 'open',
+    total: 2400, amountPaid: 0, dueDate: '2026-08-05', description: 'Rent — 301',
+    metadata: { unitId: '301', purpose: 'rent', ym: YM } }],
+  invoicesAvailable: true, invoiceBuckets: {}, settings: { landlordName: 'Crestview Holdings' },
+  role: 'admin', online: true, syncedAt: Date.now(), now: new Date('2026-08-15T12:00:00Z').getTime(),
+};
+
+const S = { tab: 'home', scope: 'b1', buildingId: 'b1', ym: YM, floor: 'all', q: '', searchAll: false, role: 'admin' };
+const calls = [];
+const ctx = () => ({
+  S, snap, money, fmt,
+  callCF: (n, p) => { calls.push([n, p]); return Promise.resolve({}); },
+  building: snap.buildings[0],
+  go(){}, openSheet(){}, closeSheet(){}, toast(){}, setScope(k){ S.scope = k; },
+  refresh(){},
+});
+
+/* ---- 1. каждый экран и лист рендерится и не пуст ---- */
+const SCREENS = { home, payments };
+const SHEETS = { unit, lease, invoice, switcher };
+const painted = [];
+for (const [name, mod] of Object.entries(SCREENS)) {
+  try {
+    const html = mod.render(ctx());
+    if (!html || !String(html).trim()) { say('bad', `${name}.render() returned nothing`); bad++; }
+    else { painted.push(html); say('ok', `${name}.render() → ${String(html).length} chars`); }
+  } catch (e) { say('bad', `${name}.render() threw: ${e && e.message}`); bad++; }
+}
+for (const [name, mod] of Object.entries(SHEETS)) {
+  // листы юнита/договора/счёта открываются с payload'ом — кладём его туда,
+  // откуда модуль его читает (S.sheetPayload / S.sheetArg / S.payload).
+  const ids = { buildingId: 'b1', floorId: 'f1', unitId: '301' };
+  S.sheet = name; S.sheetPayload = ids; S.sheetArg = ids; S.payload = ids;
+  for (const fn of ['render', 'foot']) {
+    if (typeof mod[fn] !== 'function') continue;
+    try {
+      const html = mod[fn](ctx());
+      if (fn === 'render' && (!html || !String(html).trim())) { say('bad', `${name}.render() returned nothing`); bad++; }
+      else { painted.push(html || ''); say('ok', `${name}.${fn}() → ${String(html || '').length} chars`); }
+    } catch (e) { say('bad', `${name}.${fn}() threw: ${e && e.message}`); bad++; }
+  }
+}
+S.sheet = null;
+
+/* ---- 2. каждый использованный класс существует в CSS (ловит потерянные блоки) ---- */
+const cssText = [...document.styleSheets].flatMap(s => { try { return [...s.cssRules].map(r => r.cssText); } catch { return []; } }).join('\n');
+const used = new Set();
+painted.join('\n').replace(/class="([^"]+)"/g, (m, c) => { c.split(/\s+/).filter(Boolean).forEach(x => used.add(x)); return m; });
+const missing = [...used].filter(c => !cssText.includes('.' + c));
+if (missing.length) { say('warn', `classes with no CSS rule: ${missing.join(', ')}`); }
+else say('ok', `all ${used.size} classes used in markup have CSS`);
+
+/* ---- 3. деньги: экраны и модель говорят одно и то же ---- */
+try {
+  const paid = money.verdict(units[0], YM, snap), open = money.verdict(units[1], YM, snap);
+  if (paid.status !== 'paid' && paid.ui !== 'paid') { say('bad', `paid unit reads as ${paid.ui}`); bad++; }
+  else say('ok', `paid unit → ${paid.ui} / ${paid.label}`);
+  if (!(open.amount > 0)) { say('bad', 'open invoice has no amount for the UI'); bad++; }
+  else say('ok', `unpaid unit → ${open.ui} · ${open.amount}`);
+} catch (e) { say('bad', 'money verdict threw: ' + (e && e.message)); bad++; }
+
+/* ---- 4. экранирование: имя с кавычкой и скобками не попадает в разметку сырым ---- */
+const hostile = painted.join('\n');
+if (/O'Brien & Sons <Ltd>/.test(hostile)) { say('bad', 'tenant name is injected into HTML unescaped'); bad++; }
+else say('ok', 'hostile tenant name is escaped in every rendered view');
+
+/* ---- 5. каждое data-act действие кто-то обрабатывает (ловит тупики) ---- */
+{
+  const acts = new Set();
+  painted.join('\n').replace(/data-act="([^"]+)"/g, (m, a) => { acts.add(a); return m; });
+  const srcs = await Promise.all(['ui/home.js','ui/payments.js','ui/unit.js','ui/lease.js','ui/invoice.js','ui/switcher.js','app.js']
+    .map(f => fetch('../m/' + f + V).then(r => r.text())));
+  const all = srcs.join('\n');
+  // Действие считается живым, если оно встречается в коде НЕ только там, где
+  // рисуется (то есть кто-то с ним сравнивается), либо это открытие листа.
+  const dead = [...acts].filter(a => {
+    const lit = a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return !(new RegExp("=== *'" + lit + "'|case '" + lit + "'|indexOf\\('" + lit.split(':')[0] + ":'\\)").test(all));
+  });
+  if (dead.length) { say('bad', `data-act with no handler (dead button): ${dead.join(', ')}`); bad++; }
+  else say('ok', `all ${acts.size} actions have a handler`);
+}
+
+/* ---- 6. ничего технического в тексте для оператора ---- */
+{
+  const text = painted.join('\n').replace(/<[^>]*>/g, ' ').replace(/&[a-z]+;/g, ' ');
+  const iso = text.match(/\b\d{4}-\d{2}-\d{2}\b/g);
+  const rawId = text.match(/\bin_[A-Za-z0-9]{20,}\b/g);
+  const dangling = text.match(/·\s*(—|$)/gm);
+  if (iso) { say('bad', `ISO dates shown to the operator: ${[...new Set(iso)].join(', ')}`); bad++; }
+  else say('ok', 'no ISO dates in operator-facing text');
+  if (rawId) { say('bad', `raw Stripe ids shown to the operator: ${[...new Set(rawId)].join(', ')}`); bad++; }
+  else say('ok', 'no raw Stripe ids in operator-facing text');
+  if (dangling) { say('warn', `dangling separator (empty field): ${dangling.length} place(s)`); }
+  else say('ok', 'no dangling separators');
+}
+
+document.getElementById('log').innerHTML = out.join('\n') + `\n\n${bad ? `<span class="bad">${bad} FAILURES</span>` : '<span class="ok">all render checks passed</span>'}`;
+window.__harness = { bad, missing, calls };
+
+/* ---- визуальный режим: рисуем один экран в размер телефона ---- */
+const want = new URLSearchParams(location.search).get('view');
+if (want) {
+  document.body.classList.add('visual');
+  const mod = Object.assign({}, SCREENS, SHEETS)[want];
+  if (!mod) { document.getElementById('screen').textContent = 'unknown view: ' + want; }
+  else {
+    const isSheet = !!SHEETS[want];
+    // ?unit=302 — посмотреть тот же лист на другом юните (свободный / оплаченный).
+    const uid = new URLSearchParams(location.search).get('unit') || '301';
+    const ids = { buildingId: 'b1', floorId: 'f1', unitId: uid };
+    if (isSheet) { S.sheet = want; S.sheetPayload = ids; S.sheetArg = ids; S.payload = ids; }
+    document.getElementById(isSheet ? 'sheetBody' : 'screen').innerHTML = mod.render(ctx());
+    const foot = document.getElementById('sheetFoot');
+    foot.innerHTML = (isSheet && typeof mod.foot === 'function') ? (mod.foot(ctx()) || '') : '';
+    foot.style.display = foot.innerHTML.trim() ? 'flex' : 'none';   // как в оболочке (app.js)
+  }
+}
+</script>
