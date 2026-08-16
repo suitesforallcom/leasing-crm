@@ -315,7 +315,9 @@ export function render(ctx) {
       : '<button class="act" data-act="nophone" style="opacity:.55">' + I.send + 'Text</button>')
     + '</div>';
 
-  h += '<a class="act-row" href="/floor-map-editor.html" target="_blank" rel="noopener"' + linkStyle + '>' + I.ext
+  // ?desktop=1 обязателен: полная версия сама уводит телефоны на /m, и без
+  // метки эта ссылка открыла бы новую вкладку, которая тут же вернётся сюда.
+  h += '<a class="act-row" href="/floor-map-editor.html?desktop=1" target="_blank" rel="noopener"' + linkStyle + '>' + I.ext
     + '<span><span class="t">Open in full version</span>'
     + '<span class="s">floor plan, documents, ledger</span></span></a>';
 

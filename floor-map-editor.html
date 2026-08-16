@@ -4,6 +4,36 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SuitesForAll — Floor Plan Manager</title>
+<script>
+/* Телефон → мобильный клиент /m.
+
+   Стоит ПЕРВЫМ скриптом сознательно: location.replace здесь обрывает разбор
+   оставшихся ~8.5 МБ монолита и загрузку его ресурсов (Sentry, шрифты, SDK).
+   Ниже по файлу тот же код уже не спас бы телефон от лишнего трафика.
+
+   Что считаем телефоном: МЕНЬШАЯ сторона экрана <= 500px И грубый указатель.
+   Меньшая сторона не зависит от поворота (iPhone 16 Pro Max — 440pt и в
+   портрете, и в альбоме), а у iPad она 744-834pt, поэтому планшет остаётся
+   на полной версии. Проверка указателя отсекает узкое ОКНО браузера на
+   десктопе — там указатель точный, и подмены версии не происходит.
+
+   Обратный выход: ?desktop=1 — эту метку ставят обе ссылки «полной версии»
+   в мобильном клиенте (m/app.js openfull, m/ui/unit.js). Метка живёт в URL,
+   а не в localStorage: так она переживает перезагрузку, не залипает навсегда
+   и не протекает в другие вкладки. Без неё переход зациклился бы.
+
+   replace, а не href: назад из мобильной версии по кнопке браузера должно
+   вести на предыдущий сайт, а не в ловушку из редиректов. */
+(function () {
+  try {
+    if (/[?&]desktop=1(?:&|$)/.test(location.search)) return;
+    var s = window.screen || {};
+    var narrow = Math.min(+s.width || 9999, +s.height || 9999) <= 500;
+    var coarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+    if (narrow && coarse) location.replace('/m' + location.search + location.hash);
+  } catch (e) { /* сомневаешься — показывай полную версию */ }
+})();
+</script>
 <!-- Sentry release tag — заполняется на deploy (см. scripts/stamp-release.sh).
      Если тут содержимое "DEV" — значит файл смотрят локально, не из Hosting. -->
 <meta name="sfa-release" content="cea9d20c451e">

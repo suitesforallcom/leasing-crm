@@ -169,6 +169,28 @@ async function afterSignIn(user) {
   return { user: S.user, role: S.role, rejected: null };
 }
 // Возвращает {user, role, rejected} как initApp, либо null если ушли в redirect (страница перезагрузится).
+/**
+ * Совпадает ли origin страницы с доменом входа Firebase.
+ * ЭТО РЕШАЮЩЕЕ УСЛОВИЕ для signInWithRedirect. Приложение отдаётся и на
+ * suitesforall.web.app, и на suitesforall.firebaseapp.com; authDomain —
+ * второй. С web.app redirect идёт МЕЖДУ доменами, а Safari на iPhone режет
+ * межсайтовое хранилище (ITP) — состояние теряется, и до Google доходит битый
+ * запрос: «400. That's an error… malformed» (поймано 2026-08-15 на телефоне
+ * оператора). С firebaseapp.com тот же вызов доходит до обычной страницы входа.
+ */
+function authSameOrigin() {
+  try {
+    const d = (S.auth && S.auth.config && S.auth.config.authDomain) || '';
+    return !!d && d === location.host;
+  } catch (e) { return false; }
+}
+/** Тот же путь на домене входа — там вход работает в любом браузере. */
+export function authDomainUrl(extraQuery) {
+  const d = (S.auth && S.auth.config && S.auth.config.authDomain) || '';
+  if (!d) return '';
+  return 'https://' + d + location.pathname + (extraQuery || '') + location.hash;
+}
+
 export async function signInWithGoogle() {
   if (!S.sdk) throw new Error('App is still starting — try again in a moment.');
   const provider = new S.sdk.GoogleAuthProvider();
@@ -177,15 +199,44 @@ export async function signInWithGoogle() {
     return await afterSignIn(cred.user);
   } catch (e) {
     const code = (e && e.code) || '';
-    // Мобильные браузеры и webview рутинно режут popup — уходим в redirect.
+    // Мобильные браузеры и webview рутинно режут popup. Раньше здесь безусловно
+    // шёл signInWithRedirect — и на iPhone это давало не вход, а ошибку Google.
+    // Теперь redirect разрешён ТОЛЬКО когда он остаётся внутри одного origin.
     if (/popup-blocked|popup-closed-by-user|cancelled-popup-request|operation-not-supported/.test(code)) {
-      await S.sdk.signInWithRedirect(S.auth, provider); return null;
+      if (authSameOrigin()) { await S.sdk.signInWithRedirect(S.auth, provider); return null; }
+      const err = new Error('Safari blocked the sign-in window. Continue on the sign-in address — same app, same data.');
+      err.code = 'sfa/needs-auth-domain';
+      err.authUrl = authDomainUrl('?signin=1');
+      throw err;
     }
     throw new Error(code === 'auth/network-request-failed' ? 'No connection to the sign-in service. Check your network and try again.'
       : code === 'auth/too-many-requests' ? 'Too many attempts. Wait a minute and try again.'
       : code === 'auth/unauthorized-domain' ? 'This address is not authorized for sign-in. Open the app from its normal link.'
       : 'Sign-in failed: ' + ((e && e.message) || code || 'unknown error'));
   }
+}
+
+/**
+ * Продолжение входа после перехода на домен входа: ?signin=1.
+ * Здесь мы уже same-origin, поэтому redirect работает БЕЗ жеста пользователя —
+ * оператору не приходится жать кнопку второй раз.
+ */
+export async function resumeSignInIfAsked() {
+  try {
+    if (!/[?&]signin=1(?:&|$)/.test(location.search)) return false;
+    if (S.user || !authSameOrigin() || !S.sdk) return false;
+    // Метку убираем ДО старта: Firebase вернёт браузер на текущий URL, и если
+    // вход не завершился (отмена, чужой аккаунт), страница с ?signin=1 запустила
+    // бы его снова — бесконечная петля вместо экрана входа.
+    try {
+      const clean = location.pathname
+        + location.search.replace(/([?&])signin=1(&|$)/, (m, a, b) => (b ? a : '')).replace(/[?&]$/, '')
+        + location.hash;
+      history.replaceState(null, '', clean);
+    } catch (e) { /* старый webview — переживём один лишний круг */ }
+    await S.sdk.signInWithRedirect(S.auth, new S.sdk.GoogleAuthProvider());
+    return true;
+  } catch (e) { console.warn('[m/data] resume sign-in:', (e && e.code) || e); return false; }
 }
 async function bootstrapMember(user) {
   // Только ЧТЕНИЕ members/{uid}. Новый uid себя завести не может (firestore.rules:112,

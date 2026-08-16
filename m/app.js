@@ -321,7 +321,9 @@ function builtin(a, el){
     case 'close': closeSheet(); break;
     case 'refresh': toast('Refreshing…'); doRefresh(false); break;
     case 'signout': doSignOut(); break;
-    case 'openfull': location.href = '/'; break;
+    // ?desktop=1 — метка «оператор просил именно полную версию». Без неё
+    // редирект в floor-map-editor.html вернёт нас сюда же: петля.
+    case 'openfull': location.href = '/?desktop=1'; break;
     case 'retry': if (S.sheet) openSheet(S.sheet); else render(true); break;
     case 'reboot': location.reload(); break;
     case 'toast': toast(d.msg || 'Done'); break;
@@ -394,7 +396,17 @@ async function onGateBtn(){
     if (typeof signIn === 'function') await signIn();
     else await initApp();
     if (!afterAuth()) gateState('error', 'Signed in, but this account has no access to the workspace.');
-  } catch (e){ gateState('error', friendly(e)); }
+  } catch (e){
+    // Safari срезал окно входа, а redirect отсюда невозможен (разные origin у
+    // приложения и домена входа — именно это давало ошибку Google 400).
+    // Уводим на домен входа с ?signin=1: там вход продолжится сам.
+    if (e && e.code === 'sfa/needs-auth-domain' && e.authUrl){
+      gateState('loading', 'Taking you to the sign-in address…');
+      location.href = e.authUrl;
+      return;
+    }
+    gateState('error', friendly(e));
+  }
 }
 async function onGateAlt(){
   try { if (typeof data.signOut === 'function') await data.signOut(); } catch {}
@@ -419,6 +431,15 @@ async function boot(){
       return;
     }
     if (afterAuth()) return;
+    // Пришли с ?signin=1 — значит на прошлом домене Safari срезал окно входа и
+    // нас сюда увели специально. Здесь origin совпадает с доменом входа, поэтому
+    // redirect работает без жеста: продолжаем сами, не заставляя жать второй раз.
+    if (typeof data.resumeSignInIfAsked === 'function'){
+      gateState('loading', 'Opening Google…');
+      let resumed = false;
+      try { resumed = await data.resumeSignInIfAsked(); } catch (e){ resumed = false; }
+      if (resumed) return;                      // страница уже уходит на Google
+    }
     gateState('signin', 'Sign in with the Google account that has access to this workspace.');
   } catch (e){
     clearTimeout(stuck);
