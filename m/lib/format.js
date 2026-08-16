@@ -51,6 +51,20 @@ export function money(n) {
   return (v < 0 ? '-$' : '$') + abs;
 }
 
+/**
+ * money2(13318.33) -> '$13,318.33' · money2(2400) -> '$2,400'
+ * Точная сумма для КОНКРЕТНОГО юнита. money() округляет до доллара — это верно
+ * для сводок («собрано $43,876»), но на карточке рядом стоял вердикт с центами,
+ * и два числа за одну и ту же аренду расходились на 33 цента. Выглядит как
+ * ошибка счёта, хотя это всего лишь два разных форматтера.
+ */
+export function money2(n) {
+  const v = toNum(n);
+  const cents = Math.abs(Math.round(v * 100) % 100) > 0;
+  return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('en-US',
+    { minimumFractionDigits: cents ? 2 : 0, maximumFractionDigits: 2 });
+}
+
 /** kmoney(142400) -> '$142k'  ·  kmoney(4200) -> '$4.2k'  ·  kmoney(880) -> '$880' */
 export function kmoney(n) {
   const v = toNum(n);

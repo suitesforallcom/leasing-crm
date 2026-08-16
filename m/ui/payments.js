@@ -74,6 +74,22 @@ function isVisible(u) {
    и из плитки этажа — нет: оператор ищет сьют, а не лизу. */
 function isShadow(u) { return !!(u && u.groupId && u.groupRole !== 'primary'); }
 
+/**
+ * Считать ли этот сьют отдельной позицией.
+ * Мульти-сьютовая лиза (в проде — 6 сьютов National University) физически это
+ * шесть помещений, но ОДИН долг. Клетки полосы рисуем для каждого помещения,
+ * а любые СЧЁТЧИКИ обязаны считать лизы — иначе «5 open» рядом со списком из
+ * трёх строк, и оператор думает, что должников больше, чем есть.
+ * Правило то же, что в money.buildingStats (isFinanceShadow).
+ */
+function countable(ctx, r) {
+  // money.isFinanceShadow — канон: он ловит и member'а группы, и неактивную
+  // под-комнату (сьют внутри занятого сьюта). Локальный isShadow знает только
+  // первый случай и служит запасным вариантом, если деньги недоступны.
+  try { return !ctx.money.isFinanceShadow(r.u, ctx.snap); } catch (_) { return !isShadow(r.u); }
+}
+const countableOf = (ctx, list) => list.filter(r => countable(ctx, r));
+
 function collect(blds) {
   const out = [];
   for (const b of blds) {
@@ -238,7 +254,7 @@ function glance(ctx, b, rows, ym, agg) {
     h += '<div class="chips"><button class="fchip" data-act="floor" data-f="all" aria-pressed="'
       + (sel === 'all') + '">All floors</button>'
       + floors.map((f, i) => {
-        const fr = rows.filter(r => r.f === f);
+        const fr = countableOf(ctx, rows.filter(r => r.f === f));
         const fp = fr.filter(r => { const s = stOf(ctx, r, ym); return s === 'paid' || s === 'free'; }).length;
         return '<button class="fchip" data-act="floor" data-f="' + esc(f.id) + '" aria-pressed="'
           + (sel === String(f.id)) + '">' + esc(floorLabel(f, i))
@@ -254,10 +270,11 @@ function glance(ctx, b, rows, ym, agg) {
   for (const f of shown) {
     const fr = rows.filter(r => r.f === f);
     if (!fr.length) continue;
-    const fp = fr.filter(r => { const s = stOf(ctx, r, ym); return s === 'paid' || s === 'free'; }).length;
-    const fo = fr.filter(r => isUnpaid(ctx, stOf(ctx, r, ym))).length;
+    const fc = countableOf(ctx, fr);                 // счётчик — по лизам, клетки ниже — по сьютам
+    const fp = fc.filter(r => { const s = stOf(ctx, r, ym); return s === 'paid' || s === 'free'; }).length;
+    const fo = fc.filter(r => isUnpaid(ctx, stOf(ctx, r, ym))).length;
     h += '<div class="floor"><div class="floor-lbl">'
-      + esc(f ? floorLabel(f, floors.indexOf(f)) : 'Units') + ' <span>' + fp + '/' + fr.length + ' paid'
+      + esc(f ? floorLabel(f, floors.indexOf(f)) : 'Units') + ' <span>' + fp + '/' + fc.length + ' paid'
       + (fo ? ' · ' + fo + ' open' : '') + '</span></div><div class="strip">'
       + fr.map(r => {
         const s = stOf(ctx, r, ym);
@@ -296,7 +313,7 @@ export function render(ctx) {
   const offline = snap.online === false;
   const h0 = '<div class="topbar"><div class="tb-row"><div><div class="tb-title sm">Check a payment</div>'
     + '<div class="sync"><i' + (offline ? ' style="background:var(--warn)"' : '') + '></i>'
-    + esc(scopeName) + ' · ' + scopeRows.length + ' units'
+    + esc(scopeName) + ' · ' + countableOf(ctx, scopeRows).length + ' units'
     + (offline ? ' · offline copy' : freshness) + '</div></div></div></div>';
 
   const h1 = '<div class="searchwrap"><div class="searchbox">' + I.search
@@ -355,7 +372,7 @@ export function render(ctx) {
   let money = { collected: 0, awaiting: 0, overdue: 0 };
   for (const r of scopeRows) {
     const s = stOf(ctx, r, ym);
-    if (isShadow(r.u)) continue;                     // тень мульти-лизы не считаем дважды
+    if (!countable(ctx, r)) continue;                // тень мульти-лизы не считаем дважды
     agg.n[s] = (agg.n[s] || 0) + 1;
     const a = rentOf(r.u);
     if (s === 'paid' || s === 'free') money.collected += a;
@@ -373,7 +390,7 @@ export function render(ctx) {
   }
 
   const filter = S.filter || 'overdue';
-  const counted = scopeRows.filter(r => !isShadow(r.u));
+  const counted = countableOf(ctx, scopeRows);
   const unpaidN = agg.n.invoiced + agg.n.due + agg.n.overdue;
   h += '<div class="chips">' + [
     ['overdue', 'Overdue', agg.n.overdue, 'bad'],

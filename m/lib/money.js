@@ -127,6 +127,19 @@ export function leaseHead(u, snap) {
   return g.find(x => x && x.groupRole === 'primary') || g[0] || u;
 }
 
+/**
+ * Все сьюты одной лизы. Нужен интерфейсу, а не расчёту: у member-сьюта
+ * денежные поля пустые, и вердикт для него считается по head'у — то есть на
+ * сьюте 133 честно печатается сумма ВСЕЙ лизы (в проде это, например,
+ * $13,318.33 на шесть сьютов сразу). Без явной оговорки оператор прочитает её
+ * как цену одного сьюта. Пустой массив = одиночная лиза, говорить нечего.
+ */
+export function leaseGroup(u, snap) {
+  if (!u || !u.groupId) return [];
+  const g = _ix(snap).groups.get(u.groupId);
+  return (g && g.length > 1) ? g.slice() : [];
+}
+
 // Порт _isInactiveSubRoom :62031 — identity-match этажа, не currentFloor().
 function _isInactiveSubRoom(u, snap) {
   if (!u || !u.parentId) return false;

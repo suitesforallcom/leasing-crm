@@ -43,7 +43,25 @@ function esc(s) {
   ));
 }
 function m$(ctx, n) {
-  try { return ctx.fmt.money(n); } catch (_) { return '$' + Math.round(+n || 0).toLocaleString('en-US'); }
+  // Точный формат: карточка одного юнита, а не сводка. Рядом стоит вердикт из
+  // money.js с центами — округление здесь давало расхождение в те же центы.
+  try { return ctx.fmt.money2 ? ctx.fmt.money2(n) : ctx.fmt.money(n); }
+  catch (_) { return '$' + Math.round(+n || 0).toLocaleString('en-US'); }
+}
+/**
+ * Аренда, которую надо ПОКАЗАТЬ. У member-сьюта мульти-сьютовой лизы свои
+ * денежные поля пустые (в проде буквально rent = 0), поэтому карточка писала
+ * «Rent $0/mo» и «August rent $0» рядом с «$13,318.33 past due». Берём ставку
+ * лизы с её head'а — ровно так же, как её берёт вердикт.
+ */
+function rentShown(ctx, u) {
+  const own = rentOf(u);
+  if (own > 0) return own;
+  try {
+    const head = ctx.money && typeof ctx.money.leaseHead === 'function' ? ctx.money.leaseHead(u, ctx.snap) : null;
+    if (head && head !== u) return rentOf(head);
+  } catch (_) { /* деньги молчат */ }
+  return own;
 }
 function dLong(ctx, iso) {
   try { return ctx.fmt.dateLong(iso) || ''; } catch (_) { return String(iso || ''); }
@@ -224,7 +242,7 @@ export function render(ctx) {
   const apt = !!(b && (b.apt || b.residential || b.kind === 'residential'));
   const suite = (apt ? 'Apt ' : 'Suite ') + String(u.id || '');
   const name = u.tenant || u.company || 'Vacant unit';
-  const rent = rentOf(u);
+  const rent = rentShown(ctx, u);
   const amount = (v.amount != null) ? +v.amount : rent;
 
   const sub = [suite, (b && (b.name || b.id)) || '', u.sqft ? (+u.sqft).toLocaleString('en-US') + ' ft²' : '']
@@ -241,6 +259,12 @@ export function render(ctx) {
     + '<span class="vs">' + esc(detail) + '</span>'
     + (prov ? '<span class="vs" style="margin-top:3px;font-size:11.5px;color:var(--ink-3)">' + esc(prov) + '</span>' : '')
     + '</span></div>';
+
+  /* --- мульти-сьютовая лиза: сумма относится ко ВСЕЙ лизе, а не к этому сьюту.
+     В проде такое есть (одна лиза на шесть сьютов, $13,318.33). Без этой строки
+     оператор прочитает сумму как цену одного сьюта и назовёт арендатору не то
+     число. Ту же оговорку делает лист счёта. --- */
+  h += groupNote(ctx, u);
 
   /* --- факты --- */
   const balance = isSettled(st) ? 0 : amount;
@@ -341,6 +365,21 @@ function smsBody(u, ctx) {
 function orgName(ctx) {
   const st = (ctx && ctx.snap && ctx.snap.settings) || {};
   return String(st.companyName || st.landlordName || 'SuitesForAll').trim() || 'SuitesForAll';
+}
+
+/** Строка «одна лиза на N сьютов» — только когда сьютов действительно больше одного. */
+function groupNote(ctx, u) {
+  let g = [];
+  try { g = (ctx.money && typeof ctx.money.leaseGroup === 'function') ? ctx.money.leaseGroup(u, ctx.snap) : []; }
+  catch (e) { g = []; }
+  if (!g || g.length < 2) return '';
+  const head = g.find(x => x && x.groupRole === 'primary') || g[0];
+  const ids = g.map(x => String((x && x.id) || '')).filter(Boolean).sort();
+  const shown = ids.slice(0, 6).join(', ') + (ids.length > 6 ? ' +' + (ids.length - 6) + ' more' : '');
+  const billed = head && String(head.id) !== String(u.id) ? ' Billed on Suite ' + String(head.id) + '.' : '';
+  return '<div class="hintline" style="margin:-8px 0 12px;color:var(--ink-2)">'
+    + 'One lease covers ' + ids.length + ' suites (' + esc(shown) + ') — the amount above is for the whole lease, '
+    + 'not this suite alone.' + esc(billed) + '</div>';
 }
 
 export function handle(act, el, ctx) {

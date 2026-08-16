@@ -68,6 +68,11 @@ const units = [
   u('301', { stripe: { lastInvoiceYm: YM, lastInvoiceId: 'in_1U4mHY2nq2bZh3q62SEa9jp4' } }),
   u('302', { tenant: '', status: 'vacant', tenantContact: '', email: '', tel: '' }),
   u('303', { tenant: "O'Brien & Sons <Ltd>", tenantContact: "O'Brien" }),
+  // Мульти-сьютовая лиза как в проде (National University: 6 сьютов, деньги
+  // только на head'е). Проверяет, что карточка member'а честно оговаривает сумму.
+  u('400', { groupId: 'g_test', groupRole: 'primary', rent: 13318.33, tenant: 'National University' }),
+  u('401', { groupId: 'g_test', groupRole: 'member', rent: 0, tenant: 'National University' }),
+  u('402', { groupId: 'g_test', groupRole: 'member', rent: 0, tenant: 'National University' }),
 ];
 const snap = {
   buildings: [
