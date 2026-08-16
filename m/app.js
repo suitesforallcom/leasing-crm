@@ -14,6 +14,7 @@ import * as unit from './ui/unit.js';
 import * as lease from './ui/lease.js';
 import * as invoice from './ui/invoice.js';
 import * as switcher from './ui/switcher.js';
+import * as plan from './ui/plan.js';
 
 const SCOPE_KEY = 'sfa_m_building';   // здание запоминается на устройстве
 const BOOT_STUCK_MS = 12000;          // не оставляем оператора на вечном сплэше
@@ -21,6 +22,7 @@ const BOOT_STUCK_MS = 12000;          // не оставляем операто�
 const I = {
   home:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9.5"/></svg>',
   money:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="2" x2="12" y2="22"/><path d="M17 6H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>',
+  plan:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h7V3"/><path d="M10 9v12"/><path d="M10 15h11"/></svg>',
   grid:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
   check:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
   caret:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>',
@@ -162,7 +164,7 @@ const more = {
   handle(){ return false; },
 };
 
-const TABS = { home, payments, more };
+const TABS = { home, payments, plan, more };
 const SHEETS = { unit, lease, invoice, switcher };
 
 /* ---------------- render ---------------- */
@@ -196,7 +198,8 @@ function wireInputs(){
   scrollEl.querySelectorAll('#q, [data-q]').forEach(el => el.addEventListener('input', onQueryInput));
 }
 function renderTabs(){
-  const tabs = [['home', 'Home', I.home], ['payments', 'Payments', I.money], ['more', 'More', I.grid]];
+  const tabs = [['home', 'Home', I.home], ['payments', 'Payments', I.money],
+    ['plan', 'Plan', I.plan], ['more', 'More', I.grid]];
   tabbarEl.innerHTML = tabs.map(t =>
     '<button class="tab" type="button" data-act="tab" data-k="' + t[0] + '" aria-selected="' + (S.tab === t[0]) + '">'
     + t[2] + '<span>' + t[1] + '</span></button>').join('');

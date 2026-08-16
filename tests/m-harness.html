@@ -16,7 +16,10 @@
      с продом, и проверка «класс без CSS» перестала бы что-либо значить. -->
 <script>
   document.write('<style id="appcss"></style>');
-  fetch('../m.html').then(r => r.text()).then(t => {
+  // Кэш-бастер обязателен: без него стенд проверяет классы по СТАРОЙ копии
+  // стиля и ругается на только что добавленное правило (или, хуже, молчит про
+  // удалённое). Ровно та же ловушка, что была со статическим import модулей.
+  fetch('../m.html?v=' + Date.now(), { cache: 'no-store' }).then(r => r.text()).then(t => {
     const m = t.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
     document.getElementById('appcss').textContent = m ? m[1] : '';
     window.__cssReady = true;
@@ -43,10 +46,11 @@
    map браузера, и после правки модуля стенд молча показывал СТАРЫЙ код —
    проверка, которая врёт, хуже отсутствующей. */
 const V = '?v=' + Date.now();
-const [money, fmt, home, payments, unit, lease, invoice, switcher] = await Promise.all([
+const [money, fmt, home, payments, unit, lease, invoice, switcher, plan] = await Promise.all([
   import('../m/lib/money.js' + V), import('../m/lib/format.js' + V),
   import('../m/ui/home.js' + V), import('../m/ui/payments.js' + V), import('../m/ui/unit.js' + V),
   import('../m/ui/lease.js' + V), import('../m/ui/invoice.js' + V), import('../m/ui/switcher.js' + V),
+  import('../m/ui/plan.js' + V),
 ]);
 
 // Стиль подтягивается асинхронно — без ожидания проверка классов даст ложную тревогу.
@@ -79,10 +83,13 @@ const snap = {
     // Два этажа: проверяем группировку выбора юнита и подпись «Floor N».
     { id: 'b1', name: '4355 Central Ave', address: '4355 Central Ave', code: 'CEN', floors: [
       { id: 'f1', name: '3', units },
-      { id: 'f4', name: '4th Floor', units: [
-        u('440', { tenant: '', status: 'vacant', tenantContact: '', email: '', tel: '', rent: 900 }),
-        u('441', { tenant: '', status: 'vacant', tenantContact: '', email: '', tel: '', rent: 950 }),
-        u('445', { tenant: 'Jasmine Kennedy', tenantContact: 'Jasmine' }),   // занят — искать его бесполезно
+      { id: 'f4', name: '4th Floor', outline: { points: [[0,0],[400,0],[400,300],[0,300]] }, units: [
+        u('440', { tenant: '', status: 'vacant', tenantContact: '', email: '', tel: '', rent: 900, x: 10, y: 10, w: 120, h: 90 }),
+        u('441', { tenant: '', status: 'vacant', tenantContact: '', email: '', tel: '', rent: 950, x: 140, y: 10, w: 120, h: 90 }),
+        u('445', { tenant: 'Jasmine Kennedy', tenantContact: 'Jasmine', x: 10, y: 110, w: 120, h: 90 }),   // занят
+        // полигон + общая зона: обе ветки отрисовки должны работать
+        u('446', { tenant: 'Poly Tenant', points: [[270,10],[390,10],[390,100],[330,100],[330,60],[270,60]] }),
+        u('STAIR-4', { type: 'stairs', tenant: '', status: 'vacant', x: 140, y: 110, w: 60, h: 90 }),
       ] },
     ] },
     { id: 'b2', name: 'Second Building', address: '1 Main St', code: 'SEC', floors: [{ id: 'f1', name: '1', units: [u('100')] }] },
@@ -126,7 +133,7 @@ const ctx = () => ({
 });
 
 /* ---- 1. каждый экран и лист рендерится и не пуст ---- */
-const SCREENS = { home, payments };
+const SCREENS = { home, payments, plan };
 const SHEETS = { unit, lease, invoice, switcher };
 const painted = [];
 for (const [name, mod] of Object.entries(SCREENS)) {
@@ -326,11 +333,49 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   S.lease = null; S.sheet = null; S.sheetPayload = null; S.sheetArg = null; S.payload = null;
 }
 
+/* ---- 4f. план этажа ---- */
+{
+  S.tab = 'plan'; S.planFloor = 'f4';
+  const h = plan.render(ctx());
+  painted.push(h);
+  // прямоугольники и полигон рисуются оба
+  if (!/<rect[^>]*data-act="unit"/.test(h)) { say('bad', 'план не рисует прямоугольные юниты'); bad++; }
+  else say('ok', 'план рисует прямоугольные юниты');
+  if (!/<polygon[^>]*data-act="unit"/.test(h)) { say('bad', 'план не рисует полигональные юниты'); bad++; }
+  else say('ok', 'план рисует полигональные юниты (сложная форма)');
+  // общая зона не кликабельна и не красится статусом
+  if (/data-id="STAIR-4"/.test(h)) { say('bad', 'лестница кликабельна — она ничего не должна'); bad++; }
+  else say('ok', 'общие зоны не кликабельны');
+  if (!/var\(--plan-common\)/.test(h)) { say('bad', 'общие зоны без своего цвета'); bad++; }
+  else say('ok', 'общие зоны своим цветом');
+  // цвет юнита — из money.uiStatus
+  if (!/var\(--plan-overdue\)/.test(h)) { say('bad', 'просроченный юнит не покрашен статусом'); bad++; }
+  else say('ok', 'цвет юнита берётся из денежной модели');
+  // подписи не крупнее вместимости фигуры
+  const fss = [...h.matchAll(/font-size="([\d.]+)"/g)].map(m => +m[1]);
+  if (!fss.length) { say('bad', 'ни одной подписи на плане'); bad++; }
+  else if (fss.some(v => v > 60)) { say('bad', 'подпись крупнее фигуры: ' + Math.max(...fss)); bad++; }
+  else say('ok', 'подписи в пределах фигур (' + fss.length + ' шт.)');
+  // этаж без геометрии не роняет экран
+  S.planFloor = 'f1';
+  const h2 = plan.render(ctx());
+  painted.push(h2);
+  if (!/no drawn plan/.test(h2)) { say('bad', 'этаж без геометрии не объяснён'); bad++; }
+  else say('ok', 'этаж без чертежа объясняет это словами, а не пустотой');
+  // переключение этажа и зум — рабочие действия
+  if (plan.handle('planfloor', { getAttribute: () => 'f4' }, ctx()) !== true) { say('bad', 'переключение этажа не обработано'); bad++; }
+  else say('ok', 'переключение этажа работает');
+  plan.handle('planzoom', null, ctx());
+  if (!S.planZoom) { say('bad', 'зум не переключился'); bad++; }
+  else say('ok', 'зум переключается');
+  S.planZoom = false; S.tab = 'home'; S.planFloor = null;
+}
+
 /* ---- 5. каждое data-act действие кто-то обрабатывает (ловит тупики) ---- */
 {
   const acts = new Set();
   painted.join('\n').replace(/data-act="([^"]+)"/g, (m, a) => { acts.add(a); return m; });
-  const srcs = await Promise.all(['ui/home.js','ui/payments.js','ui/unit.js','ui/lease.js','ui/invoice.js','ui/switcher.js','app.js']
+  const srcs = await Promise.all(['ui/home.js','ui/payments.js','ui/unit.js','ui/lease.js','ui/invoice.js','ui/switcher.js','ui/plan.js','app.js']
     .map(f => fetch('../m/' + f + V).then(r => r.text())));
   const all = srcs.join('\n');
   // Действие считается живым, если оно встречается в коде НЕ только там, где
@@ -359,6 +404,7 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
 
 document.getElementById('log').innerHTML = out.join('\n') + `\n\n${bad ? `<span class="bad">${bad} FAILURES</span>` : '<span class="ok">all render checks passed</span>'}`;
 window.__harness = { bad, missing, calls };
+window.__snap = snap; window.__S = S; window.__ctx = ctx;   // для ручных проверок в консоли
 
 /* ---- визуальный режим: рисуем один экран в размер телефона ---- */
 const want = new URLSearchParams(location.search).get('view');
@@ -379,6 +425,19 @@ if (want) {
     // ?preset=service — посмотреть лист счёта с каталогом услуг.
     const preset = new URLSearchParams(location.search).get('preset');
     if (preset && want === 'invoice') { S.inv = null; mod.render(ctx()); if (S.inv) S.inv.preset = preset; }
+    // ?real=1 — подставить НАСТОЯЩУЮ геометрию этажей из прода (только формы,
+    // без имён арендаторов): синтетика из четырёх коробок не покажет, читаются
+    // ли подписи на этаже из шестидесяти юнитов.
+    if (new URLSearchParams(location.search).get('real')) {
+      try {
+        const real = await (await fetch('./fixtures/plan-geometry.json?v=' + Date.now())).json();
+        snap.buildings = [real];
+        S.scope = real.id; S.buildingId = real.id;
+      } catch (e) { console.warn('real geometry not loaded', e); }
+    }
+    // ?floor=f4 — какой этаж показать на плане.
+    const fl = new URLSearchParams(location.search).get('floor');
+    if (fl) S.planFloor = fl;
     // ?step=3 — шаг условий договора (проверять живую сводку под полями).
     const step = new URLSearchParams(location.search).get('step');
     if (want === 'lease' && step) {

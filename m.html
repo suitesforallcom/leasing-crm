@@ -18,10 +18,17 @@
     --accent:#4F46E5; --accent-ink:#4338CA; --accent-soft:#EDEEFD; --on-accent:#FFFFFF; --ok:#059669;   --ok-soft:#E4F5EE; --info:#0284C7; --info-soft:#E2F1FB; --warn:#D97706; --warn-soft:#FBF1E1;
     --bad:#E11D48;  --bad-soft:#FCEAEE; --bad-deep:#9F1239; --idle:#8A8F98; --idle-soft:#EFEEEA; --shadow:0 1px 2px rgba(26,26,28,.05), 0 8px 24px -12px rgba(26,26,28,.18); --sheet-shadow:0 -8px 40px -12px rgba(26,26,28,.35);
     --r-lg:20px; --r-md:14px; --r-sm:10px; --ui:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,Helvetica,Arial,sans-serif; --num:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
-    --safe-b:env(safe-area-inset-bottom,14px); }
+    --safe-b:env(safe-area-inset-bottom,14px);
+    /* План этажа: те же шаги статусов, что у полосы на Payments. */
+    --plan-shell:#FFFFFF; --plan-line:#3A3733; --plan-ink:#1A1A1C; --plan-common:#E9E6DE;
+    --plan-paid:#8FD9BE; --plan-invoiced:#9CCDEA; --plan-due:#EFC98D; --plan-overdue:#F2A2B4;
+    --plan-idle:#DAD7D0; --plan-vacant:#FFFFFF; --plan-reserved:#C3BCF2; }
   @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){ --paper:#141310; --card:#1E1D1A; --card-2:#232219; --sunk:#191815; --line:#302E29; --line-2:#403D36; --ink:#F2F0EA; --ink-2:#A6A299; --ink-3:#7A766D;
       --accent:#8D86F7; --accent-ink:#A9A3FA; --accent-soft:#26224A; --on-accent:#16142B; --ok:#0FAE79;   --ok-soft:#0E2A22; --info:#2B93D4; --info-soft:#0E2433; --warn:#BC8322; --warn-soft:#2C2211;
-      --bad:#E8557A;  --bad-soft:#331520; --bad-deep:#F17E99; --idle:#8E8B84; --idle-soft:#232220; --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px -14px rgba(0,0,0,.7); --sheet-shadow:0 -8px 44px -10px rgba(0,0,0,.75); } }
+      --bad:#E8557A;  --bad-soft:#331520; --bad-deep:#F17E99; --idle:#8E8B84; --idle-soft:#232220; --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px -14px rgba(0,0,0,.7); --sheet-shadow:0 -8px 44px -10px rgba(0,0,0,.75);
+      --plan-shell:#1B1A17; --plan-line:#4A463F; --plan-ink:#F2F0EA; --plan-common:#26241F;
+      --plan-paid:#1F6F52; --plan-invoiced:#1E4A66; --plan-due:#6B4C18; --plan-overdue:#7A2740;
+      --plan-idle:#39362F; --plan-vacant:#211F1B; --plan-reserved:#3B3470; } }
   :root[data-theme="dark"]{ --paper:#141310; --card:#1E1D1A; --card-2:#232219; --sunk:#191815; --line:#302E29; --line-2:#403D36; --ink:#F2F0EA; --ink-2:#A6A299; --ink-3:#7A766D;
     --accent:#8D86F7; --accent-ink:#A9A3FA; --accent-soft:#26224A; --on-accent:#16142B; --ok:#0FAE79;   --ok-soft:#0E2A22; --info:#2B93D4; --info-soft:#0E2433; --warn:#BC8322; --warn-soft:#2C2211;
     --bad:#E8557A;  --bad-soft:#331520; --bad-deep:#F17E99; --idle:#8E8B84; --idle-soft:#232220; --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px -14px rgba(0,0,0,.7); --sheet-shadow:0 -8px 44px -10px rgba(0,0,0,.75); }
@@ -172,6 +179,12 @@
   .cell[data-s="idle"]{ background:var(--idle-soft); border-color:var(--line-2); }
   .cell[data-s="reserved"]{ background:var(--accent-soft); border:1px dotted var(--accent); }
   .cell[data-s="vacant"]{ background:transparent; border:1px dashed var(--line-2); }
+  .plan-wrap{ margin:8px 12px 6px; padding:8px; background:var(--card); border:1px solid var(--line); border-radius:var(--r-md); overflow:auto; -webkit-overflow-scrolling:touch; }
+  .plan-wrap .plan-svg{ display:block; width:100%; height:auto; }
+  .plan-wrap.zoom{ }
+  .plan-wrap.zoom .plan-svg{ width:220%; }          /* панорама скроллом внутри рамки */
+  .plan-svg [data-act="unit"]{ transition:opacity .12s; }
+  .plan-svg [data-act="unit"]:active{ opacity:.65; }
   .legend{ display:flex; flex-wrap:wrap; gap:5px 12px; padding:2px 14px 14px; font-size:11px; color:var(--ink-3); }
   .legend i{ width:9px; height:9px; border-radius:3px; display:inline-block; margin-right:5px; vertical-align:-1px; }
 
