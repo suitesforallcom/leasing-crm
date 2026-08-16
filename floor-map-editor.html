@@ -93370,6 +93370,7 @@ function _qatSyncDeposit() {
 }
 
 async function saveQuickAddTenant() {
+  if (typeof requireLeaderTab === 'function' && !requireLeaderTab('Adding a tenant')) return;
   if (!_qatCtx) {
     // Leases-mode opened the modal with the picker visible but no unit
     // chosen — surface a concrete error instead of failing silently.
@@ -103147,6 +103148,7 @@ function submitMoveOut() {
   }
 }
 function toggleField(f) {
+  if (typeof requireLeaderTab === 'function' && !requireLeaderTab('Changing unit attributes')) return;
   const u = currentUnits().find(x => x.id === selectedIds[0]);
   if (!u) return;
   pushHistory();
@@ -103165,6 +103167,9 @@ function toggleField(f) {
   } catch {}
 }
 function saveDetail() {
+  // Follower-вкладка не сохранит НИЧЕГО (инцидент: массовая смена типов на
+  // квартиры испарилась после перезагрузки). Отказ ДО работы с полями.
+  if (typeof requireLeaderTab === 'function' && !requireLeaderTab('Saving unit details')) return false;
   // Гард «email вместо имени» (аудит 2026-08-16, прод-находка №6): email,
   // сохранённый в Tenant name, утёк в DocuSign-конверт как recipientName.
   // Блокируем сейв ДО pushHistory/коммита в state и возвращаем false —
@@ -106184,6 +106189,10 @@ function toggleEditMode() {
     if (typeof toast === 'function') toast('You do not have permission to edit the map.', 'warning');
     return;
   }
+  // ВКЛЮЧЕНИЕ Edit Mode во follower-вкладке — предупреждаем ДО начала работы,
+  // а не после того, как час правок испарится. Выключение не блокируем.
+  if (!state.settings.editMode
+      && typeof requireLeaderTab === 'function' && !requireLeaderTab('Edit Mode')) return;
   state.settings.editMode = !state.settings.editMode;
   document.getElementById('tglEdit')?.classList.toggle('on', state.settings.editMode);
   document.getElementById('editBtn')?.classList.toggle('active', state.settings.editMode);

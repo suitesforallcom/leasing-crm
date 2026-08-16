@@ -248,10 +248,12 @@ echo "Entry 16 — follower-tab guard on destructive actions:"
 # удалял Suite 418 трижды подряд, каждый раз видя успех.
 if grep -qE "^function requireLeaderTab\(what\)" "$HTML" \
    && grep -qE "requireLeaderTab\('Archiving Suite " "$HTML" \
-   && grep -qE "requireLeaderTab\('Deleting Suite " "$HTML"; then
-  echo "  ✓ requireLeaderTab present and wired into archive + delete"
+   && grep -qE "requireLeaderTab\('Deleting Suite " "$HTML" \
+   && grep -qE "requireLeaderTab\('Saving unit details'\)" "$HTML" \
+   && grep -qE "requireLeaderTab\('Edit Mode'\)" "$HTML"; then
+  echo "  ✓ requireLeaderTab wired into archive + delete + unit edits + Edit Mode"
 else
-  echo "  ✗ Entry 16 — requireLeaderTab missing or unwired: a read-only tab can delete a suite that silently comes back"
+  echo "  ✗ Entry 16 — requireLeaderTab missing or unwired: a read-only tab silently loses deletes OR edits (mass type change vanished 2026-08-16)"
   FAIL=1
 fi
 
