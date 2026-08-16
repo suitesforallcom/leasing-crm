@@ -198,11 +198,7 @@
   .legend{ display:flex; flex-wrap:wrap; gap:5px 12px; padding:2px 14px 14px; font-size:11px; color:var(--ink-3); }
   .legend i{ width:9px; height:9px; border-radius:3px; display:inline-block; margin-right:5px; vertical-align:-1px; }
 
-  /* bottom building bar — the operator lives in ONE building; switching is
-     rare, so it sits in the thumb zone and never occupies the top */
-           border:1px solid var(--line-2); box-shadow:0 6px 20px -10px rgba(26,26,28,.4); cursor:pointer; text-align:left; width:calc(100% - 24px); }
-
-  /* tab bar — three labelled destinations, no hidden gestures */
+  /* tab bar — four labelled destinations, no hidden gestures */
   .tabbar{ position:absolute; left:0; right:0; bottom:0; z-index:40; display:flex; padding:8px 10px calc(10px + var(--safe-b)); background:color-mix(in srgb, var(--card) 94%, transparent); backdrop-filter:saturate(1.4) blur(16px);
            border-top:1px solid var(--line); }
   .tab{ flex:1; background:none; border:0; display:flex; flex-direction:column; align-items:center; gap:4px; padding:5px 0; color:var(--ink-3); cursor:pointer; font-size:11px; font-weight:620; }
