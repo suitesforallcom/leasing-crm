@@ -82,7 +82,13 @@ function stOf(ctx, u, ym) {
     }
     const s = ctx.money.uiStatus(u, ym, ctx.snap);
     return { status: typeof s === 'string' ? s : 'vacant', overdue: s === 'overdue' };
-  } catch (e) { return { status: 'vacant', overdue: false }; }
+  } catch (e) {
+    // Раньше здесь возвращалось 'vacant' — сбой денежной модели красил
+    // ЗАНЯТЫЙ сьют в белый «свободно». Молча врать про деньги нельзя:
+    // отдельный статус, видимый в легенде, и ошибка в консоль.
+    console.error('[m] plan: money model failed for unit', u && u.id, e);
+    return { status: 'unknown', overdue: false };
+  }
 }
 
 /** Прямоугольник или полигон — приводим к одному описанию для отрисовки. */
@@ -249,8 +255,18 @@ function planSvg(ctx, b, f, ym, zoom) {
     // Общие зоны подписываем мельче: это фон, а не то, что оператор ищет.
     // Их подпись прячем, если фигура для неё мала — в отличие от номера сьюта,
     // который нужен всегда.
-    const fs = rentable ? LABEL_FS : LABEL_FS * 0.8;
-    if (!rentable && (w < fs * txt.length * 0.62 || h < fs * 1.6)) continue;
+    const base = rentable ? LABEL_FS : LABEL_FS * 0.8;
+    // Все номера одного кегля — так их можно сравнивать глазом. Но узкая
+    // высокая форма (сьют 20510: ширина 66 при тексте 82) этот кегль не
+    // вмещает, и номер вылезал на соседа. Уменьшаем ТОЛЬКО такие подписи,
+    // остальные остаются выровненными по общему кеглю.
+    const need = txt.length * 0.62;                 // ширина строки в долях кегля
+    const fitW = (w * 0.88) / need;                 // 12% на поля внутри формы
+    const fitH = h * 0.62;
+    const fs = Math.min(base, fitW, fitH);
+    // Номер сьюта нужен ВСЕГДА (Тони увеличит и прочитает), общую зону — только
+    // если её название читаемо: это фон, а не то, что ищут.
+    if (!rentable && fs < base * 0.55) continue;
     labels.push('<text x="' + cx + '" y="' + (cy + fs * 0.35) + '" text-anchor="middle"'
       + ' font-size="' + fs + '" font-weight="' + (rentable ? 700 : 600) + '"'
       + ' fill="var(--plan-' + (rentable ? 'ink' : 'ink-soft') + ')"'
@@ -315,6 +331,12 @@ export function render(ctx) {
   const L = [['paid', 'Paid'], ['invoiced', 'Invoice sent'], ['due', 'Due'],
     ['overdue', 'Not billed · past due'], ['idle', 'Not billed yet'],
     ['reserved', 'Reserved'], ['vacant', 'Vacant']];
+  // «unknown» рисуется только когда денежная модель упала на этом юните.
+  // Показываем его в легенде ТОЛЬКО если он реально есть на этаже, иначе это
+  // строка-пугало на каждом исправном плане.
+  const onFloor = Array.isArray(f && f.units) ? f.units : [];
+  if (onFloor.some(u => u && !u.deletedAt && !u.archivedAt && isRentable(u)
+      && stOf(ctx, u, ym).status === 'unknown')) L.push(['unknown', 'Status unavailable']);
   h += '<div class="legend" style="padding:2px 16px 10px">' + L.map(([k, t]) =>
     '<span><i style="background:var(--plan-' + k + ');border:1px solid var(--plan-line)"></i>' + t + '</span>').join('')
     + '<span><i style="background:var(--plan-invoiced);border:1.5px dashed var(--plan-overdue-mark)"></i>'

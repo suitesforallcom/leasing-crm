@@ -54,15 +54,23 @@ function m$(ctx, n) {
  * «Rent $0/mo» и «August rent $0» рядом с «$13,318.33 past due». Берём ставку
  * лизы с её head'а — ровно так же, как её берёт вердикт.
  */
-function rentShown(ctx, u) {
-  const own = rentOf(u);
+function rentShown(ctx, u) { return fromLeaseHead(ctx, u, rentOf); }
+/**
+ * Значение с ГОЛОВЫ лизы, если на самом юните его нет.
+ * У мульти-сьютовой лизы (National University — 6 сьютов под одним договором)
+ * деньги лежат только на главном сьюте, у остальных 0. Аренда это уже
+ * учитывала, а депозит читался как +u.deposit и показывал члену лизы $0.
+ */
+function fromLeaseHead(ctx, u, pick) {
+  const own = pick(u);
   if (own > 0) return own;
   try {
     const head = ctx.money && typeof ctx.money.leaseHead === 'function' ? ctx.money.leaseHead(u, ctx.snap) : null;
-    if (head && head !== u) return rentOf(head);
+    if (head && head !== u) return pick(head);
   } catch (_) { /* деньги молчат */ }
   return own;
 }
+const depositShown = (ctx, u) => fromLeaseHead(ctx, u, x => (+(x && x.deposit) || 0));
 function dLong(ctx, iso) {
   try { return ctx.fmt.dateLong(iso) || ''; } catch (_) { return String(iso || ''); }
 }
@@ -168,26 +176,25 @@ function provenance(v) {
 /* Живой (не оплаченный и не убитый) счёт за этот месяц — есть ли что напоминать.
    ym матчим ТОЧНО, без created-date фолбэка, и скоупим по клиенту текущего
    арендатора: id сьютов повторяются между зданиями. */
+/**
+ * Живой счёт за месяц — ТОЛЬКО из денежной модели.
+ *
+ * Здесь была своя реализация, и она расходилась с моделью по трём пунктам:
+ * не звала leaseHead (у члена мульти-сьютовой лизы счёт лежит на главном
+ * сьюте), требовала совпадения customerId/почты (юнит без них не видел
+ * СВОЕГО счёта) и знала только bucket open|past_due. Из-за этого карточка и
+ * экран Payments показывали разное про один и тот же счёт, а «Remind»
+ * пропадала там, где он есть.
+ */
 function openInvoice(ctx, u, ym) {
-  const snap = ctx.snap || {};
-  let rows = snap.invoices;
-  if (rows && !Array.isArray(rows) && Array.isArray(rows.rows)) rows = rows.rows;
-  if (!Array.isArray(rows) || !u) return null;
-  const uid = String(u.id || '');
-  const cust = (u.stripe && u.stripe.customerId) || '';
-  const email = String(u.email || '').trim().toLowerCase();
-  if (!uid || (!cust && !email)) return null;
-  for (const r of rows) {
-    if (!r) continue;
-    if (String(r.unitId || (r.metadata && r.metadata.unitId) || '') !== uid) continue;
-    if ((r.ym || (r.metadata && r.metadata.ym) || '') !== ym) continue;
-    const bucket = r.bucket || r.status || '';
-    if (bucket !== 'open' && bucket !== 'past_due') continue;
-    const rc = r.customerId || '';
-    const re = String(r.customerEmail || '').trim().toLowerCase();
-    if ((cust && rc && rc === cust) || (email && re && re === email)) return r;
-  }
-  return null;
+  try {
+    const head = (ctx.money && ctx.money.leaseHead) ? ctx.money.leaseHead(u, ctx.snap) : u;
+    const r = (ctx.money && ctx.money.liveInvoiceFor)
+      ? ctx.money.liveInvoiceFor(head, 'rent', ym, ctx.snap) : null;
+    if (!r) return null;
+    const b = r.bucket || r.status;
+    return (b === 'paid') ? null : r;      // напоминать об оплаченном нечего
+  } catch (e) { return null; }
 }
 
 /* Открытая лиза: 'mtm'/'m2m'/'1', пустой конец, или конец раньше старта.
@@ -213,7 +220,11 @@ function leaseEnd(ctx, u) {
 /* Какое ОДНО действие имеет смысл прямо сейчас (улучшение 3). */
 function plan(ctx, hit, v, ym) {
   const u = hit.u;
-  const st = v.status;
+  // v.ui — словарь ИНТЕРФЕЙСА (money.uiStatus), в нём есть «invoiced».
+  // v.status — словарь денежной модели, где такого значения НЕТ ВООБЩЕ: ветка
+  // ниже была недостижима, и при живом счёте в грейс-периоде карточка
+  // предлагала выставить ВТОРОЙ счёт за тот же месяц.
+  const st = v.ui || v.status;
   const occupied = u.status === 'occupied' || !!(u.tenant || u.company);
   if (!occupied || st === 'vacant') return { kind: 'lease' };
   if (isSettled(st)) return { kind: 'quiet' };
@@ -225,6 +236,27 @@ function plan(ctx, hit, v, ym) {
 }
 
 /* ---------- render ---------- */
+/* Десктоп архивирует полем deletedAt (MONO:30443); archivedAt проверяем на
+   всякий случай — так же, как payments/lease/app. Карточка этого НЕ проверяла:
+   архивный сьют открывался как живой, с балансом и кнопкой отправки счёта. */
+const isArchived = u => !!(u && (u.deletedAt || u.archivedAt));
+
+/** Сколько дней назад, по часам снимка (в тестах время задаётся, а не берётся). */
+function daysSince(ctx, iso) {
+  const t = Date.parse(String(iso || '').slice(0, 10));
+  if (!Number.isFinite(t)) return 0;
+  const now = (ctx && ctx.snap && Number.isFinite(ctx.snap.now)) ? ctx.snap.now : Date.now();
+  return Math.max(0, Math.floor((now - t) / 86400000));
+}
+
+function archivedCard(u, b, close) {
+  const where = String((b && (b.name || b.id)) || '').trim();
+  return '<div class="sheet-h"><div><h3>Suite ' + esc(String(u.id || '')) + ' is archived</h3>'
+    + '<p>' + esc(['This suite was removed from the building', where].filter(Boolean).join(' · '))
+    + '. Nothing can be billed or leased here.</p></div>' + close + '</div>'
+    + '<div class="empty">Restore it on the desktop first if this is wrong.</div>';
+}
+
 export function render(ctx) {
   const hit = resolve(ctx);
   const close = '<button class="x-btn" data-act="close" aria-label="Close">✕</button>';
@@ -235,6 +267,7 @@ export function render(ctx) {
       + '<span><span class="t">Refresh</span><span class="s">pull the latest data</span></span></button>';
   }
   const { u, f, b } = hit;
+  if (isArchived(u)) return archivedCard(u, b, close);
   const S = ctx.S || {};
   const ym = S.ym || todayYm();
   const v = verdictOf(ctx, u, ym);
@@ -275,7 +308,7 @@ export function render(ctx) {
     + '<div class="fact"><div class="k">Balance</div><div class="v"'
     + (st === 'overdue' ? ' style="color:var(--bad)"' : '') + '>' + m$(ctx, balance) + '</div></div>'
     + '<div class="fact"><div class="k">Rent</div><div class="v">' + m$(ctx, rent) + '/mo</div></div>'
-    + '<div class="fact"><div class="k">Deposit</div><div class="v">' + m$(ctx, +u.deposit || 0) + '</div></div>'
+    + '<div class="fact"><div class="k">Deposit</div><div class="v">' + m$(ctx, depositShown(ctx, u)) + '</div></div>'
     + '<div class="fact"><div class="k">Lease ends</div><div class="v sm">' + esc(endTxt) + '</div></div>'
     + '</div>';
 
@@ -333,7 +366,7 @@ export function render(ctx) {
 /* ---------- sticky footer: ОДНО главное действие по состоянию ---------- */
 export function foot(ctx) {
   const hit = resolve(ctx);
-  if (!hit) return '';
+  if (!hit || isArchived(hit.u)) return '';
   const ym = (ctx.S && ctx.S.ym) || todayYm();
   const v = verdictOf(ctx, hit.u, ym);
   const p = plan(ctx, hit, v, ym);
@@ -372,21 +405,29 @@ function orgName(ctx) {
 
 /**
  * Неподписанные конверты договора на этом юните — и кнопка отмены.
- * Показываем только живые: completed/voided/declined отменять нечего.
- * До этого висящий договор можно было отменить только с компьютера.
+ * Показываем только живые: отменять завершённый конверт нечего.
+ *
+ * timedout — это ИСТЁКШИЙ конверт (у DocuSign есть такой статус envelope,
+ * по умолчанию срок 120 дней). Его тут не было: истёкший договор висел как
+ * «Lease awaiting signature» с кнопкой Cancel, которая ничего бы не отменила.
  */
 function pendingLeases(ctx, u) {
   const list = Array.isArray(u && u.leaseEnvelopes) ? u.leaseEnvelopes : [];
-  const dead = { completed: 1, voided: 1, declined: 1 };
+  const dead = { completed: 1, voided: 1, declined: 1, timedout: 1, 'timed out': 1, expired: 1, deleted: 1 };
   const open = list.filter(e => e && e.envelopeId && !dead[String(e.status || '').toLowerCase()]);
   if (!open.length) return '';
   const maySend = (typeof ctx.canSend !== 'function') || ctx.canSend();
   return open.map((e) => {
     const who = e.recipientEmail || e.recipientName || 'the tenant';
     const when = e.sentAt ? dLong(ctx, String(e.sentAt).slice(0, 10)) : '';
+    // Конверт, который висит месяцами, выглядел так же, как отправленный вчера.
+    // У DocuSign он истечёт молча — оператор должен видеть это заранее.
+    const days = daysSince(ctx, e.sentAt);
+    const stale = days >= 30;
     return '<div class="arow-wrap"><span class="arow" style="cursor:default">'
-      + '<span class="astat" data-s="invoiced">' + I.doc + '</span>'
-      + '<span class="amain"><span class="aname">Lease awaiting signature</span>'
+      + '<span class="astat" data-s="' + (stale ? 'overdue' : 'invoiced') + '">' + I.doc + '</span>'
+      + '<span class="amain"><span class="aname">Lease awaiting signature'
+      + (stale ? ' · ' + days + ' days' : '') + '</span>'
       + '<span class="await">' + esc([who, String(e.status || 'sent'), when].filter(Boolean).join(' · ')) + '</span></span></span>'
       + (maySend
         ? '<button class="arow-act" data-act="voidenv" data-env="' + esc(e.envelopeId) + '"'

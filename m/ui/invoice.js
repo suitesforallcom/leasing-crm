@@ -119,9 +119,24 @@ function idemFor(L, body, isDup) {
   const sig = [body.purpose, body.ym, body.amountOverride, body.daysUntilDue, body.description || ''].join('|');
   return (L.idem + '-' + fp(sig) + (isDup ? '-d' : '')).slice(0, 128);
 }
+/**
+ * Годится ли юнит из ССЫЛКИ под счёт. Список выбора это уже фильтровал
+ * (archived + занятость), а предвыбор из payload'а — нет: по старой ссылке
+ * или залежавшемуся slot'у счёт открывался на архивный сьют.
+ */
+function payloadUsable(ctx, p) {
+  if (!p || !p.unitId) return false;
+  const rows = (ctx.snap && ctx.snap.units) || [];
+  const e = rows.find(x => x && x.unit && String(x.unit.id) === String(p.unitId)
+    && (!p.buildingId || String(x.building && x.building.id) === String(p.buildingId)));
+  if (!e) return false;
+  return !e.unit.deletedAt && !e.unit.archivedAt && isOccupied(e.unit);
+}
+
 function st(ctx) {
   const S = ctx.S || (ctx.S = {});
-  const p = payloadOf(ctx);
+  const p0 = payloadOf(ctx);
+  const p = (p0 && p0.unitId && !payloadUsable(ctx, p0)) ? Object.assign({}, p0, { unitId: null, floorId: null }) : p0;
   const seed = p ? (p.buildingId || '') + '|' + (p.unitId || '') : '';
   let L = S.inv;
   if (!L || (seed && L._seed !== seed)) {

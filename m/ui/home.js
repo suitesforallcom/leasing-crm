@@ -314,8 +314,9 @@ function syncLine(ctx) {
   } else {
     text = 'synced ' + when + ' · ' + ctx.fmt.dateShort(Date.now());
   }
-  return '<button class="sync" data-act="sync" aria-label="Refresh data"'
-    + ' style="background:none;border:0;padding:0;cursor:pointer">'
+  // Инлайн-стиля здесь быть не должно: он бил правило button.sync в m.html
+  // своим padding:0, и кнопка обновления оставалась 17px высотой — мимо пальца.
+  return '<button class="sync" data-act="sync" aria-label="Refresh data">'
     + '<i style="background:' + dot + '"></i>' + esc(text) + '</button>';
 }
 

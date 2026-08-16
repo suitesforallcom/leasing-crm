@@ -840,6 +840,275 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   else say('ok', 'no dangling separators');
 }
 
+/* ---- 7. дефекты аудита 2026-08-16: каждый закреплён проверкой ---- */
+{
+  const YM = '2026-08';
+  const ctxOf = (snap, S, m) => ({ S, snap, money: m || money, fmt, canSend: () => true,
+    callCF: () => Promise.resolve({}), building: snap.buildings[0],
+    go(){}, openSheet(){}, closeSheet(){}, toast(){}, refresh(){} });
+  const idsOf = (bid, fid, uid) => ({ buildingId: bid, floorId: fid, unitId: uid });
+  const sheetS = (sheet, ids) => ({ ym: YM, scope: ids.buildingId, sheet,
+    sheetPayload: ids, payload: ids, sheetArg: ids });
+
+  // 7a. Живой счёт => «напомнить», а не второй счёт за тот же месяц.
+  //     Ветка сравнивалась с verdict().status, где значения 'invoiced' НЕТ.
+  {
+    const u = { id: '300', type: 'office', status: 'occupied', tenant: 'Acme', email: 'a@b.co',
+      rent: 1000, leaseStart: '2025-01-01', payments: {}, stripe: { customerId: 'cus_1' } };
+    const b = { id: 'b1', name: 'B', floors: [{ id: 'f1', name: '1', units: [u] }] };
+    const snap = { buildings: [b], units: [{ unit: u, building: b, floor: b.floors[0] }],
+      unitsIndex: { 'b1|300': { unit: u, building: b, floor: b.floors[0] } },
+      invoices: [{ id: 'in_1', number: 'R-1', status: 'open', bucket: 'open', total: 1000,
+        amountPaid: 0, buildingId: 'b1', customerId: 'cus_1',
+        metadata: { unitId: '300', purpose: 'rent', ym: YM } }],
+      invoicesAvailable: true, invoiceBuckets: {},
+      settings: { lateFee: { graceDays: 20 } }, now: new Date('2026-08-16T12:00:00Z').getTime() };
+    const f = unit.foot(ctxOf(snap, sheetS('unit', idsOf('b1', 'f1', '300'))));
+    // Важно ГЛАВНОЕ действие. Вторичная «Invoice» (ghost) законна: бывает
+    // доп.счёт за услугу, и лист счёта сам ловит дубль («An invoice already
+    // exists» + Send дважды). Проверяем, что первым идёт Remind, а не счёт.
+    const first = (f.match(/data-act="(remind|sendinvoice)"/) || [])[1];
+    if (money.uiStatus(u, YM, snap) !== 'invoiced') { say('warn', 'фикстура 7a не даёт invoiced — проверка ослабла'); }
+    else if (first !== 'remind') { say('bad', `live invoice: primary action is "${first}", must be Remind`); bad++; }
+    else if (!/<button class="[^"]*ghost[^"]*"[^>]*data-act="sendinvoice"/.test(f)) {
+      say('bad', 'the extra invoice button is not secondary (missing "ghost")'); bad++;
+    } else say('ok', 'live invoice => Remind is primary, extra invoice stays secondary');
+  }
+
+  // 7a-bis. Лист счёта обязан ПОЙМАТЬ дубль за тот же месяц.
+  {
+    const u = { id: '301', type: 'office', status: 'occupied', tenant: 'Acme', email: 'a@b.co',
+      rent: 1000, leaseStart: '2025-01-01', payments: {}, stripe: { customerId: 'cus_2' } };
+    const b = { id: 'b1', name: 'B', floors: [{ id: 'f1', name: '1', units: [u] }] };
+    const snap = { buildings: [b], units: [{ unit: u, building: b, floor: b.floors[0] }],
+      unitsIndex: { 'b1|301': { unit: u, building: b, floor: b.floors[0] } },
+      invoices: [{ id: 'in_2', number: 'R-2', status: 'open', bucket: 'open', total: 1000,
+        amountPaid: 0, buildingId: 'b1', customerId: 'cus_2',
+        metadata: { unitId: '301', purpose: 'rent', ym: YM } }],
+      invoicesAvailable: true, invoiceBuckets: {}, settings: {} };
+    const r = invoice.render(ctxOf(snap, sheetS('invoice', idsOf('b1', 'f1', '301'))));
+    if (!/already exists|already PAID|already paid/i.test(r)) {
+      say('bad', 'invoice sheet does NOT warn about an existing invoice for the same month'); bad++;
+    } else say('ok', 'invoice sheet warns before a duplicate rent invoice');
+  }
+
+  // 7b. Архивный сьют (deletedAt) не открывается как живой и не даёт кнопок.
+  {
+    const u = { id: '900', type: 'office', status: 'occupied', tenant: 'Gone Inc',
+      deletedAt: '2025-04-01', rent: 5000, leaseStart: '2024-01-01', payments: {} };
+    const b = { id: 'b1', name: 'B', floors: [{ id: 'f1', name: '1', units: [u] }] };
+    const snap = { buildings: [b], units: [{ unit: u, building: b, floor: b.floors[0] }],
+      invoices: [], invoicesAvailable: true, invoiceBuckets: {}, settings: {} };
+    const ids = idsOf('b1', 'f1', '900');
+    const r = unit.render(ctxOf(snap, sheetS('unit', ids)));
+    const ft = unit.foot(ctxOf(snap, sheetS('unit', ids)));
+    if (!/archived/i.test(r)) { say('bad', 'archived unit opens as a live card'); bad++; }
+    else if (/Balance/.test(r) || ft.trim()) { say('bad', 'archived unit still shows money actions'); bad++; }
+    else say('ok', 'archived unit says so and offers nothing');
+    // ...и счёт по прямой ссылке на него тоже не открывается предвыбранным
+    const ri = invoice.render(ctxOf(snap, sheetS('invoice', ids)));
+    if (!/Who is this for\?/.test(ri)) { say('bad', 'invoice sheet accepts an archived unit from a link'); bad++; }
+    else say('ok', 'invoice sheet rejects an archived unit from a link');
+  }
+
+  // 7b-bis. Истёкший конверт DocuSign не висит как «ждём подписи»,
+  //         а долго висящий — виден как долго висящий.
+  {
+    const mkU = (id, env) => ({ id, type: 'office', status: 'vacant', rent: 1000,
+      payments: {}, leaseEnvelopes: [env] });
+    const envOf = (status, sentAt) => ({ envelopeId: 'e1', status, sentAt, recipientEmail: 't@x.co' });
+    const run = (u) => {
+      const b = { id: 'b1', name: 'B', floors: [{ id: 'f1', name: '1', units: [u] }] };
+      const snap = { buildings: [b], units: [{ unit: u, building: b, floor: b.floors[0] }],
+        invoices: [], invoicesAvailable: true, invoiceBuckets: {}, settings: {},
+        now: Date.parse('2026-08-16T12:00:00Z') };
+      return unit.render(ctxOf(snap, sheetS('unit', idsOf('b1', 'f1', u.id))));
+    };
+    const outT = run(mkU('801', envOf('timedout', '2026-01-05')));
+    if (/awaiting signature/.test(outT)) { say('bad', 'an EXPIRED (timedout) envelope still reads "awaiting signature"'); bad++; }
+    else say('ok', 'expired envelope is not shown as awaiting signature');
+
+    const outS = run(mkU('802', envOf('sent', '2026-04-01')));       // 137 дней
+    if (!/awaiting signature/.test(outS)) { say('bad', 'a live sent envelope disappeared from the card'); bad++; }
+    else if (!/\d+ days/.test(outS)) { say('bad', 'a months-old envelope looks as fresh as one sent today'); bad++; }
+    else say('ok', 'a stale envelope shows how long it has been waiting');
+
+    const outF = run(mkU('803', envOf('sent', '2026-08-14')));       // 2 дня
+    if (/\d+ days/.test(outF)) { say('bad', 'a fresh envelope is wrongly flagged as stale'); bad++; }
+    else say('ok', 'a fresh envelope carries no staleness flag');
+  }
+
+  // 7c. Деньги члена мульти-сьютовой лизы читаются с ГОЛОВЫ (аренда и депозит).
+  {
+    const head = { id: '101', type: 'office', status: 'occupied', tenant: 'National University',
+      email: 'n@u.edu', rent: 13318, deposit: 26636, leaseStart: '2024-01-01',
+      groupId: 'g1', groupRole: 'primary', payments: {} };
+    const memb = { id: '102', type: 'office', status: 'occupied', tenant: 'National University',
+      rent: 0, deposit: 0, leaseStart: '2024-01-01', groupId: 'g1', payments: {} };
+    const b = { id: 'b1', name: 'B', floors: [{ id: 'f1', name: '1', units: [head, memb] }] };
+    const snap = { buildings: [b], units: [head, memb].map(u => ({ unit: u, building: b, floor: b.floors[0] })),
+      invoices: [], invoicesAvailable: true, invoiceBuckets: {}, settings: {} };
+    const r = unit.render(ctxOf(snap, sheetS('unit', idsOf('b1', 'f1', '102'))));
+    const dep = (r.match(/Deposit<\/div><div class="v">([^<]+)/) || [])[1] || '';
+    if (!dep || /^\$0$/.test(dep)) { say('bad', 'lease member shows $0 deposit — not read from the lease head'); bad++; }
+    else say('ok', 'lease member reads deposit from the lease head (' + dep + ')');
+  }
+
+  // 7d. Сбой денежной модели на плане НЕ красит занятый сьют в «свободно».
+  {
+    const u = { id: '700', type: 'office', status: 'occupied', tenant: 'X', rent: 1000,
+      leaseStart: '2024-01-01', payments: {}, x: 0, y: 0, w: 100, h: 100 };
+    const b = { id: 'b1', name: 'B', floors: [{ id: 'f1', name: '1', units: [u] }] };
+    const snap = { buildings: [b], units: [{ unit: u, building: b, floor: b.floors[0] }],
+      invoices: [], invoicesAvailable: true, invoiceBuckets: {}, settings: {} };
+    const boom = () => { throw new Error('money model down'); };
+    const broken = Object.assign({}, money, { mapStatus: boom, uiStatus: boom });
+    const S = { ym: YM, scope: 'b1', tab: 'plan', floor: 'f1' };
+    const html = plan.render(ctxOf(snap, S, broken));
+    const svg = html.slice(html.indexOf('<svg'), html.indexOf('</svg>'));   // без легенды
+    const fills = [...svg.matchAll(/fill="var\(--plan-([a-z-]+)\)"/g)].map(m => m[1]);
+    if (fills.includes('vacant')) { say('bad', 'plan paints an OCCUPIED unit as vacant when money fails'); bad++; }
+    else if (!fills.includes('unknown')) { say('bad', 'plan has no distinct fill for a money-model failure'); bad++; }
+    else if (!/Status unavailable/.test(html)) { say('bad', 'unknown fill is not explained in the legend'); bad++; }
+    else say('ok', 'money-model failure paints "unknown", never "vacant"');
+    if (/Status unavailable/.test(plan.render(ctxOf(snap, S)))) {
+      say('bad', 'healthy plan shows the "Status unavailable" legend row'); bad++;
+    } else say('ok', 'healthy plan has no spurious legend row');
+  }
+
+  // 7e. Палитра плана обязана быть в ОБОИХ тёмных блоках: media И явный выбор.
+  {
+    const shellSrc = await (await fetch('../m.html?v=' + Date.now(), { cache: 'no-store' })).text();
+    const dark = shellSrc.slice(shellSrc.indexOf(':root[data-theme="dark"]'));
+    const blk = dark.slice(0, dark.indexOf('}') + 1);
+    const missing = ['shell', 'paid', 'invoiced', 'overdue', 'vacant', 'unknown']
+      .filter(k => !new RegExp('--plan-' + k + '\\s*:').test(blk));
+    if (missing.length) { say('bad', 'explicit dark theme keeps the LIGHT plan palette: --plan-' + missing.join(', --plan-')); bad++; }
+    else say('ok', 'plan palette defined in the explicit dark theme too');
+    const tok = (shellSrc.match(/--plan-unknown\s*:/g) || []).length;
+    if (tok < 3) { say('bad', `--plan-unknown defined ${tok}/3 times (light + media dark + explicit dark)`); bad++; }
+    else say('ok', '--plan-unknown defined in all three theme blocks');
+  }
+}
+
+/* ---- 8. план на НАСТОЯЩЕЙ геометрии прода (tests/fixtures/plan-geometry.json)
+       Синтетический этаж из одного квадрата ничего не доказывает: беда с
+       подписями вылезает только на реальных узких и Г-образных формах. ---- */
+try {
+  const b = await (await fetch('../tests/fixtures/plan-geometry.json?v=' + Date.now(), { cache: 'no-store' })).json();
+  const stage = document.createElement('div');
+  stage.style.cssText = 'position:fixed;left:-9999px;top:0;width:390px';
+  document.body.appendChild(stage);
+  let missTotal = 0, overTotal = 0, sizes = [], shrunk = 0, floors = 0;
+  const missWhere = [], overWhere = [];
+
+  for (const f of (b.floors || [])) {
+    const snap = { buildings: [b], units: (f.units || []).map(u => ({ unit: u, building: b, floor: f })),
+      invoices: [], invoicesAvailable: true, invoiceBuckets: {}, settings: {} };
+    const html = plan.render({ S: { ym: YM, scope: b.id, tab: 'plan', planFloor: f.id }, snap, money, fmt,
+      canSend: () => true, building: b, go(){}, openSheet(){}, closeSheet(){}, toast(){}, refresh(){} });
+    const i0 = html.indexOf('<svg');
+    if (i0 < 0) continue;                       // этаж без чертежа — законно
+    floors++;
+    stage.innerHTML = html.slice(i0, html.indexOf('</svg>') + 6);
+    const el = stage.querySelector('svg');
+    const geoms = [...el.querySelectorAll('rect,polygon')].map(g => {
+      const bb = g.getBBox();
+      return { cx: bb.x + bb.width / 2, cy: bb.y + bb.height / 2, w: bb.width, h: bb.height };
+    });
+    const rentable = (f.units || []).filter(u => u && !u.deletedAt && !u.archivedAt
+      && u.rentable !== false && (!u.type || u.type === 'office'));
+    const texts = [...el.querySelectorAll('text')];
+    const shown = new Set(texts.map(t => t.textContent.trim()));
+    const miss = rentable.map(u => String(u.id)).filter(id => !shown.has(id));
+    if (miss.length) { missTotal += miss.length; missWhere.push(`${f.name}: ${miss.slice(0, 6).join(',')}`); }
+
+    const ids = new Set(rentable.map(u => String(u.id)));
+    const fsOnFloor = [];
+    for (const t of texts) {
+      const ax = +t.getAttribute('x'), ay = +t.getAttribute('y'), tb = t.getBBox();
+      // «своя» форма — та, чей центр совпадает с якорем подписи. Поиск
+      // наименьшей СОДЕРЖАЩЕЙ формы даёт ложные срабатывания на вложенных.
+      const own = geoms.slice().sort((p, q) =>
+        Math.hypot(p.cx - ax, p.cy - ay) - Math.hypot(q.cx - ax, q.cy - ay))[0];
+      if (own && tb.width > own.w + 0.5) { overTotal++; overWhere.push(`${f.name} «${t.textContent}»`); }
+      if (ids.has(t.textContent.trim())) fsOnFloor.push(+t.getAttribute('font-size'));
+    }
+    if (fsOnFloor.length) {
+      const mx = Math.max(...fsOnFloor);
+      shrunk += fsOnFloor.filter(x => x < mx - 0.01).length;
+      sizes.push(fsOnFloor.length);
+    }
+  }
+  stage.remove();
+
+  if (!floors) { say('bad', 'plan geometry fixture produced no drawable floor'); bad++; }
+  else if (missTotal) { say('bad', `${missTotal} suite numbers missing from the plan (${missWhere.join('; ')})`); bad++; }
+  else say('ok', `every suite number is drawn on all ${floors} real floors`);
+
+  if (overTotal) { say('bad', `${overTotal} label(s) overflow their own shape: ${overWhere.slice(0, 4).join('; ')}`); bad++; }
+  else say('ok', 'no label overflows its own shape on the real plans');
+
+  // Выровненность: ужиматься позволено ЛИШЬ единицам, иначе «единый кегль»
+  // перестаёт быть правдой и номера снова «едут».
+  const totalNums = sizes.reduce((a, c) => a + c, 0);
+  if (totalNums && shrunk / totalNums > 0.1) {
+    say('bad', `${shrunk}/${totalNums} suite numbers had to shrink — labels are no longer aligned`); bad++;
+  } else say('ok', `suite numbers share one size (${shrunk}/${totalNums} shrunk to fit)`);
+} catch (e) {
+  say('bad', 'real-geometry plan check crashed: ' + e.message); bad++;
+}
+
+/* ---- 9. цели нажатия: палец не попадает в кнопку меньше 24px ----
+       Меряем ОТРИСОВАННЫЕ элементы на ширине телефона: по CSS этого не видно,
+       кнопка бывает мала из-за содержимого, а не из-за правила. ---- */
+{
+  const stage = document.getElementById('stage');
+  const screen = document.getElementById('screen');
+  const sBody = document.getElementById('sheetBody');
+  const prev = { w: stage.style.width, pos: stage.style.position, left: stage.style.left };
+  stage.style.cssText = 'position:fixed;left:0;top:0;width:390px;visibility:hidden';
+
+  const tiny = [];
+  const measure = (label) => {
+    for (const el of stage.querySelectorAll('button, a, input, select, [data-act]')) {
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height) continue;                     // не отрисован
+      if (getComputedStyle(el).pointerEvents === 'none') continue;
+      if (el.closest('svg')) continue;                         // сьют на плане: цель = сама фигура
+      if (r.width < 24 || r.height < 24) {
+        const what = (el.textContent || '').trim().slice(0, 20)
+          || el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.tagName;
+        tiny.push(`${label}/${what} ${r.width.toFixed(0)}x${r.height.toFixed(0)}`);
+      }
+    }
+  };
+
+  const ids = { buildingId: 'b1', floorId: 'f1', unitId: '301' };
+  for (const [name, mod] of Object.entries(SCREENS)) {
+    S.sheet = null; S.tab = name;
+    try { screen.innerHTML = mod.render(ctx()); sBody.innerHTML = ''; } catch (e) { continue; }
+    measure(name);
+  }
+  for (const [name, mod] of Object.entries(SHEETS)) {
+    S.lease = null; S.inv = null;
+    S.sheet = name; S.sheetPayload = ids; S.sheetArg = ids; S.payload = ids;
+    try {
+      screen.innerHTML = '';
+      sBody.innerHTML = mod.render(ctx());
+      document.getElementById('sheetFoot').innerHTML =
+        (typeof mod.foot === 'function' ? (mod.foot(ctx()) || '') : '');
+    } catch (e) { continue; }
+    measure(name);
+  }
+  S.sheet = null; screen.innerHTML = ''; sBody.innerHTML = '';
+  document.getElementById('sheetFoot').innerHTML = '';
+  stage.style.cssText = ''; stage.style.width = prev.w; stage.style.position = prev.pos; stage.style.left = prev.left;
+
+  if (tiny.length) { say('bad', `tap targets under 24px: ${[...new Set(tiny)].slice(0, 8).join('; ')}`); bad++; }
+  else say('ok', 'every rendered tap target is at least 24x24');
+}
+
 document.getElementById('log').innerHTML = out.join('\n') + `\n\n${bad ? `<span class="bad">${bad} FAILURES</span>` : '<span class="ok">all render checks passed</span>'}`;
 window.__harness = { bad, missing, calls };
 window.__snap = snap; window.__S = S; window.__ctx = ctx;   // для ручных проверок в консоли
