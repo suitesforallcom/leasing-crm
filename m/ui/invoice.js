@@ -120,7 +120,7 @@ function st(ctx) {
     L = S.inv = {
       _seed: seed, buildingId: (p && p.buildingId) || null, unitId: (p && p.unitId) || null,
       floorId: (p && p.floorId) || null, preset: 'rent', ym: todayYm(), amount: '', days: 14, memo: '',
-      idem: newKey(), confirmDup: null, busy: false, err: null, done: null,
+      idem: newKey(), confirmDup: null, busy: false, err: null, done: null, svcId: null, q: '',
     };
   }
   return L;
@@ -157,6 +157,42 @@ const PRESETS = [
   { k: 'custom', purpose: 'custom', label: 'Custom' },
 ];
 const presetOf = (k) => PRESETS.find((p) => p.k === k) || PRESETS[0];
+
+/* ---- каталог услуг воркспейса ---------------------------------------------
+   Источник тот же, что у полной версии: state.settings.additionalServices
+   (десктоп строит из него optgroup «From service catalog», MONO:150300).
+   Позиция каталога = счёт с purpose 'custom', описанием = name и суммой из
+   каталога — ровно как делает десктоп (MONO:151104). Свой список здесь не
+   заводим: разойдётся с прайсом, по которому выставляют счета с компьютера. */
+const FREQ_SUFFIX = { monthly: '/mo', hourly: '/hr', daily: '/day', once: ' one-time' };
+function serviceCatalog(snap) {
+  const list = (snap && snap.settings && snap.settings.additionalServices) || [];
+  if (!Array.isArray(list)) return [];
+  return list.filter((s) => s && s.name && +s.amount > 0)
+    .slice()
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+}
+const serviceById = (snap, id) => serviceCatalog(snap).find((s) => String(s.id) === String(id)) || null;
+const servicePrice = (ctx, s) => usd(ctx, +s.amount) + (FREQ_SUFFIX[s.frequency || 'monthly'] || '');
+
+/** Список услуг: тап подставляет и сумму, и текст для арендатора. */
+function serviceList(ctx, L) {
+  const cat = serviceCatalog(ctx.snap);
+  if (!cat.length) {
+    return '<div class="whatnext" style="margin-bottom:10px">' + I.info + '<span>No services in the catalog yet. '
+      + 'Add them in the full version (Settings → Billing), or use Custom and type the amount.</span></div>';
+  }
+  return '<div class="field"><label>Which service</label></div>'
+    + cat.map((s) => {
+      const on = String(L.svcId || '') === String(s.id);
+      return '<button class="act-row" data-act="inv:svc" data-id="' + esc(s.id) + '"'
+        + ' aria-pressed="' + on + '"'
+        + (on ? ' style="border-color:var(--accent);background:var(--accent-soft)"' : '') + '>'
+        + (on ? I.check : I.money)
+        + '<span><span class="t">' + esc(s.name) + '</span><span class="s">' + esc(servicePrice(ctx, s))
+        + (s.description ? ' · ' + esc(s.description) : '') + '</span></span></button>';
+    }).join('');
+}
 const periodic = (k) => k === 'rent' || k === 'late';        // только у этих ym входит в дедуп-ключ
 // Каскад late fee workspace → building → floor → unit (getLateFeeConfig :144072).
 function lateCfg(snap, hit) {
@@ -187,7 +223,7 @@ function defaultMemo(L, hit) {
   if (L.preset === 'rent') return 'Rent — ' + s + ' · ' + ymLabel(L.ym);
   if (L.preset === 'deposit') return 'Security deposit — ' + s;
   if (L.preset === 'late') return 'Late charge — ' + s + ' · ' + ymLabel(L.ym);
-  if (L.preset === 'service') return 'Service — ' + s;
+  if (L.preset === 'service') return '';                 // текст приходит из выбранной позиции каталога
   return '';
 }
 const amountOf = (ctx, L, hit) => (L.amount === '' ? defaultAmount(ctx, L, hit) : (+String(L.amount).replace(/[$,\s]/g, '') || 0));
@@ -384,21 +420,66 @@ function qrBlock(url) {
 }
 
 /* ---- экраны ---------------------------------------------------------------- */
+const PICK_CAP = 120;      // потолок ОТРИСОВКИ, а не поиска
+
+const invHay = (e) => [e.unit.tenant, e.unit.company, e.unit.id, e.building.name,
+  e.floor && e.floor.name, e.unit.tel || e.unit.phone].filter(Boolean).join(' ').toLowerCase();
+
+/**
+ * Список арендаторов.
+ * Раньше здесь было slice(0, 80) + bindFilter, то есть поиск прятал уже
+ * ОТРИСОВАННЫЕ строки — всё, что не попало в первые 80, найти было нельзя.
+ * Тот же дефект стоил оператору попытки выписать договор (см. lease.js).
+ * Фильтруем данные, потолок применяем к результату.
+ */
+function pickRows(ctx, rows, q) {
+  const hits = q ? rows.filter((e) => {
+    const hay = invHay(e);
+    return hay.includes(q) || hay.includes(q.replace(/^0+(\d)/, '$1'));
+  }) : rows;
+  const shown = hits.slice(0, PICK_CAP);
+  if (!shown.length) {
+    return '<div class="empty">' + (q ? 'No tenant matches “' + esc(q) + '”.'
+      : 'No tenants in this building yet.') + '</div>';
+  }
+  let h = shown.map((e) => {
+    const u = e.unit, nm = u.tenant || u.company || suiteLabel(u);
+    return '<button class="act-row" data-act="inv:pick" data-b="' + esc(e.building.id) + '" data-f="'
+      + esc((e.floor && e.floor.id) || '') + '" data-u="' + esc(u.id) + '">' + I.user
+      + '<span><span class="t">' + esc(nm) + '</span><span class="s">' + esc(suiteLabel(u)) + ' · '
+      + esc(e.building.name || '') + '</span></span></button>';
+  }).join('');
+  if (hits.length > shown.length) {
+    h += '<div class="hintline" style="text-align:center;padding:8px">Showing ' + shown.length
+      + ' of ' + hits.length + ' — type to narrow it down.</div>';
+  }
+  return h;
+}
+
 function picker(ctx) {
   const snap = ctx.snap || {}, scope = String((ctx.S && ctx.S.scope) || 'all');
+  const L = st(ctx);
   const rows = (snap.units || []).filter((e) => e && !e.unit.archivedAt && isOccupied(e.unit)
-    && (scope === 'all' || String(e.building.id) === scope)).slice(0, 80);
-  bindFilter('invQ', 'data-row');
+    && (scope === 'all' || String(e.building.id) === scope));
+  bindPickInv(ctx, L, rows);
   return '<div class="field"><label>Who is this for?</label><div class="searchbox" style="box-shadow:none">' + I.search
-    + '<input id="invQ" placeholder="Tenant, suite or company" autocomplete="off"></div></div>'
-    + (rows.length ? rows.map((e) => {
-      const u = e.unit, nm = u.tenant || u.company || suiteLabel(u);
-      return '<button class="act-row" data-act="inv:pick" data-b="' + esc(e.building.id) + '" data-f="'
-        + esc(e.floor.id || '') + '" data-u="' + esc(u.id) + '" data-row="'
-        + esc([nm, u.company, u.id, e.building.name, u.tel || u.phone || ''].join(' ').toLowerCase()) + '">' + I.user
-        + '<span><span class="t">' + esc(nm) + '</span><span class="s">' + esc(suiteLabel(u)) + ' · '
-        + esc(e.building.name || '') + '</span></span></button>';
-    }).join('') : '<div class="empty">No tenants in this building yet.</div>');
+    + '<input id="invQ" placeholder="Tenant, suite or company" autocomplete="off" value="' + esc(L.q || '') + '"></div></div>'
+    + '<div id="invList">' + pickRows(ctx, rows, String(L.q || '').trim().toLowerCase()) + '</div>';
+}
+function bindPickInv(ctx, L, rows) {
+  setTimeout(() => {
+    const inp = document.getElementById('invQ');
+    const list = document.getElementById('invList');
+    if (!inp || !list || inp.dataset.bound) return;
+    inp.dataset.bound = '1';
+    // Перерисовываем только список: трогать input нельзя — на телефоне это
+    // уводит фокус и закрывает клавиатуру после каждого символа.
+    inp.addEventListener('input', () => {
+      L.q = inp.value;
+      try { list.innerHTML = pickRows(ctx, rows, inp.value.trim().toLowerCase()); }
+      catch (e) { console.error('[m] tenant picker failed:', e); }
+    });
+  }, 0);
 }
 function dupCard(ctx, L, dup) {
   const r = dup.row;
@@ -438,6 +519,9 @@ function form(ctx, L, hit) {
       + '<button aria-pressed="true" data-act="inv:noop">' + esc(ymLabel(L.ym)) + '</button>'
       + '<button data-act="inv:ym" data-d="1" style="flex:0 0 56px">›</button></div></div>';
   }
+  // Service — не свободная строка: оператор выбирает позицию из того же
+  // каталога, по которому выставляет счета с компьютера.
+  if (L.preset === 'service') h += serviceList(ctx, L);
   h += '<div class="amount"><span class="cur">$</span><input class="n" id="invAmt" inputmode="decimal" '
     + 'aria-label="Amount" value="' + esc(amt ? String(amt) : '') + '" placeholder="0"></div>';
   h += '<div class="field"><label>Payment due in</label><div class="seg" style="margin-bottom:0">'
@@ -536,6 +620,17 @@ export function handle(act, el, ctx) {
   if (act === 'inv:preset') {
     L.preset = el.getAttribute('data-k') || 'rent';
     L.amount = ''; L.memo = ''; L.confirmDup = null; L.err = null;    // сумма и текст пересчитываются под пресет
+    L.svcId = null;                                                   // выбор услуги не переносим на другой пресет
+    return true;
+  }
+  if (act === 'inv:svc') {
+    const svc = serviceById(ctx.snap, el.getAttribute('data-id'));
+    if (!svc) return true;
+    // Повторный тап снимает выбор — иначе от ошибочной услуги не отделаться,
+    // не закрыв лист целиком.
+    if (String(L.svcId || '') === String(svc.id)) { L.svcId = null; L.amount = ''; L.memo = ''; }
+    else { L.svcId = String(svc.id); L.amount = String(+svc.amount); L.memo = svc.name; }
+    L.confirmDup = null; L.err = null;
     return true;
   }
   if (act === 'inv:ym') {
@@ -586,6 +681,9 @@ async function send(ctx, L, hit, isDup) {
   const memo = String(memoOf(L, hit) || '').trim();
   const tel = hit.unit.tel || hit.unit.phone || '';
 
+  if (L.preset === 'service' && !L.svcId && !memoOf(L, hit)) {
+    return fail(ctx, L, 'Pick a service from the list first — or use Custom to type your own.');
+  }
   if (!(amount > 0)) return fail(ctx, L, 'Enter an amount greater than $0.');
   if (!buildingId || !floorId || !unitId) return fail(ctx, L, 'This unit is missing its building or floor — open it in the full version.');
   if (purpose === 'rent' && !/^\d{4}-\d{2}$/.test(L.ym)) return fail(ctx, L, 'Pick a billing month first.');

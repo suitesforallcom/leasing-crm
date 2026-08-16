@@ -230,34 +230,174 @@ function dsCfg(snap) {
 }
 
 /* ---- шаги ------------------------------------------------------------------ */
+/** «4th Floor» уже человекочитаемо; голое «3» — нет. Как на экране Payments. */
+function floorName(f, idx) {
+  const n = String((f && f.name) || '').trim();
+  if (n) return /^\d{1,3}[A-Za-z]?$/.test(n) ? 'Floor ' + n : n;
+  const lv = f && f.level;
+  return 'Floor ' + (lv != null ? lv : (idx + 1));
+}
+/** Строка поиска юнита: номер, имя, здание, этаж — всё, что оператор может набрать. */
+const rowHay = (e) => [e.unit.id, e.unit.name, e.building.name, e.floor && e.floor.name]
+  .filter(Boolean).join(' ').toLowerCase();
+
+function matches(e, q) {
+  if (!q) return true;
+  const hay = rowHay(e);
+  // Прощаем ведущие нули: «044» должно находить сьют 44.
+  return hay.includes(q) || hay.includes(q.replace(/^0+(\d)/, '$1'));
+}
+
+const PICK_CAP = 120;      // потолок ОТРИСОВКИ, а не поиска: искать надо во всём
+
+/**
+ * Список свободных юнитов, сгруппированный по зданию и этажу.
+ *
+ * Раньше здесь было rows.slice(0, 60), а поиск работал через bindFilter —
+ * то есть прятал уже отрисованные строки. Всё, что не попало в первые 60
+ * (у Pinnellas Park это весь 4-й этаж), НАЙТИ БЫЛО НЕВОЗМОЖНО: оператор
+ * набирал «445» и получал пустоту. Теперь фильтруем ДАННЫЕ, а потолок
+ * применяем к результату фильтра.
+ */
+function pickList(ctx, vacant, taken, q) {
+  const hits = vacant.filter((e) => matches(e, q));
+  const shown = hits.slice(0, PICK_CAP);
+
+  let h = '';
+  // Занятый юнит — частая причина «его нет в списке». Молчать здесь нельзя:
+  // оператор ищет сьют 445, а он сдан, и пустой экран это не объясняет.
+  const busy = q ? taken.filter((e) => matches(e, q)).slice(0, 4) : [];
+  if (busy.length) {
+    h += '<div class="verdict" data-s="due" style="align-items:flex-start;margin-bottom:10px">'
+      + '<span class="vi">' + I.alert + '</span><span><span class="vt">'
+      + (busy.length === 1 ? 'That unit is occupied' : 'Some matches are occupied') + '</span>'
+      + busy.map((e) => '<span class="vs">' + esc(suiteLabel(e.unit)) + ' · '
+          + esc(floorName(e.floor, 0)) + ' — ' + esc(e.unit.tenant || e.unit.company || 'occupied') + '</span>').join('')
+      + '<span class="vs" style="margin-top:3px">A new lease needs a vacant unit. For a renewal use the full version.</span>'
+      + '</span></div>';
+  }
+
+  if (!shown.length) {
+    h += '<div class="empty">' + (q ? 'No vacant unit matches “' + esc(q) + '”.'
+      : 'No vacant units here. Try “Search all buildings too”.') + '</div>';
+    return h;
+  }
+
+  // Группируем: здание → этаж. Порядок этажей — как в самом здании.
+  const byB = new Map();
+  for (const e of shown) {
+    const bk = String(e.building.id);
+    if (!byB.has(bk)) byB.set(bk, { b: e.building, floors: new Map() });
+    const g = byB.get(bk);
+    const fk = String((e.floor && e.floor.id) || '');
+    if (!g.floors.has(fk)) g.floors.set(fk, { f: e.floor, rows: [] });
+    g.floors.get(fk).rows.push(e);
+  }
+  const multiB = byB.size > 1;
+  for (const g of byB.values()) {
+    if (multiB) {
+      h += '<div style="font-size:11.5px;font-weight:700;color:var(--ink);margin:14px 0 6px">'
+        + esc(g.b.name || g.b.id) + '</div>';
+    }
+    let i = 0;
+    for (const fg of g.floors.values()) {
+      h += '<div style="font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);'
+        + 'font-weight:700;margin:' + (i++ ? '14px' : '10px') + ' 0 6px;display:flex;justify-content:space-between">'
+        + '<span>' + esc(floorName(fg.f, i - 1)) + '</span><span style="opacity:.7">' + fg.rows.length + '</span></div>';
+      h += fg.rows.map((e) => {
+        const u = e.unit, b = e.building;
+        return '<button class="act-row" data-act="lease:pick" data-b="' + esc(b.id) + '" data-f="' + esc((e.floor && e.floor.id) || '')
+          + '" data-u="' + esc(u.id) + '">' + I.bld
+          + '<span><span class="t">' + esc(suiteLabel(u)) + (multiB ? ' · ' + esc(b.name || b.id) : '') + '</span><span class="s">'
+          + (u.sqft ? esc(u.sqft) + ' ft² · ' : '') + 'asking ' + esc(usd(ctx, u.rent || u.contractRent || 0))
+          + '/mo</span></span></button>';
+      }).join('');
+    }
+  }
+  if (hits.length > shown.length) {
+    h += '<div class="hintline" style="text-align:center;padding:8px">Showing ' + shown.length
+      + ' of ' + hits.length + ' — type to narrow it down.</div>';
+  }
+  return h;
+}
+
+/** Список знакомых арендаторов. Фильтр по ДАННЫМ — см. комментарий у pickList. */
+function peopleList(people, q) {
+  const hay = (e) => [e.unit.tenant, e.unit.company, e.unit.id, e.building.name, e.unit.email]
+    .filter(Boolean).join(' ').toLowerCase();
+  const hits = q ? people.filter((e) => {
+    const s = hay(e);
+    return s.includes(q) || s.includes(q.replace(/^0+(\d)/, '$1'));
+  }) : people;
+  const shown = hits.slice(0, PICK_CAP);
+  if (!shown.length) {
+    return '<div class="empty">' + (q ? 'Nobody matches “' + esc(q) + '”. Use “New tenant”.'
+      : 'Nobody with an email on file here yet — use “New tenant”.') + '</div>';
+  }
+  let h = shown.map((e) => {
+    const u = e.unit, nm = u.tenant || u.company || u.email;
+    return '<button class="act-row" data-act="lease:person" data-name="' + esc(u.tenant || '') + '" data-co="'
+      + esc(u.company || '') + '" data-email="' + esc(u.email) + '" data-tel="' + esc(u.tel || u.phone || '') + '">' + I.user
+      + '<span><span class="t">' + esc(nm) + '</span><span class="s">' + esc(u.email) + ' · ' + esc(suiteLabel(u))
+      + ' · ' + esc(e.building.name || '') + '</span></span></button>';
+  }).join('');
+  if (hits.length > shown.length) {
+    h += '<div class="hintline" style="text-align:center;padding:8px">Showing ' + shown.length
+      + ' of ' + hits.length + ' — type to narrow it down.</div>';
+  }
+  return h;
+}
+function bindPeople(L, people) {
+  setTimeout(() => {
+    const inp = document.getElementById('lsWho');
+    const list = document.getElementById('lsWhoList');
+    if (!inp || !list || inp.dataset.bound) return;
+    inp.dataset.bound = '1';
+    inp.addEventListener('input', () => {
+      L.wq = inp.value;
+      try { list.innerHTML = peopleList(people, inp.value.trim().toLowerCase()); }
+      catch (e) { console.error('[m] people picker failed:', e); }
+    });
+  }, 0);
+}
+
 function step1(ctx, L) {
   const snap = ctx.snap || {}, scope = String((ctx.S && ctx.S.scope) || 'all');
   const all = L.all || scope === 'all';
-  const rows = (snap.units || []).filter((e) => e && isLeasable(e.unit) && !isOccupied(e.unit)
-    && (all || String(e.building.id) === scope));
-  const shown = rows.slice(0, 60);
-  bindFilter('lsQ', 'data-row');
+  const inScope = (e) => e && (all || String(e.building.id) === scope);
+  const units = snap.units || [];
+  const vacant = units.filter((e) => inScope(e) && isLeasable(e.unit) && !isOccupied(e.unit));
+  const taken = units.filter((e) => inScope(e) && isLeasable(e.unit) && isOccupied(e.unit));
+
   let h = '<div class="field"><label>Find a unit</label><div class="searchbox" style="box-shadow:none">' + I.search
-    + '<input id="lsQ" placeholder="Suite number or building" autocomplete="off"></div></div>';
+    + '<input id="lsQ" placeholder="Suite number, floor or building" autocomplete="off"'
+    + ' value="' + esc(L.q || '') + '"></div></div>';
   if (scope !== 'all') {
     h += '<div class="chips" style="padding:8px 0 2px"><button class="fchip" data-act="lease:all" aria-pressed="'
       + (!!L.all) + '">' + (L.all ? 'Searching every building' : 'Search all buildings too') + '</button></div>';
   }
   h += '<div style="font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);'
-    + 'font-weight:700;margin:14px 0 8px">Vacant right now · ' + rows.length + '</div>';
-  h += shown.length ? shown.map((e) => {
-    const u = e.unit, b = e.building;
-    return '<button class="act-row" data-act="lease:pick" data-b="' + esc(b.id) + '" data-f="' + esc(e.floor.id || '')
-      + '" data-u="' + esc(u.id) + '" data-row="' + esc([u.id, u.name, b.name].join(' ').toLowerCase()) + '">' + I.bld
-      + '<span><span class="t">' + esc(suiteLabel(u)) + ' · ' + esc(b.name || b.id) + '</span><span class="s">'
-      + (u.sqft ? esc(u.sqft) + ' ft² · ' : '') + 'asking ' + esc(usd(ctx, u.rent || u.contractRent || 0))
-      + '/mo</span></span></button>';
-  }).join('') : '<div class="empty">No vacant units here. Try “Search all buildings too”.</div>';
-  if (rows.length > shown.length) {
-    h += '<div class="hintline" style="text-align:center;padding:8px">Showing the first ' + shown.length
-      + ' — type to narrow it down.</div>';
-  }
+    + 'font-weight:700;margin:14px 0 8px">Vacant right now · ' + vacant.length + '</div>';
+  h += '<div id="lsList">' + pickList(ctx, vacant, taken, String(L.q || '').trim().toLowerCase()) + '</div>';
+
+  // Перерисовываем ТОЛЬКО список: трогать input нельзя — на телефоне это уводит
+  // фокус и закрывает клавиатуру после каждой набранной цифры.
+  bindPick(ctx, L, vacant, taken);
   return h;
+}
+
+function bindPick(ctx, L, vacant, taken) {
+  setTimeout(() => {
+    const inp = document.getElementById('lsQ');
+    const list = document.getElementById('lsList');
+    if (!inp || !list || inp.dataset.bound) return;
+    inp.dataset.bound = '1';
+    inp.addEventListener('input', () => {
+      L.q = inp.value;                                   // переживает перерисовку листа оболочкой
+      try { list.innerHTML = pickList(ctx, vacant, taken, inp.value.trim().toLowerCase()); }
+      catch (e) { console.error('[m] unit picker failed:', e); }
+    });
+  }, 0);
 }
 function step2(ctx, L) {
   const snap = ctx.snap || {}, scope = String((ctx.S && ctx.S.scope) || 'all');
@@ -285,19 +425,13 @@ function step2(ctx, L) {
     const k = String(u.email).toLowerCase();
     if (seen.has(k)) return false;
     seen.add(k); return true;
-  }).slice(0, 60);
-  bindFilter('lsWho', 'data-row');
+  });
   h += '<div class="field"><label>Pick someone already in the system</label>'
     + '<div class="searchbox" style="box-shadow:none">' + I.search
-    + '<input id="lsWho" placeholder="Name, company or suite" autocomplete="off"></div></div>';
-  return h + (people.length ? people.map((e) => {
-    const u = e.unit, nm = u.tenant || u.company || u.email;
-    return '<button class="act-row" data-act="lease:person" data-name="' + esc(u.tenant || '') + '" data-co="'
-      + esc(u.company || '') + '" data-email="' + esc(u.email) + '" data-tel="' + esc(u.tel || u.phone || '')
-      + '" data-row="' + esc([nm, u.company, u.id, e.building.name, u.email].join(' ').toLowerCase()) + '">' + I.user
-      + '<span><span class="t">' + esc(nm) + '</span><span class="s">' + esc(u.email) + ' · ' + esc(suiteLabel(u))
-      + ' · ' + esc(e.building.name || '') + '</span></span></button>';
-  }).join('') : '<div class="empty">Nobody with an email on file here yet — use “New tenant”.</div>');
+    + '<input id="lsWho" placeholder="Name, company or suite" autocomplete="off" value="' + esc(L.wq || '') + '"></div></div>';
+  h += '<div id="lsWhoList">' + peopleList(people, String(L.wq || '').trim().toLowerCase()) + '</div>';
+  bindPeople(L, people);
+  return h;
 }
 function step3(ctx, L, hit) {
   const snap = ctx.snap || {}, u = hit.unit;

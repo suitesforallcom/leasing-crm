@@ -76,15 +76,44 @@ const units = [
 ];
 const snap = {
   buildings: [
-    { id: 'b1', name: '4355 Central Ave', address: '4355 Central Ave', code: 'CEN', floors: [{ id: 'f1', name: '3', units }] },
+    // Два этажа: проверяем группировку выбора юнита и подпись «Floor N».
+    { id: 'b1', name: '4355 Central Ave', address: '4355 Central Ave', code: 'CEN', floors: [
+      { id: 'f1', name: '3', units },
+      { id: 'f4', name: '4th Floor', units: [
+        u('440', { tenant: '', status: 'vacant', tenantContact: '', email: '', tel: '', rent: 900 }),
+        u('441', { tenant: '', status: 'vacant', tenantContact: '', email: '', tel: '', rent: 950 }),
+        u('445', { tenant: 'Jasmine Kennedy', tenantContact: 'Jasmine' }),   // занят — искать его бесполезно
+      ] },
+    ] },
     { id: 'b2', name: 'Second Building', address: '1 Main St', code: 'SEC', floors: [{ id: 'f1', name: '1', units: [u('100')] }] },
   ],
   invoices: [{ id: 'in_1U4mHY2nq2bZh3q62SEa9jp4', number: 'R-CEN-301-2026-08', status: 'open', bucket: 'open',
     total: 2400, amountPaid: 0, dueDate: '2026-08-05', description: 'Rent — 301',
     metadata: { unitId: '301', purpose: 'rent', ym: YM } }],
-  invoicesAvailable: true, invoiceBuckets: {}, settings: { landlordName: 'Crestview Holdings' },
+  invoicesAvailable: true, invoiceBuckets: {},
+  settings: {
+    landlordName: 'Crestview Holdings',
+    // Форма 1:1 из прода (workspaces/default/data/state → state.settings).
+    additionalServices: [
+      { id: 'svc_1', name: 'Reserved parking space', amount: 75, frequency: 'monthly', description: 'Dedicated numbered space.' },
+      { id: 'svc_2', name: 'Conference room — extra hours', amount: 35, frequency: 'hourly' },
+      { id: 'svc_3', name: 'Key fob / access card replacement', amount: 35, frequency: 'once' },
+      { id: 'svc_bad', name: 'Zero priced', amount: 0, frequency: 'monthly' },
+    ],
+  },
   role: 'admin', online: true, syncedAt: Date.now(), now: new Date('2026-08-15T12:00:00Z').getTime(),
 };
+
+/* Индекс юнитов строит клиент (m/lib/data.js rebuildIndex) — стенд обязан
+   собрать его так же, иначе выбор юнита и арендатора окажется пустым, и
+   проверка молча пройдёт на пустых списках. */
+snap.units = [];
+snap.unitsIndex = Object.create(null);
+for (const b of snap.buildings) for (const f of (b.floors || [])) for (const un of (f.units || [])) {
+  const entry = { unit: un, building: b, floor: f, key: b.id + '|' + un.id };
+  snap.unitsIndex[entry.key] = entry;
+  snap.units.push(entry);
+}
 
 const S = { tab: 'home', scope: 'b1', buildingId: 'b1', ym: YM, floor: 'all', q: '', searchAll: false, role: 'admin' };
 const calls = [];
@@ -145,6 +174,63 @@ const hostile = painted.join('\n');
 if (/O'Brien & Sons <Ltd>/.test(hostile)) { say('bad', 'tenant name is injected into HTML unescaped'); bad++; }
 else say('ok', 'hostile tenant name is escaped in every rendered view');
 
+/* ---- 4b. каталог услуг доезжает до листа счёта ---- */
+{
+  const ids = { buildingId: 'b1', floorId: 'f1', unitId: '301' };
+  S.sheet = 'invoice'; S.sheetPayload = ids; S.sheetArg = ids; S.payload = ids;
+  S.inv = null;
+  invoice.render(ctx());                       // создаёт S.inv
+  if (S.inv) S.inv.preset = 'service';
+  const html = invoice.render(ctx());
+  painted.push(html);
+  const named = ['Reserved parking space', 'Conference room — extra hours', 'Key fob / access card replacement']
+    .filter(n => html.includes(n));
+  if (named.length !== 3) { say('bad', `service catalog: показано ${named.length}/3 позиций`); bad++; }
+  else say('ok', 'service catalog: все позиции с ценой видны в листе счёта');
+  if (html.includes('Zero priced')) { say('bad', 'позиция с нулевой ценой не отфильтрована'); bad++; }
+  else say('ok', 'позиция с нулевой ценой отфильтрована (как на десктопе)');
+  const freq = html.includes('/mo') && html.includes('/hr') && html.includes('one-time');
+  if (!freq) { say('bad', 'периодичность услуги не показана (/mo, /hr, one-time)'); bad++; }
+  else say('ok', 'периодичность услуги показана');
+  // выбор услуги подставляет сумму и текст
+  invoice.handle('inv:svc', { getAttribute: () => 'svc_1' }, ctx());
+  const after = invoice.render(ctx());
+  painted.push(after);
+  if (!(S.inv && String(S.inv.amount) === '75' && S.inv.memo === 'Reserved parking space')) {
+    say('bad', `выбор услуги не подставил сумму/текст: ${JSON.stringify({a:S.inv&&S.inv.amount, m:S.inv&&S.inv.memo})}`); bad++;
+  } else say('ok', 'выбор услуги подставляет сумму и текст для арендатора');
+  invoice.handle('inv:svc', { getAttribute: () => 'svc_1' }, ctx());   // повторный тап снимает
+  if (S.inv && S.inv.svcId) { say('bad', 'повторный тап не снимает выбор услуги'); bad++; }
+  else say('ok', 'повторный тап снимает выбор услуги');
+  S.inv = null; S.sheet = null;
+}
+
+/* ---- 4c. выбор юнита: свободные, по этажам, занятые объясняются ---- */
+{
+  S.lease = null; S.sheet = 'lease'; S.sheetPayload = null; S.sheetArg = null; S.payload = null;
+  const h1 = lease.render(ctx());
+  painted.push(h1);
+  const vac = ['300','440','441'].filter(id => h1.includes('Suite ' + id));
+  if (h1.includes('Vacant right now · 0')) { say('bad', 'выбор юнита пуст — индекс snap.units не дошёл'); bad++; }
+  else if (!h1.includes('Floor 3') || !h1.includes('4th Floor')) { say('bad', 'юниты не сгруппированы по этажам'); bad++; }
+  else say('ok', 'выбор юнита: свободные сгруппированы по этажам');
+  if (h1.includes('Suite 445')) { say('bad', 'занятый юнит попал в список для нового договора'); bad++; }
+  else say('ok', 'занятый юнит в списке нового договора отсутствует');
+  // поиск обязан находить ЗА пределами отрисованной страницы и объяснять занятые
+  S.lease.q = '445';
+  const h2 = lease.render(ctx());
+  painted.push(h2);
+  if (!/occupied/i.test(h2) || !h2.includes('Jasmine Kennedy')) {
+    say('bad', 'поиск занятого юнита не объясняет, почему его нет'); bad++;
+  } else say('ok', 'поиск занятого юнита объясняет: занят и кем');
+  S.lease.q = '441';
+  const h3 = lease.render(ctx());
+  painted.push(h3);
+  if (!h3.includes('Suite 441')) { say('bad', 'поиск не находит свободный юнит другого этажа'); bad++; }
+  else say('ok', 'поиск находит свободный юнит на другом этаже');
+  S.lease = null; S.sheet = null;
+}
+
 /* ---- 5. каждое data-act действие кто-то обрабатывает (ловит тупики) ---- */
 {
   const acts = new Set();
@@ -188,9 +274,16 @@ if (want) {
   else {
     const isSheet = !!SHEETS[want];
     // ?unit=302 — посмотреть тот же лист на другом юните (свободный / оплаченный).
+    // ?unit=none — открыть лист БЕЗ выбранного юнита (шаг «какой юнит»).
     const uid = new URLSearchParams(location.search).get('unit') || '301';
-    const ids = { buildingId: 'b1', floorId: 'f1', unitId: uid };
+    const ids = uid === 'none' ? null : { buildingId: 'b1', floorId: 'f1', unitId: uid };
+    // Состояние мастеров переживает текстовый прогон выше — сбрасываем, иначе
+    // визуальный режим покажет чужой шаг, а не тот, что просили.
+    S.lease = null; S.inv = null;
     if (isSheet) { S.sheet = want; S.sheetPayload = ids; S.sheetArg = ids; S.payload = ids; }
+    // ?preset=service — посмотреть лист счёта с каталогом услуг.
+    const preset = new URLSearchParams(location.search).get('preset');
+    if (preset && want === 'invoice') { S.inv = null; mod.render(ctx()); if (S.inv) S.inv.preset = preset; }
     document.getElementById(isSheet ? 'sheetBody' : 'screen').innerHTML = mod.render(ctx());
     const foot = document.getElementById('sheetFoot');
     foot.innerHTML = (isSheet && typeof mod.foot === 'function') ? (mod.foot(ctx()) || '') : '';
