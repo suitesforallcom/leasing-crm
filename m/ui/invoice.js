@@ -468,6 +468,38 @@ function pickRows(ctx, rows, q) {
   return h;
 }
 
+/**
+ * Сводка счёта. Отдельно, потому что перерисовывается ПО ВВОДУ: значения полей
+ * забираются из DOM только при нажатии (readForm), а сводка рисовалась один раз.
+ * Оператор набирал 777 и видел под кнопкой Send прежний «Total $2,400» — то же,
+ * что поймали на мастере договора. На саму отправку это не влияло, но проверять
+ * перед отправкой было нечем, а сводка существует ровно для этого.
+ */
+function recapHtml(ctx, L, hit) {
+  const u = hit.unit;
+  return '<div class="recap"><div><span>Tenant</span><b>' + esc(u.tenant || u.company || '—') + '</b></div>'
+    + '<div><span>Emails to</span><b style="word-break:break-all">' + esc(u.email || 'no email on file') + '</b></div>'
+    + '<div><span>Suite</span><b>' + esc(suiteLabel(u)) + '</b></div>'
+    + '<div><span>Total</span><b>' + esc(usd(ctx, amountOf(ctx, L, hit))) + '</b></div></div>';
+}
+/** Сводка следует за суммой и текстом. Перерисовываем ТОЛЬКО её. */
+function bindRecap(ctx, L, hit) {
+  setTimeout(() => {
+    const box = document.getElementById('invRecap');
+    if (!box) return;
+    for (const [key, id] of [['amount', 'invAmt'], ['memo', 'invMemo']]) {
+      const inp = document.getElementById(id);
+      if (!inp || inp.dataset.recap) continue;
+      inp.dataset.recap = '1';
+      inp.addEventListener('input', () => {
+        L[key] = inp.value;
+        try { box.innerHTML = recapHtml(ctx, L, hit); }
+        catch (e) { console.error('[m] invoice recap failed:', e); }
+      });
+    }
+  }, 0);
+}
+
 function picker(ctx) {
   const snap = ctx.snap || {}, scope = String((ctx.S && ctx.S.scope) || 'all');
   const L = st(ctx);
@@ -546,10 +578,13 @@ function form(ctx, L, hit) {
     h += '<div class="whatnext" style="margin-bottom:10px">' + I.info + '<span>Invoice history has not loaded, so '
       + 'this cannot be checked against existing invoices. Stripe still blocks an exact duplicate.</span></div>';
   }
-  h += '<div class="recap"><div><span>Tenant</span><b>' + esc(u.tenant || u.company || '—') + '</b></div>'
-    + '<div><span>Emails to</span><b style="word-break:break-all">' + esc(u.email || 'no email on file') + '</b></div>'
-    + '<div><span>Suite</span><b>' + esc(suiteLabel(u)) + '</b></div>'
-    + '<div><span>Total</span><b>' + esc(usd(ctx, amt)) + '</b></div></div>';
+  h += '<div id="invRecap">' + (bindRecap(ctx, L, hit), recapHtml(ctx, L, hit)) + '</div>';
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(u.email || '').trim())) {
+    h += '<div class="verdict" data-s="due" style="align-items:flex-start;margin-top:10px">'
+      + '<span class="vi">' + I.alert + '</span><span><span class="vt">No email on this unit</span>'
+      + '<span class="vs">Stripe emails the invoice, so it cannot go out. Add the address in the full version.</span>'
+      + '</span></div>';
+  }
   h += '<div class="whatnext">' + I.info + '<span>' + (autopay
     ? 'This tenant is on autopay — the card on file is charged and there may be no payment link to show.'
     : 'After sending you get a payment link and a QR code — the tenant can pay right in front of you.')
@@ -584,6 +619,13 @@ export function render(ctx) {
       : 'Pick the tenant first';
   const h = '<div class="sheet-h"><div><h3>' + title + '</h3><p>' + esc(sub) + '</p></div>'
     + '<button class="x-btn" data-act="inv:close" aria-label="Close">✕</button></div>';
+  // Роль без права отправки — говорим сразу, а не после заполнения формы.
+  if (!L.done && typeof ctx.canSend === 'function' && !ctx.canSend()) {
+    return h + '<div class="verdict" data-s="due" style="align-items:flex-start"><span class="vi">' + I.alert + '</span>'
+      + '<span><span class="vt">Your role cannot send invoices</span>'
+      + '<span class="vs">You can look at payments, but issuing an invoice needs an admin or manager account. '
+      + 'Ask an admin to change your role, then reopen the app.</span></span></div>';
+  }
   if (L.done) return h + doneBody(ctx, L);
   if (L.unitId && !hit) {
     return h + '<div class="empty">That unit is no longer in this snapshot.</div>'
@@ -594,6 +636,9 @@ export function render(ctx) {
 
 export function foot(ctx) {
   const L = st(ctx);
+  if (!L.done && typeof ctx.canSend === 'function' && !ctx.canSend()) {
+    return '<button class="big-btn" data-act="inv:close">Close</button>';
+  }
   if (L.done) {
     const tel = String(L.done.tel || '').replace(/[^\d+]/g, '');
     const sms = (tel && L.done.hostedUrl)
@@ -705,6 +750,13 @@ async function send(ctx, L, hit, isDup) {
     return fail(ctx, L, 'Pick a service from the list first — or use Custom to type your own.');
   }
   if (!(amount > 0)) return fail(ctx, L, 'Enter an amount greater than $0.');
+  // Stripe выставляет счёт НА ПОЧТУ. Без неё вызов упадёт невнятной ошибкой уже
+  // после того, как оператор всё заполнил (в проде так живёт сьют 101 на
+  // $13,318/мес). Говорим до попытки и подсказываем, где чинится.
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(hit.unit.email || '').trim())) {
+    return fail(ctx, L, 'This unit has no email on file, so Stripe has nowhere to send the invoice. '
+      + 'Add the tenant’s email in the full version, then try again.');
+  }
   if (!buildingId || !floorId || !unitId) return fail(ctx, L, 'This unit is missing its building or floor — open it in the full version.');
   if (purpose === 'rent' && !/^\d{4}-\d{2}$/.test(L.ym)) return fail(ctx, L, 'Pick a billing month first.');
   if (typeof ctx.callCF !== 'function') return fail(ctx, L, 'The app is not connected to the server yet.');

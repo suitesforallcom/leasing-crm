@@ -118,6 +118,7 @@ function ctx(){
     building: curBld(),
     go, openSheet, closeSheet, toast,
     setScope,                       // менять здание можно ТОЛЬКО так (один владелец состояния)
+    canSend,                        // право отправлять деньги/договоры — одна проверка на все экраны
     refresh: () => doRefresh(false),
   };
 }
@@ -287,6 +288,19 @@ async function doRefresh(quiet){
     if (!quiet) toast('Could not refresh — ' + errText(e));
   }
 }
+/* Право отправлять договор и счёт. Сервер всё равно последняя инстанция
+   (_dsAssertCanSendLeases / requireEditor), но узнавать об отказе ПОСЛЕ того,
+   как заполнил весь мастер и нажал Send, — худший момент из возможных.
+   Незнакомую или ещё не подъехавшую роль не блокируем: иначе админ на
+   холодном старте останется без кнопок. Ровно та же логика, что в unit.js. */
+const KNOWN_ROLES = { admin: 1, manager: 1, mapeditor: 1, teamviewer: 1, viewer: 1 };
+const EDITOR_ROLES = { admin: 1, manager: 1 };
+function canSend(){
+  const r = snap && snap.role;
+  if (!r || !KNOWN_ROLES[r]) return true;
+  return !!EDITOR_ROLES[r];
+}
+
 function setScope(k){
   if (!k) return;
   if (k !== 'all' && !buildings().some(b => b && String(b.id) === String(k))) return;

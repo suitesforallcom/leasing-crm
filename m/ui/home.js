@@ -407,11 +407,18 @@ export function render(ctx) {
 
   h += moneyLine(ctx, sc, st, ym);
 
+  // Роль без права отправки видит только проверку оплаты: предлагать «отправить»
+  // тому, кому сервер откажет, — обещание, которое приложение не выполнит.
+  const maySend = (typeof ctx.canSend !== 'function') || ctx.canSend();
   h += '<div class="jobs">'
     + job('payments', I.search, 'Check a payment', 'Search a tenant, suite or phone')
-    + job('lease', I.doc, 'Send a lease', 'Pick a unit — the template fills itself')
-    + job('invoice', I.money, 'Send an invoice', 'Rent, deposit, late fee or custom')
+    + (maySend ? job('lease', I.doc, 'Send a lease', 'Pick a unit — the template fills itself') : '')
+    + (maySend ? job('invoice', I.money, 'Send an invoice', 'Rent, deposit, late fee or custom') : '')
     + '</div>';
+  if (!maySend) {
+    h += '<div class="whatnext" style="margin:0 16px 12px">' + I.alert
+      + '<span>Your role can look at payments but not send leases or invoices. Ask an admin to change it.</span></div>';
+  }
 
   h += sinceBlock(ctx, sc, st, ym);
   h += recentBlock(ctx, sc, ym);

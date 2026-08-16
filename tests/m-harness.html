@@ -72,6 +72,8 @@ const units = [
   u('301', { stripe: { lastInvoiceYm: YM, lastInvoiceId: 'in_1U4mHY2nq2bZh3q62SEa9jp4' } }),
   u('302', { tenant: '', status: 'vacant', tenantContact: '', email: '', tel: '' }),
   u('303', { tenant: "O'Brien & Sons <Ltd>", tenantContact: "O'Brien" }),
+  // Занят, ставка есть, а почты нет — в проде так живёт сьют 101 на $13,318/мес.
+  u('304', { tenant: 'No Mail LLC', email: '', rent: 1500 }),
   // Мульти-сьютовая лиза как в проде (National University: 6 сьютов, деньги
   // только на head'е). Проверяет, что карточка member'а честно оговаривает сумму.
   u('400', { groupId: 'g_test', groupRole: 'primary', rent: 13318.33, tenant: 'National University' }),
@@ -331,6 +333,24 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   }
   host.innerHTML = '';
   S.lease = null; S.sheet = null; S.sheetPayload = null; S.sheetArg = null; S.payload = null;
+
+  // ТОТ ЖЕ класс на листе счёта: «Total» стоит прямо над кнопкой Send.
+  S.inv = null; S.sheet = 'invoice';
+  const iid = { buildingId: 'b1', floorId: 'f1', unitId: '301' };
+  S.sheetPayload = iid; S.sheetArg = iid; S.payload = iid;
+  host.innerHTML = invoice.render(ctx());
+  painted.push(host.innerHTML);
+  await new Promise(r => setTimeout(r, 5));
+  const iAmt = document.getElementById('invAmt'), iRec = document.getElementById('invRecap');
+  if (!iAmt || !iRec) { say('bad', 'на листе счёта нет поля суммы или сводки'); bad++; }
+  else {
+    iAmt.value = '777'; iAmt.dispatchEvent(new Event('input', { bubbles: true }));
+    const t = iRec.innerText.replace(/\s+/g, ' ');
+    if (!/Total \$777/.test(t)) { say('bad', 'итог счёта не следует за вводом суммы: ' + t); bad++; }
+    else say('ok', 'итог счёта обновляется по мере ввода суммы');
+  }
+  host.innerHTML = '';
+  S.inv = null; S.sheet = null; S.sheetPayload = null; S.sheetArg = null; S.payload = null;
 }
 
 /* ---- 4f. план этажа ---- */
@@ -369,6 +389,53 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   if (!S.planZoom) { say('bad', 'зум не переключился'); bad++; }
   else say('ok', 'зум переключается');
   S.planZoom = false; S.tab = 'home'; S.planFloor = null;
+}
+
+/* ---- 4g. роль без права отправки: отказ ДО работы, а не после ---- */
+{
+  const roleCtx = () => Object.assign(ctx(), { canSend: () => false });
+  const homeH = home.render(roleCtx());
+  painted.push(homeH);
+  if (/data-k="lease"|data-k="invoice"/.test(homeH)) { say('bad', 'viewer видит кнопки отправки на главной'); bad++; }
+  else say('ok', 'viewer не видит «отправить» на главной');
+  if (!/cannot send|not send/i.test(homeH)) { say('bad', 'viewer не объяснили, почему кнопок нет'); bad++; }
+  else say('ok', 'viewer получает объяснение, а не пустое место');
+
+  S.lease = null; S.sheet = 'lease'; S.sheetPayload = null; S.sheetArg = null; S.payload = null;
+  const lh = lease.render(roleCtx()), lf = lease.foot(roleCtx());
+  painted.push(lh, lf);
+  if (!/cannot send leases/i.test(lh)) { say('bad', 'мастер договора пускает viewer к работе'); bad++; }
+  else say('ok', 'мастер договора отказывает viewer сразу');
+  if (/lease:send/.test(lf)) { say('bad', 'viewer видит кнопку отправки договора'); bad++; }
+  else say('ok', 'у viewer нет кнопки отправки договора');
+
+  S.inv = null; S.sheet = 'invoice';
+  const iid = { buildingId: 'b1', floorId: 'f1', unitId: '301' };
+  S.sheetPayload = iid; S.sheetArg = iid; S.payload = iid;
+  const ih = invoice.render(roleCtx()), if2 = invoice.foot(roleCtx());
+  painted.push(ih, if2);
+  if (!/cannot send invoices/i.test(ih)) { say('bad', 'лист счёта пускает viewer к работе'); bad++; }
+  else say('ok', 'лист счёта отказывает viewer сразу');
+  if (/inv:send/.test(if2)) { say('bad', 'viewer видит кнопку отправки счёта'); bad++; }
+  else say('ok', 'у viewer нет кнопки отправки счёта');
+
+  // админ ничего не теряет
+  const okH = home.render(ctx());
+  if (!/data-k="lease"/.test(okH)) { say('bad', 'у админа пропали кнопки отправки'); bad++; }
+  else say('ok', 'у роли с правом отправки всё на месте');
+  S.lease = null; S.inv = null; S.sheet = null; S.sheetPayload = null; S.sheetArg = null; S.payload = null;
+}
+
+/* ---- 4h. юнит без почты: счёт не уйдёт, и это сказано ДО отправки ---- */
+{
+  S.inv = null; S.sheet = 'invoice';
+  const nid = { buildingId: 'b1', floorId: 'f1', unitId: '304' };
+  S.sheetPayload = nid; S.sheetArg = nid; S.payload = nid;
+  const h = invoice.render(ctx());
+  painted.push(h);
+  if (!/No email on this unit/i.test(h)) { say('bad', 'юнит без почты не предупреждён на форме счёта'); bad++; }
+  else say('ok', 'юнит без почты предупреждён прямо на форме');
+  S.inv = null; S.sheet = null; S.sheetPayload = null; S.sheetArg = null; S.payload = null;
 }
 
 /* ---- 5. каждое data-act действие кто-то обрабатывает (ловит тупики) ---- */

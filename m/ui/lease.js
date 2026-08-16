@@ -525,6 +525,14 @@ function bindRecap(ctx, L, hit) {
     }
   }, 0);
 }
+/** Отказ по роли. Сервер откажет всё равно — но узнать об этом надо ДО работы. */
+function roleGate() {
+  return '<div class="verdict" data-s="due" style="align-items:flex-start"><span class="vi">' + I.alert + '</span>'
+    + '<span><span class="vt">Your role cannot send leases</span>'
+    + '<span class="vs">You can look at payments and units, but sending a lease for signature needs an admin or '
+    + 'manager account. Ask an admin to change your role, then reopen the app.</span></span></div>';
+}
+
 function gateBody(ctx, hit) {
   const u = hit.unit, who = u.tenant || u.company || 'someone', until = u.until || u.leaseEnd || '';
   return '<div class="verdict" data-s="overdue"><span class="vi">' + I.alert + '</span>'
@@ -629,6 +637,8 @@ export function render(ctx) {
   let h = '<div class="sheet-h"><div><h3>Send a lease</h3><p>'
     + (L.done ? 'Done' : 'Step ' + L.step + ' of 3 · ' + sub) + '</p></div>'
     + '<button class="x-btn" data-act="lease:close" aria-label="Close">✕</button></div>';
+  // Роль без права отправки — говорим сразу, а не после заполнения мастера.
+  if (typeof ctx.canSend === 'function' && !ctx.canSend()) return h + roleGate();
   if (L.done) return h + doneBody(ctx, L);
   h += '<div class="steps">' + [1, 2, 3].map((i) => '<span class="step" data-on="' + (i <= L.step ? 1 : 0)
     + '"></span>').join('') + '</div>';
@@ -645,6 +655,9 @@ export function render(ctx) {
 export function foot(ctx) {
   const L = st(ctx);
   const hit = L.unitId ? findUnit(ctx.snap || {}, L.buildingId, L.unitId) : null;
+  if (typeof ctx.canSend === 'function' && !ctx.canSend()) {
+    return '<button class="big-btn" data-act="lease:close">Close</button>';
+  }
   // Отправка депозита и первой ренты живёт в строках экрана заселения —
   // там же, где виден их статус. Внизу остаётся только выход.
   if (L.done) return '<button class="big-btn" data-act="lease:close">Done</button>';
