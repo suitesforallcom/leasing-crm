@@ -444,7 +444,7 @@ function qrBlock(url) {
   for (let y = 0; y < q.size; y++) for (let x = 0; x < q.size; x++) if (q.m[y][x]) d += 'M' + x + ' ' + y + 'h1v1h-1z';
   const s = q.size + 8;                                              // тихая зона 4 модуля с каждой стороны
   return '<div class="qr" style="display:block;width:min(230px,72%);height:auto;aspect-ratio:1;padding:12px">'
-    + '<svg viewBox="-4 -4 ' + s + ' ' + s + '" width="100%" height="100%" shape-rendering="crispEdges" '
+    + '<svg viewBox="-4 -4 ' + s + ' ' + s + '" style="width:100%;height:100%;display:block" shape-rendering="crispEdges" '
     + 'role="img" aria-label="Payment QR code"><rect x="-4" y="-4" width="' + s + '" height="' + s + '" fill="#fff"/>'
     + '<path d="' + d + '" fill="#12110F"/></svg></div>';
 }

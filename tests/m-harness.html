@@ -1333,6 +1333,30 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   } catch (e) { say('bad', 'проверка hoistFoot упала: ' + e.message); bad++; }
 }
 
+/* ---- 7q. QR оплаты заполняет свою карточку ----
+       Прод-жалоба: QR рисовался 18×18 в углу — глобальное правило иконок
+       .app svg{18px} душило его (атрибуты width проигрывают CSS). ---- */
+{
+  try {
+    const src = await (await fetch('../m/ui/invoice.js?v=' + Date.now(), { cache: 'no-store' })).text();
+    const helpers = src.slice(src.indexOf('/* ============================ QR'), src.indexOf('/* ---- экраны'));
+    const fn = new Function(helpers + '\nreturn qrBlock;')();
+    const html = fn('https://invoice.stripe.com/i/acct_1S6zlI2nq2bZ/test_YWNjdF8xUzZ6bEkybnEyYlpoM3E2LF9TdDJXbUdmR2pKQVJMc1J4TUF18XlV3Qsw0100abcdEFGH');
+    const stq = document.getElementById('stage');
+    stq.style.cssText = 'position:fixed;left:0;top:0;width:390px;visibility:hidden';
+    document.getElementById('screen').innerHTML = '<div class="card" style="padding:16px">' + html + '</div>';
+    await new Promise(r => setTimeout(r, 80));
+    const box = stq.querySelector('.qr'), svg = stq.querySelector('.qr svg');
+    const rq = box ? box.getBoundingClientRect() : { width: 0 };
+    const rs = svg ? svg.getBoundingClientRect() : { width: 0 };
+    stq.style.cssText = ''; document.getElementById('screen').innerHTML = '';
+    if (!svg || rq.width < 100) { say('bad', 'QR-блок не отрисовался'); bad++; }
+    else if (rs.width / rq.width < 0.8) {
+      say('bad', `QR занимает ${Math.round(rs.width / rq.width * 100)}% карточки — задушен правилом иконок`); bad++;
+    } else say('ok', `QR заполняет карточку (${Math.round(rs.width / rq.width * 100)}%)`);
+  } catch (e) { say('bad', 'проверка QR упала: ' + e.message); bad++; }
+}
+
 /* ---- 8. план на НАСТОЯЩЕЙ геометрии прода (tests/fixtures/plan-geometry.json)
        Синтетический этаж из одного квадрата ничего не доказывает: беда с
        подписями вылезает только на реальных узких и Г-образных формах. ---- */
