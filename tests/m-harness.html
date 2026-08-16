@@ -1174,6 +1174,40 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   S.ym = curYm; S.ymPinned = false; S.tab = 'home';
 }
 
+/* ---- 7l. Переключатель вида плана: Payment status / Unit type ----
+       Просьба оператора (обведённое место в топбаре). Вид «type» красит
+       квартиры цветом типа (переопределения b.typeFillColors уважаются),
+       без денежных сигналов; вид «payment» — прежнее поведение. ---- */
+{
+  const YM = '2026-08';
+  const uA = { id: '450', type: 'apt_2_1', status: 'occupied', tenant: 'Rita', email: 'r@f.co',
+    rent: 1900, leaseStart: '2026-06-01', payments: {}, x: 0, y: 0, w: 100, h: 100 };
+  const uO = { id: '451', type: 'office', status: 'vacant', x: 110, y: 0, w: 100, h: 100 };
+  const bT = { id: 'bT', name: 'T', typeFillColors: { apt_2_1: '#123456' },
+    floors: [{ id: 'fT', name: '1', units: [uA, uO] }] };
+  const snapT = { buildings: [bT], units: [uA, uO].map(u => ({ unit: u, building: bT, floor: bT.floors[0] })),
+    invoices: [], invoicesAvailable: true, invoiceBuckets: {}, settings: {},
+    now: Date.parse('2026-08-16T12:00:00Z') };
+  const ctxT = (view) => ({ S: { ym: YM, scope: 'bT', tab: 'plan', planFloor: 'fT', planView: view },
+    snap: snapT, money, fmt, canSend: () => true, building: bT,
+    go(){}, openSheet(){}, closeSheet(){}, toast(){}, refresh(){} });
+
+  const rp = plan.render(ctxT('payment'));
+  if ((rp.match(/data-act="planview"/g) || []).length !== 2) { say('bad', 'план: нет двух переключателей вида'); bad++; }
+  else say('ok', 'план: переключатель Payment / Unit type на месте');
+  if (!/var\(--plan-/.test(rp.slice(rp.indexOf('<svg')))) { say('bad', 'вид payment потерял статусную заливку'); bad++; }
+  else say('ok', 'вид payment красит статусами, как раньше');
+
+  const rt = plan.render(ctxT('type'));
+  const svgT = rt.slice(rt.indexOf('<svg'), rt.indexOf('</svg>'));
+  if (!/#123456/.test(svgT)) { say('bad', 'вид type игнорирует переопределение цвета из b.typeFillColors'); bad++; }
+  else say('ok', 'вид type красит квартиру цветом здания (переопределение уважается)');
+  if (!/2 bed · 1 bath/.test(rt)) { say('bad', 'легенда вида type не называет присутствующий тип'); bad++; }
+  else say('ok', 'легенда вида type — только присутствующие типы');
+  if (/Not billed · past due/.test(rt)) { say('bad', 'в виде type осталась денежная легенда'); bad++; }
+  else say('ok', 'в виде type денежной легенды нет');
+}
+
 /* ---- 8. план на НАСТОЯЩЕЙ геометрии прода (tests/fixtures/plan-geometry.json)
        Синтетический этаж из одного квадрата ничего не доказывает: беда с
        подписями вылезает только на реальных узких и Г-образных формах. ---- */

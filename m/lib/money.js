@@ -37,6 +37,24 @@ export const UNPAID = new Set(['due', 'overdue']);
 // у офиса; неизвестный тип НЕ сдаваемый (fail-safe: ведёт себя как сегодня —
 // общая зона, в деньги не попадает).
 export function isAptType(t) { return String(t || '').slice(0, 4) === 'apt_'; }
+// ── Заливка и подпись квартирных типов (зеркало DEFAULT_APT_TYPE_FILL и
+// TYPE_LABELS монолита). Переопределения оператора едут В ДОКУМЕНТЕ ЗДАНИЯ
+// (b.typeFillColors — он ставит их пикером в легенде десктопа), поэтому
+// телефон красит теми же цветами автоматически.
+const APT_TYPE_FILL = {
+  apt_studio_1: '#FDD5CF', apt_loft_1: '#EDC67F', apt_1_1: '#CDEDA4',
+  apt_2_1: '#77E1D8', apt_3_1: '#B9E8FD', apt_2_2: '#CFC3FB', apt_3_2: '#FDCEFD',
+};
+const APT_TYPE_LABELS = {
+  apt_studio_1: 'Studio · 1 bath', apt_loft_1: 'Loft · 1 bath', apt_1_1: '1 bed · 1 bath',
+  apt_2_1: '2 bed · 1 bath', apt_3_1: '3 bed · 1 bath', apt_2_2: '2 bed · 2 bath', apt_3_2: '3 bed · 2 bath',
+};
+export function aptTypeFill(t, building) {
+  const ov = building && building.typeFillColors;
+  return (ov && ov[t]) || APT_TYPE_FILL[t] || '#EAE6F5';
+}
+export function aptTypeLabel(t) { return APT_TYPE_LABELS[t] || String(t || ''); }
+
 export function isRentableType(t) { return !t || t === 'office' || isAptType(t); }
 
 

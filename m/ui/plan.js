@@ -159,7 +159,7 @@ function ariaWord(st, overdue) {
 }
 
 /* ---------- сам план ---------- */
-function planSvg(ctx, b, f, ym, zoom) {
+function planSvg(ctx, b, f, ym, zoom, view) {
   const units = Array.isArray(f && f.units) ? f.units : [];
   const outline = f && f.outline ? shapeOf(f.outline) : null;
 
@@ -220,16 +220,24 @@ function planSvg(ctx, b, f, ym, zoom) {
     if (ra !== rb) return ra - rb;                 // общие зоны — под всеми
     return areaOf(bq.s) - areaOf(a.s);             // большие ниже, мелкие поверх
   });
+  const typeView = view === 'type';
   for (const { u, s } of ordered) {
     const rentable = isRentable(u);
     const m = rentable ? stOf(ctx, u, ym) : { status: 'common', overdue: false };
     const st = m.status;
-    const fill = rentable ? 'var(--plan-' + st + ')' : 'var(--plan-common)';
+    // Вид «Unit type»: квартиры — цветом типа (те же цвета, что на десктопе,
+    // включая переопределения оператора из b.typeFillColors), офисы — нейтраль,
+    // денежных сигналов нет. Вид «Payment status» — как раньше.
+    let fill = rentable ? 'var(--plan-' + st + ')' : 'var(--plan-common)';
+    if (typeView && rentable) {
+      fill = isAptType(u.type) ? ctx.money.aptTypeFill(u.type, b) : 'var(--plan-idle)';
+    }
     const attrs = ' fill="' + fill + '" stroke="var(--plan-line)" stroke-width="' + (vw / 520) + '"'
       + (rentable
         ? ' data-act="unit" data-b="' + esc(b.id) + '" data-floor="' + esc(f.id || '') + '" data-id="' + esc(u.id) + '"'
           + ' style="cursor:pointer" role="button" tabindex="0"'
-          + ' aria-label="' + esc((isAptType(u.type) ? 'Apt ' : 'Suite ') + u.id + ' — ' + ariaWord(st, m.overdue)) + '"'
+          + ' aria-label="' + esc((isAptType(u.type) ? 'Apt ' : 'Suite ') + u.id + ' — '
+            + (typeView ? ctx.money.aptTypeLabel(u.type || 'office') : ariaWord(st, m.overdue))) + '"'
         : ' aria-hidden="true"');
     body += s.kind === 'rect'
       ? '<rect x="' + s.x + '" y="' + s.y + '" width="' + s.w + '" height="' + s.h + '" rx="' + (vw / 900) + '"' + attrs + '/>'
@@ -242,7 +250,7 @@ function planSvg(ctx, b, f, ym, zoom) {
     // Пометка просрочки поверх синей заливки: заливка совпадает с десктопом,
     // но «не заплатили» не исчезает. Рисуем ВТОРЫМ контуром внутрь фигуры —
     // он не мешает тапу (pointer-events выключены) и виден на любом фоне.
-    if (m.overdue && st !== 'overdue') {
+    if (m.overdue && st !== 'overdue' && !typeView) {
       const inset = vw / 300;
       overlays.push(s.kind === 'rect'
         ? '<rect x="' + (s.x + inset) + '" y="' + (s.y + inset) + '" width="' + Math.max(0, s.w - inset * 2)
@@ -314,8 +322,15 @@ export function render(ctx) {
   const b = (S.scope && S.scope !== 'all' ? blds.find(x => x && String(x.id) === String(S.scope)) : null) || blds[0];
   const ym = S.ym || todayYm();
 
+  const view = (S.planView === 'type') ? 'type' : 'payment';
+  // Переключатель вида — там, где оператор обвёл (справа от заголовка):
+  // Payment status (деньги, по умолчанию) / Unit type (типы квартир).
+  const seg = '<div class="chips" style="padding:0;margin:0">'
+    + '<button class="fchip" data-act="planview" data-v="payment" aria-pressed="' + (view === 'payment') + '">Payment</button>'
+    + '<button class="fchip" data-act="planview" data-v="type" aria-pressed="' + (view === 'type') + '">Unit type</button></div>';
   let h = '<div class="topbar"><div class="tb-row"><div><div class="tb-title sm">Floor plan</div>'
-    + '<div class="sync"><i></i>' + esc(b ? (b.name || b.id) : 'no building') + '</div></div></div></div>';
+    + '<div class="sync"><i></i>' + esc(b ? (b.name || b.id) : 'no building') + '</div></div>'
+    + seg + '</div></div>';
 
   if (!b) return h + '<div class="empty">No building loaded yet.</div>';
   h += monthChips(S);
@@ -340,7 +355,7 @@ export function render(ctx) {
   }
 
   const big = !!S.planZoom;
-  h += '<div class="plan-wrap' + (big ? ' zoom' : '') + '" id="planWrap">' + planSvg(ctx, b, f, ym, big) + '</div>';
+  h += '<div class="plan-wrap' + (big ? ' zoom' : '') + '" id="planWrap">' + planSvg(ctx, b, f, ym, big, view) + '</div>';
   h += '<div class="chips" style="padding-top:2px">'
     + '<button class="fchip" data-act="planzoom" aria-pressed="' + big + '">'
     + (big ? I.zoomOut + ' Fit to screen' : I.zoom + ' Zoom in') + '</button>'
@@ -366,6 +381,23 @@ export function render(ctx) {
   // Строки, которые нужны только когда состояние реально есть на этаже.
   if (statusesOnFloor.has('leased')) L.splice(1, 0, ['leased', 'Leased · move-in ahead']);
   if (statusesOnFloor.has('unknown')) L.push(['unknown', 'Status unavailable']);
+  if (view === 'type') {
+    // Легенда вида «Unit type»: только типы, реально присутствующие на этаже
+    // (как на десктопе), цвета — из aptTypeFill (учитывают b.typeFillColors).
+    const present = [];
+    const seen = new Set();
+    for (const u of onFloor) {
+      if (!u || u.deletedAt || u.archivedAt || !isRentable(u)) continue;
+      const t = isAptType(u.type) ? u.type : 'office';
+      if (!seen.has(t)) { seen.add(t); present.push(t); }
+    }
+    h += '<div class="legend" style="padding:2px 16px 10px">' + present.map((t) =>
+      '<span><i style="background:' + (t === 'office' ? 'var(--plan-idle)' : esc(ctx.money.aptTypeFill(t, b)))
+      + ';border:1px solid var(--plan-line)"></i>'
+      + esc(t === 'office' ? 'Office' : ctx.money.aptTypeLabel(t)) + '</span>').join('')
+      + '<span><i style="background:var(--plan-common);border:1px solid var(--plan-line)"></i>Common area</span></div>';
+    return h;
+  }
   h += '<div class="legend" style="padding:2px 16px 10px">' + L.map(([k, t]) =>
     '<span><i style="background:var(--plan-' + k + ');border:1px solid var(--plan-line)"></i>' + t + '</span>').join('')
     + '<span><i style="background:var(--plan-invoiced);border:1.5px dashed var(--plan-overdue-mark)"></i>'
@@ -376,6 +408,11 @@ export function render(ctx) {
 export function handle(act, el, ctx) {
   const S = ctx.S || {};
   if (act === 'planfloor') { S.planFloor = el.getAttribute('data-f') || null; return true; }
+  if (act === 'planview') {
+    const v = el.getAttribute('data-v');
+    S.planView = (v === 'type') ? 'type' : 'payment';
+    return true;
+  }
   if (act === 'planzoom') { S.planZoom = !S.planZoom; return true; }
   return false;
 }
