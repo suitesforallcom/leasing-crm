@@ -86,6 +86,17 @@ function boundsOf(shape, acc) {
   }
   return acc;
 }
+/** Площадь фигуры — для порядка отрисовки: мелкое рисуем ПОВЕРХ крупного. */
+function areaOf(s) {
+  if (!s) return 0;
+  if (s.kind === 'rect') return s.w * s.h;
+  let a = 0;
+  for (let i = 0; i < s.pts.length; i++) {
+    const [x1, y1] = s.pts[i], [x2, y2] = s.pts[(i + 1) % s.pts.length];
+    a += x1 * y2 - x2 * y1;
+  }
+  return Math.abs(a / 2);
+}
 const centerOf = (s) => s.kind === 'rect'
   ? [s.x + s.w / 2, s.y + s.h / 2]
   : s.pts.reduce((a, p) => [a[0] + p[0] / s.pts.length, a[1] + p[1] / s.pts.length], [0, 0]);
@@ -138,6 +149,10 @@ function planSvg(ctx, b, f, ym, zoom) {
   const renderPx = zoom ? 360 * 2.2 : 360;
   const scale = renderPx / vw;
   const MIN_PX = 7;
+  // Потолок обязателен: у большого сьюта (2-й этаж, 205 площадью 444k) кегль,
+  // посчитанный от его габаритов, вырастал на пол-экрана и накрывал соседей.
+  // На десктопе номер крупного сьюта такого же размера, как у мелкого.
+  const MAX_PX = 13;
 
   let body = '';
   if (outline) {
@@ -154,7 +169,15 @@ function planSvg(ctx, b, f, ym, zoom) {
   //   2) сдаваемые юниты — поверх, иначе коридор закрывает сьют (видели на 401);
   //   3) подписи — поверх всего, иначе номер прячется под соседней фигурой.
   const labels = [];
-  const ordered = drawn.slice().sort((a, bq) => (isRentable(a.u) ? 1 : 0) - (isRentable(bq.u) ? 1 : 0));
+  // Внутри каждой группы — от БОЛЬШИХ к маленьким. В данных крупный сьют и его
+  // под-комнаты пересекаются по координатам (2-й этаж: 205 площадью 444k
+  // накрывает 20510/20511/20512, а 204 и 207 — 201 и 2041). Без сортировки
+  // побеждал порядок массива, и большой юнит закрывал мелкие целиком.
+  const ordered = drawn.slice().sort((a, bq) => {
+    const ra = isRentable(a.u) ? 1 : 0, rb = isRentable(bq.u) ? 1 : 0;
+    if (ra !== rb) return ra - rb;                 // общие зоны — под всеми
+    return areaOf(bq.s) - areaOf(a.s);             // большие ниже, мелкие поверх
+  });
   for (const { u, s } of ordered) {
     const rentable = isRentable(u);
     const st = rentable ? stOf(ctx, u, ym) : 'common';
@@ -176,7 +199,11 @@ function planSvg(ctx, b, f, ym, zoom) {
     if (!txt) continue;
     // Кегль подбираем так, чтобы номер ПОМЕЩАЛСЯ: по высоте — доля фигуры,
     // по ширине — исходя из ширины моноширинного знака (~0.62 кегля).
-    const fs = Math.min(h * (rentable ? 0.38 : 0.24), w / (txt.length * (rentable ? 0.72 : 0.66)));
+    const fs = Math.min(
+      h * (rentable ? 0.38 : 0.24),
+      w / (txt.length * (rentable ? 0.72 : 0.66)),
+      MAX_PX / scale,                                  // и не больше потолка
+    );
     if (fs * scale < MIN_PX) continue;                 // не влезает читаемо — не рисуем
     labels.push('<text x="' + cx + '" y="' + (cy + fs * 0.35) + '" text-anchor="middle"'
       + ' font-size="' + fs + '" font-weight="' + (rentable ? 700 : 600) + '"'

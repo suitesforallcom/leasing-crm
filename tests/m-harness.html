@@ -432,7 +432,8 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   plan.handle('planzoom', null, ctx());
   if (!S.planZoom) { say('bad', 'зум не переключился'); bad++; }
   else say('ok', 'зум переключается');
-  S.planZoom = false; S.tab = 'home'; S.planFloor = null;
+  S.planZoom = false;
+  S.tab = 'home'; S.planFloor = null;
 }
 
 /* ---- 4g. роль без права отправки: отказ ДО работы, а не после ---- */
@@ -546,6 +547,25 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   const nZoom = (plz.match(/<text/g) || []).length;
   if (nZoom <= nFit) { say('bad', `зум не добавил подписей (${nFit} → ${nZoom})`); bad++; }
   else say('ok', `зум показывает больше подписей (${nFit} → ${nZoom})`);
+  // Порядок: крупный юнит обязан быть НИЖЕ мелкого, иначе он его закрывает.
+  // На 2-м этаже прода 205 (площадь 444k) накрывал 20510/20511/20512.
+  {
+    // 440 — 120×90, 449 — 26×18: крупный обязан идти раньше (то есть ниже).
+    const big = plh.indexOf('data-id="440"'), small = plh.indexOf('data-id="449"');
+    if (big < 0 || small < 0) say('warn', 'в фикстуре нет пары крупный/мелкий для проверки порядка');
+    else if (big > small) { say('bad', 'крупный юнит рисуется ПОВЕРХ мелкого — он его закроет'); bad++; }
+    else say('ok', 'крупные юниты рисуются ниже мелких');
+  }
+  // Кегль подписи ограничен сверху: у огромного сьюта он вырастал на пол-экрана.
+  {
+    const fss = [...plh.matchAll(/font-size="([\d.]+)"/g)].map(m => +m[1]);
+    const vb = /viewBox="[-\d.]+ [-\d.]+ ([\d.]+)/.exec(plh);
+    const vw = vb ? +vb[1] : 0;
+    const maxPx = (vw && fss.length) ? Math.max(...fss) * (360 / vw) : 0;
+    if (!vw || !fss.length) say('warn', 'не удалось померить кегль подписей');
+    else if (maxPx > 16) { say('bad', `подпись крупнее потолка: ${maxPx.toFixed(1)}px на экране`); bad++; }
+    else say('ok', `кегль подписей в пределах потолка (макс ${maxPx.toFixed(1)}px)`);
+  }
   S.planZoom = false;
   S.tab = 'home'; S.planFloor = null;
 }
