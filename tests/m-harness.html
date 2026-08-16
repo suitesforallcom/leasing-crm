@@ -712,6 +712,43 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   S.inv = null; S.sheet = null; S.sheetPayload = null; S.sheetArg = null; S.payload = null;
 }
 
+/* ---- 4n. ЧТО УЙДЁТ В DOCUSIGN И В АРЕНДУ при отправке договора ---------
+   Тот же принцип, что и со счётом: живую отправку выполнить нельзя, но весь
+   путь до вызова проверяется. Здесь особенно важна аренда — сервер заводит её
+   в той же транзакции, и ошибка тут означает неверный договор у арендатора. */
+{
+  S.lease = null; S.sheet = 'lease';
+  const lid = { buildingId: 'b1', floorId: 'f4', unitId: '440' };   // свободный
+  S.sheetPayload = lid; S.sheetArg = lid; S.payload = lid;
+  const calls = [];
+  const sendCtx = () => Object.assign(ctx(), {
+    callCF: (n, p) => { calls.push({ n, p }); return Promise.resolve({ envelopeId: 'env_1', status: 'sent', stateWriteOk: true }); },
+  });
+  lease.render(sendCtx());
+  Object.assign(S.lease, { step: 3, name: 'Test Tenant', email: 'tony@al-en.com', phone: '7275550000',
+    company: '', start: '2026-09-01', term: '12', rent: '1', deposit: '1' });
+  await lease.handle('lease:send', null, sendCtx());
+
+  if (calls.length !== 1 || calls[0].n !== 'dsSendEnvelope') {
+    say('bad', `отправка договора: ${calls.length} вызовов (${calls.map(c => c.n).join(',')})`); bad++;
+  } else say('ok', 'отправка договора делает ровно один вызов сервера');
+  const p = (calls[0] && calls[0].p) || {};
+  const t = p.tenancy || {};
+  const bad2 = [];
+  if (t.tenant !== 'Test Tenant') bad2.push('имя арендатора потеряно');
+  if (t.email !== 'tony@al-en.com') bad2.push('почта потеряна');
+  if (t.leaseStart !== '2026-09-01') bad2.push('дата начала ' + t.leaseStart);
+  if (t.leaseEnd !== '2027-08-31') bad2.push('срок 12 мес посчитан как ' + t.leaseEnd);
+  if (t.contractRent !== 1) bad2.push('ставка ' + t.contractRent + ' — ожидался 1');
+  if (t.deposit !== 1) bad2.push('депозит ' + t.deposit);
+  if (p.recipientEmail !== 'tony@al-en.com') bad2.push('получатель ' + p.recipientEmail);
+  const doc = p.payload && p.payload.documents && p.payload.documents[0];
+  if (!doc || !doc.documentBase64 || doc.documentBase64.length < 500) bad2.push('документ не сформирован');
+  if (bad2.length) { say('bad', 'договор: ' + bad2.join('; ')); bad++; }
+  else say('ok', 'договор и аренда собраны верно (имя, почта, срок, ставка, документ)');
+  S.lease = null; S.sheet = null; S.sheetPayload = null; S.sheetArg = null; S.payload = null;
+}
+
 /* ---- 5. каждое data-act действие кто-то обрабатывает (ловит тупики) ---- */
 {
   const acts = new Set();
