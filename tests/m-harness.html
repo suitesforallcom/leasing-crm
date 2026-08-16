@@ -1313,7 +1313,7 @@ try {
   if (typeof money.isAptType !== 'function' || typeof money.isRentableType !== 'function') {
     say('bad', 'money.js не экспортирует isAptType/isRentableType'); bad++;
   } else {
-    const wrong = ['apt_loft_1', 'apt_1_1', 'apt_2_1', 'apt_3_1', 'apt_2_2', 'apt_3_2']
+    const wrong = ['apt_studio_1', 'apt_loft_1', 'apt_1_1', 'apt_2_1', 'apt_3_1', 'apt_2_2', 'apt_3_2']
       .filter(k => !money.isAptType(k) || !money.isRentableType(k));
     if (money.isAptType('office') || money.isRentableType('stairs')
         || !money.isRentableType('') || !money.isRentableType('office') || money.isAptType('apartment')) {

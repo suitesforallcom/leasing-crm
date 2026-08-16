@@ -27033,6 +27033,7 @@ const TYPE_LABELS = {
   // Money-семантика и rentable-поведение идентичны office; заливка по
   // статусу — как office, т.е. БЕЗ записи в TYPE_FILL (не-rentable типы
   // падают в TYPE_FILL/common-grey внутри _computeUnitFillImpl).
+  apt_studio_1:'Studio · 1 bath',
   apt_loft_1:'Loft · 1 bath', apt_1_1:'1 bed · 1 bath',
   apt_2_1:'2 bed · 1 bath',   apt_3_1:'3 bed · 1 bath',
   apt_2_2:'2 bed · 2 bath',   apt_3_2:'3 bed · 2 bath',
@@ -27065,7 +27066,7 @@ function _floorLeaseNoun(f) {
 // so they never collide with the built-ins above (and never accidentally
 // clash with a future built-in we ship).
 const BUILTIN_UNIT_TYPE_KEYS = new Set(Object.keys(TYPE_LABELS));
-const _UNIT_TYPE_ORDER = ['office','apt_loft_1','apt_1_1','apt_2_1','apt_3_1','apt_2_2','apt_3_2','conf','kitchen','storage','toilet','mechanical','stairs','elevator','atrium'];
+const _UNIT_TYPE_ORDER = ['office','apt_studio_1','apt_loft_1','apt_1_1','apt_2_1','apt_3_1','apt_2_2','apt_3_2','conf','kitchen','storage','toilet','mechanical','stairs','elevator','atrium'];
 
 // === Customer-facing noun helpers (Apartments, 2026-08) ===
 // Апартаменты (apt_*) в клиентских текстах — «Apt», всё остальное —
