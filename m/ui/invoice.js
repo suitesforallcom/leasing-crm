@@ -500,6 +500,20 @@ function bindRecap(ctx, L, hit) {
   }, 0);
 }
 
+/**
+ * Держим поле поиска у ВЕРХА видимой области, пока человек печатает.
+ * На телефоне клавиатура съедает две трети экрана: найденный сьют оказывался
+ * под ней, и его приходилось искать, пряча клавиатуру (поймано оператором на
+ * поиске «1018»). Подтягиваем поле к верху — результаты попадают в тот кусок
+ * экрана, который остался видимым.
+ */
+function keepQueryVisible(inp) {
+  const sc = inp && inp.closest && inp.closest('.sheet-scroll');
+  if (!sc) return;
+  const delta = inp.getBoundingClientRect().top - sc.getBoundingClientRect().top;
+  if (delta > 12) sc.scrollTop += delta - 8;      // уже наверху — не дёргаем
+}
+
 function picker(ctx) {
   const snap = ctx.snap || {}, scope = String((ctx.S && ctx.S.scope) || 'all');
   const L = st(ctx);
@@ -522,6 +536,7 @@ function bindPickInv(ctx, L, rows) {
       L.q = inp.value;
       try { list.innerHTML = pickRows(ctx, rows, inp.value.trim().toLowerCase()); }
       catch (e) { console.error('[m] tenant picker failed:', e); }
+      keepQueryVisible(inp);
     });
   }, 0);
 }

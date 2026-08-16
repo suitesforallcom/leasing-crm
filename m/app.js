@@ -120,8 +120,24 @@ function ctx(){
     go, openSheet, closeSheet, toast,
     setScope,                       // менять здание можно ТОЛЬКО так (один владелец состояния)
     canSend,                        // право отправлять деньги/договоры — одна проверка на все экраны
+    // Перерисовать ТОЛЬКО подвал листа. Нужно модулям, у которых кнопка внизу
+    // зависит от того, что человек печатает: ввод не вызывает handle, значит
+    // подвал сам по себе никогда не обновится (оператор набирал имя и почту, а
+    // Continue оставался серым, пока он не переключит вкладку).
+    refreshFoot: () => { if (S.sheet) paintFoot(S.sheet); },
     refresh: () => doRefresh(false),
   };
+}
+function paintFoot(name){
+  const mod = SHEETS[name];
+  let footHtml = '';
+  if (mod && typeof mod.foot === 'function'){
+    try { footHtml = mod.foot(ctx()) || ''; }
+    catch (e){ console.error('[m] foot failed:', name, e); footHtml = ''; }
+  }
+  sheetFoot.innerHTML = footHtml;
+  sheetFoot.style.display = footHtml.trim() ? 'flex' : 'none';
+  hoistFoot();
 }
 function go(name){
   if (TABS[name]){ if (S.sheet) hideSheet(); S.tab = name; render(); return; }
@@ -308,14 +324,7 @@ function openSheet(name, payload){
     : errCard('sheet:' + name, new Error('unknown sheet'));
   // Модуль может отдавать закреплённый низ листа через foot(ctx) — там живут
   // ВСЕ кнопки отправки. Без этого вызова листы договора и счёта нерабочие.
-  let footHtml = '';
-  if (mod && typeof mod.foot === 'function'){
-    try { footHtml = mod.foot(ctx()) || ''; }
-    catch (e){ console.error('[m] foot failed:', name, e); footHtml = ''; }
-  }
-  sheetFoot.innerHTML = footHtml;
-  sheetFoot.style.display = footHtml.trim() ? 'flex' : 'none';
-  hoistFoot();
+  paintFoot(name);
   sheetEl.setAttribute('data-on', '1');
   scrimEl.setAttribute('data-on', '1');
   sheetBody.scrollTop = y;

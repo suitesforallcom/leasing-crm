@@ -379,6 +379,7 @@ function bindPeople(L, people) {
       L.wq = inp.value;
       try { list.innerHTML = peopleList(people, inp.value.trim().toLowerCase()); }
       catch (e) { console.error('[m] people picker failed:', e); }
+      keepQueryVisible(inp);
     });
   }, 0);
 }
@@ -418,6 +419,7 @@ function bindPick(ctx, L, vacant, taken) {
       L.q = inp.value;                                   // переживает перерисовку листа оболочкой
       try { list.innerHTML = pickList(ctx, vacant, taken, inp.value.trim().toLowerCase()); }
       catch (e) { console.error('[m] unit picker failed:', e); }
+      keepQueryVisible(inp);
     });
   }, 0);
 }
@@ -427,6 +429,9 @@ function step2(ctx, L) {
     + '<button data-act="lease:who" data-k="new" aria-pressed="' + (L.who === 'new') + '">New tenant</button>'
     + '<button data-act="lease:who" data-k="existing" aria-pressed="' + (L.who === 'existing') + '">Existing</button></div>';
   if (L.who === 'new') {
+    // Биндер ДО return — иначе он недостижим (первая версия правки именно так
+    // и не работала: кнопка по-прежнему не загоралась по вводу).
+    bindFootFields(ctx, L, [['name', 'lsName'], ['email', 'lsEmail'], ['phone', 'lsPhone'], ['company', 'lsCompany']]);
     return h
       + '<div class="field"><label>Full name</label><input class="val" id="lsName" placeholder="Elliot Reyes"'
       + ' autocomplete="off" value="' + esc(L.name) + '"></div>'
@@ -508,6 +513,42 @@ function recapHtml(ctx, L, hit) {
     + '<div><span>Rent</span><b>' + esc(usd(ctx, rent)) + '/mo</b></div>'
     + '<div><span>Deposit</span><b>' + esc(usd(ctx, dep)) + '</b></div></div>';
 }
+/**
+ * Держим поле поиска у ВЕРХА видимой области, пока человек печатает.
+ * На телефоне клавиатура съедает две трети экрана: найденный сьют оказывался
+ * под ней, и его приходилось искать, пряча клавиатуру (поймано оператором на
+ * поиске «1018»). Подтягиваем поле к верху — результаты попадают в тот кусок
+ * экрана, который остался видимым.
+ */
+function keepQueryVisible(inp) {
+  const sc = inp && inp.closest && inp.closest('.sheet-scroll');
+  if (!sc) return;
+  const delta = inp.getBoundingClientRect().top - sc.getBoundingClientRect().top;
+  if (delta > 12) sc.scrollTop += delta - 8;      // уже наверху — не дёргаем
+}
+
+/**
+ * Кнопка внизу зависит от того, что человек ПЕЧАТАЕТ. Ввод не вызывает handle,
+ * поэтому подвал сам не обновлялся: оператор вводил имя и почту, а «Continue»
+ * оставался серым, пока он не переключит вкладку и не вернётся (тогда
+ * срабатывал readForm). Слушаем ввод и просим оболочку перерисовать подвал.
+ */
+function bindFootFields(ctx, L, fields) {
+  setTimeout(() => {
+    for (const [key, id] of fields) {
+      const inp = document.getElementById(id);
+      if (!inp || inp.dataset.foot) continue;
+      inp.dataset.foot = '1';
+      inp.addEventListener('input', () => {
+        L[key] = inp.value;
+        if (typeof ctx.refreshFoot === 'function') {
+          try { ctx.refreshFoot(); } catch (e) { console.error('[m] refreshFoot failed:', e); }
+        }
+      });
+    }
+  }, 0);
+}
+
 /** Сводка следует за полями. Перерисовываем ТОЛЬКО её — input трогать нельзя. */
 function bindRecap(ctx, L, hit) {
   setTimeout(() => {

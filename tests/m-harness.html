@@ -549,14 +549,21 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   painted.push(plh);
   if (!/STAIRS/.test(plh)) { say('bad', 'на плане нет подписи типа общей зоны'); bad++; }
   else say('ok', 'общие зоны на плане подписаны типом (как на десктопе)');
-  // зум обязан ПОКАЗЫВАТЬ БОЛЬШЕ, иначе кнопка бессмысленна
-  const nFit = (plh.match(/<text/g) || []).length;
+  // Номер обязан быть у КАЖДОГО сдаваемого сьюта: оператор нашёл этаж, где на
+  // правой половине не было ни одного номера — мелкие не дотягивали до порога.
+  const drawn = (plh.match(/data-act="unit"/g) || []).length;
+  const labels = (plh.match(/<text/g) || []).length;
+  if (labels < drawn) { say('bad', `подписей ${labels} на ${drawn} сьютов — часть без номера`); bad++; }
+  else say('ok', `номер есть у каждого сьюта (${drawn})`);
+  // и все одного размера — иначе номера «едут»
+  const sizes = [...new Set([...plh.matchAll(/data-act="unit"[\s\S]{0,400}?<\/(?:rect|polygon)>/g)].map(() => 0))];
+  const fsAll = [...plh.matchAll(/font-size="([\d.]+)"/g)].map(m => +m[1]);
+  const uniq = [...new Set(fsAll.map(v => v.toFixed(2)))];
+  if (uniq.length > 2) { say('bad', `кегли разъезжаются: ${uniq.join(', ')}`); bad++; }
+  else say('ok', `кегль единый (${uniq.join(' и ')} — сьюты и общие зоны)`);
   S.planZoom = true;
   const plz = plan.render(ctx());
   painted.push(plz);
-  const nZoom = (plz.match(/<text/g) || []).length;
-  if (nZoom <= nFit) { say('bad', `зум не добавил подписей (${nFit} → ${nZoom})`); bad++; }
-  else say('ok', `зум показывает больше подписей (${nFit} → ${nZoom})`);
   // Заливка карты = десктоп, но просрочка не потеряна: синий + пометка.
   {
     const blue = /data-id="445"[^>]*/.exec(plh) || [''];
@@ -581,15 +588,15 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
     else if (big > small) { say('bad', 'крупный юнит рисуется ПОВЕРХ мелкого — он его закроет'); bad++; }
     else say('ok', 'крупные юниты рисуются ниже мелких');
   }
-  // Кегль подписи ограничен сверху: у огромного сьюта он вырастал на пол-экрана.
+  // Кегль на экране должен оставаться читаемым при обычном показе.
   {
     const fss = [...plh.matchAll(/font-size="([\d.]+)"/g)].map(m => +m[1]);
     const vb = /viewBox="[-\d.]+ [-\d.]+ ([\d.]+)/.exec(plh);
     const vw = vb ? +vb[1] : 0;
-    const maxPx = (vw && fss.length) ? Math.max(...fss) * (360 / vw) : 0;
+    const px = (vw && fss.length) ? Math.max(...fss) * (360 / vw) : 0;
     if (!vw || !fss.length) say('warn', 'не удалось померить кегль подписей');
-    else if (maxPx > 16) { say('bad', `подпись крупнее потолка: ${maxPx.toFixed(1)}px на экране`); bad++; }
-    else say('ok', `кегль подписей в пределах потолка (макс ${maxPx.toFixed(1)}px)`);
+    else if (px < 5 || px > 16) { say('bad', `кегль ${px.toFixed(1)}px вне разумного диапазона`); bad++; }
+    else say('ok', `кегль подписей ${px.toFixed(1)}px на экране`);
   }
   S.planZoom = false;
   S.tab = 'home'; S.planFloor = null;
@@ -746,6 +753,59 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   if (!doc || !doc.documentBase64 || doc.documentBase64.length < 500) bad2.push('документ не сформирован');
   if (bad2.length) { say('bad', 'договор: ' + bad2.join('; ')); bad++; }
   else say('ok', 'договор и аренда собраны верно (имя, почта, срок, ставка, документ)');
+  S.lease = null; S.sheet = null; S.sheetPayload = null; S.sheetArg = null; S.payload = null;
+}
+
+/* ---- 4o. кнопка внизу следует за вводом (находка оператора 2026-08-16) ----
+   Оператор ввёл имя и почту, а «Continue» остался серым: подвал считает своё
+   состояние при отрисовке, а печать ничего не перерисовывает. Приходилось
+   переключать вкладку и возвращаться.
+
+   Проверяем ДВЕ вещи по отдельности, без тонкостей DOM-таймингов:
+   1) сама логика кнопки — по строке подвала;
+   2) что слушатель ввода вообще подключается ДО return (первая версия правки
+      стояла ПОСЛЕ return и была недостижима — кнопка не загоралась). */
+{
+  S.lease = null; S.sheet = 'lease';
+  const lid = { buildingId: 'b1', floorId: 'f4', unitId: '440' };
+  S.sheetPayload = lid; S.sheetArg = lid; S.payload = lid;
+  lease.render(ctx());                       // создаёт S.lease (шаг 2: юнит уже выбран)
+  S.lease.step = 2; S.lease.who = 'new';
+  S.lease.name = ''; S.lease.email = '';
+  const empty = lease.foot(ctx());
+  S.lease.name = 'Test delete me';
+  const named = lease.foot(ctx());
+  S.lease.email = 'tony@al-en.com';
+  const ready = lease.foot(ctx());
+  S.lease.email = 'битая';
+  const broken = lease.foot(ctx());
+  painted.push(empty, ready);
+  const off = (h) => /data-act="lease:step"[^>]*data-d="1"[^>]*disabled/.test(h) || !/data-d="1"/.test(h);
+  const problems = [];
+  if (!off(empty)) problems.push('активна без данных');
+  if (!off(named)) problems.push('активна без почты');
+  if (off(ready)) problems.push('НЕ активна при верных данных');
+  if (!off(broken)) problems.push('активна при битой почте');
+  if (problems.length) { say('bad', 'кнопка «Continue»: ' + problems.join('; ')); bad++; }
+  else say('ok', 'логика кнопки «Continue» верна на всех четырёх состояниях');
+
+  // слушатель ввода обязан подключаться ДО return
+  const src = await (await fetch('../m/ui/lease.js?v=' + Date.now())).text();
+  const s2 = src.slice(src.indexOf('function step2('), src.indexOf('function step3(') > 0 ? src.indexOf('function step3(') : undefined);
+  const call = s2.indexOf('bindFootFields(');
+  const ret = s2.indexOf('return h');
+  if (call < 0) { say('bad', 'слушатель ввода на шаге «кто подписывает» не подключён вовсе'); bad++; }
+  else if (ret >= 0 && call > ret) { say('bad', 'слушатель ввода стоит ПОСЛЕ return — недостижим'); bad++; }
+  else say('ok', 'слушатель ввода подключается до отрисовки (кнопка оживёт по вводу)');
+
+  // поле поиска подтягивается к верху — иначе результат уходит под клавиатуру
+  const binders = (src.match(/keepQueryVisible\(inp\);/g) || []).length;
+  if (binders < 2) { say('bad', `keepQueryVisible в ${binders} биндерах из 2 — результат уйдёт под клавиатуру`); bad++; }
+  else say('ok', 'оба поиска договора подтягивают поле к верху экрана');
+  const isrc = await (await fetch('../m/ui/invoice.js?v=' + Date.now())).text();
+  if (!/keepQueryVisible\(inp\);/.test(isrc)) { say('bad', 'поиск арендатора в счёте не подтягивает поле'); bad++; }
+  else say('ok', 'поиск арендатора в счёте подтягивает поле к верху');
+
   S.lease = null; S.sheet = null; S.sheetPayload = null; S.sheetArg = null; S.payload = null;
 }
 
