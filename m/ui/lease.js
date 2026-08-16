@@ -399,7 +399,7 @@ function step1(ctx, L) {
     + '<input id="lsQ" placeholder="Suite number, floor or building" autocomplete="off"'
     + ' value="' + esc(L.q || '') + '"></div></div>';
   if (scope !== 'all') {
-    h += '<div class="chips" style="padding:8px 0 2px"><button class="fchip" data-act="lease:all" aria-pressed="'
+    h += '<div class="chips searchall-chip" style="padding:8px 0 2px"><button class="fchip" data-act="lease:all" aria-pressed="'
       + (!!L.all) + '">' + (L.all ? 'Searching every building' : 'Search all buildings too') + '</button></div>';
   }
   h += '<div style="font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);'
