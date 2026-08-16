@@ -27044,6 +27044,18 @@ const TYPE_LABELS = {
 // Зеркало в мобильном клиенте: m/lib/money.js (isAptType/isRentableType).
 function _isAptType(t) { return String(t || '').slice(0, 4) === 'apt_'; }
 function _isRentableType(t) { return !t || t === 'office' || _isAptType(t); }
+// Окно и вода — офисные ДИФФЕРЕНЦИАТОРЫ; у квартиры они есть по определению
+// (Tony 2026-08-16: «это офисы, у всех есть вода и у всех есть окно»).
+// Для квартир признаки подразумеваются: фильтры/тепловая карта/рент-ролл
+// читают их через эти хелперы, тумблеры в редакторе для apt_ скрыты.
+function _unitHasWindow(u) { return !!(u && u.window) || _isAptType(u && u.type); }
+function _unitHasSink(u)   { return !!(u && u.sink)   || _isAptType(u && u.type); }
+// Подпись типа этажа: «(apartments)», когда сдаваемые юниты этажа — квартиры.
+function _floorLeaseNoun(f) {
+  const us = (f && f.units) || [];
+  const rent = us.filter(u => u && !u.deletedAt && u.rentable !== false && _isRentableType(u.type));
+  return (rent.length && rent.every(u => _isAptType(u.type))) ? 'apartments' : 'offices';
+}
 
 // === Custom unit types ===
 // Operators can extend the type catalogue per-workspace via
@@ -28182,6 +28194,7 @@ function loadState() {
       for (const b of (state.buildings || [])) {
         for (const f of (b.floors || [])) {
           for (const u of (f.units || [])) {
+            if (typeof _isAptType === 'function' && _isAptType(u && u.type)) continue;  // квартиры: вместимость — офисная метрика
             const _sqft = +u.sqft || 0;
             if (_sqft > 0) {
               u.cap = Math.max(0, Math.floor(_sqft / _sqftPP));
@@ -31859,7 +31872,7 @@ function _computeUnitFillImpl(u, mode) {
 
   if (mode === 'type') {
     // Window vs interior — warm-neutral pastels from the mock.
-    return u.window ? '#E8EFE4' : '#F4F2EE';
+    return _unitHasWindow(u) ? '#E8EFE4' : '#F4F2EE';
   }
   if (mode === 'payment') {
     // Payment status overlay for a SELECTED month. Two-state model:
@@ -32148,8 +32161,8 @@ function unitMatchesFilters(u, filterSet) {
   if (statusOn.length && !statusOn.includes(u.status || 'vacant')) return false;
 
   // Window sub-group
-  if (filterSet.has('window-yes') && !u.window) return false;
-  if (filterSet.has('window-no')  &&  u.window) return false;
+  if (filterSet.has('window-yes') && !_unitHasWindow(u)) return false;
+  if (filterSet.has('window-no')  &&  _unitHasWindow(u)) return false;
 
   // Sink sub-group
   if (filterSet.has('sink-yes') && !u.sink) return false;
@@ -74431,7 +74444,7 @@ function onRectDrawEnd(e) {
     }
     // Capacity сразу выставляем из sqft / sqftPerPerson чтобы поле
     // в panel'и показывало правильное число с первой секунды.
-    if (+newUnit.sqft > 0) {
+    if (+newUnit.sqft > 0 && !_isAptType(newUnit.type)) {
       const _sqftPP = Math.max(5, +state?.settings?.sqftPerPerson || 30);
       newUnit.cap = Math.max(0, Math.floor(+newUnit.sqft / _sqftPP));
     }
@@ -75189,7 +75202,7 @@ function _polyCommit() {
   }
   // Capacity = floor(sqft / sqftPerPerson) сразу при создании — чтобы
   // панель справа показывала правильное значение, а не defaultCap.
-  if (+newUnit.sqft > 0) {
+  if (+newUnit.sqft > 0 && !_isAptType(newUnit.type)) {
     const _sqftPP = Math.max(5, +state?.settings?.sqftPerPerson || 30);
     newUnit.cap = Math.max(0, Math.floor(+newUnit.sqft / _sqftPP));
   }
@@ -75955,7 +75968,7 @@ function _autoUpdateUnitSqft(u, f) {
   // больше не уважается: при любом изменении sqft cap пересчитывается.
   // Поле capacity в форме остаётся редактируемым, но новое значение sqft
   // (resize / calibration / правка sqft вручную) перезаписывает его.
-  {
+  if (!_isAptType(u.type)) {   // квартиры: вместимость — офисная метрика, не пишем
     const sqftPP = Math.max(5, +state?.settings?.sqftPerPerson || 30);
     const newCap = Math.max(0, Math.floor(sqft / sqftPP));
     u.cap = newCap;
@@ -77764,8 +77777,8 @@ function renderDetail() {
     `${+u.sqft || 0} ft²`,
     esc(TYPE_LABELS[u.type] || u.type),
     `$${(+u.rent || 0).toLocaleString()}/mo proforma`,
-    u.window ? _rdIc('window', 12) : null,
-    u.sink ? _rdIc('drop', 12) : null,
+    _unitHasWindow(u) ? _rdIc('window', 12) : null,
+    _unitHasSink(u) ? _rdIc('drop', 12) : null,
   ].filter(Boolean).join(' · ');
   // Auto-open specs for newly-created units. _newUnitEditFocus is set
   // by onRectDrawEnd / _polyCommit / _unitAddSubRoom and consumed here
@@ -77808,7 +77821,7 @@ function renderDetail() {
         <div class="field"><label>Type</label><select id="fType" ${typeSelectAttrs} ${ro}>${typeOptions}</select></div>
         <div class="field-row">
           <div class="field"><label>Size (ft²)</label><input type="number" id="fSqft" value="${u.sqft||0}" ${ro}></div>
-          <div class="field"><label>Capacity</label><input type="number" id="fCap" value="${u.cap||0}" ${ro}></div>
+          ${_isAptType(u.type) ? '' : `<div class="field"><label>Capacity</label><input type="number" id="fCap" value="${u.cap||0}" ${ro}></div>`}
         </div>
         <div class="sfa-finance-only">
           <!-- Two parallel rent fields. Both write to the same u.* keys
@@ -77832,8 +77845,10 @@ function renderDetail() {
              default --rd-accent); handler toggleField тот же, вне edit-режима
              input disabled. Эмодзи 🌞/🚰 → спрайт i-window / i-drop. -->
         <div class="toggle-row"><label>${_rdIc('dollar', 14)}Rentable</label><label class="rd-sw"><input type="checkbox" ${u.rentable !== false ? 'checked' : ''} ${editOn ? `onchange="toggleField('rentable')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>
+        ${_isAptType(u.type) ? `
+        <div class="field" style="color:var(--muted); font-size:12px; padding:2px 0 6px;">${_rdIc('window', 12)} ${_rdIc('drop', 12)} Windows &amp; plumbing — standard for apartments</div>` : `
         <div class="toggle-row"><label>${_rdIc('window', 14)}Window</label><label class="rd-sw"><input type="checkbox" ${u.window ? 'checked' : ''} ${editOn ? `onchange="toggleField('window')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>
-        <div class="toggle-row"><label>${_rdIc('drop', 14)}Sink / plumbing</label><label class="rd-sw"><input type="checkbox" ${u.sink ? 'checked' : ''} ${editOn ? `onchange="toggleField('sink')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>
+        <div class="toggle-row"><label>${_rdIc('drop', 14)}Sink / plumbing</label><label class="rd-sw"><input type="checkbox" ${u.sink ? 'checked' : ''} ${editOn ? `onchange="toggleField('sink')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>`}
         ${(() => {
           // Floor lease-type селектор. Меняет f.leaseType (общее для всего этажа,
           // не только этого юнита). Показываем только для rentable office юнитов
@@ -77849,7 +77864,7 @@ function renderDetail() {
               <label>Floor lease type <span style="color:var(--muted); font-weight:400;">(${_name})</span></label>
               <select id="fFloorLeaseType" ${ro}
                       onchange="${editOn ? `_saveFloorLeaseType('${esc(_f.id)}', this.value)` : ''}">
-                <option value="multi-suite" ${lt === 'multi-suite' ? 'selected' : ''}>Multi-tenant (offices)</option>
+                <option value="multi-suite" ${lt === 'multi-suite' ? 'selected' : ''}>Multi-tenant (${_floorLeaseNoun(_f)})</option>
                 <option value="full-floor"  ${lt === 'full-floor'  ? 'selected' : ''}>Single tenant (whole floor)</option>
               </select>
             </div>
@@ -78207,7 +78222,7 @@ function renderDetail() {
         <div class="field"><label>Type</label><select id="fType" ${typeSelectAttrs} ${ro}>${typeOptions}</select></div>
         <div class="field-row">
           <div class="field"><label>Size (ft²)</label><input type="number" id="fSqft" value="${u.sqft||0}" ${ro}></div>
-          <div class="field"><label>Capacity</label><input type="number" id="fCap" value="${u.cap||0}" ${ro}></div>
+          ${_isAptType(u.type) ? '' : `<div class="field"><label>Capacity</label><input type="number" id="fCap" value="${u.cap||0}" ${ro}></div>`}
         </div>
         <div class="sfa-finance-only">
           <!-- Mirror of the vacant-path render: surface BOTH Monthly
@@ -78779,7 +78794,9 @@ function _renderUnitV2Header(u, editOn) {
   const subBits = [
     typeLabel,
     `${u.sqft || 0} ft²`,
-    (u.cap && u.cap > 0) ? `${u.cap}-person capacity` : null,
+    // «Вместимость N человек» — офисная метрика (sqft/person); у квартиры
+    // ролью владеет тип (спальни/ванные) — capacity прячем.
+    (!_isAptType(u.type) && u.cap && u.cap > 0) ? `${u.cap}-person capacity` : null,
   ].filter(Boolean).join(' · ');
 
   // Compact Tenant + Rent card. Two figures live on the unit:
@@ -80375,7 +80392,7 @@ function renderFloorKebabMenu() {
   const spacer = '<span style="display:inline-block;width:14px"></span>';  // выравнивание без галочки
   const ms  = lt === 'multi-suite';
   items.push(`<div class="upv2-menu-sep-label" title="Underwriting / forecast assumption for this floor — separate from the operational whole-floor lease above. Drives Revenue Forecast escalation vs. downtime.">Floor lease type (forecast)</div>`);
-  items.push(`<button class="upv2-menu-item" onclick="closeFloorMenu(); _floorLeaseTypeFromMenu('${fid}','multi-suite')">${ms ? chk : spacer} Multi-tenant (offices)</button>`);
+  items.push(`<button class="upv2-menu-item" onclick="closeFloorMenu(); _floorLeaseTypeFromMenu('${fid}','multi-suite')">${ms ? chk : spacer} Multi-tenant (${_floorLeaseNoun(f)})</button>`);
   items.push(`<button class="upv2-menu-item" onclick="closeFloorMenu(); _floorLeaseTypeFromMenu('${fid}','full-floor')">${!ms ? chk : spacer} Single tenant (whole floor)</button>`);
 
   // Не-editor роли видят меню только для навигации (rename/billing/lease type
@@ -103384,6 +103401,9 @@ function saveDetail() {
     }
     u.sqft = newSqft;
   }
+  // Квартира: поле Capacity скрыто, а записанный ранее авто-cap (Apt 101
+  // успел получить 14 из 908 ft²) чистим при первом же сохранении.
+  if (_isAptType(u.type) && (u.cap || u.capAuto)) { delete u.cap; delete u.capAuto; }
   if (get('fCap')) {
     const newCap = +get('fCap').value;
     // Detect manual override vs auto-derived. If operator typed a value
@@ -139282,7 +139302,7 @@ function renderRRCell(r, c) {
       return `<a class="rr-tenant-link" onclick="event.stopPropagation(); _openUnitDetailOrDrawer('${esc(r.buildingId)}','${esc(r.floorId)}','${esc(r.unitId)}')" title="Open tenant ledger">${esc(r.tenant)}</a>`;
     }
     case 'window':
-      return r.window ? '<span title="Window unit">🌞</span>' : '<span style="color:var(--muted)">—</span>';
+      return _unitHasWindow(r) ? '<span title="Window unit">🌞</span>' : '<span style="color:var(--muted)">—</span>';
     case 'sink':
       return r.sink ? '<span title="Unit has a sink / plumbing">🚰</span>' : '<span style="color:var(--muted)">—</span>';
     case 'rent': {
