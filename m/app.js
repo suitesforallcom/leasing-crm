@@ -397,6 +397,27 @@ function hoistFoot(){
   if (node){ sheetFoot.innerHTML = node.innerHTML; node.remove(); }
   sheetFoot.style.display = sheetFoot.innerHTML.trim() ? 'flex' : 'none';
 }
+/* Пока клавиатура открыта (фокус в input/textarea внутри шторки), шторка
+   держит высоту (класс kb) — короткий список результатов не роняет её под
+   клавиатуру. Снятие — с паузой: iOS шлёт focusout при перерисовке списка,
+   хотя фокус тут же возвращается в то же поле. Вынесено в именованную
+   функцию ради извлечения в стенд. */
+function wireSheetKeyboard(el){
+  let t = 0;
+  el.addEventListener('focusin', (e) => {
+    if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) {
+      clearTimeout(t); el.classList.add('kb');
+    }
+  });
+  el.addEventListener('focusout', () => {
+    clearTimeout(t);
+    t = setTimeout(() => {
+      const a = document.activeElement;
+      if (!a || !el.contains(a) || !/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) el.classList.remove('kb');
+    }, 120);
+  });
+}
+
 function openSheet(name, payload){
   const same = (S.sheet === name);
   if (payload !== undefined) S.payload = payload;
@@ -416,6 +437,7 @@ function openSheet(name, payload){
 }
 function hideSheet(){
   sheetEl.setAttribute('data-on', '0');
+  sheetEl.classList.remove('kb');
   scrimEl.setAttribute('data-on', '0');
   S.sheet = null; S.payload = null;
 }
@@ -589,6 +611,7 @@ async function boot(){
   gateBtn.addEventListener('click', onGateBtn);
   gateAlt.addEventListener('click', onGateAlt);
   appEl.addEventListener('click', onClick);
+  wireSheetKeyboard(sheetEl);
   scrimEl.addEventListener('click', () => closeSheet());
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && S.sheet) closeSheet(); });
   document.addEventListener('visibilitychange', () => { if (!document.hidden && booted) doRefresh(true); });

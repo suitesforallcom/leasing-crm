@@ -1239,6 +1239,45 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   } catch (e) { say('bad', 'проверка таб-бара упала: ' + e.message); bad++; }
 }
 
+/* ---- 7n. Шторка держит высоту при открытой клавиатуре ----
+       Прод-жалоба: в мастере лизы после поиска юнита короткий результат
+       сжимал шторку под клавиатуру iOS. wireSheetKeyboard извлекается из
+       app.js и гоняется на настоящем DOM. ---- */
+{
+  try {
+    const src = await (await fetch('../m/app.js?v=' + Date.now(), { cache: 'no-store' })).text();
+    const m = src.match(/function wireSheetKeyboard\(el\)\{[\s\S]*?\n\}/);
+    if (!m) { say('bad', 'wireSheetKeyboard не найден в m/app.js'); bad++; }
+    else {
+      const host = document.createElement('div');
+      host.innerHTML = '<input id="kbq"><button id="kbb"></button>';
+      document.body.appendChild(host);
+      new Function('el', m[0] + '\nwireSheetKeyboard(el);')(host);
+      const inp = host.querySelector('#kbq');
+      inp.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+      const gotKb = host.classList.contains('kb');
+      // focusout с мгновенным возвратом фокуса (перерисовка списка) — класс держится
+      inp.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+      inp.focus();
+      await new Promise(r => setTimeout(r, 200));
+      const heldKb = host.classList.contains('kb');
+      inp.blur();
+      inp.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 200));
+      const releasedKb = !host.classList.contains('kb');
+      host.remove();
+      if (!gotKb) { say('bad', 'фокус в поле шторки не включает режим клавиатуры (kb)'); bad++; }
+      else if (!heldKb) { say('bad', 'kb слетает при перерисовке списка (focusout+focus)'); bad++; }
+      else if (!releasedKb) { say('bad', 'kb не снимается после ухода фокуса'); bad++; }
+      else say('ok', 'шторка держит высоту при клавиатуре и отпускает после');
+      // CSS: правило .sheet.kb существует
+      const css = await (await fetch('../m.html?v=' + Date.now(), { cache: 'no-store' })).text();
+      if (!/\.sheet\.kb\{\s*height/.test(css)) { say('bad', 'нет CSS-правила .sheet.kb — высота не держится'); bad++; }
+      else say('ok', 'CSS .sheet.kb на месте');
+    }
+  } catch (e) { say('bad', 'проверка клавиатуры шторки упала: ' + e.message); bad++; }
+}
+
 /* ---- 8. план на НАСТОЯЩЕЙ геометрии прода (tests/fixtures/plan-geometry.json)
        Синтетический этаж из одного квадрата ничего не доказывает: беда с
        подписями вылезает только на реальных узких и Г-образных формах. ---- */
