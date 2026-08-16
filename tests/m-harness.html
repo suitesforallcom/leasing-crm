@@ -1080,6 +1080,65 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   } else say('ok', 'with no invoice list the stamp is still trusted (cold cache intact)');
 }
 
+/* ---- 7i. «Сдан, аренда впереди» (leased) — зеркало правила десктопа
+       (Tony 2026-05-22): подписанный сьют с полученными деньгами не должен
+       выглядеть как «не сдан». Прод-жалоба: сьют 204, Luka Gogic. ---- */
+{
+  const YM = '2026-08';
+  const mk = (over) => {
+    const u = Object.assign({ id: '204', type: 'office', status: 'occupied', tenant: 'Luka Gogic',
+      email: 'l@g.co', rent: 4000, contractRent: 4000, deposit: 4000,
+      leaseStart: '2026-09-01', leaseEnd: '', payments: {},
+      stripe: { customerId: 'cus_x' } }, over || {});
+    const b = { id: 'b1', name: 'B', floors: [{ id: 'f1', name: '1', units: [u] }] };
+    return { u, snap: { buildings: [b], units: [{ unit: u, building: b, floor: b.floors[0] }],
+      invoices: [], invoicesAvailable: true, invoiceBuckets: {},
+      settings: {}, now: Date.parse('2026-08-16T12:00:00Z') } };
+  };
+  // депозит оплачен → leased на карте, «Leased» словом, uiStatus НЕ тронут
+  const paid = mk({ stripe: { customerId: 'cus_x', depositInvoice: { invoiceId: 'in_d', status: 'paid', amount: 4000 } } });
+  const ms = money.mapStatus(paid.u, YM, paid.snap);
+  if (!ms || ms.status !== 'leased') { say('bad', 'deposit-paid future lease does not map to "leased"'); bad++; }
+  else say('ok', 'deposit-paid future lease maps to "leased" on the plan');
+  const v = money.verdict(paid.u, YM, paid.snap);
+  if (String(v.label) !== 'Leased') { say('bad', `card word for onboarded tenancy is "${v.label}", must be "Leased"`); bad++; }
+  else say('ok', 'unit card says "Leased" for an onboarded tenancy');
+  if (money.uiStatus(paid.u, YM, paid.snap) === 'leased') {
+    say('bad', 'uiStatus leaked "leased" — money truth (buildingStats/Overdue) is corrupted'); bad++;
+  } else say('ok', 'money truth (uiStatus) untouched by the leased paint');
+  // денег НЕТ → остаётся не-leased (негативный контроль правила)
+  const bare = mk({});
+  const ms2 = money.mapStatus(bare.u, YM, bare.snap);
+  if (ms2 && ms2.status === 'leased') { say('bad', 'future lease with NO money received still paints "leased"'); bad++; }
+  else say('ok', 'no money received => no "leased" paint');
+  // оплаченный месяц сильнее leased
+  const pd = mk({ payments: { [YM]: { status: 'paid', amount: 4000 } },
+    stripe: { customerId: 'cus_x', depositInvoice: { invoiceId: 'in_d', status: 'paid', amount: 4000 } } });
+  const ms3 = money.mapStatus(pd.u, YM, pd.snap);
+  if (!ms3 || ms3.status !== 'paid') { say('bad', 'a PAID month lost to the leased paint'); bad++; }
+  else say('ok', 'a paid month still wins over "leased"');
+  // токен в трёх темовых блоках
+  const shellSrc2 = await (await fetch('../m.html?v=' + Date.now(), { cache: 'no-store' })).text();
+  const tok = (shellSrc2.match(/--plan-leased\s*:/g) || []).length;
+  if (tok < 3) { say('bad', `--plan-leased defined ${tok}/3 theme blocks`); bad++; }
+  else say('ok', '--plan-leased defined in all three theme blocks');
+}
+
+/* ---- 7j. Версионная загрузка модулей: деплой обязан доезжать до телефона.
+       Статический import без версии Safari на iOS не обновляет никогда —
+       оператор дважды сообщал об уже исправленной ошибке. ---- */
+{
+  const mhtml = await (await fetch('../m.html?v=' + Date.now(), { cache: 'no-store' })).text();
+  const appjs = await (await fetch('../m/app.js?v=' + Date.now(), { cache: 'no-store' })).text();
+  if (!/src="\/m\/app\.js\?v=/.test(mhtml)) { say('bad', 'm.html loads app.js WITHOUT a version — cached phones never update'); bad++; }
+  else say('ok', 'm.html loads app.js with a version stamp');
+  if (/^import .* from '\.\/(lib|ui)\//m.test(appjs)) {
+    say('bad', 'app.js has unversioned static sibling imports — cached phones never update'); bad++;
+  } else if (!/import\.meta\.url\)\.searchParams\.get\('v'\)/.test(appjs)) {
+    say('bad', 'app.js lost the version propagation to its module imports'); bad++;
+  } else say('ok', 'app.js versions all sibling module imports');
+}
+
 /* ---- 8. план на НАСТОЯЩЕЙ геометрии прода (tests/fixtures/plan-geometry.json)
        Синтетический этаж из одного квадрата ничего не доказывает: беда с
        подписями вылезает только на реальных узких и Г-образных формах. ---- */

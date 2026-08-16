@@ -285,6 +285,21 @@ fi
 
 
 echo
+echo "Mobile cache-busting — versioned module loading:"
+# Статический import без версии Safari на iOS не обновляет никогда (no-store
+# не выселяет уже закэшированный ответ). Оператор дважды сообщал об уже
+# исправленной ошибке, потому что телефон выполнял старую сборку.
+M_HTML="$(dirname "$HTML")/m.html"; M_APP="$(dirname "$HTML")/m/app.js"
+if grep -qE 'src="/m/app\.js\?v=' "$M_HTML" \
+   && grep -qE "import\.meta\.url\).searchParams.get\('v'\)" "$M_APP" \
+   && ! grep -qE "^import .* from '\./(lib|ui)/" "$M_APP"; then
+  echo "  ✓ m.html versions app.js; app.js versions its module imports"
+else
+  echo "  ✗ mobile module loading lost its version stamps — deploys will not reach cached phones"
+  FAIL=1
+fi
+
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."

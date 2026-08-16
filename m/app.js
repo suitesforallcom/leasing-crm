@@ -4,17 +4,20 @@
    Внутренности экранов — в /m/ui/*, деньги — в /m/lib/money.js.
    Здесь НЕТ прямого обращения к Firebase: только через ./lib/data.js. */
 
-import { initApp, subscribe, getSnapshot, refresh, callCF } from './lib/data.js';
-import * as data from './lib/data.js';           // мягкий доступ к signIn/signOut
-import * as money from './lib/money.js';
-import * as fmt from './lib/format.js';
-import * as home from './ui/home.js';
-import * as payments from './ui/payments.js';
-import * as unit from './ui/unit.js';
-import * as lease from './ui/lease.js';
-import * as invoice from './ui/invoice.js';
-import * as switcher from './ui/switcher.js';
-import * as plan from './ui/plan.js';
+/* Импорты — ДИНАМИЧЕСКИЕ с версией из URL самого app.js (?v=RELEASE,
+   штампуется stamp-release.sh в m.html). Причина: статический import без
+   версии однажды закэшированного модуля Safari на iOS не обновляет НИКОГДА —
+   no-store не выселяет уже сохранённый ответ (см. FIXES_LOG, инцидент
+   2026-08-16: оператор дважды сообщал об уже исправленной ошибке, потому что
+   телефон выполнял старую сборку). Разные ?v= — разные записи кэша: каждый
+   деплой гарантированно доезжает. */
+const _V = (() => { try { return new URL(import.meta.url).searchParams.get('v') || ''; } catch (e) { return ''; } })();
+const _q = _V ? ('?v=' + _V) : '';
+const [data, money, fmt, home, payments, unit, lease, invoice, switcher, plan] = await Promise.all([
+  './lib/data.js', './lib/money.js', './lib/format.js', './ui/home.js', './ui/payments.js',
+  './ui/unit.js', './ui/lease.js', './ui/invoice.js', './ui/switcher.js', './ui/plan.js',
+].map((m) => import(m + _q)));
+const { initApp, subscribe, getSnapshot, refresh, callCF } = data;
 
 const SCOPE_KEY = 'sfa_m_building';   // здание запоминается на устройстве
 const BOOT_STUCK_MS = 12000;          // не оставляем оператора на вечном сплэше

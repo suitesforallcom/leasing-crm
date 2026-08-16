@@ -26,4 +26,14 @@ fi
 sed -i.bak -E 's|(<meta name="sfa-release" content=")[^"]*(">)|\1'"$HASH"'\2|' "$FILE"
 rm -f "$FILE.bak"
 
+# m.html: версия модулей мобильного клиента (?v= на /m/app.js). Другой ?v= —
+# другая запись кэша Safari: деплой доезжает до телефона всегда (инцидент
+# 2026-08-16 — оператор дважды сообщал об уже исправленной ошибке).
+M_FILE="$REPO_ROOT/m.html"
+if [ -f "$M_FILE" ]; then
+  sed -i.bak -E 's|(src="/m/app\.js\?v=)[^"]*(")|\1'"$HASH"'\2|' "$M_FILE"
+  rm -f "$M_FILE.bak"
+  echo "stamp-release: tagged m/app.js?v=$HASH in m.html"
+fi
+
 echo "stamp-release: tagged release=$HASH in floor-map-editor.html"

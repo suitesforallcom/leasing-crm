@@ -524,7 +524,7 @@ export function verdict(unit, ym, snap) {
   const c = _classify(unit, ym, snap);
   const u = c.unit;
   const p = (u && u.payments && u.payments[ym]) || null;
-  let detail = '', source = '';
+  let detail = '', source = '', overrideLabel = '';
 
   if (c.status === 'paid' && c.settle.via === 'local') {
     detail = (p && +p.amount > 0) ? `${_usd(p.amount)} received` : 'Recorded as paid';
@@ -553,6 +553,19 @@ export function verdict(unit, ym, snap) {
   } else if (c.status === 'upcoming') {
     detail = (c.startIso && ym < c.startIso.slice(0, 7)) ? `Lease starts ${_human(c.startIso, snap)}` : 'Not billed yet';
     source = 'no invoice on record';
+    // Сдан и деньги получены — карточка обязана говорить «Leased», а не
+    // нейтральное «Upcoming»: оператор читал его как «не сдан» (сьют 204).
+    if (leasedNotStarted(u, snap)) {
+      overrideLabel = 'Leased';
+      const dep = (u.payments && u.payments.deposit) || null;
+      const di = u.stripe && u.stripe.depositInvoice;
+      const paidBits = [];
+      if ((dep && String(dep.status) === 'paid') || (di && String(di.status) === 'paid')) paidBits.push('Deposit paid');
+      if (c.startIso && isMonthSettled(u, c.startIso.slice(0, 7), snap)) paidBits.push('first month paid');
+      detail = [paidBits.join(', ') || 'Lease signed',
+        c.startIso ? `lease starts ${_human(c.startIso, snap)}` : ''].filter(Boolean).join(' · ');
+      source = 'signed tenancy, money received before start';
+    }
   } else if (c.status === 'ended') {
     detail = c.endIso ? `Lease ended ${_human(c.endIso, snap)}` : 'Lease ended'; source = 'lease end date on file';
   } else if (c.status === 'reserved') {
@@ -565,7 +578,8 @@ export function verdict(unit, ym, snap) {
   }
   // amount — сколько реально должен за месяц (учитывает прорасчёт и вейверы);
   // без него карточки показывали полную ренту. ui — статус словами легенды.
-  return { status: c.status, ui: uiStatus(unit, ym, snap), label: STATUS_LABELS[c.status] || c.status,
+  return { status: c.status, ui: uiStatus(unit, ym, snap),
+           label: overrideLabel || STATUS_LABELS[c.status] || c.status,
            amount: UNPAID.has(c.status) ? (c.amount || 0) : 0, detail, source };
 }
 
@@ -660,6 +674,33 @@ export function buildingStats(building, ym, snap) {
  * «Overdue $13k» на главной), и подмена там превратила бы долг в «счёт
  * выставлен» — ровно та потеря сигнала, которой мы избегаем.
  */
+/**
+ * «Сдан, аренда ещё не началась» — зеркало правила десктопа (Tony 2026-05-22,
+ * _unitRentCurrentStatus:127446 «Deposit paid · lease starts …», заливка
+ * #E3F6EE «Paid (lease status)»). Телефон этого правила не знал и красил
+ * подписанный сьют с оплаченным депозитом как «Not billed» — оператор читал
+ * это как «не сдан» (прод-жалоба: сьют 204, Luka Gogic, старт 1 сентября).
+ * Деньги получены = депозит оплачен ИЛИ первый месяц аренды уже закрыт.
+ */
+export function leasedNotStarted(unit, snap) {
+  try {
+    const u = leaseHead(unit, snap) || unit;
+    if (!u || u.status !== 'occupied' || (!u.tenant && !u.company)) return false;
+    const startIso = String(u.leaseStart || u.signed || '').slice(0, 10);
+    if (!startIso) return false;
+    const start = Date.parse(startIso + 'T00:00:00');
+    if (!Number.isFinite(start)) return false;
+    const now = (snap && Number.isFinite(snap.now)) ? snap.now : Date.now();
+    if (start <= now) return false;                       // аренда уже идёт
+    const dep = (u.payments && u.payments.deposit) || null;
+    if (dep && String(dep.status) === 'paid') return true;
+    const di = u.stripe && u.stripe.depositInvoice;
+    if (di && String(di.status) === 'paid') return true;
+    const firstYm = startIso.slice(0, 7);
+    return isMonthSettled(u, firstYm, snap);              // первый месяц закрыт заранее
+  } catch (e) { return false; }
+}
+
 export function mapStatus(unit, ym, snap) {
   const base = uiStatus(unit, ym, snap);
   const overdue = base === 'overdue';
@@ -667,6 +708,12 @@ export function mapStatus(unit, ym, snap) {
   // и «аренда впереди» остаются собой.
   if (overdue && _hasOpenInvoice(leaseHead(unit, snap) || unit, ym, snap)) {
     return { status: 'invoiced', overdue: true };
+  }
+  // «Не выставлено» у сьюта, который СДАН и уже принёс деньги, читается как
+  // «не сдан» — поднимаем в leased (карта и полоса, денежная правда uiStatus
+  // не тронута: она кормит buildingStats и цифру Overdue).
+  if ((base === 'idle') && leasedNotStarted(unit, snap)) {
+    return { status: 'leased', overdue: false };
   }
   return { status: base, overdue };
 }

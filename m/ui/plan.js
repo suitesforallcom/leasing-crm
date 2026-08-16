@@ -151,6 +151,7 @@ function currentFloor(ctx, b) {
 function ariaWord(st, overdue) {
   if (st === 'invoiced') return overdue ? 'invoice sent, payment past due' : 'invoice sent';
   if (st === 'overdue') return 'not billed, payment past due';
+  if (st === 'leased') return 'leased, move-in ahead';
   return st;
 }
 
@@ -335,8 +336,11 @@ export function render(ctx) {
   // Показываем его в легенде ТОЛЬКО если он реально есть на этаже, иначе это
   // строка-пугало на каждом исправном плане.
   const onFloor = Array.isArray(f && f.units) ? f.units : [];
-  if (onFloor.some(u => u && !u.deletedAt && !u.archivedAt && isRentable(u)
-      && stOf(ctx, u, ym).status === 'unknown')) L.push(['unknown', 'Status unavailable']);
+  const statusesOnFloor = new Set(onFloor.filter(u => u && !u.deletedAt && !u.archivedAt && isRentable(u))
+    .map(u => stOf(ctx, u, ym).status));
+  // Строки, которые нужны только когда состояние реально есть на этаже.
+  if (statusesOnFloor.has('leased')) L.splice(1, 0, ['leased', 'Leased · move-in ahead']);
+  if (statusesOnFloor.has('unknown')) L.push(['unknown', 'Status unavailable']);
   h += '<div class="legend" style="padding:2px 16px 10px">' + L.map(([k, t]) =>
     '<span><i style="background:var(--plan-' + k + ');border:1px solid var(--plan-line)"></i>' + t + '</span>').join('')
     + '<span><i style="background:var(--plan-invoiced);border:1.5px dashed var(--plan-overdue-mark)"></i>'
