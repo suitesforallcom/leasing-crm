@@ -283,6 +283,27 @@ function planSvg(ctx, b, f, ym, zoom) {
 }
 
 /* ---------- экран ---------- */
+
+/* Чипы месяцев — как на десктопе (3 назад · текущий · следующий). Владелец
+   выбора — оболочка (data-act="setym"); тап по текущему месяцу возвращает
+   режим «следовать календарю». У чужого года — приписка ʼYY. */
+function monthChips(S) {
+  const MS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const t = new Date(); const ty = t.getFullYear(), tm = t.getMonth();
+  const cur = ty + '-' + String(tm + 1).padStart(2, '0');
+  const sel = (/^\d{4}-\d{2}$/.test(S && S.ym)) ? S.ym : cur;
+  let h = '<div class="chips" role="tablist" aria-label="Month">';
+  for (let off = -3; off <= 1; off++) {
+    const d = new Date(ty, tm + off, 1);
+    const ym = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+    const lbl = MS[d.getMonth()] + (d.getFullYear() !== ty ? ' \u02BC' + String(d.getFullYear()).slice(2) : '')
+      + (ym === cur ? ' \u00B7' : '');
+    h += '<button class="fchip" data-act="setym" data-k="' + ym + '"'
+      + ' aria-pressed="' + (ym === sel) + '">' + lbl + '</button>';
+  }
+  return h + '</div>';
+}
+
 export function render(ctx) {
   const S = ctx.S || {};
   const snap = ctx.snap || {};
@@ -294,6 +315,7 @@ export function render(ctx) {
     + '<div class="sync"><i></i>' + esc(b ? (b.name || b.id) : 'no building') + '</div></div></div></div>';
 
   if (!b) return h + '<div class="empty">No building loaded yet.</div>';
+  h += monthChips(S);
 
   const floors = floorsOf(b);
   const f = currentFloor(ctx, b);

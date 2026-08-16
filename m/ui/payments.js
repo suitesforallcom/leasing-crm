@@ -389,6 +389,27 @@ function glance(ctx, b, rows, ym, agg) {
 }
 
 /* ---------- render ---------- */
+
+/* Чипы месяцев — как на десктопе (3 назад · текущий · следующий). Владелец
+   выбора — оболочка (data-act="setym"); тап по текущему месяцу возвращает
+   режим «следовать календарю». У чужого года — приписка ʼYY. */
+function monthChips(S) {
+  const MS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const t = new Date(); const ty = t.getFullYear(), tm = t.getMonth();
+  const cur = ty + '-' + String(tm + 1).padStart(2, '0');
+  const sel = (/^\d{4}-\d{2}$/.test(S && S.ym)) ? S.ym : cur;
+  let h = '<div class="chips" role="tablist" aria-label="Month">';
+  for (let off = -3; off <= 1; off++) {
+    const d = new Date(ty, tm + off, 1);
+    const ym = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+    const lbl = MS[d.getMonth()] + (d.getFullYear() !== ty ? ' \u02BC' + String(d.getFullYear()).slice(2) : '')
+      + (ym === cur ? ' \u00B7' : '');
+    h += '<button class="fchip" data-act="setym" data-k="' + ym + '"'
+      + ' aria-pressed="' + (ym === sel) + '">' + lbl + '</button>';
+  }
+  return h + '</div>';
+}
+
 export function render(ctx) {
   const S = ctx.S || {};
   const snap = ctx.snap || {};
@@ -410,6 +431,8 @@ export function render(ctx) {
     + esc(scopeName) + ' · ' + countableOf(ctx, scopeRows).length + ' units'
     + (offline ? ' · offline copy' : freshness) + '</div></div></div></div>';
 
+  const hMonths = monthChips(S);
+
   const h1 = '<div class="searchwrap"><div class="searchbox">' + I.search
     + '<input id="q" placeholder="Tenant, suite or phone" value="' + esc(S.q || '') + '"'
     + ' autocomplete="off" autocapitalize="off" autocorrect="off" enterkeyhint="search" aria-label="Search payments">'
@@ -417,10 +440,10 @@ export function render(ctx) {
     + '</div></div>';
 
   if (!blds.length) {
-    return h0 + h1 + '<div class="card"><div class="empty">No buildings in this snapshot yet.<br>Pull to refresh once you are online.</div></div>';
+    return h0 + hMonths + h1 + '<div class="card"><div class="empty">No buildings in this snapshot yet.<br>Pull to refresh once you are online.</div></div>';
   }
 
-  let h = h0 + h1;
+  let h = h0 + hMonths + h1;
 
   /* ---- ветка ПОИСКА ---- */
   if (q) {

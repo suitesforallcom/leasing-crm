@@ -1139,6 +1139,34 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   } else say('ok', 'app.js versions all sibling module imports');
 }
 
+/* ---- 7k. Чипы месяцев: оператор может смотреть не только текущий месяц. ---- */
+{
+  S.sheet = null; S.tab = 'payments'; S.ymPinned = false;
+  const rp = payments.render(ctx());
+  const chipsP = (rp.match(/data-act="setym"/g) || []).length;
+  if (chipsP !== 5) { say('bad', `payments shows ${chipsP} month chips, expected 5 (-3 … +1)`); bad++; }
+  else say('ok', 'payments has the 5-month picker');
+  S.tab = 'plan';
+  const rl = plan.render(ctx());
+  if ((rl.match(/data-act="setym"/g) || []).length !== 5) { say('bad', 'plan lost the month picker'); bad++; }
+  else say('ok', 'plan has the 5-month picker');
+  // текущий месяц помечен точкой, выбранный — нажат
+  const now = new Date();
+  const curYm = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+  const curChip = new RegExp('data-k="' + curYm + '"[^>]*aria-pressed="true"');
+  if (!curChip.test(rp)) { say('bad', 'current month chip is not marked as selected by default'); bad++; }
+  else say('ok', 'current month selected by default');
+  // выбор другого месяца отражается в разметке
+  const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const prevYm = prev.getFullYear() + '-' + String(prev.getMonth() + 1).padStart(2, '0');
+  S.ym = prevYm; S.ymPinned = true;
+  const rp2 = payments.render(ctx());
+  if (!new RegExp('data-k="' + prevYm + '"[^>]*aria-pressed="true"').test(rp2)) {
+    say('bad', 'picking a past month does not mark its chip selected'); bad++;
+  } else say('ok', 'a picked month is shown as selected');
+  S.ym = curYm; S.ymPinned = false; S.tab = 'home';
+}
+
 /* ---- 8. план на НАСТОЯЩЕЙ геометрии прода (tests/fixtures/plan-geometry.json)
        Синтетический этаж из одного квадрата ничего не доказывает: беда с
        подписями вылезает только на реальных узких и Г-образных формах. ---- */

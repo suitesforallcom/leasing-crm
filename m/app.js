@@ -357,7 +357,10 @@ function renderTabs(){
 function render(keep){
   if (!booted) return;
   const y = scrollEl.scrollTop, f = grabFocus();
-  S.ym = todayYm();
+  // Месяц по умолчанию следует за календарём (открытая неделями вкладка
+  // переезжает в новый месяц сама). Но ЯВНЫЙ выбор оператора (чипы месяцев
+  // на Payments/Plan) прикалывает месяц до возврата на текущий.
+  if (!S.ymPinned) S.ym = todayYm();
   const ws = snap && snap.workspace;
   let html = (ws && String(ws) !== 'default')
     ? '<div class="wsbanner">' + esc(ws) + ' workspace — not production</div>' : '';
@@ -462,6 +465,15 @@ function builtin(a, el){
     case 'switcher': openSheet('switcher', null); break;
     case 'setscope': setScope(d.k); break;
     case 'floor': S.floor = d.f || 'all'; render(true); break;
+    case 'setym': {
+      const k = String(d.k || '');
+      if (/^\d{4}-\d{2}$/.test(k)) {
+        S.ym = k;
+        S.ymPinned = (k !== todayYm());   // тап по текущему = снова следовать календарю
+        render(true);
+      }
+      break;
+    }
     case 'filter': S.filter = d.k || 'all'; render(true); break;
     case 'searchall': S.searchAll = !S.searchAll; render(true); break;
     case 'clearq': S.q = ''; render(true); break;
