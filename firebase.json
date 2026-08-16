@@ -21,6 +21,8 @@
     ],
     "rewrites": [
       { "source": "/redesign/**", "destination": "/redesign/index.html" },
+      { "source": "/m", "destination": "/m.html" },
+      { "source": "/m/", "destination": "/m.html" },
       { "source": "**", "destination": "/floor-map-editor.html" }
     ],
     "headers": [
