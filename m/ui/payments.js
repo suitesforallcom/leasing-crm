@@ -372,6 +372,10 @@ function glance(ctx, b, rows, ym, agg) {
       }).join('') + '</div></div>';
   }
 
+  if ((ctx.snap || {}).invoicesAvailable === false) {
+    h += '<div class="hintline" style="padding:6px 14px 0">Invoice history has not loaded — cells marked '
+      + '“not billed” are not proven.</div>';
+  }
   h += '<div class="legend">'
     + '<span><i style="background:var(--ok)"></i>Paid</span><span><i style="background:var(--info)"></i>Invoice sent</span>'
     + '<span><i style="background:var(--warn)"></i>Due</span>'

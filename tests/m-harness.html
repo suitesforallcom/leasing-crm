@@ -74,6 +74,9 @@ const units = [
   u('303', { tenant: "O'Brien & Sons <Ltd>", tenantContact: "O'Brien" }),
   // Занят, ставка есть, а почты нет — в проде так живёт сьют 101 на $13,318/мес.
   u('304', { tenant: 'No Mail LLC', email: '', rent: 1500 }),
+  // Чистый юнит: занят, почта есть, счетов НЕТ — на нём проверяется первая
+  // отправка. На 301 первый тап только взводит подтверждение дубля.
+  u('900', { tenant: 'Clean Test LLC', email: 'clean@test.co', rent: 1 }),
   // Архивирован ДЕСКТОПОМ (поле deletedAt, MONO:30443). Мобильный проверял
   // archivedAt, которого в базе нет, и показывал такие юниты.
   u('999', { tenant: '', status: 'vacant', deletedAt: '2026-07-01T00:00:00Z', rent: 1200 }),
@@ -631,6 +634,82 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   if (/>Overdue</.test(h)) { say('bad', 'в легенде плана осталось безадресное «Overdue»'); bad++; }
   else say('ok', 'безадресного «Overdue» в легенде плана нет');
   S.tab = 'home'; S.planFloor = null;
+}
+
+/* ---- 4l. приложение не выдаёт незнание за ответ ---- */
+{
+  // пустой снимок: «$0 собрано» — это утверждение о деньгах, а мы ещё не знаем
+  const emptyCtx = () => Object.assign(ctx(), { snap: { buildings: [], units: [], invoices: [], settings: {} } });
+  const eh = home.render(emptyCtx());
+  painted.push(eh);
+  if (/Paid \$0|Overdue \$0/.test(eh)) { say('bad', 'пустой снимок показан как «$0 собрано» — это ложный ответ'); bad++; }
+  else say('ok', 'пустой снимок не выдаётся за «$0»');
+  if (!/loading|Offline/i.test(eh)) { say('bad', 'пустой снимок не объяснён словами'); bad++; }
+  else say('ok', 'пустой снимок объяснён словами');
+
+  // счета не загрузились: «not billed» недоказуемо — обязаны предупредить
+  const noInv = () => Object.assign(ctx(), { snap: Object.assign({}, snap, { invoicesAvailable: false }) });
+  S.tab = 'plan'; S.planFloor = 'f4';
+  const ph2 = plan.render(noInv());
+  painted.push(ph2);
+  if (!/not proven/i.test(ph2)) { say('bad', 'план не предупредил, что счета не загрузились'); bad++; }
+  else say('ok', 'план предупреждает, когда «not billed» недоказуемо');
+  S.tab = 'payments'; S.q = ''; S.filter = 'all'; S.limit = 0;
+  const pay2 = payments.render(noInv());
+  painted.push(pay2);
+  if (!/not proven/i.test(pay2)) { say('bad', 'полоса не предупредила про незагруженные счета'); bad++; }
+  else say('ok', 'полоса предупреждает о том же');
+  S.tab = 'home'; S.planFloor = null;
+
+  // штамп на юните заменяет список счетов — без этого карта врала бы чаще
+  const stamped = JSON.parse(JSON.stringify(units[1]));
+  stamped.stripe = { lastInvoiceYm: YM, lastInvoiceId: 'in_stamp' };
+  const cold = Object.assign({}, snap, { invoices: [], invoicesAvailable: false });
+  const m = money.mapStatus(stamped, YM, cold);
+  if (m.status !== 'invoiced') { say('bad', 'штамп счёта не спасает при незагруженном списке'); bad++; }
+  else say('ok', 'штамп на юните заменяет список счетов');
+}
+
+/* ---- 4m. ЧТО ИМЕННО уйдёт в Stripe при отправке счёта ------------------
+   Живую отправку выполнить нельзя (нужна сессия оператора), но весь путь до
+   вызова проверяется здесь: перехватываем callCF и смотрим точный payload.
+   Это единственная защита от «ушло не то и не туда». */
+{
+  S.inv = null; S.sheet = 'invoice';
+  const iid = { buildingId: 'b1', floorId: 'f1', unitId: '900' };   // чистый, без счетов
+  S.sheetPayload = iid; S.sheetArg = iid; S.payload = iid;
+  const sent = [];
+  const sendCtx = () => Object.assign(ctx(), {
+    callCF: (n, p, o) => { sent.push({ n, p, o }); return Promise.resolve({ invoiceId: 'in_x', number: 'R-1', hostedUrl: 'https://pay', amount: 100 }); },
+  });
+  invoice.render(sendCtx());
+  S.inv.amount = '1';                      // маленькая сумма — как на боевой проверке
+  S.inv.memo = 'Test — please ignore';
+  await invoice.handle('inv:send', null, sendCtx());
+
+  if (sent.length !== 1) { say('bad', `отправка сделала ${sent.length} вызовов вместо одного`); bad++; }
+  else say('ok', 'отправка счёта делает ровно один вызов сервера');
+  const p = (sent[0] && sent[0].p) || {};
+  const problems = [];
+  if (sent[0] && sent[0].n !== 'createStripeInvoice') problems.push('не та функция: ' + sent[0].n);
+  if (p.amountOverride !== 1) problems.push('сумма ' + p.amountOverride + ' — ожидались ДОЛЛАРЫ (1), не центы');
+  if (p.unitId !== '900' || p.buildingId !== 'b1' || p.floorId !== 'f1') problems.push('адрес юнита потерян');
+  if (p.purpose !== 'rent') problems.push('назначение ' + p.purpose);
+  if (!/^[A-Za-z0-9_-]{8,128}$/.test(String(p.idempotencyKey || ''))) problems.push('ключ идемпотентности не пройдёт валидацию CF');
+  if (p.allowDuplicate) problems.push('дубль взведён без второго тапа');
+  if (!((sent[0] && sent[0].o || {}).timeoutMs > 0)) problems.push('нет таймаута — зависнет молча');
+  if (problems.length) { say('bad', 'payload счёта: ' + problems.join('; ')); bad++; }
+  else say('ok', 'payload счёта корректен (доллары, адрес, назначение, ключ, таймаут)');
+
+  // повторное нажатие тем же телом НЕ должно менять ключ — иначе второй счёт
+  const first = p.idempotencyKey;
+  sent.length = 0;
+  S.inv.done = null; S.inv.busy = false;
+  await invoice.handle('inv:send', null, sendCtx());
+  const second = (sent[0] && sent[0].p && sent[0].p.idempotencyKey) || '';
+  if (second && second !== first) { say('bad', 'повтор того же счёта сменил ключ — Stripe выставит ВТОРОЙ'); bad++; }
+  else say('ok', 'повтор того же счёта идёт с тем же ключом идемпотентности');
+  S.inv = null; S.sheet = null; S.sheetPayload = null; S.sheetArg = null; S.payload = null;
 }
 
 /* ---- 5. каждое data-act действие кто-то обрабатывает (ловит тупики) ---- */

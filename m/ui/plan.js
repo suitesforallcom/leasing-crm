@@ -18,6 +18,7 @@
    ========================================================================== */
 
 const I = {
+  info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="11" x2="12" y2="16"/><line x1="12" y1="8" x2="12" y2="8"/></svg>',
   zoom: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="20" y1="20" x2="16.5" y2="16.5"/><line x1="11" y1="8.5" x2="11" y2="13.5"/><line x1="8.5" y1="11" x2="13.5" y2="11"/></svg>',
   zoomOut: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="20" y1="20" x2="16.5" y2="16.5"/><line x1="8.5" y1="11" x2="13.5" y2="11"/></svg>',
 };
@@ -278,6 +279,16 @@ export function render(ctx) {
       + (f && String(x.id) === String(f.id)) + '">' + esc(floorName(x, i)) + '</button>').join('') + '</div>';
   }
   if (!f) return h + '<div class="empty">This building has no floors yet.</div>';
+
+  // Список счетов не доехал (роль без доступа к Stripe, обрыв связи) — тогда
+  // «Not billed» на карте недоказуемо: счёт может быть, мы его просто не видим.
+  // Штамп на юните выручает не всегда (его стирает building-свап), поэтому
+  // говорим об этом прямо, а не молча красим.
+  if (snap.invoicesAvailable === false) {
+    h += '<div class="whatnext" style="margin:0 16px 8px">' + I.info
+      + '<span>Invoice history has not loaded, so “not billed” here is not proven — a suite may already '
+      + 'have an invoice. Paid and vacant are unaffected.</span></div>';
+  }
 
   const big = !!S.planZoom;
   h += '<div class="plan-wrap' + (big ? ' zoom' : '') + '" id="planWrap">' + planSvg(ctx, b, f, ym, big) + '</div>';

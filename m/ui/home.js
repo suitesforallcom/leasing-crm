@@ -321,6 +321,18 @@ function syncLine(ctx) {
 
 function moneyLine(ctx, sc, st, ym) {
   const w = v => (st.billed > 0 ? Math.max(v > 0 ? 3 : 0, v / st.billed * 100) : 0);
+  // Пока зданий в снимке нет, «$0 · Paid $0 · Overdue $0» читается как ОТВЕТ
+  // про деньги оператора, хотя это «мы ещё не знаем». Молчание честнее нуля.
+  const known = !!(ctx.snap && Array.isArray(ctx.snap.buildings) && ctx.snap.buildings.length);
+  if (!known) {
+    return '<button class="moneyline" data-act="job" data-k="payments">'
+      + '<span class="ml-top"><span class="ml-k">' + esc(monthName(ym)) + '</span>'
+      + '<span class="ml-go">Details ›</span></span>'
+      + '<span class="ml-num" style="color:var(--ink-3)">—</span>'
+      + '<span class="ml-legend"><span>' + (ctx.snap && ctx.snap.online === false
+        ? 'Offline — showing nothing rather than a wrong number.'
+        : 'Still loading the buildings…') + '</span></span></button>';
+  }
   return '<button class="moneyline" data-act="job" data-k="payments">'
     + '<span class="ml-top"><span class="ml-k">' + esc(monthName(ym)) + ' · ' + esc(sc.name) + '</span>'
     + '<span class="ml-go">Details ›</span></span>'
