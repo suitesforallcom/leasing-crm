@@ -503,7 +503,7 @@ function bindRecap(ctx, L, hit) {
 function picker(ctx) {
   const snap = ctx.snap || {}, scope = String((ctx.S && ctx.S.scope) || 'all');
   const L = st(ctx);
-  const rows = (snap.units || []).filter((e) => e && !e.unit.archivedAt && isOccupied(e.unit)
+  const rows = (snap.units || []).filter((e) => e && !e.unit.deletedAt && !e.unit.archivedAt && isOccupied(e.unit)
     && (scope === 'all' || String(e.building.id) === scope));
   bindPickInv(ctx, L, rows);
   return '<div class="field"><label>Who is this for?</label><div class="searchbox" style="box-shadow:none">' + I.search

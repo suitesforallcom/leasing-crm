@@ -74,6 +74,9 @@ const units = [
   u('303', { tenant: "O'Brien & Sons <Ltd>", tenantContact: "O'Brien" }),
   // Занят, ставка есть, а почты нет — в проде так живёт сьют 101 на $13,318/мес.
   u('304', { tenant: 'No Mail LLC', email: '', rent: 1500 }),
+  // Архивирован ДЕСКТОПОМ (поле deletedAt, MONO:30443). Мобильный проверял
+  // archivedAt, которого в базе нет, и показывал такие юниты.
+  u('999', { tenant: '', status: 'vacant', deletedAt: '2026-07-01T00:00:00Z', rent: 1200 }),
   // Мульти-сьютовая лиза как в проде (National University: 6 сьютов, деньги
   // только на head'е). Проверяет, что карточка member'а честно оговаривает сумму.
   u('400', { groupId: 'g_test', groupRole: 'primary', rent: 13318.33, tenant: 'National University' }),
@@ -567,6 +570,34 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
     else say('ok', `кегль подписей в пределах потолка (макс ${maxPx.toFixed(1)}px)`);
   }
   S.planZoom = false;
+  S.tab = 'home'; S.planFloor = null;
+}
+
+/* ---- 4j. юнит, архивированный десктопом, не должен нигде появляться ---- */
+{
+  S.tab = 'payments'; S.q = ''; S.filter = 'all'; S.limit = 0;
+  const ph = payments.render(ctx());
+  painted.push(ph);
+  if (/Suite 999|data-id="999"/.test(ph)) { say('bad', 'архивный юнит виден на экране Payments'); bad++; }
+  else say('ok', 'архивный юнит (deletedAt) не попадает в Payments');
+
+  S.tab = 'plan'; S.planFloor = 'f1';
+  const plh2 = plan.render(ctx());
+  painted.push(plh2);
+  if (/data-id="999"/.test(plh2)) { say('bad', 'архивный юнит нарисован на плане'); bad++; }
+  else say('ok', 'архивный юнит не рисуется на плане');
+
+  // и не участвует в деньгах: считаем ожидаемое сами, по тем же правилам
+  const st = money.buildingStats(snap.buildings[0], YM, snap);
+  let expect = 0;
+  for (const fl of snap.buildings[0].floors) for (const un of fl.units) {
+    if (!un || un.deletedAt || un.archivedAt || un.rentable === false) continue;
+    if (un.type && un.type !== 'office') continue;
+    if (money.isFinanceShadow(un, snap)) continue;
+    expect++;
+  }
+  if (st.units !== expect) { say('bad', `в сводке ${st.units} юнитов, ожидалось ${expect} — архивный посчитан`); bad++; }
+  else say('ok', `архивный юнит исключён из денежной сводки (${expect} юнитов)`);
   S.tab = 'home'; S.planFloor = null;
 }
 

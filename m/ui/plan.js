@@ -35,7 +35,12 @@ function todayYm() {
   const d = new Date();
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
 }
-const isRentable = (u) => !!u && !u.archivedAt && u.rentable !== false && (!u.type || u.type === 'office');
+/* deletedAt — это поле, которым архивирует ДЕСКТОП (floor-map-editor.html:30443).
+   Мобильный проверял archivedAt, которого в базе нет ни у одного юнита,
+   поэтому показывал и считал удалённые (в проде их 2, напр. сьют 111).
+   Проверяем ОБА поля: archivedAt оставляем на случай старых записей. */
+const isArchived = (u) => !!(u && (u.deletedAt || u.archivedAt));
+const isRentable = (u) => !!u && !isArchived(u) && u.rentable !== false && (!u.type || u.type === 'office');
 
 /* Словарь типов 1:1 с десктопом (TYPE_LABELS, MONO:27027). Там все общие зоны
    залиты ОДНИМ серым (COMMON_GREY #EBE8E2), а различаются подписью внутри
@@ -249,8 +254,10 @@ export function render(ctx) {
     + '<span class="hintline" style="align-self:center;padding-left:4px">Tap a suite for money and actions</span></div>';
 
   // Легенда — те же слова, что на экране Payments.
+  // Reserved модель отдаёт (money.uiStatus) и план его красит — значит он обязан
+  // быть в легенде, иначе оператор видит цвет, которому нет объяснения.
   const L = [['paid', 'Paid'], ['invoiced', 'Invoice sent'], ['due', 'Due'], ['overdue', 'Overdue'],
-    ['idle', 'Not billed'], ['vacant', 'Vacant']];
+    ['idle', 'Not billed'], ['reserved', 'Reserved'], ['vacant', 'Vacant']];
   h += '<div class="legend" style="padding:2px 16px 10px">' + L.map(([k, t]) =>
     '<span><i style="background:var(--plan-' + k + ');border:1px solid var(--plan-line)"></i>' + t + '</span>').join('') + '</div>';
   return h;

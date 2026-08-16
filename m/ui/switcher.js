@@ -31,7 +31,7 @@ function unitCount(b) {
   let n = 0;
   for (const f of floorsOf(b)) {
     const units = Array.isArray(f && f.units) ? f.units : [];
-    for (const u of units) if (u && !u.archivedAt) n++;
+    for (const u of units) if (u && !u.deletedAt && !u.archivedAt) n++;
   }
   return n;
 }

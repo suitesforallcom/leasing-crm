@@ -67,7 +67,8 @@ function within1(a, b) {
 /* Виден на экране: не архивный, арендуемый, не общая зона.
    type может отсутствовать в старых записях — тогда считаем офисом. */
 function isVisible(u) {
-  return !!(u && u.id) && !u.archivedAt && u.rentable !== false && (!u.type || u.type === 'office');
+  // deletedAt — поле архивации десктопа (MONO:30443); archivedAt в базе нет.
+  return !!(u && u.id) && !u.deletedAt && !u.archivedAt && u.rentable !== false && (!u.type || u.type === 'office');
 }
 /* Финансовая тень мульти-сьютовой лизы: вся касса живёт на groupRole==='primary'.
    Из СУММ и счётчиков такие юниты исключаем (иначе двойной счёт), но из поиска

@@ -553,7 +553,8 @@ export function buildingStats(building, ym, snap) {
   if (!building || !ym) return out;
   for (const f of (building.floors || [])) {
     for (const u of ((f && f.units) || [])) {
-      if (!u || u.archivedAt || u.rentable === false) continue;
+      // deletedAt — архивация десктопа (MONO:30443); archivedAt в базе нет.
+      if (!u || u.deletedAt || u.archivedAt || u.rentable === false) continue;
       if (u.type && u.type !== 'office') continue;
       if (isFinanceShadow(u, snap)) continue;          // каждый лиз считаем один раз
       out.units++;
@@ -592,7 +593,8 @@ export function buildingStats(building, ym, snap) {
   let awaiting = 0, overdueMoney = 0;
   for (const f of (building.floors || [])) {
     for (const u of ((f && f.units) || [])) {
-      if (!u || u.archivedAt || u.rentable === false) continue;
+      // deletedAt — архивация десктопа (MONO:30443); archivedAt в базе нет.
+      if (!u || u.deletedAt || u.archivedAt || u.rentable === false) continue;
       if (u.type && u.type !== 'office') continue;
       if (isFinanceShadow(u, snap)) continue;
       const st = uiStatus(u, ym, snap);

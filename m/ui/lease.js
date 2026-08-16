@@ -78,7 +78,7 @@ function findUnit(snap, buildingId, unitId) {
 }
 function isOccupied(u) { return !!u && (u.status === 'occupied' || !!(u.tenant || u.company)); }
 function isLeasable(u) {
-  if (!u || u.archivedAt || u.rentable === false) return false;
+  if (!u || u.deletedAt || u.archivedAt || u.rentable === false) return false;
   if (u.type && u.type !== 'office') return false;               // общие зоны не сдаются (DATA: isRentable)
   return !(u.groupId && u.groupRole !== 'primary');               // member мульти-сьют лизы — финансовая тень
 }
