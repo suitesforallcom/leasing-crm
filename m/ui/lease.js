@@ -494,8 +494,10 @@ function doneBody(L) {
     + '<div><span>Sent to</span><b style="word-break:break-all">' + esc(d.email) + '</b></div>'
     + '<div><span>Status</span><b>' + esc(d.status || 'sent') + '</b></div></div>'
     + '<div class="whatnext">' + I.info + '<span>Signature status appears under More. '
-    + (d.stateWriteOk ? 'The unit already carries this envelope.'
-      : 'The envelope went out, but the server could not stamp it onto the unit — open the full version once to '
+    + (d.stateWriteOk
+      ? (d.suite ? esc(d.suite) + ' is now leased to ' + esc(d.tenant || d.email) + ' — you can invoice it right away.'
+                 : 'The unit already carries this envelope.')
+      : 'The envelope went out, but the server could not record it on the unit — open the full version once to '
       + 'reconcile before sending another.') + '</span></div>';
 }
 
@@ -524,7 +526,13 @@ export function render(ctx) {
 export function foot(ctx) {
   const L = st(ctx);
   const hit = L.unitId ? findUnit(ctx.snap || {}, L.buildingId, L.unitId) : null;
-  if (L.done) return '<button class="big-btn" data-act="lease:close">Done</button>';
+  if (L.done) {
+    // Ровно тот шаг, который оператор делает следующим: договор ушёл, юнит
+    // теперь занят — значит можно брать депозит и первую ренту не отходя.
+    return (L.done.stateWriteOk
+        ? '<button class="big-btn ghost" data-act="lease:invoice">' + I.send + 'Invoice</button>' : '')
+      + '<button class="big-btn" data-act="lease:close">Done</button>';
+  }
   if (hit && isOccupied(hit.unit)) {
     return '<button class="big-btn ghost" data-act="lease:reset">' + I.left + '</button>'
       + '<button class="big-btn" data-act="lease:openunit">Open the unit</button>';
@@ -552,6 +560,14 @@ export function handle(act, el, ctx) {
   const S = ctx.S || {}, L = st(ctx);
   readForm(L);                                     // введённое сохраняем ДО любой перерисовки
   if (act === 'lease:close') { S.lease = null; ctx.closeSheet(); return true; }
+  if (act === 'lease:invoice') {
+    // Юнит только что стал занятым — лист счёта откроется уже с арендатором.
+    const d = L.done || {};
+    S.lease = null;
+    if (d.buildingId && d.unitId) ctx.openSheet('invoice', { buildingId: d.buildingId, floorId: d.floorId, unitId: d.unitId });
+    else ctx.closeSheet();
+    return true;
+  }
   if (act === 'lease:reset') { S.lease = null; const N = st(ctx); N.step = 1; N.unitId = null; return true; }
   if (act === 'lease:all') { L.all = !L.all; return true; }
   if (act === 'lease:pick') {
@@ -656,12 +672,25 @@ async function send(ctx, L) {
         recipientName: name, subject: payload.emailSubject, templateId: null, mode: 'inline',
         leaseStart: L.start || null, leaseEnd: end || null, rent,     // НОВЫЕ условия, не прежние
       },
+      // Аренду заводит СЕРВЕР, в той же транзакции, что и запись конверта.
+      // Клиент документ здания не пишет вообще (_savedRev-гард). До этого
+      // договор уходил, а юнит оставался свободным: счёт выставить не по кому.
+      tenancy: {
+        tenant: name, company: L.company || '', email, tel: L.phone || '',
+        leaseStart: L.start || '', leaseEnd: end || '',
+        contractRent: rent, deposit: (L.deposit === '' ? (+hit.unit.deposit || 0) : (+L.deposit || 0)),
+      },
     }, { timeoutMs: 30000 });
     const r = (res && res.envelopeId === undefined && res.data) ? res.data : (res || {});
     L.busy = false;
     // stateWriteOk===false — НЕ провал: конверт уже у арендатора
     // (functions/index.js:10060-10066), нужна лишь сверка.
-    L.done = { envelopeId: r.envelopeId || '', status: r.status || 'sent', stateWriteOk: r.stateWriteOk !== false, email };
+    L.done = {
+      envelopeId: r.envelopeId || '', status: r.status || 'sent',
+      stateWriteOk: r.stateWriteOk !== false, email,
+      suite, tenant: name,
+      buildingId, floorId, unitId,
+    };
     if (typeof ctx.refresh === 'function') { try { ctx.refresh(); } catch (e) { /* сеть */ } }
     if (typeof ctx.toast === 'function') ctx.toast('Lease sent to ' + email);
   } catch (e) {

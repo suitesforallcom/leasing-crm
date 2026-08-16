@@ -9969,11 +9969,68 @@ async function _dsAudit(action, callerInfo, extra) {
 // 403, Drew/manager, 2026-05-18 02:27 UTC was the first observed loss).
 // Now the write rides on the SERVER side via admin SDK so it can't be
 // blocked by tab leadership rules.
+/**
+ * Проверка и нормализация заявки на аренду от клиента.
+ * Возвращает null, если аренду заводить не просили. Бросает — если просили,
+ * но данные негодные: молча проглотить нельзя, оператор решит что всё записано.
+ *
+ * Числа и даты проверяем строго: это деньги и срок договора, а клиент —
+ * телефон в чужом офисе, где легко промахнуться по клавиатуре.
+ */
+function _dsSanitizeTenancy(t) {
+  if (t == null) return null;
+  if (typeof t !== 'object') throw new HttpsError('invalid-argument', 'tenancy must be an object');
+  const str = (v, max, name) => {
+    const x = String(v == null ? '' : v).trim();
+    if (x.length > max) throw new HttpsError('invalid-argument', `tenancy.${name} is too long`);
+    return x;
+  };
+  const iso = (v, name) => {
+    const x = String(v == null ? '' : v).trim();
+    if (!x) return '';
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(x);
+    // Сверяем обратно по компонентам: new Date('2026-02-31') движок глотает и
+    // тихо сдвигает на 3 марта. Срок договора от такой даты поедет молча.
+    const d = m && new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+    const roundTrips = d && !isNaN(d.getTime())
+      && d.getUTCFullYear() === +m[1] && d.getUTCMonth() === +m[2] - 1 && d.getUTCDate() === +m[3];
+    if (!roundTrips) throw new HttpsError('invalid-argument', `tenancy.${name} must be a real date, YYYY-MM-DD`);
+    return x;
+  };
+  const money = (v, name) => {
+    if (v == null || v === '') return 0;
+    const n = +v;
+    if (!Number.isFinite(n) || n < 0 || n > 10000000) {
+      throw new HttpsError('invalid-argument', `tenancy.${name} is out of range`);
+    }
+    return Math.round(n * 100) / 100;
+  };
+  const tenant = str(t.tenant, 200, 'tenant');
+  const company = str(t.company, 200, 'company');
+  if (!tenant && !company) throw new HttpsError('invalid-argument', 'tenancy needs a tenant name or company');
+  const email = str(t.email, 254, 'email');
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new HttpsError('invalid-argument', 'tenancy.email is not a valid address');
+  }
+  const leaseStart = iso(t.leaseStart, 'leaseStart');
+  const leaseEnd = iso(t.leaseEnd, 'leaseEnd');
+  if (leaseStart && leaseEnd && leaseEnd < leaseStart) {
+    throw new HttpsError('invalid-argument', 'tenancy.leaseEnd is before leaseStart');
+  }
+  return {
+    tenant, company, email,
+    tel: str(t.tel, 40, 'tel'),
+    leaseStart, leaseEnd,
+    contractRent: money(t.contractRent, 'contractRent'),
+    deposit: money(t.deposit, 'deposit'),
+  };
+}
+
 exports.dsSendEnvelope = onCall(
   { secrets: [DOCUSIGN_PRIVATE_KEY], timeoutSeconds: 90 },
   async (request) => {
     const caller = await _dsAssertCanSendLeases(request.auth);
-    const { payload, recipientEmail, unitId, buildingId, floorId, envelopeMeta } = request.data || {};
+    const { payload, recipientEmail, unitId, buildingId, floorId, envelopeMeta, tenancy } = request.data || {};
     if (!payload || typeof payload !== 'object') {
       throw new HttpsError('invalid-argument', 'payload (envelope body) required');
     }
@@ -9982,6 +10039,28 @@ exports.dsSendEnvelope = onCall(
     }
     if (!unitId || !buildingId || !floorId) {
       throw new HttpsError('invalid-argument', 'unitId + buildingId + floorId required for server-authoritative state write');
+    }
+    // Мобильный клиент не может писать документ здания (_savedRev-гард), а
+    // отправка договора без заведения аренды оставляла юнит свободным: счёт
+    // выставить не по кому. Поэтому аренда создаётся ЗДЕСЬ, в той же
+    // транзакции, что и запись конверта — половинчатого состояния не будет.
+    const safeTenancy = _dsSanitizeTenancy(tenancy);
+    // Проверяем занятость ДО обращения к DocuSign. Гард внутри транзакции
+    // остаётся (гонка возможна), но без этой проверки конверт уже улетел бы
+    // арендатору, а вызов упал — договор на руках, аренды нет, объяснить
+    // нечем. Дешевле один лишний чтение состояния.
+    if (safeTenancy) {
+      try {
+        const pre = findUnit(await readWorkspaceState(), { buildingId, floorId, unitId });
+        const pu = pre && pre.unit;
+        if (pu && (pu.status === 'occupied' || String(pu.tenant || '').trim() || String(pu.company || '').trim())) {
+          throw new HttpsError('failed-precondition',
+            `Suite ${unitId} already has a tenant. A new lease needs a vacant unit — use the full version for a renewal.`);
+        }
+      } catch (e) {
+        if (e instanceof HttpsError) throw e;
+        logger.warn('[docusign:tenancy-precheck] state read failed, relying on the in-transaction guard', { unitId, error: e.message });
+      }
     }
     const res = await _dsApi('/envelopes', {
       method: 'POST',
@@ -10037,11 +10116,48 @@ exports.dsSendEnvelope = onCall(
         u.leaseEnvelopes.push(envelopeRecord);
         u.currentLeaseEnvelopeId = data.envelopeId;
 
+        // Массив истории создаём ДО обеих записей ниже: на юните без outreach
+        // push() уронил бы всю транзакцию, и договор ушёл бы без записи.
+        u.outreach = Array.isArray(u.outreach) ? u.outreach : [];
+
+        // --- заведение аренды (только по явной заявке клиента) ---------------
+        // ТОЛЬКО на свободный юнит. Живую аренду не перезаписываем никогда:
+        // это стёрло бы арендатора, срок и договорную ставку — то есть деньги.
+        // Проверка занятости — как на десктопе (MONO:126457): статус ИЛИ
+        // непустой tenant/company.
+        if (safeTenancy) {
+          const busy = u.status === 'occupied' || !!(String(u.tenant || '').trim() || String(u.company || '').trim());
+          if (busy) {
+            throw new HttpsError('failed-precondition',
+              `unit ${unitId} already has a tenant — a new lease needs a vacant unit`);
+          }
+          u.tenant = safeTenancy.tenant;
+          if (safeTenancy.company) u.company = safeTenancy.company;
+          if (safeTenancy.email) u.email = safeTenancy.email;
+          if (safeTenancy.tel) u.tel = safeTenancy.tel;
+          if (safeTenancy.leaseStart) u.leaseStart = safeTenancy.leaseStart;
+          if (safeTenancy.leaseEnd) u.leaseEnd = safeTenancy.leaseEnd;
+          // contractRent — договорная ставка (MONEY RULE: она бьёт проформу
+          // u.rent, которую менять нельзя: это запрашиваемая цена юнита).
+          if (safeTenancy.contractRent > 0) u.contractRent = safeTenancy.contractRent;
+          if (safeTenancy.deposit > 0) u.deposit = safeTenancy.deposit;
+          u.status = 'occupied';
+          u.outreach.push({
+            ts: nowIso,
+            kind: 'lease',
+            note: `Tenancy started from the phone: ${safeTenancy.tenant || safeTenancy.company}`
+              + (safeTenancy.leaseStart ? ` · ${safeTenancy.leaseStart}` : '')
+              + (safeTenancy.contractRent > 0 ? ` · $${safeTenancy.contractRent}/mo` : ''),
+            by: caller.email || caller.uid,
+            byEmail: caller.email || null,
+            envelopeId: data.envelopeId,
+          });
+        }
+
         // Outreach trail so the Activity Log on the unit panel reflects
         // this send. {kind, note, by} is the shape every client renderer
         // reads (recordOutreach / drawer / Activity Log) — mirror the
         // discount-ledger writer above, including the 100-entry cap.
-        u.outreach = Array.isArray(u.outreach) ? u.outreach : [];
         u.outreach.push({
           ts: nowIso,
           kind: 'lease',
