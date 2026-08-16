@@ -69062,7 +69062,11 @@ function renderUnits() {
     // только когда оператор убавил слайдер. (Запрос оператора 2026-06-07.)
     const isVacantUnit = isRentable && u.status === 'vacant';
     let _baseOpacity = effectiveOpacity;
-    if (!state.settings.editMode && !isVacantUnit) _baseOpacity = 1;
+    // В режиме «Unit type» цвет типа — суть вкладки: заливка плотная и у
+    // СВОБОДНЫХ юнитов (жилой этаж целиком вакантен — палитра выцветала в
+    // молоко, оператор: «очень бледно, ничего не понятно»). Entry 58
+    // (прозрачные vacant под слайдер) остаётся в lease/payment/rent.
+    if (!state.settings.editMode && (!isVacantUnit || mapViewMode === 'type')) _baseOpacity = 1;
     // Selected units stand out; rotated units need their own stroke (shared-edge won't apply)
     const unitOpacity = isSelected ? Math.max(0.7, _baseOpacity) : _baseOpacity;
 
@@ -142147,9 +142151,29 @@ async function loadMoreInvoices() {
 // invoices being absent from a CUSTOMER-scoped pull means they really
 // don't exist). Only workspace-wide pulls should evict.
 //
+// Принадлежит ли счёт ЭТОМУ порталу. В Stripe-аккаунте живут и счета
+// другого портфеля (номера MIL-* — 919 Milam): зданий, которых нет в базе
+// сайта, здесь показывать нельзя (оператор 2026-08-16). Правило:
+//   • есть metadata.buildingId → здание должно существовать в state.buildings
+//     (пока здания не загружены — не решаем, пускаем);
+//   • нет buildingId → счёт наш, только если несёт наши метки
+//     (metadata.unitId / ym / purpose — их ставят и клиент, и CF);
+//   • совсем без наших меток (все MIL-*) → чужой, отсекается.
+function _invoiceBelongsHere(r) {
+  const md = (r && r.metadata) || {};
+  const bid = String(md.buildingId || r.buildingId || '');
+  if (bid) {
+    const bl = state && Array.isArray(state.buildings) ? state.buildings : null;
+    if (!bl || !bl.length) return true;
+    return bl.some(b => b && String(b.id) === bid);
+  }
+  return !!(md.unitId || md.ym || md.purpose);
+}
+
 // Always returns the resulting cache (so callers can assign or chain).
 function _mergeIntoInvoicesCache(rows, opts = {}) {
   if (!Array.isArray(rows)) rows = [];
+  rows = rows.filter(_invoiceBelongsHere);
   if (!Array.isArray(_invoicesCache)) {
     _invoicesCache = rows.slice();
     // FIX-perf 2: прогреваем индекс + бампаем эпоху сразу в точке слияния
@@ -142160,7 +142184,7 @@ function _mergeIntoInvoicesCache(rows, opts = {}) {
   }
   const incomingIds = new Set();
   const byId = new Map();
-  for (const r of _invoicesCache) if (r && r.id) byId.set(r.id, r);
+  for (const r of _invoicesCache) if (r && r.id && _invoiceBelongsHere(r)) byId.set(r.id, r);
   for (const r of rows) {
     if (!r || !r.id) continue;
     byId.set(r.id, r);
