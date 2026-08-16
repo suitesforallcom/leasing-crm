@@ -38,7 +38,7 @@
   .app svg{ width:18px; height:18px; flex:0 0 auto; }
 
   .app{ position:fixed; inset:0; display:flex; flex-direction:column; background:var(--paper); overflow:hidden; }
-  .scroll{ flex:1 1 auto; overflow-y:auto; -webkit-overflow-scrolling:touch; scrollbar-width:none; padding:max(env(safe-area-inset-top,0px),10px) 0 calc(152px + var(--safe-b)); }
+  .scroll{ flex:1 1 auto; overflow-y:auto; -webkit-overflow-scrolling:touch; scrollbar-width:none; padding:max(env(safe-area-inset-top,0px),10px) 0 calc(90px + var(--safe-b)); }   /* таб-бар; полосы зданий больше нет */
   .scroll::-webkit-scrollbar{ display:none; }
 
   .topbar{ padding:4px 18px 6px; }
@@ -177,15 +177,7 @@
 
   /* bottom building bar — the operator lives in ONE building; switching is
      rare, so it sits in the thumb zone and never occupies the top */
-  .bldbar{ position:absolute; left:0; right:0; bottom:calc(68px + var(--safe-b)); z-index:41; display:flex; align-items:center; gap:10px; padding:9px 14px; margin:0 12px; border-radius:14px; background:var(--card);
            border:1px solid var(--line-2); box-shadow:0 6px 20px -10px rgba(26,26,28,.4); cursor:pointer; text-align:left; width:calc(100% - 24px); }
-  .bldbar:active{ transform:scale(.99); }
-  .bldbar[hidden]{ display:none; }
-  .bldbar-code{ font-family:var(--num); font-size:10px; font-weight:700; letter-spacing:.05em; color:var(--accent); background:var(--accent-soft); border-radius:5px; padding:4px 5px; flex:0 0 auto; }
-  .bldbar-main{ display:block; flex:1 1 auto; min-width:0; }
-  .bldbar-name{ display:block; font-size:14px; font-weight:640; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .bldbar-sub{ display:block; font-size:11.5px; color:var(--ink-3); font-family:var(--num); margin-top:1px; }
-  .bldbar-sw{ font-size:12.5px; font-weight:660; color:var(--accent); flex:0 0 auto; }
 
   /* tab bar — three labelled destinations, no hidden gestures */
   .tabbar{ position:absolute; left:0; right:0; bottom:0; z-index:40; display:flex; padding:8px 10px calc(10px + var(--safe-b)); background:color-mix(in srgb, var(--card) 94%, transparent); backdrop-filter:saturate(1.4) blur(16px);
@@ -340,7 +332,6 @@
 <body>
 <div class="app" id="app">
   <div class="scroll" id="scroll"></div>
-  <button class="bldbar" id="bldbar" type="button" data-act="switcher"></button>
   <div class="tabbar" id="tabbar"></div>
   <div class="scrim" id="scrim" data-on="0"></div>
   <div class="sheet" id="sheet" data-on="0" role="dialog" aria-modal="true" aria-label="Sheet">

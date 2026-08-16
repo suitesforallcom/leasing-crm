@@ -297,6 +297,35 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   S.lease = null; S.inv = null; S.sheet = null; S.sheetPayload = null; S.sheetArg = null; S.payload = null;
 }
 
+/* ---- 4e. сводка условий следует за вводом (живая проверка в DOM) ---- */
+{
+  S.lease = null; S.inv = null;
+  S.sheet = 'lease';
+  const ids = { buildingId: 'b1', floorId: 'f4', unitId: '440' };
+  S.sheetPayload = ids; S.sheetArg = ids; S.payload = ids;
+  lease.render(ctx());
+  Object.assign(S.lease, { step: 3, name: 'E', email: 'e@x.co', phone: '1', start: '2026-09-01', term: '12' });
+  const host = document.getElementById('sheetBody');
+  host.innerHTML = lease.render(ctx());
+  painted.push(host.innerHTML);
+  await new Promise(r => setTimeout(r, 5));                 // биндер вешается через setTimeout(0)
+  const dep = document.getElementById('lsDep'), recap = document.getElementById('lsRecap');
+  if (!dep || !recap) { say('bad', 'на шаге условий нет поля депозита или сводки'); bad++; }
+  else {
+    const read = () => recap.innerText.replace(/\s+/g, ' ');
+    dep.value = '1800'; dep.dispatchEvent(new Event('input', { bubbles: true }));
+    const typed = read();
+    dep.value = '0'; dep.dispatchEvent(new Event('input', { bubbles: true }));
+    const zero = read();
+    if (!/Deposit \$1,800/.test(typed)) { say('bad', 'сводка не следует за вводом депозита: ' + typed); bad++; }
+    else say('ok', 'сводка обновляется по мере ввода депозита');
+    if (!/Deposit \$0\b/.test(zero)) { say('bad', 'явный ноль в депозите не доехал до сводки: ' + zero); bad++; }
+    else say('ok', 'явный ноль в депозите остаётся нулём (прощёный депозит)');
+  }
+  host.innerHTML = '';
+  S.lease = null; S.sheet = null; S.sheetPayload = null; S.sheetArg = null; S.payload = null;
+}
+
 /* ---- 5. каждое data-act действие кто-то обрабатывает (ловит тупики) ---- */
 {
   const acts = new Set();
@@ -350,6 +379,13 @@ if (want) {
     // ?preset=service — посмотреть лист счёта с каталогом услуг.
     const preset = new URLSearchParams(location.search).get('preset');
     if (preset && want === 'invoice') { S.inv = null; mod.render(ctx()); if (S.inv) S.inv.preset = preset; }
+    // ?step=3 — шаг условий договора (проверять живую сводку под полями).
+    const step = new URLSearchParams(location.search).get('step');
+    if (want === 'lease' && step) {
+      mod.render(ctx());
+      Object.assign(S.lease, { step: +step, name: 'Elliot Reyes', email: 'elliot@example.com',
+        phone: '7275550134', start: '2026-09-01', term: '12' });
+    }
     // ?done=1 — экран заселения после отправки договора (&sent=deposit — с уже
     // отправленным депозитом, чтобы видеть обе строки в разных состояниях).
     if (want === 'lease' && new URLSearchParams(location.search).get('done')) {

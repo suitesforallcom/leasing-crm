@@ -157,15 +157,37 @@ function resolveTpl(snap, u, f, b) {
 }
 
 /* ---- документ конверта ---------------------------------------------------- */
+/**
+ * Деньги мастера — ОДНО правило на все три потребителя (сводка, документ,
+ * заведение аренды). Пустое поле = берём значение юнита; ЯВНЫЙ 0 = ноль.
+ *
+ * Раньше документ считал через `+L.deposit || +u.deposit`: вписанный ноль
+ * (прощёный депозит) — falsy, и в договор печаталось старое значение юнита.
+ * Сводка и аренда при этом показывали 0 — три места расходились на деньгах.
+ */
+function termsOf(L, u) {
+  const pick = (typed, fallback) => {
+    const t = String(typed == null ? '' : typed).trim();
+    if (t === '') return +fallback || 0;
+    const n = +t;
+    return Number.isFinite(n) && n >= 0 ? n : (+fallback || 0);
+  };
+  return {
+    rent: pick(L.rent, +u.contractRent || +u.rent || 0),
+    deposit: pick(L.deposit, +u.deposit || 0),
+  };
+}
+
 function leaseFields(ctx, L, hit, end) {
   const u = hit.unit, b = hit.building, s = (ctx.snap && ctx.snap.settings) || {};
-  const rent = +L.rent || +u.contractRent || +u.rent || 0;        // contractRent выигрывает (MONEY RULE)
+  const t = termsOf(L, u);                                        // общее правило: см. termsOf
+  const rent = t.rent;
   return {
     tenant_name: L.name, tenant_email: L.email, tenant_phone: L.phone, client_company: L.company,
     suite: String(u.id), building_name: b.name || '', building_address: b.address || '',
     lease_start: dlong(ctx, L.start), lease_end: end ? dlong(ctx, end) : 'Month-to-month',
     term: L.term === 'mtm' ? 'Month-to-month' : L.term + ' months',
-    rent: usd(ctx, rent), deposit: usd(ctx, +L.deposit || +u.deposit || 0),
+    rent: usd(ctx, rent), deposit: usd(ctx, t.deposit),
     landlord_name: s.landlordName || b.name || 'Landlord',
     landlord_title: s.landlordTitle || 'Authorized Signatory',
     landlord_signed_date: dlong(ctx, todayIso()),
@@ -437,8 +459,8 @@ function step3(ctx, L, hit) {
   const snap = ctx.snap || {}, u = hit.unit;
   const end = endOf(ctx, L);
   const tpl = resolveTpl(snap, u, hit.floor, hit.building);
-  const rent = L.rent === '' ? (+u.contractRent || +u.rent || 0) : +L.rent;
-  const dep = L.deposit === '' ? (+u.deposit || 0) : +L.deposit;
+  const t0 = termsOf(L, u);
+  const rent = t0.rent, dep = t0.deposit;
   return (L.err ? errCard(L) : '')
     + '<div class="field"><label>Template</label><div class="picked"><span class="doc">' + I.doc + '</span>'
     + '<span class="mid"><span class="t">' + esc(tpl.name) + '</span><span class="s">' + esc(tpl.where)
@@ -461,15 +483,47 @@ function step3(ctx, L, hit) {
     + '<button class="chg" data-act="lease:step" data-d="-1">Change</button></div>'
     + (EMAIL_RE.test(L.email) ? '' : '<div class="hintline" style="color:var(--bad)">That address is not a valid '
       + 'email — go back and fix it.</div>') + '</div>'
-    + '<div class="recap"><div><span>Unit</span><b>' + esc(suiteLabel(u)) + '</b></div>'
+    + '<div id="lsRecap">' + (bindRecap(ctx, L, hit), recapHtml(ctx, L, hit)) + '</div>'
+    + '<div class="whatnext">' + I.info + '<span>The tenant gets a DocuSign email; signature status appears under '
+    + 'More. Sending also puts the tenant on the unit with these terms, so you can bill the deposit and the first '
+    + 'rent straight away.</span></div>';
+}
+
+/**
+ * Сводка условий. Вынесена отдельно, потому что перерисовывается ПО ВВОДУ:
+ * значения полей забираются из DOM только при нажатии (readForm), а сводка
+ * рисовалась один раз — оператор печатал депозит 1800 и видел под ним «$0».
+ * На отправку это не влияло (readForm срабатывает раньше), но проверять перед
+ * отправкой было нечем, а сводка существует ровно для этого.
+ */
+function recapHtml(ctx, L, hit) {
+  const u = hit.unit;
+  const end = endOf(ctx, L);
+  const t = termsOf(L, u);
+  const rent = t.rent, dep = t.deposit;
+  return '<div class="recap"><div><span>Unit</span><b>' + esc(suiteLabel(u)) + '</b></div>'
     + '<div><span>Building</span><b>' + esc(hit.building.name || hit.building.id) + '</b></div>'
     + '<div><span>Starts</span><b>' + esc(dlong(ctx, L.start)) + '</b></div>'
     + '<div><span>Ends</span><b>' + (end ? esc(dlong(ctx, end)) : 'Open · month-to-month') + '</b></div>'
     + '<div><span>Rent</span><b>' + esc(usd(ctx, rent)) + '/mo</b></div>'
-    + '<div><span>Deposit</span><b>' + esc(usd(ctx, dep)) + '</b></div></div>'
-    + '<div class="whatnext">' + I.info + '<span>The tenant gets a DocuSign email; signature status appears under '
-    + 'More. These terms ride on the envelope — the unit&rsquo;s own dates and rent are updated in the full version '
-    + 'when you file the signed lease.</span></div>';
+    + '<div><span>Deposit</span><b>' + esc(usd(ctx, dep)) + '</b></div></div>';
+}
+/** Сводка следует за полями. Перерисовываем ТОЛЬКО её — input трогать нельзя. */
+function bindRecap(ctx, L, hit) {
+  setTimeout(() => {
+    const box = document.getElementById('lsRecap');
+    if (!box) return;
+    for (const [key, id] of [['start', 'lsStart'], ['rent', 'lsRent'], ['deposit', 'lsDep']]) {
+      const inp = document.getElementById(id);
+      if (!inp || inp.dataset.recap) continue;
+      inp.dataset.recap = '1';
+      inp.addEventListener('input', () => {
+        L[key] = inp.value;
+        try { box.innerHTML = recapHtml(ctx, L, hit); }
+        catch (e) { console.error('[m] recap failed:', e); }
+      });
+    }
+  }, 0);
 }
 function gateBody(ctx, hit) {
   const u = hit.unit, who = u.tenant || u.company || 'someone', until = u.until || u.leaseEnd || '';
@@ -690,7 +744,8 @@ async function send(ctx, L) {
 
   const cfg = dsCfg(snap);
   const end = endOf(ctx, L);
-  const rent = L.rent === '' ? (+hit.unit.contractRent || +hit.unit.rent || 0) : (+L.rent || 0);
+  const terms = termsOf(L, hit.unit);
+  const rent = terms.rent;
   const html = buildDoc(resolveTpl(snap, hit.unit, hit.floor, hit.building), leaseFields(ctx, L, hit, end));
   const suite = suiteLabel(hit.unit);
 
@@ -750,7 +805,7 @@ async function send(ctx, L) {
       tenancy: {
         tenant: name, company: L.company || '', email, tel: L.phone || '',
         leaseStart: L.start || '', leaseEnd: end || '',
-        contractRent: rent, deposit: (L.deposit === '' ? (+hit.unit.deposit || 0) : (+L.deposit || 0)),
+        contractRent: rent, deposit: terms.deposit,
       },
     }, { timeoutMs: 30000 });
     const r = (res && res.envelopeId === undefined && res.data) ? res.data : (res || {});

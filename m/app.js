@@ -34,7 +34,6 @@ const I = {
 const appEl = document.getElementById('app');
 const scrollEl = document.getElementById('scroll');
 const tabbarEl = document.getElementById('tabbar');
-const bldbarEl = document.getElementById('bldbar');
 const scrimEl = document.getElementById('scrim');
 const sheetEl = document.getElementById('sheet');
 const sheetBody = document.getElementById('sheetBody');
@@ -145,6 +144,8 @@ const more = {
     h += '<div class="card">'
       + moreRow('job', 'lease', I.doc, 'Send a lease', 'One unit, sent for signature')
       + moreRow('job', 'invoice', I.money, 'Send an invoice', 'Rent, deposit, late fee or custom')
+      + moreRow('switcher', '', I.grid, 'Building', scopeName() + (buildings().length > 1
+          ? ' · tap to switch (' + buildings().length + ' buildings)' : ''))
       + moreRow('refresh', '', I.sync, 'Refresh now', 'Pull the latest payments and buildings')
       + moreRow('openfull', '', I.ext, 'Open the full version', 'Floor plans, analytics, settings — best on a computer')
       + '</div>';
@@ -200,17 +201,11 @@ function renderTabs(){
     '<button class="tab" type="button" data-act="tab" data-k="' + t[0] + '" aria-selected="' + (S.tab === t[0]) + '">'
     + t[2] + '<span>' + t[1] + '</span></button>').join('');
 }
-function renderBldBar(){
-  const hide = (S.tab === 'more');
-  bldbarEl.hidden = hide;
-  if (hide) return;
-  const b = curBld(), st = scopeStats();
-  const code = b ? esc(codeOf(b)) : (S.scope === 'all' ? 'ALL' : '···');
-  bldbarEl.innerHTML = '<span class="bldbar-code">' + code + '</span>'
-    + '<span class="bldbar-main"><span class="bldbar-name">' + esc(scopeName()) + '</span>'
-    + '<span class="bldbar-sub">' + esc(st ? (st.pct + '% collected · ' + st.late + ' late') : 'reading the latest numbers…') + '</span></span>'
-    + '<span class="bldbar-sw">Switch</span>';
-}
+/* Постоянной панели переключения зданий больше нет: оператор работает в одном
+   здании и меняет его редко, а панель занимала полосу над таб-баром на каждом
+   экране. Смена живёт в меню More; какое здание открыто — видно в шапке Home
+   и Payments. Выбор запоминается на устройстве (writeScope), приложение
+   открывается в нём же. */
 function render(keep){
   if (!booted) return;
   const y = scrollEl.scrollTop, f = grabFocus();
@@ -220,7 +215,7 @@ function render(keep){
     ? '<div class="wsbanner">' + esc(ws) + ' workspace — not production</div>' : '';
   html += renderSafe(TABS[S.tab] || TABS.home, 'tab:' + S.tab);
   scrollEl.innerHTML = html;
-  renderTabs(); renderBldBar();
+  renderTabs();
   scrollEl.scrollTop = keep ? y : 0;
   wireInputs(); restoreFocus(f);
 }
