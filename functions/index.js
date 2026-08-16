@@ -740,6 +740,14 @@ exports.ensureStripeCustomer = onCall(
     if (!email || !name) {
       throw new HttpsError('invalid-argument', 'email and name are required');
     }
+
+    // Гард NEW- (прод-аудит 2026-08-16, п.7): не создаём и не перепривязываем
+    // живого Stripe-customer под placeholder-юнит — оттуда NEW- тянется в
+    // инвойсы. unitId здесь опционален: вызов без id не блокируем (fail safe).
+    if (unitId && /^NEW-/.test(String(unitId).trim())) {
+      throw new HttpsError('invalid-argument',
+        `Unit "${unitId}" is an unsaved placeholder (NEW-…). Give the suite its real number in the editor before connecting a Stripe customer.`);
+    }
     const stripe = getStripe();
 
     const emailLower = email.toLowerCase();
@@ -983,6 +991,14 @@ exports.createStripeInvoice = onCall(
       throw new HttpsError('invalid-argument',
         'buildingId, floorId, unitId are required');
     }
+    // Гард NEW- (прод-аудит 2026-08-16, п.7): placeholder-id юнита (черновик
+    // NEW-… из редактора) не должен попасть в customer-facing поля Stripe —
+    // description, footer, custom field «Suite», invoice number.
+    if (/^NEW-/.test(String(unitId).trim())) {
+      throw new HttpsError('invalid-argument',
+        `Unit "${unitId}" is an unsaved placeholder (NEW-…). Give the suite its real number in the editor first — placeholder ids must never reach a tenant-facing invoice.`);
+    }
+
     // Only rent invoices REQUIRE a month — other types are one-off. For
     // non-rent invoices, ym is optional (we still stamp the current month
     // for metadata consistency if nothing supplied).
@@ -1787,6 +1803,13 @@ exports.startAutoPay = onCall(
     const found = findUnit(state, {buildingId, floorId, unitId});
     if (!found) throw new HttpsError('not-found', 'Unit not found');
     const {unit, building} = found;
+
+    // Гард NEW- (прод-аудит 2026-08-16, п.7): черновой suite-id не должен
+    // уехать в название подписки Checkout («Monthly rent — … · Suite NEW-…»).
+    if (/^NEW-/.test(String(unitId).trim())) {
+      throw new HttpsError('invalid-argument',
+        `Unit "${unitId}" is an unsaved placeholder (NEW-…). Give the suite its real number in the editor before enabling autopay.`);
+    }
 
     const email = unit.email;
     if (!email) throw new HttpsError('failed-precondition', 'Tenant email missing');
@@ -5193,6 +5216,15 @@ const _runAutoInvoicesHandler = async (opts) => {
             if (nextYm < _lsYmGate) { skipped++; continue; }
           }
 
+          // Гард NEW- (прод-аудит 2026-08-16, п.7): авто-счёт по placeholder-
+          // юниту не выставляем — черновой id уехал бы арендатору в description.
+          // Скип, не throw: один битый юнит не валит крон для остальных.
+          if (/^NEW-/.test(String(u.id || ''))) {
+            logger.warn(`[auto-invoice] ${u.id}: placeholder unit id (NEW-…) — NOT billing ${nextYm}; give the suite its real number in the editor`);
+            skipped++; continue;
+          }
+
+
           // Create the invoice via Stripe
           try {
             const customerId = u.stripe?.customerId;
@@ -5681,6 +5713,21 @@ exports.recoverAutoZeroInvoices = onCall(
       return { dryRun: true, ...plan };
     }
 
+    // Гард (аудит 2026-08-16): unit-scoped audit-строка обязана нести
+    // buildingId+floorId — reconciler больше не угадывает юнит по номеру suite.
+    // Дубль unitId (байт-в-байт клоны вроде NEW-70492) — путь не пишем:
+    // пропуск честнее догадки.
+    const unitPathById = new Map();
+    for (const b of (state.buildings || [])) {
+      for (const f of (b.floors || [])) {
+        for (const u of (f.units || [])) {
+          const prev = unitPathById.get(u.id);
+          if (prev === undefined) unitPathById.set(u.id, { buildingId: b.id, floorId: f.id });
+          else if (prev && (prev.buildingId !== b.id || prev.floorId !== f.id)) unitPathById.set(u.id, null);
+        }
+      }
+    }
+
     // LIVE (a): удалить болтающиеся pending items.
     let itemsDeleted = 0;
     for (const it of pendingItems) {
@@ -5689,6 +5736,7 @@ exports.recoverAutoZeroInvoices = onCall(
         try {
           await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
             action: 'invoice-item.deleted', ts: Date.now(), unitId: it.unitId, itemId: it.id,
+            ...(unitPathById.get(it.unitId) || {}),
             amount: (it.amount || 0) / 100, actor: 'system:recover-auto-zero',
             note: `Deleted dangling $0-backfill pending ${it.purpose} item for ${ym}`,
           });
@@ -6026,6 +6074,15 @@ async function _runAutoLateFeesHandler(opts) {
           skipped++;
           continue;
         }
+
+        // Гард NEW- (прод-аудит 2026-08-16, п.7): по placeholder-юниту пени не
+        // считаем и не выставляем — зеркало NEW--гарда rent-крона. Скип, не throw.
+        if (/^NEW-/.test(String(u.id || ''))) {
+          logger.warn(`[auto-late-fee] ${u.id}: placeholder unit id (NEW-…) — skipping late fees`);
+          skipped++;
+          continue;
+        }
+
 
         // Compute overdue months
         const overdues = _computeOverdueMonths(u, cfg, todayInZoneParts);
@@ -10012,6 +10069,15 @@ function _dsSanitizeTenancy(t) {
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     throw new HttpsError('invalid-argument', 'tenancy.email is not a valid address');
   }
+  // Гард «email вместо имени» (аудит 2026-08-16): email в tenant/company уезжал
+  // в DocuSign recipientName и дальше в клиентские интерфейсы. Имя — в имя,
+  // адрес — в tenancy.email. Бросаем, а не чиним молча: оператор должен видеть,
+  // куда что вводить (та же политика, что у остальных проверок этой функции).
+  const emailish = /[^\s@]+@[^\s@]+\.[^\s@]+/;
+  if (emailish.test(tenant) || emailish.test(company)) {
+    throw new HttpsError('invalid-argument',
+      'tenancy.tenant/company looks like an email address — put the NAME in the name field, the address goes in tenancy.email');
+  }
   const leaseStart = iso(t.leaseStart, 'leaseStart');
   const leaseEnd = iso(t.leaseEnd, 'leaseEnd');
   if (leaseStart && leaseEnd && leaseEnd < leaseStart) {
@@ -10039,6 +10105,13 @@ exports.dsSendEnvelope = onCall(
     }
     if (!unitId || !buildingId || !floorId) {
       throw new HttpsError('invalid-argument', 'unitId + buildingId + floorId required for server-authoritative state write');
+    }
+
+    // Гард NEW- (прод-аудит 2026-08-16, п.7): placeholder-id юнита не должен
+    // попасть в договор DocuSign и в серверную запись аренды.
+    if (/^NEW-/.test(String(unitId).trim())) {
+      throw new HttpsError('invalid-argument',
+        `Unit "${unitId}" is an unsaved placeholder (NEW-…). Give the suite its real number in the editor before sending a lease.`);
     }
     // Мобильный клиент не может писать документ здания (_savedRev-гард), а
     // отправка договора без заведения аренды оставляла юнит свободным: счёт
@@ -10141,6 +10214,14 @@ exports.dsSendEnvelope = onCall(
           // u.rent, которую менять нельзя: это запрашиваемая цена юнита).
           if (safeTenancy.contractRent > 0) u.contractRent = safeTenancy.contractRent;
           if (safeTenancy.deposit > 0) u.deposit = safeTenancy.deposit;
+          // Пересчёт производной ставки $/ft²/yr (аудит 2026-08-16): запись
+          // contractRent без пересчёта оставляла stale rate (формула — как в
+          // монолите :75747: monthly*12/sqft, contract бьёт proforma u.rent).
+          {
+            const monthly = +u.contractRent || +u.rent || 0;
+            const sqft = +u.sqft || 0;
+            if (monthly > 0 && sqft > 0) u.rate = +(monthly * 12 / sqft).toFixed(2);
+          }
           u.status = 'occupied';
           u.outreach.push({
             ts: nowIso,

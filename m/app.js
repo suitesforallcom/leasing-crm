@@ -173,6 +173,10 @@ function dataIssues(){
   const list = buildings();
   for (const b of list){
     for (const f of ((b && b.floors) || [])){
+
+      // Детектор 4 (прод-аудит 2026-08-16): два живых юнита этажа с одинаковым
+      // прямоугольником (класс 440/441 внутри 442) — площадь этажа двоится.
+      const rectSeen = new Map();
       for (const u of ((f && f.units) || [])){
         if (!u || u.deletedAt || u.archivedAt || u.rentable === false) continue;
         if (u.type && u.type !== 'office') continue;
@@ -182,6 +186,69 @@ function dataIssues(){
         try { if (money.isFinanceShadow(u, snap)) continue; } catch (e) { /* деньги молчат */ }
         const who = String(u.tenant || u.company || '').trim();
         const ref = { buildingId: b.id, floorId: f && f.id, unitId: u.id };
+
+        // ── Новые детекторы (прод-аудит 2026-08-16). Каждый — независимый if:
+        // у юнита может быть несколько бед сразу; карточка это переживает. ──
+        // 1. «Забытая репетиция»: занят, но ВСЕ конверты аннулированы и ни одной
+        // платёжной строки. Пустой список конвертов НЕ считаем — бумажная аренда
+        // без DocuSign легальна (fail safe: молчим, когда неоднозначно).
+        const envs = Array.isArray(u.leaseEnvelopes) ? u.leaseEnvelopes.filter(e => e && e.envelopeId) : [];
+        const payRows = u.payments ? Object.keys(u.payments).length : 0;
+        if (u.status === 'occupied' && envs.length
+            && envs.every(e => String(e.status || '').toLowerCase() === 'voided')
+            && payRows === 0){
+          out.push({ ref, suite: u.id, bld: b.name || b.id,
+            title: 'Looks like an abandoned rehearsal',
+            why: 'Every lease envelope is voided and no payment was ever recorded, yet the unit still counts as occupied.' });
+        }
+        // 2. Вместо имени арендатора сохранена почта (класс «email утёк в
+        // recipientName конверта»).
+        const opEmail = String(safe(() => snap.user.email, '') || '').trim().toLowerCase();
+        if (who && who.indexOf('@') !== -1){
+          out.push({ ref, suite: u.id, bld: b.name || b.id,
+            title: (opEmail && who.toLowerCase() === opEmail)
+              ? 'Tenant name is YOUR email'
+              : 'Tenant name looks like an email address',
+            why: 'This exact text flows into DocuSign and Stripe as the tenant name on documents.' });
+        }
+        // 3. Производный rate ($/ft²/yr) разъехался: пути, пишущие contractRent,
+        // не всегда пересчитывают rate (MONO:75747 — rate = monthly*12/sqft).
+        // Головы мульти-сьютовых лиз пропускаем: их contractRent — сумма всей
+        // группы (сьют 101: 13318 при собственных 2210 ft²), «ожидаемая» ставка
+        // из этой пары бессмысленна и давала бы вечную ложную строку (ревью).
+        if (!u.groupId) {
+          const monthly = +u.contractRent || +u.rent || 0;
+          const sqft = +u.sqft || 0, rate = +u.rate || 0;
+          if (monthly > 0 && sqft > 0 && rate > 0){
+            const expected = monthly * 12 / sqft;
+            if (expected > 0 && Math.abs(rate - expected) / expected > 0.20){
+              out.push({ ref, suite: u.id, bld: b.name || b.id,
+                title: 'Derived rate is stale',
+                why: 'Listed $' + rate.toFixed(2) + '/ft²/yr, but rent and area say $' + expected.toFixed(2) + ' — a rent edit skipped the recompute.' });
+            }
+          }
+        }
+        // 5. Плейсхолдерный номер NEW-…: сервер теперь ОТКАЗЫВАЕТСЯ выставлять
+        // по нему счета (номер попадает в текст клиентского инвойса), а крон
+        // молча пропускает такой юнит. Молчаливый пропуск должен быть виден.
+        if (/^NEW-/i.test(String(u.id || '')) && (u.status === 'occupied'
+            || (u.stripe && (u.stripe.lastInvoiceId || u.stripe.depositInvoice || u.stripe.moveInRent)))){
+          out.push({ ref, suite: u.id, bld: b.name || b.id,
+            title: 'Needs a real suite number',
+            why: 'Billing is skipped for placeholder NEW- ids — rename the suite on the desktop, then invoices resume.' });
+        }
+        // 4. Тот же прямоугольник, что у другого живого юнита этажа.
+        // w>0 и h>0 — как shapeOf в плане: два непроставленных юнита с
+        // нулевым прямоугольником не должны сталкиваться на ключе 0|0|0|0.
+        if ([+u.x, +u.y, +u.w, +u.h].every(Number.isFinite) && +u.w > 0 && +u.h > 0){
+          const rk = (+u.x) + '|' + (+u.y) + '|' + (+u.w) + '|' + (+u.h);
+          const first = rectSeen.get(rk);
+          if (first){
+            out.push({ ref, suite: u.id, bld: b.name || b.id,
+              title: 'Same outline as Suite ' + first,
+              why: 'Two live units share one rectangle — the floor area is counted twice. One is probably a sub-room missing its parent.' });
+          } else rectSeen.set(rk, u.id);
+        }
         if (u.status === 'vacant' && who){
           out.push({ ref, suite: u.id, bld: b.name || b.id,
             title: 'Marked vacant, but still carries ' + who,

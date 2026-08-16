@@ -30350,7 +30350,32 @@ window.addEventListener('unhandledrejection', (e) => {
 //     after:  { status: 'paid', amount: 750 },
 //     note: 'Cash payment received from tenant',
 //   });
+// Гард (аудит 2026-08-16): unit-scoped запись без buildingId/floorId — мёртвый
+// груз для reconciler'а (он больше НЕ угадывает юнит по номеру suite/email).
+// Доводим путь из state по unitId. Дубль id (байт-в-байт клоны вроде NEW-70492)
+// — не гадаем: null, запись уходит как есть, reconciler её честно пропустит.
+function _auditResolveUnitPath(unitId) {
+  let hit = null;
+  for (const b of (state?.buildings || [])) {
+    for (const f of (b.floors || [])) {
+      if ((f.units || []).some(x => x && x.id === unitId)) {
+        if (hit && (hit.buildingId !== b.id || hit.floorId !== f.id)) return null;
+        if (!hit) hit = { buildingId: b.id, floorId: f.id };
+      }
+    }
+  }
+  return hit;
+}
 function recordAuditClient(action, ctx = {}) {
+  // Гард: у unit-scoped записи путь обязателен — доводим из state, если
+  // call-site его не передал (или передал пустые строки). Не нашли/дубль —
+  // пишем как есть: аудит важнее полноты, блокировать запись нельзя.
+  if (ctx.unitId && (!ctx.buildingId || !ctx.floorId)) {
+    try {
+      const p = _auditResolveUnitPath(ctx.unitId);
+      if (p) ctx = { ...ctx, buildingId: ctx.buildingId || p.buildingId, floorId: ctx.floorId || p.floorId };
+    } catch {}
+  }
   _auditOutboxEnqueue({ action, ...ctx });
   // Fire-and-forget drain attempt. Failures stay queued for retry.
   _auditOutboxDrain().catch(() => {});
@@ -70991,6 +71016,12 @@ function onPolyVertexEnd() {
     saveState();
   }
   window.removeEventListener('pointermove', onPolyVertexMove);
+
+  // Guard (аудит 2026-08-16 #5): вершины дотянули так, что полигон оказался
+  // внутри другого rentable офиса → confirm «сделать sub-room?».
+  if (polyVertexDrag && polyVertexDrag.unit && typeof _nestedRentableGuardCheck === 'function') {
+    _nestedRentableGuardCheck(polyVertexDrag.unit, (typeof currentFloor === 'function') ? currentFloor() : null);
+  }
   polyVertexDrag = null;
 }
 
@@ -73684,7 +73715,15 @@ function onDragMove(e) {
 }
 
 function onDragEnd() {
-  if (drag && drag.started) { saveState(); updateStats(); }
+  if (drag && drag.started) {
+    saveState(); updateStats();
+    // Guard (аудит 2026-08-16 #5): юнит(ы) перетащили внутрь другого
+    // rentable офиса → confirm «сделать sub-room?». Только на commit.
+    if (typeof _nestedRentableGuardCheck === 'function') {
+      const _gf = (typeof currentFloor === 'function') ? currentFloor() : null;
+      if (_gf) for (const _gi of drag.items) _nestedRentableGuardCheck(_gi.unit, _gf);
+    }
+  }
   window.removeEventListener('pointermove', onDragMove);
   drag = null;
   drawSnapGuides(null);
@@ -74055,6 +74094,12 @@ function onResizeEnd() {
   } catch {}
   saveState();
   window.removeEventListener('pointermove', onResizeMove);
+
+  // Guard (аудит 2026-08-16 #5): юнит растянули поверх / внутрь другого
+  // rentable офиса → confirm «сделать sub-room?».
+  if (resize && resize.unit && typeof _nestedRentableGuardCheck === 'function') {
+    _nestedRentableGuardCheck(resize.unit, currentFloor());
+  }
   resize = null;
   drawSnapGuides(null);
   updateStats();
@@ -74377,6 +74422,10 @@ function onRectDrawEnd(e) {
     renderAll();
     const scaleHint = (f && f.scale) ? ` · ${newUnit.sqft} ft²` : '';
     toast('Unit created' + scaleHint);
+
+    // Guard (аудит 2026-08-16 #5): новый юнит нарисован внутри другого
+    // rentable офиса или byte-identical дубликат → confirm/warn.
+    if (typeof _nestedRentableGuardCheck === 'function') _nestedRentableGuardCheck(newUnit, f);
   }
   rectStart = null;
   window.removeEventListener('pointermove', onRectDrawMove);
@@ -75131,6 +75180,10 @@ function _polyCommit() {
   renderAll();
   const sqftHint = newUnit.sqft > 0 ? ` · ${newUnit.sqft} ft²` : '';
   if (typeof toast === 'function') toast(`Polygon room created${sqftHint}`, 'success');
+
+  // Guard (аудит 2026-08-16 #5): полигон нарисован внутри другого
+  // rentable офиса → confirm «сделать sub-room?».
+  if (typeof _nestedRentableGuardCheck === 'function') _nestedRentableGuardCheck(newUnit, f);
 }
 
 // Polygon area via the shoelace formula — works for any simple polygon
@@ -75145,6 +75198,127 @@ function _polygonArea(points) {
   }
   return Math.abs(area) / 2;
 }
+
+// =========================================================================
+// Guard: rentable офис внутри другого rentable офиса без parentId
+// =========================================================================
+// Аудит 2026-08-16 (#5): 440/441 нарисованы внутри 442 без parentId →
+// rentable-площадь этажа задвоилась (плюс byte-identical дубликат
+// NEW-70492 = 2072). Проверка запускается ТОЛЬКО при commit'е геометрии
+// (draw / drag / resize / vertex-drag), никогда per-frame. Fail-safe:
+// только warn/confirm — действие оператора не блокируется и не откатывается.
+
+// Точка внутри полигона — стандартный ray casting (even-odd). Точность на
+// границе не важна: используется только для сэмплирования площади.
+function _pointInPolyGuard(px, py, points) {
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const xi = points[i][0], yi = points[i][1];
+    const xj = points[j][0], yj = points[j][1];
+    if (((yi > py) !== (yj > py)) &&
+        (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+
+// Точка внутри юнита: полигон → ray cast, прямоугольник → bbox-тест.
+function _pointInUnitGuard(px, py, u) {
+  if (Array.isArray(u.points) && u.points.length >= 3) {
+    return _pointInPolyGuard(px, py, u.points);
+  }
+  return px >= u.x && px <= u.x + u.w && py >= u.y && py <= u.y + u.h;
+}
+
+// Доля площади inner, лежащая внутри outer (0..1). Два прямоугольника →
+// точное пересечение bbox; если есть полигон — сетка 8×8 сэмплов по bbox
+// inner'а (константная работа на пару юнитов, O(юнитов этажа) на commit).
+function _unitOverlapFracGuard(inner, outer) {
+  if (!(+inner.w > 0) || !(+inner.h > 0) || !(+outer.w > 0) || !(+outer.h > 0)) return 0;
+  const ix1 = Math.max(inner.x, outer.x), iy1 = Math.max(inner.y, outer.y);
+  const ix2 = Math.min(inner.x + inner.w, outer.x + outer.w);
+  const iy2 = Math.min(inner.y + inner.h, outer.y + outer.h);
+  if (ix2 <= ix1 || iy2 <= iy1) return 0;            // bbox не пересекаются
+  const innerPoly = Array.isArray(inner.points) && inner.points.length >= 3;
+  const outerPoly = Array.isArray(outer.points) && outer.points.length >= 3;
+  if (!innerPoly && !outerPoly) {
+    return ((ix2 - ix1) * (iy2 - iy1)) / (inner.w * inner.h);
+  }
+  const N = 8;
+  let inInner = 0, inBoth = 0;
+  for (let gy = 0; gy < N; gy++) {
+    for (let gx = 0; gx < N; gx++) {
+      const sx = inner.x + inner.w * (gx + 0.5) / N;
+      const sy = inner.y + inner.h * (gy + 0.5) / N;
+      if (!_pointInUnitGuard(sx, sy, inner)) continue;
+      inInner++;
+      if (_pointInUnitGuard(sx, sy, outer)) inBoth++;
+    }
+  }
+  return inInner > 0 ? inBoth / inInner : 0;
+}
+
+// «Оператор ответил Нет» — ту же пару юнитов в этой сессии не переспрашиваем
+// (иначе каждый следующий drag того же юнита рождал бы повторный confirm).
+window._nestedGuardDismissed = window._nestedGuardDismissed || new Set();
+
+// Проверка одного юнита после commit'а геометрии. Смотрим в ОБЕ стороны:
+// u как вложенный (нарисовали мелкий внутри крупного) и u как контейнер
+// (растянули крупный поверх мелких — кейс 442 над 440/441).
+function _nestedRentableGuardCheck(u, f) {
+  try {
+    if (!u || !f || !Array.isArray(f.units)) return;
+    if (typeof isArchived === 'function' && isArchived(u)) return;
+    const _rentable = (x) => !!x && x.rentable !== false && (!x.type || x.type === 'office');
+    if (!_rentable(u)) return;                       // common area — не проверяем
+    let bestOuter = null, bestFrac = 0;              // лучший контейнер для u
+    const innersOfU = [];                            // юниты, оказавшиеся внутри u
+    for (const other of f.units) {
+      if (!other || other.id === u.id) continue;
+      if (typeof isArchived === 'function' && isArchived(other)) continue;
+      if (!_rentable(other)) continue;
+      if (u.parentId === other.id || other.parentId === u.id) continue;  // уже parent/child
+      // Byte-identical прямоугольник (кейс NEW-70492 = 2072) — всегда warn,
+      // но parentId не предлагаем: это дубликат юнита, а не sub-room.
+      if (!Array.isArray(u.points) && !Array.isArray(other.points) &&
+          Math.round(u.x) === Math.round(other.x) && Math.round(u.y) === Math.round(other.y) &&
+          Math.round(u.w) === Math.round(other.w) && Math.round(u.h) === Math.round(other.h)) {
+        if (typeof toast === 'function') {
+          toast(`Suite ${u.id} and Suite ${other.id} have identical geometry — duplicate unit? Floor area may double-count.`, 'error');
+        }
+        continue;
+      }
+      if (u.parentId || other.parentId) continue;    // уже чей-то sub-room — не предлагаем вложенность
+      const fIn = _unitOverlapFracGuard(u, other);
+      if (fIn >= 0.6) {
+        // Самый «тесный» контейнер: максимальная доля, при равенстве — меньший bbox.
+        if (fIn > bestFrac || (fIn === bestFrac && bestOuter &&
+            other.w * other.h < bestOuter.w * bestOuter.h)) {
+          bestFrac = fIn; bestOuter = other;
+        }
+        continue;
+      }
+      if (_unitOverlapFracGuard(other, u) >= 0.6) innersOfU.push(other);
+    }
+    const pairs = [];
+    if (bestOuter) pairs.push([u, bestOuter]);
+    for (const inner of innersOfU) pairs.push([inner, u]);
+    for (const [inner, outer] of pairs) {
+      const key = `${f.id}|${inner.id}|${outer.id}`;
+      if (window._nestedGuardDismissed.has(key)) continue;
+      const ok = confirm(`Suite ${inner.id} sits inside Suite ${outer.id} — make it a sub-room of ${outer.id}?\n\nOK — set parentId=${outer.id} so the floor area isn't double-counted.\nCancel — keep as-is (won't ask again this session).`);
+      if (ok) {
+        pushHistory();
+        inner.parentId = outer.id;
+        saveState();
+        renderAll();
+        if (typeof toast === 'function') toast(`Suite ${inner.id} is now a sub-room of ${outer.id}`, 'success');
+      } else {
+        window._nestedGuardDismissed.add(key);
+      }
+    }
+  } catch (err) { console.warn('[nested-rentable-guard]', err); }
+}
+
 
 // =========================================================================
 // Floor stats overlay — Total / Useful / Other ft²
@@ -75742,7 +75916,9 @@ function _autoUpdateUnitSqft(u, f) {
   if (+u.sqft === +sqft) return false;
   u.sqft = sqft;
   // Re-derive $/ft²/yr if we have rent + sqft now
-  if (sqft > 0 && (+u.rent > 0 || +u.contractRent > 0)) {
+  // Группа (мульти-сьютовая лиза): у головы contractRent = сумма ГРУППЫ,
+  // делить её на собственную площадь нельзя (ревью 2026-08-16).
+  if (!u.groupId && sqft > 0 && (+u.rent > 0 || +u.contractRent > 0)) {
     const monthly = +u.contractRent || +u.rent || 0;
     u.rate = +(monthly * 12 / sqft).toFixed(2);
   }
@@ -84294,12 +84470,17 @@ Continue?`;
       if (!fn) throw new Error('Stripe callable not available');
       const res = await fn({ invoiceId: it.id });
       results.ok.push({ ...it, action: res?.data?.action || res?.action || 'voided' });
+      // Guard 2026-08-16: штампы юнитов не должны указывать на void'нутый
+      // инвойс (см. _cleanupInvoiceStamps). saveState — один раз после цикла.
+      try { if (typeof _cleanupInvoiceStamps === 'function') _cleanupInvoiceStamps(it.id, res?.data?.action || res?.action || 'voided'); } catch {}
     } catch (e) {
       console.error('[uir] void failed for', it.id, e);
       results.err.push({ ...it, error: e?.message || String(e) });
     }
   }
 
+  // Guard 2026-08-16: чистка штампов выше меняла state — сохраняем один раз.
+  try { if (results.ok.length) saveState(); } catch {}
   // 2. Local hide — single saveState() at the end, much cheaper than per-row.
   if (hideItems.length > 0) {
     const added = _uirHideInvoiceIds(hideItems.map(it => it.id));
@@ -84688,6 +84869,15 @@ async function _invHistoryVoidViaStripe(id, number, amount, bucket) {
       : null;
     if (!fn) throw new Error('Stripe callable not available');
     await fn({ invoiceId: id });
+    // Guard 2026-08-16: чистим локальные штампы, указывающие на этот инвойс
+    // (lastInvoiceId/Ym, depositInvoice, moveInRent, неоплаченные строки
+    // payments) — иначе юнит ссылается на мёртвый Stripe-инвойс.
+    try {
+      if (typeof _cleanupInvoiceStamps === 'function') {
+        _cleanupInvoiceStamps(id, (bucket === 'draft') ? 'deleted' : 'voided');
+        saveState();
+      }
+    } catch (e) { console.warn('[invHistory:void:stamp-cleanup]', e); }
     if (typeof toast === 'function') toast(`${verb} OK — ${number}`, 'success');
     // Refresh: pull latest from Stripe + re-render unit panel
     const u = (typeof currentUnits === 'function')
@@ -93203,6 +93393,12 @@ async function saveQuickAddTenant() {
   }
   // Guard past-dated lease starts (same rule as the Lease tab).
   if (leaseStart < _todayIso()) return showErr('Lease start cannot be in the past.');
+  // Гард «email вместо имени» (аудит 2026-08-16): адрес, введённый в поле
+  // имени, уезжал в DocuSign как recipientName. Имя — в Tenant name/Company,
+  // адрес — в Email (он же получатель Stripe-инвойсов и конверта).
+  const _emailishRe = /[^\s@]+@[^\s@]+\.[^\s@]+/;
+  if (_emailishRe.test(tenant))  return showErr('Tenant name looks like an email address. Put the person\'s NAME here — the email goes in the Email field (it becomes the invoice / DocuSign recipient).');
+  if (_emailishRe.test(company)) return showErr('Company looks like an email address. Put the legal entity NAME here — the email goes in the Email field.');
   // Month-to-month leases have no fixed end date; DocuSign templates
   // usually need one. Block M2M from the quick-add path — operator can
   // still use the right-panel Lease tab for M2M setups later.
@@ -93220,6 +93416,11 @@ async function saveQuickAddTenant() {
   u.contractRent = rent;
   u.deposit = deposit;
   u.status = 'occupied';
+  // Пересчёт derived-ставки $/ft²/yr — quick-add пишет contractRent, значит
+  // обязан пересчитать (аудит 2026-08-16; формула — как в _autoUpdateUnitSqft :75747).
+  if (!u.groupId && rent > 0 && (+u.sqft || 0) > 0) {   // группа: см. ревью 2026-08-16
+    u.rate = +(rent * 12 / (+u.sqft)).toFixed(2);
+  }
   // Resolve lease end. Priority:
   //   1. operator-entered date (qatLeaseEnd)
   //   2. fall back to derived from start + term using the end-of-month
@@ -99100,6 +99301,55 @@ function _performTenantMove(source, target, opts) {
   if (source === target) {
     return { ok: false, error: 'Source and target are the same unit' };
   }
+
+  // ── Liveness-guard (аудит 2026-08-16: цепочка релокаций 325→328→338) ──
+  // source/target часто захвачены wizard'ом/addendum-editor'ом за минуты до
+  // сабмита, а buildings-listener применяет remote-доки WHOLE-OBJECT swap'ом
+  // (см. race-guard в _aeSendForSignature) — ссылка становится detached от
+  // state. Мутация detached-объекта = half-applied move: живой target
+  // заполняется, а ЖИВОЙ source остаётся occupied (tenant, autoInvoice,
+  // stripe customer), ledger-sync по identity его не находит, и saveState()
+  // персистит расщеплённое состояние. Поэтому ДО любой мутации:
+  //   1) проверяем identity-привязку обеих ссылок к state;
+  //   2) detached source пере-резолвим по suite id и принимаем ТОЛЬКО если
+  //      живой юнит держит ТОТ ЖЕ tenancy (данные там свежее; caller после
+  //      move из source ничего не читает и не пишет — подмена безопасна);
+  //   3) detached target НЕ подменяем: caller после move дописывает в СВОЮ
+  //      ссылку addendum/envelope-записи — молчаливая подмена их потеряла
+  //      бы. Отказ с понятным error; recovery = пере-открыть wizard.
+  const _liveAttached = (unit) => {
+    for (const b of (state.buildings || []))
+      for (const f of (b.floors || []))
+        if ((f.units || []).some(x => x === unit)) return true;
+    return false;
+  };
+  const _liveById = (unitId) => {
+    const hits = [];
+    for (const b of (state.buildings || []))
+      for (const f of (b.floors || []))
+        for (const x of (f.units || []))
+          if (String(x.id) === String(unitId)) hits.push(x);
+    return hits;
+  };
+  if (!_liveAttached(source)) {
+    const hits = _liveById(source.id);
+    const _sameTenancy = (x) =>
+      (x.tenant || '') === (source.tenant || '') &&
+      (x.company || '') === (source.company || '') &&
+      (x.email || '') === (source.email || '');
+    if (hits.length === 1 && _sameTenancy(hits[0])) {
+      source = hits[0];
+    } else {
+      return { ok: false, error: `Suite ${source.id} was updated from the server while the move dialog was open — no changes were made. Close the dialog and re-run the move on fresh data.` };
+    }
+  }
+  if (!_liveAttached(target)) {
+    return { ok: false, error: `Target Suite ${target.id} was updated from the server while the move dialog was open — no changes were made. Close the dialog and re-run the move on fresh data.` };
+  }
+  // Повторная identity-проверка ПОСЛЕ возможной подмены source
+  if (source === target) {
+    return { ok: false, error: 'Source and target resolve to the same unit' };
+  }
   if (!source.tenant && !source.company) {
     return { ok: false, error: 'Source has no tenant to move' };
   }
@@ -99324,6 +99574,21 @@ function _performTenantMove(source, target, opts) {
   target.leaseTerm      = source.leaseTerm      || '';
   target.note           = source.note           || '';
   target.contractRent   = moveRent;
+  // Пересчёт derived-ставки на TARGET (аудит 2026-08-16, relocation-цепочка
+  // 325→328→338): sqft у target другой, а старый target.rate — от прошлого
+  // тенанта либо от proforma. Формула та же, что в _autoUpdateUnitSqft (:75747).
+  {
+    const _tMonthly = +moveRent || +target.rent || 0;
+    const _tSq = +target.sqft || 0;
+    if (_tMonthly > 0 && _tSq > 0) target.rate = +(_tMonthly * 12 / _tSq).toFixed(2);
+  }
+  // rate ($/ft²/yr) — производное поле (идиома _autoUpdateUnitSqft):
+  // пересчитываем под sqft ИМЕННО destination-суйта, иначе target носит
+  // ставку, выведенную из чужой площади (аудит 2026-08-16: 1100×12/162).
+  if (+target.sqft > 0 && (moveRent > 0 || +target.rent > 0)) {
+    const _tMonthly = moveRent || +target.rent || 0;
+    target.rate = +(_tMonthly * 12 / +target.sqft).toFixed(2);
+  }
   target.deposit        = source.deposit        || 0;
 
   // Merge moving payments + deposit в target.payments. Если на target
@@ -99432,8 +99697,22 @@ function _performTenantMove(source, target, opts) {
   // привязана к старому suite metadata; её должен пересоздать operator
   // через UI после переезда (см. CALLER MUST handle).
   target.stripe = target.stripe || {};
+  // Stripe-штампы на destination НЕ наследуются: вычищаем стейл-остатки
+  // предыдущего тенанта (формально vacant target мог их сохранить) —
+  // lastInvoice*/moveInRent/subscription* принадлежат ЧУЖОМУ биллинг-циклу
+  // и должны быть re-derived новым циклом инвойсинга (аудит 2026-08-16).
+  delete target.stripe.lastInvoiceId;
+  delete target.stripe.lastInvoiceYm;
+  delete target.stripe.moveInRent;
+  delete target.stripe._sendingRentAt;
+  delete target.stripe._sendingDepositAt;
+  target.stripe.autoPayEnabled = false;
+  target.stripe.subscriptionId = null;
+  target.stripe.subscriptionStatus = null;
   if (source.stripe?.customerId)     target.stripe.customerId     = source.stripe.customerId;
+  else                               delete target.stripe.customerId;
   if (source.stripe?.depositInvoice) target.stripe.depositInvoice = source.stripe.depositInvoice;
+  else                               delete target.stripe.depositInvoice;
 
   // Status flip
   target.status = 'occupied';
@@ -99460,11 +99739,22 @@ function _performTenantMove(source, target, opts) {
   source.leaseTerm = '';
   source.note = '';
   source.contractRent = 0;
+  // rate — производное от contractRent||rent: после vacate пересчитываем от
+  // market rent, иначе юнит носит ставку уехавшего тенанта (stale-rate,
+  // аудит 2026-08-16).
+  source.rate = (+source.sqft > 0 && +source.rent > 0)
+    ? +((+source.rent) * 12 / +source.sqft).toFixed(2) : 0;
   source.deposit = 0;
   // Все платежи перенесены/заснапшочены — source.payments пустой
   source.payments = {};
   source.collectionStatus = '';
   delete source.stripeBillingContact;
+  // delete, а НЕ явный 'off' (ревью 2026-08-16, HIGH): крон и так пропускает
+  // всё, что не status==='occupied', так что вакантный источник счетов не
+  // получит. А залипший 'off' пережил бы ЗАСЕЛЕНИЕ следующего арендатора —
+  // ни quick-add, ни телефонная тенанси, ни saveDetail его не сбрасывают,
+  // и у per-unit 'off' высший приоритет над всеми дефолтами: автобиллинг
+  // нового жильца молча выключен, видно только по A/R через недели.
   delete source.autoInvoice;
   delete source.autoInvoiceBeforeDays;
   delete source.autoCharge;
@@ -99885,7 +100175,7 @@ function saveUnitDetail() {
   // different customer, by definition).
   const prevEmail   = String(u.email || '').toLowerCase().trim();
 
-  saveDetail();             // commits form fields to state
+  if (saveDetail() === false) return;   // commits form fields to state; false = гард отклонил сейв — остаёмся в edit-режиме, ввод оператора не теряем
   // Multi-suite lease auto-sync — if this unit is the PRIMARY of a tenant
   // group, propagate tenant/lease fields to all secondaries so they don't
   // drift out of sync. Edits on a secondary don't propagate back; they're
@@ -102829,6 +103119,29 @@ function toggleField(f) {
   } catch {}
 }
 function saveDetail() {
+  // Гард «email вместо имени» (аудит 2026-08-16, прод-находка №6): email,
+  // сохранённый в Tenant name, утёк в DocuSign-конверт как recipientName.
+  // Блокируем сейв ДО pushHistory/коммита в state и возвращаем false —
+  // saveUnitDetail по этому сигналу остаётся в edit-режиме, ввод не теряется.
+  {
+    const _emailishRe = /[^\s@]+@[^\s@]+\.[^\s@]+/;
+    const _nmT = (document.getElementById('fTenant')?.value  || '').trim();
+    const _nmC = (document.getElementById('fCompany')?.value || '').trim();
+    // Легаси-запись, где почта УЖЕ лежит в имени, не должна блокировать
+    // каждое сохранение юнита (включая не связанные с именем правки):
+    // ругаемся только на НОВЫЙ ввод, т.е. когда значение изменилось.
+    const _uSel = currentUnits().find(x => x.id === selectedIds[0]);
+    const _tChanged = !_uSel || _nmT !== String(_uSel.tenant  || '').trim();
+    const _cChanged = !_uSel || _nmC !== String(_uSel.company || '').trim();
+    const _badField = (_tChanged && _emailishRe.test(_nmT)) ? 'Tenant name'
+                    : (_cChanged && _emailishRe.test(_nmC)) ? 'Company' : null;
+    if (_badField) {
+      if (typeof toast === 'function') {
+        toast(`${_badField} looks like an email address. Put the NAME in "${_badField}" — the address goes in the Email field (that is what Stripe invoices and DocuSign envelopes use).`, 'error');
+      }
+      return false;
+    }
+  }
   const u = currentUnits().find(x => x.id === selectedIds[0]);
   if (!u) return;
   pushHistory();
@@ -103108,6 +103421,26 @@ function saveDetail() {
       }
     }
   }
+  // Пересчёт производной ставки $/ft²/yr (аудит 2026-08-16): каждый путь,
+  // который пишет contractRent/sqft, обязан пересчитывать u.rate — иначе
+  // ставка протухает (найдено 4+ юнита со stale rate). Формула та же, что в
+  // _autoUpdateUnitSqft (:75747): monthly*12/sqft, contractRent бьёт proforma.
+  // Ручную правку fRate в ЭТОМ ЖЕ сейве уважаем — её пересчётом не затираем.
+  {
+    const _rateTypedNow = get('fRate') ? ((+get('fRate').value || 0) !== _editSnap.rate) : false;
+    const _crChanged = (+u.contractRent || 0) !== _editSnap.contractRent;
+    const _sqChanged = (+u.sqft || 0) !== _editSnap.sqft;
+    if (!_rateTypedNow && !u.groupId && (_crChanged || _sqChanged)) {   // группа: см. ревью 2026-08-16
+      const _monthly = +u.contractRent || +u.rent || 0;
+      const _sq = +u.sqft || 0;
+      if (_monthly > 0 && _sq > 0) {
+        u.rate = +(_monthly * 12 / _sq).toFixed(2);
+        const _frEl = get('fRate');
+        if (_frEl) _frEl.value = String(u.rate);
+      }
+    }
+  }
+
   // Late fee policy — write an override only when the user explicitly
   // opted in. Otherwise delete any stale override so the unit falls
   // back to the global config.
@@ -115785,7 +116118,7 @@ function _loiSubmitResolutions() {
             u.sqft = newSqft;
             u.sqftAuto = false; // оператор зафиксировал значение, polygon не трогаем
             // Re-derive rate if rent set
-            if ((+u.rent > 0 || +u.contractRent > 0)) {
+            if (!u.groupId && (+u.rent > 0 || +u.contractRent > 0)) {   // группа: см. ревью 2026-08-16
               const monthly = +u.contractRent || +u.rent || 0;
               u.rate = +(monthly * 12 / newSqft).toFixed(2);
             }
@@ -128143,7 +128476,7 @@ async function _dsArchiveSignedEnvelope(envelopeId) {
     _dsArchiveInflight.delete(envelopeId);
   }
 }
-async function _dsArchiveSignedEnvelopeInner(envelopeId, { b, u, env }) {
+async function _dsArchiveSignedEnvelopeInner(envelopeId, { b, f, u, env }) {
   if (!fbSync?.enabled || !fbSync.storage) {
     console.warn('[ds] storage unavailable — signed PDF not archived yet');
     return;
@@ -128217,6 +128550,9 @@ async function _dsArchiveSignedEnvelopeInner(envelopeId, { b, u, env }) {
     if (typeof recordAuditClient === 'function') {
       recordAuditClient('docusign.envelope-archived', {
         unitId: u?.id,
+        // Гард (аудит 2026-08-16): путь юнита обязателен в unit-scoped записи.
+        buildingId: b?.id,
+        floorId: f?.id,
         note: `Signed lease envelope ${envelopeId.slice(0, 12)}… archived to Storage`,
         source: '_dsArchiveSignedEnvelope',
       });
@@ -128451,6 +128787,11 @@ async function leaseVoidEnvelope(envelopeId) {
       hit.env.voidedAt = new Date().toISOString();
       hit.env.voidedReason = reason;
       recordOutreach(hit.u, 'note', `Lease voided: ${reason} (envelope ${envelopeId.slice(0,8)}…)`);
+      // Guard 2026-08-16 (аудит: репетиции на живых юнитах): void'нутый
+      // конверт не должен оставаться «текущей лизой» юнита — иначе юнит
+      // выглядит занятым по мёртвому конверту. Чистим указатель здесь же,
+      // до saveState ниже.
+      if (hit.u.currentLeaseEnvelopeId === envelopeId) delete hit.u.currentLeaseEnvelopeId;
     }
     saveState();
     toast('⊘ Envelope voided', 'info');
@@ -128459,6 +128800,42 @@ async function leaseVoidEnvelope(envelopeId) {
     // pill drops to 0 (or hides) immediately after void, instead of
     // waiting for the 2-minute interval tick.
     try { updateTopbarLeasePill(); } catch {}
+    // Guard 2026-08-16: если после void'а юнит числится «occupied», но на нём
+    // не осталось ни одного открытого конверта, нет ни одного подписанного
+    // (completed) и нет ни одной строки платежей — это почти наверняка остаток
+    // репетиции на живом юните. Предлагаем штатный move-out (confirm; по
+    // умолчанию Cancel = оставить как есть). Fail-safe: любая неоднозначность
+    // (незнакомый статус конверта, платежи, подписанная лиза) — молча не
+    // предлагаем, ничего не блокируем.
+    try {
+      if (hit && hit.u && hit.u.status === 'occupied') {
+        const OPEN = new Set(['created', 'sent', 'delivered', 'correcting']);
+        const envs = Array.isArray(hit.u.leaseEnvelopes) ? hit.u.leaseEnvelopes.filter(Boolean) : [];
+        const allTerminal = envs.every(e => !OPEN.has(String(e.status || 'sent').toLowerCase()));
+        const anySigned = envs.some(e => String(e.status || '').toLowerCase() === 'completed');
+        const noPayments = !hit.u.payments || Object.keys(hit.u.payments).length === 0;
+        // Ревью 2026-08-16 (HIGH): «void-и-переслать» на НАСТОЯЩЕЙ новой
+        // тенанси попадал под это предложение. Два глушителя:
+        // 1) живые биллинг-штампы (депозит/move-in/last invoice) = настоящая
+        //    тенанси в процессе — молчим (у репетиции, разобранной до конца,
+        //    штампы уже сняты чисткой void'а);
+        // 2) один раз спросили на этом юните в этой сессии — больше не ноем.
+        const hasBilling = !!(hit.u.stripe && (hit.u.stripe.depositInvoice
+          || hit.u.stripe.moveInRent || hit.u.stripe.lastInvoiceId));
+        window.__rehearsalOfferSeen = window.__rehearsalOfferSeen || new Set();
+        const askedAlready = window.__rehearsalOfferSeen.has(String(hit.u.id));
+        if (allTerminal && !anySigned && noPayments && !hasBilling && !askedAlready) {
+          window.__rehearsalOfferSeen.add(String(hit.u.id));
+          const nm = hit.u.tenant || hit.u.company || '(no name)';
+          if (confirm(
+            `Suite ${hit.u.id} is still marked OCCUPIED (${nm}), but after this void it has no active lease envelope and no recorded payments.\n\n` +
+            `This looks like a test/rehearsal leftover.\n\n` +
+            `OK — run the standard move-out (history snapshot, unit → Vacant)\nCancel — keep the unit as is`)) {
+            if (typeof moveOutCurrentTenant === 'function') moveOutCurrentTenant(hit.u);
+          }
+        }
+      }
+    } catch (e) { console.warn('[ds:void:rehearsal-offer]', e); }
     if (_drawerCtx) openTenantDrawer(_drawerCtx.buildingId, _drawerCtx.floorId, _drawerCtx.unitId);
   } catch (err) {
     console.error('[ds] void failed', err);
@@ -149052,6 +149429,18 @@ function _cleanupInvoiceStamps(invoiceId, action) {
 async function stripeVoidOrDeleteInvoice({invoiceId}) {
   const fn = stripeCallable('voidOrDeleteStripeInvoice');
   const res = await fn({invoiceId});
+  // Guard 2026-08-16 (аудит: lastInvoiceId указывал на void'нутый инвойс):
+  // после успешного void/delete чистим локальные штампы юнитов, указывающие
+  // на этот инвойс (lastInvoiceId/Ym, depositInvoice, moveInRent, неоплаченные
+  // строки payments) — customerId и extraInvoices не трогаем. Идемпотентно:
+  // повторная чистка из executeBulkVoidInvoices безвредна. Чистим и при
+  // action === 'noop' (инвойс уже был void — штампы всё равно мёртвые).
+  try {
+    if (typeof _cleanupInvoiceStamps === 'function') {
+      _cleanupInvoiceStamps(invoiceId, res?.data?.action || 'voided');
+      saveState();
+    }
+  } catch (e) { console.warn('[void-stamp-cleanup]', e); }
   // Audit: invoice voided/deleted (Tony Phase 2). We don't have full
   // building/floor/unit context here (operator could be voiding from
   // many UI surfaces), so we walk _invoicesCache to recover unitId.
@@ -153722,6 +154111,9 @@ async function _mpmRenderBankSuggestions(u, ym) {
     if (typeof recordAuditClient === 'function') {
       try {
         recordAuditClient('bank.txn.dup_suspected', {
+          // Гард (аудит 2026-08-16): путь юнита обязателен в unit-scoped записи.
+          buildingId: (_mpmCtx && _mpmCtx.unitId === u.id) ? _mpmCtx.buildingId : undefined,
+          floorId:    (_mpmCtx && _mpmCtx.unitId === u.id) ? _mpmCtx.floorId    : undefined,
           unitId: u.id,
           ym,
           dupCount: _bankDedupResult.dupCount,
@@ -154508,6 +154900,9 @@ async function _refreshTxnBrowser() {
           recordAuditClient('bank.txn.dup_suspected', {
             source: 'txn-browser',
             unitId: _mpmCtx?.unitId || null,
+            // Гард (аудит 2026-08-16): путь юнита обязателен в unit-scoped записи.
+            buildingId: _mpmCtx?.buildingId || null,
+            floorId: _mpmCtx?.floorId || null,
             ym: _mpmCtx?.ym || null,
             dupCount: _dedup.dupCount,
             groupCount: _dedup.dups.size,
@@ -157291,6 +157686,23 @@ async function submitManualPayment() {
               cacheRow.amountRemaining = 0;
             }
           }
+        }
+        // Guard 2026-08-16: оператор выбрал void — штамп lastInvoiceId юнита
+        // не должен указывать на void'нутый инвойс. Точечный клир, а не
+        // _cleanupInvoiceStamps: свежая строка u.payments[ym] записана выше и
+        // могла быть не-'paid' (partial) — её не трогаем; customerId и
+        // extraInvoices тоже остаются. saveState({priority:'money'}) ниже
+        // сохранит это изменение.
+        if (_syncAction === 'void' && u.stripe && u.stripe.lastInvoiceId === _promptInvId) {
+          delete u.stripe.lastInvoiceId;
+          delete u.stripe.lastInvoiceYm;
+        }
+        // Ревью 2026-08-16: те же мёртвые указатели живут и в moveInRent /
+        // depositInvoice — без этого Move-in карточка продолжает рисовать
+        // void'нутый инвойс как отправленный. Платёжную строку не трогаем.
+        if (_syncAction === 'void' && u.stripe) {
+          if (u.stripe.moveInRent && u.stripe.moveInRent.invoiceId === _promptInvId) delete u.stripe.moveInRent;
+          if (u.stripe.depositInvoice && u.stripe.depositInvoice.invoiceId === _promptInvId) delete u.stripe.depositInvoice;
         }
         // Re-push payment record with the new sync stamps.
         if (typeof fbPushPaymentChange === 'function') {

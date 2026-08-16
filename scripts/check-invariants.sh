@@ -270,6 +270,21 @@ else
 fi
 
 echo
+echo "Audit 2026-08-16 — nested-rentable guard (sub-room без parentId):"
+# 440/441 нарисованы внутри 442 без parentId → rentable-площадь этажа
+# задвоена. Гейт: commit геометрии прогоняет _nestedRentableGuardCheck
+# (confirm → parentId), byte-identical прямоугольник всегда даёт warn.
+if grep -qE "^function _nestedRentableGuardCheck\(u, f\)" "$HTML" \
+   && grep -qE "_nestedRentableGuardCheck\(newUnit, f\)" "$HTML" \
+   && grep -qE "identical geometry" "$HTML"; then
+  echo "  ✓ nested-rentable guard present and wired into geometry commits"
+else
+  echo "  ✗ nested-rentable guard missing/unwired — офис внутри офиса снова задвоит площадь этажа (audit 2026-08-16 #5)"
+  FAIL=1
+fi
+
+
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."
