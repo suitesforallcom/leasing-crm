@@ -696,8 +696,21 @@ function _hasOpenInvoice(unit, ym, snap) {
     const b = r.bucket || r.status;
     if (b === 'open' || b === 'sent' || b === 'past_due') return true;
   }
+  // Штамп на юните — фолбэк на случай, когда список счетов не загружен.
+  // Но он НЕ знает, что счёт потом аннулировали: на проде у сьютов 418, 328 и
+  // 338 висит id аннулированного счёта, и месяц читался как «счёт выставлен» —
+  // карта красила синим, а повторно выставить счёт карточка не предлагала.
+  // Если список есть и говорит void/uncollectible/paid — штамп не в счёт.
   const st = unit.stripe || {};
-  if (st.lastInvoiceYm === ym && st.lastInvoiceId) return true;
-  if (st.moveInRent && st.moveInRent.ym === ym && st.moveInRent.invoiceId) return true;
+  const stampOpen = (id) => {
+    if (!id) return false;
+    const row = _lookupInvoiceRow(id, snap);
+    if (!row) return true;                       // списка нет — верим штампу
+    const b = String(row.bucket || row.status || '').toLowerCase();
+    return !(b === 'void' || b === 'voided' || b === 'uncollectible' || b === 'paid'
+             || b === 'deleted' || b === 'draft');
+  };
+  if (st.lastInvoiceYm === ym && stampOpen(st.lastInvoiceId)) return true;
+  if (st.moveInRent && st.moveInRent.ym === ym && stampOpen(st.moveInRent.invoiceId)) return true;
   return false;
 }

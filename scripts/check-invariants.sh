@@ -256,6 +256,20 @@ else
 fi
 
 echo
+echo "Audit 2026-08-16 — ds-reconcile must not guess the unit:"
+# Номер сьюта уникален только внутри здания (208 из 815 повторяются). Резолв
+# по голому id и по почте разложил подписанные договоры по чужим зданиям:
+# конверты Pinnellas Park 201/304/344 оказались на Bay Vista с теми же номерами.
+if grep -qE "unitIdCount\.get\(r\.unitId\) === 1" "$HTML" \
+   && ! grep -qE "ctx = allUnits\.find\(x => \(x\.u\.email" "$HTML" \
+   && grep -qE "if \(!uLive\.currentLeaseEnvelopeId\) uLive\.currentLeaseEnvelopeId" "$HTML"; then
+  echo "  ✓ ds-reconcile: suite-number fallback gated on uniqueness, email fallback gone, pointer not overwritten"
+else
+  echo "  ✗ ds-reconcile guesses the unit again (bare suite-number or email fallback, or overwrites currentLeaseEnvelopeId) — signed leases land on foreign suites"
+  FAIL=1
+fi
+
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."

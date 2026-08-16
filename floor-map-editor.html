@@ -109293,7 +109293,10 @@ async function _dsReconcileEnvelopes() {
     .flatMap(f => (f.units || []).map(u => ({ u, bId: b.id, fId: f.id }))));
   const unitById = new Map(allUnits.map(x => [x.u.id, x]));
   const unitByPath = new Map(allUnits.map(x => [`${x.bId}|${x.fId}|${x.u.id}`, x]));
-  let backfilled = 0;
+  // Сколько раз номер сьюта встречается во всём портфеле: 208 из 815 повторяются.
+  const unitIdCount = new Map();
+  for (const x of allUnits) unitIdCount.set(x.u.id, (unitIdCount.get(x.u.id) || 0) + 1);
+  let backfilled = 0, skippedAmbiguous = 0;
   const promises = [];
 
   snap.forEach(d => {
@@ -109308,11 +109311,24 @@ async function _dsReconcileEnvelopes() {
     let ctx = (r.unitId && r.buildingId && r.floorId)
       ? unitByPath.get(`${r.buildingId}|${r.floorId}|${r.unitId}`)
       : null;
-    if (!ctx && r.unitId) ctx = unitById.get(r.unitId);
-    if (!ctx && r.recipientEmail) {
-      ctx = allUnits.find(x => (x.u.email || '').toLowerCase() === r.recipientEmail.toLowerCase());
+    // Фолбэк по номеру сьюта РАЗРЕШЁН только если номер уникален во всём
+    // портфеле. Раньше unitById была Map по голому id через все здания — при
+    // дубле она хранит ПОСЛЕДНЕЕ вхождение, и конверт уезжал в чужое здание.
+    // Аудит 2026-08-16 нашёл 7 таких: 201, 304, 344 существуют и в Pinnellas
+    // Park, и в Bay Vista; подписанные договоры оказались не на тех сьютах.
+    if (!ctx && r.unitId && (unitIdCount.get(r.unitId) === 1)) ctx = unitById.get(r.unitId);
+    // Фолбэк по почте убран совсем: он ставил конверт на ЛЮБОЙ юнит с этой
+    // почтой — другое здание, другой сьют, другой договор. Пропустить строку
+    // безопаснее, чем привязать договор не туда.
+    if (!ctx) {
+      if (r.unitId || r.recipientEmail) {
+        console.warn('[ds-reconcile] пропущено: не удалось однозначно определить юнит',
+          { envelopeId: r.envelopeId, unitId: r.unitId || null, buildingId: r.buildingId || null,
+            floorId: r.floorId || null, ambiguous: r.unitId ? (unitIdCount.get(r.unitId) || 0) : 0 });
+        skippedAmbiguous++;
+      }
+      return;
     }
-    if (!ctx) return;
     const { u } = ctx;
     const envs = Array.isArray(u.leaseEnvelopes) ? u.leaseEnvelopes : [];
     if (envs.some(e => e && (e.envelopeId === r.envelopeId || e.id === r.envelopeId))) return;
@@ -109351,12 +109367,20 @@ async function _dsReconcileEnvelopes() {
           subject: env?.emailSubject || null,
           sentBy: r.callerEmail || null,
           mode: 'template',
-          leaseStart: uLive.signed || uLive.leaseStart || null,
-          leaseEnd: uLive.until || null,
-          rent: +uLive.contractRent || +uLive.rent || 0,
+          // Раньше сюда подставлялись срок и рента ЮНИТА-ХОЗЯИНА — и это
+          // выглядело как условия договора. На проде один и тот же конверт
+          // лежит на разных сьютах с РАЗНОЙ рентой (1500 и 350), потому что
+          // каждая копия взяла цифру у своего юнита. Чего нет в audit-строке —
+          // оставляем пустым: пустое поле честнее выдуманного.
+          leaseStart: r.leaseStart || null,
+          leaseEnd: r.leaseEnd || null,
+          rent: (r.rent != null && r.rent !== '') ? +r.rent : null,
           backfilled: { at: new Date().toISOString(), source: 'audit_log_reconcile' },
         });
-        uLive.currentLeaseEnvelopeId = r.envelopeId;
+        // Указатель «текущий договор» НЕ перетираем: восстановленная старая
+        // строка затирала актуальный договор. Сьют 325 (Chad Butler) так стал
+        // показывать договор Mackie Hicks, съехавшей отсюда сутками раньше.
+        if (!uLive.currentLeaseEnvelopeId) uLive.currentLeaseEnvelopeId = r.envelopeId;
         uLive.outreach = uLive.outreach || [];
         uLive.outreach.push({
           type: 'lease',
@@ -109381,6 +109405,15 @@ async function _dsReconcileEnvelopes() {
       toast(`✓ Recovered ${backfilled} sent lease${backfilled===1?'':'s'} from server audit log`, 'success');
     }
     console.log(`[ds-reconcile] backfilled ${backfilled} envelope(s) from audit log`);
+  }
+  // Пропущенное должно быть ВИДНО: молчаливый пропуск читается как «всё
+  // восстановлено». Раньше эти строки не пропускались, а угадывались — и
+  // договор уезжал на чужой сьют.
+  if (skippedAmbiguous > 0) {
+    console.warn(`[ds-reconcile] пропущено ${skippedAmbiguous} строк(и): юнит не определяется однозначно`);
+    if (typeof toast === 'function') {
+      toast(`${skippedAmbiguous} lease${skippedAmbiguous === 1 ? '' : 's'} in the audit log could not be matched to a suite — see the console`, 'error');
+    }
   }
 }
 window._dsReconcileEnvelopes = _dsReconcileEnvelopes;

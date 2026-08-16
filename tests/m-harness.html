@@ -1040,6 +1040,46 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   } else say('ok', 'manual-payment date is human-readable, never ISO');
 }
 
+/* ---- 7h. АННУЛИРОВАННЫЙ счёт не должен читаться как «выставлен».
+       Штамп stripe.lastInvoiceId остаётся на юните и после void'а. На проде
+       это живёт на сьютах 418, 328 и 338: карта красила синим «счёт выставлен»,
+       а карточка не предлагала выставить счёт заново. ---- */
+{
+  const YM = '2026-08';
+  const mk = (bucket) => {
+    const u = { id: '418', type: 'office', status: 'occupied', tenant: 'Mark', email: 'm@x.co',
+      rent: 1700, leaseStart: '2025-01-01', payments: {},
+      stripe: { customerId: 'cus_9', lastInvoiceId: 'in_dead', lastInvoiceYm: YM } };
+    const b = { id: 'b1', name: 'B', floors: [{ id: 'f1', name: '1', units: [u] }] };
+    return { u, snap: { buildings: [b], units: [{ unit: u, building: b, floor: b.floors[0] }],
+      unitsIndex: { 'b1|418': { unit: u, building: b, floor: b.floors[0] } },
+      invoices: bucket ? [{ id: 'in_dead', number: 'R-9', status: bucket, bucket,
+        total: 1700, amountPaid: 0, buildingId: 'b1', customerId: 'cus_9',
+        metadata: { unitId: '418', purpose: 'rent', ym: YM } }] : [],
+      invoicesAvailable: !!bucket, invoiceBuckets: {},
+      settings: { lateFee: { graceDays: 20 } }, now: new Date('2026-08-16T12:00:00Z').getTime() } };
+  };
+
+  const dead = mk('void');
+  const st = money.mapStatus(dead.u, YM, dead.snap);
+  if (st && st.status === 'invoiced') {
+    say('bad', 'a VOIDED invoice still reads as "invoice sent" — the map lies and re-billing is suppressed'); bad++;
+  } else say('ok', 'a voided invoice no longer reads as "invoice sent"');
+
+  // Живой счёт обязан по-прежнему читаться как выставленный.
+  const live = mk('open');
+  const st2 = money.mapStatus(live.u, YM, live.snap);
+  if (!st2 || st2.status !== 'invoiced') { say('bad', 'an OPEN invoice stopped reading as "invoice sent"'); bad++; }
+  else say('ok', 'an open invoice still reads as "invoice sent"');
+
+  // Списка счетов нет (роль без Stripe, обрыв) — штампу по-прежнему верим.
+  const cold = mk(null);
+  const st3 = money.mapStatus(cold.u, YM, cold.snap);
+  if (!st3 || st3.status !== 'invoiced') {
+    say('bad', 'with no invoice list loaded the stamp stopped being trusted — cold cache regressed'); bad++;
+  } else say('ok', 'with no invoice list the stamp is still trusted (cold cache intact)');
+}
+
 /* ---- 8. план на НАСТОЯЩЕЙ геометрии прода (tests/fixtures/plan-geometry.json)
        Синтетический этаж из одного квадрата ничего не доказывает: беда с
        подписями вылезает только на реальных узких и Г-образных формах. ---- */
