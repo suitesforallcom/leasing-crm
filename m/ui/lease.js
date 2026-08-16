@@ -580,6 +580,11 @@ function dlBlock(L) {
     + (dl.err ? '<div class="hintline" style="color:var(--bad)">' + esc(dl.err) + '</div>' : '') + '</div>';
 }
 function bindDlSlots(ctx, L) {
+  // ПЕРЕРИСОВКА ШТОРКИ = openSheet(тот же лист): он сохраняет payload и скролл.
+  // ctx.refresh — это обновление ДАННЫХ из базы, шторку он не трогает: из-за
+  // этой ошибки оператор снял фото и не увидел ни «Processing…», ни превью
+  // (прод-жалоба 2026-08-16). Ошибка теперь ещё и тостом — немых сбоев нет.
+  const repaint = () => { try { if (ctx.S && ctx.S.sheet) ctx.openSheet(ctx.S.sheet); } catch (e) {} };
   setTimeout(() => {
     for (const inp of document.querySelectorAll('input[data-dl]')) {
       if (inp.dataset.bound) continue;
@@ -590,7 +595,7 @@ function bindDlSlots(ctx, L) {
         if (!file) return;
         const dl = L.dl || (L.dl = {});
         dl[side + 'Busy'] = true; dl.err = null;
-        if (typeof ctx.refresh === 'function') ctx.refresh();
+        repaint();
         try {
           const p = await ctx.idphoto.processIdPhoto(file);
           const up = await ctx.uploadDoc(p.blob, 'dl-' + side + '.jpg');
@@ -600,9 +605,10 @@ function bindDlSlots(ctx, L) {
         } catch (e) {
           console.error('[m] dl photo failed:', e);
           dl.err = 'Could not process the photo — try again with the card on a dark table.';
+          try { ctx.toast(dl.err); } catch (e2) {}
         }
         dl[side + 'Busy'] = false;
-        if (typeof ctx.refresh === 'function') ctx.refresh();
+        repaint();
       });
     }
   }, 0);

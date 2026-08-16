@@ -95,7 +95,21 @@ function stretchContrast(ctx2d, w, h) {
     ~150–250 КБ). EXIF-поворот отдаёт createImageBitmap. */
 export async function processIdPhoto(file, target) {
   const T = target || 1280;
-  const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  // Каскад декодеров: Safari разных версий по-разному поддерживает options у
+  // createImageBitmap; <img> — последний рубеж (iOS ≥13.4 сам применяет EXIF).
+  let bmp = null;
+  try { bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch (e) { /* дальше */ }
+  if (!bmp) { try { bmp = await createImageBitmap(file); } catch (e) { /* дальше */ } }
+  if (!bmp) {
+    const u = URL.createObjectURL(file);
+    try {
+      const img = new Image();
+      img.src = u;
+      await img.decode();
+      bmp = img;                                     // drawImage принимает и <img>
+      bmp.width = img.naturalWidth; bmp.height = img.naturalHeight;
+    } finally { setTimeout(() => URL.revokeObjectURL(u), 5000); }
+  }
   let W = bmp.width, H = bmp.height, rot = false;
   // Права — альбомные; портретный кадр поворачиваем на 90°.
   if (H > W * 1.15) { rot = true; const t = W; W = H; H = t; }

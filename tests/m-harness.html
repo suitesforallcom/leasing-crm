@@ -1440,6 +1440,63 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   } catch (e) { say('bad', 'проверка фото прав упала: ' + e.message); bad++; }
 }
 
+/* ---- 7t. Слот фото прав: ПОЛНЫЙ прогон (снимок → busy → превью) ----
+       Ловит именно сегодняшний прод-баг: после снимка UI не менялся
+       (repaint шёл через ctx.refresh — обновление данных, не шторки). ---- */
+{
+  try {
+    // синтетическое «фото прав» как настоящий File
+    const pc = document.createElement('canvas'); pc.width = 720; pc.height = 540;
+    const pg = pc.getContext('2d');
+    pg.fillStyle = '#23262B'; pg.fillRect(0, 0, 720, 540);
+    pg.fillStyle = '#E9E5DC'; pg.fillRect(140, 120, 440, 278);
+    pg.fillStyle = '#57616E';
+    for (let i = 0; i < 5; i++) pg.fillRect(168, 156 + i * 44, 330, 16);
+    const blob = await new Promise(r => pc.toBlob(r, 'image/jpeg', 0.9));
+    const file = new File([blob], 'dl.jpg', { type: 'image/jpeg' });
+
+    // мастер на шаге «кто подписывает», свободный юнит
+    S.lease = null; S.sheet = 'lease'; S.sheetPayload = null; S.sheetArg = null; S.payload = null;
+    const sb = document.getElementById('sheetBody');
+    const paints = [];
+    const idp7 = await import('../m/lib/idphoto.js?v=' + Date.now());
+    const ctxDl = () => Object.assign(ctx(), {
+      idphoto: idp7,                                 // без него обработчик падал синхронно и busy не успевал в замер
+      // шпион перерисовки: как настоящий openSheet — рендер того же листа
+      openSheet: (name) => { paints.push(name); sb.innerHTML = lease.render(ctxDl()); },
+      uploadDoc: async (b) => ({ url: 'https://firebasestorage.googleapis.com/v0/b/x/o/t.jpg',
+        storagePath: 'workspaces/default/tenantDocs/t.jpg', fileName: 't.jpg',
+        mime: 'image/jpeg', size: b.size, addedAt: 1, addedBy: 'op@x.co' }),
+      toast: () => {},
+    });
+    lease.render(ctxDl());
+    const Ld = S.lease; Ld.step = 2; Ld.who = 'new';
+    Ld.unitId = '302'; Ld.buildingId = 'b1'; Ld.floorId = 'f1';
+    sb.innerHTML = lease.render(ctxDl());
+    await new Promise(r => setTimeout(r, 60));                 // биндеры
+    const inp = sb.querySelector('input[data-dl="front"]');
+    if (!inp) { say('bad', 'слот front не отрисован'); bad++; }
+    else {
+      const dt = new DataTransfer(); dt.items.add(file);
+      inp.files = dt.files;
+      inp.dispatchEvent(new Event('change', { bubbles: true }));
+      // busy должен отрисоваться СРАЗУ (первый repaint синхронный)
+      const busySeen = /Processing the photo/.test(sb.innerHTML);
+      // ждём обработку+«загрузку»
+      for (let i = 0; i < 100 && !(Ld.dl && Ld.dl.front); i++) await new Promise(r => setTimeout(r, 50));
+      const d = Ld.dl && Ld.dl.front;
+      const doneUi = /Front side ✓|Auto-cropped|full frame/.test(sb.innerHTML);
+      if (!busySeen) { say('bad', 'после снимка не показался «Processing…» — repaint снова сломан'); bad++; }
+      else if (!d || !d.url) { say('bad', 'фото не дошло до загрузки: ' + JSON.stringify((Ld.dl || {}).err || null)); bad++; }
+      else if (!doneUi) { say('bad', 'после обработки превью не отрисовалось'); bad++; }
+      else say('ok', 'слот прав: снимок → Processing → превью → ссылка в черновике');
+      // и payload отправки понесёт фото
+      if (d && d.storagePath !== 'workspaces/default/tenantDocs/t.jpg') { say('bad', 'storagePath потерялся'); bad++; }
+    }
+    S.lease = null; S.sheet = null; sb.innerHTML = '';
+  } catch (e) { say('bad', 'полный прогон слота упал: ' + e.message); bad++; }
+}
+
 /* ---- 8. план на НАСТОЯЩЕЙ геометрии прода (tests/fixtures/plan-geometry.json)
        Синтетический этаж из одного квадрата ничего не доказывает: беда с
        подписями вылезает только на реальных узких и Г-образных формах. ---- */
