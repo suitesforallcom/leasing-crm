@@ -1208,6 +1208,37 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   else say('ok', 'в виде type денежной легенды нет');
 }
 
+/* ---- 7m. Нижний бар: пятая кнопка — выбор здания (код текущего) ----
+       Просьба оператора: «вынеси в нижнее меню выбора здания, на телефоне».
+       renderTabs живёт в оболочке — извлекаем из файла и гоняем со стабами. */
+{
+  try {
+    const src = await (await fetch('../m/app.js?v=' + Date.now(), { cache: 'no-store' })).text();
+    const m = src.match(/function renderTabs\(\)\{[\s\S]*?\n\}/);
+    if (!m) { say('bad', 'renderTabs не найден в m/app.js'); bad++; }
+    else {
+      const el = { innerHTML: '' };
+      const fn = new Function('tabbarEl', 'S', 'curBld', 'codeOf', 'scopeName', 'esc', 'I',
+        m[0] + '\nrenderTabs();');
+      fn(el, { tab: 'home', sheet: null, scope: 'b1' },
+        () => ({ id: 'b1', name: 'Pinnellas Park', code: 'PIN' }),
+        (b) => (b && b.code) || '?', () => 'Pinnellas Park',
+        (x) => String(x), { home: '', money: '', plan: '', grid: '', bld: '' });
+      const btns = (el.innerHTML.match(/<button/g) || []).length;
+      if (btns !== 5) { say('bad', `таб-бар: ${btns} кнопок, ожидалось 5 (с выбором здания)`); bad++; }
+      else if (!/data-act="switcher"/.test(el.innerHTML)) { say('bad', 'в таб-баре нет кнопки выбора здания'); bad++; }
+      else if (!/>PIN</.test(el.innerHTML)) { say('bad', 'кнопка здания не показывает код текущего здания'); bad++; }
+      else say('ok', 'таб-бар: 5 кнопок, выбор здания с кодом текущего (PIN)');
+      // режим «все здания»
+      const el2 = { innerHTML: '' };
+      fn(el2, { tab: 'home', sheet: null, scope: 'all' }, () => null, () => '?', () => 'All buildings',
+        (x) => String(x), { home: '', money: '', plan: '', grid: '', bld: '' });
+      if (!/>All</.test(el2.innerHTML)) { say('bad', 'кнопка здания в режиме «все» не говорит All'); bad++; }
+      else say('ok', 'кнопка здания в режиме «все здания» подписана All');
+    }
+  } catch (e) { say('bad', 'проверка таб-бара упала: ' + e.message); bad++; }
+}
+
 /* ---- 8. план на НАСТОЯЩЕЙ геометрии прода (tests/fixtures/plan-geometry.json)
        Синтетический этаж из одного квадрата ничего не доказывает: беда с
        подписями вылезает только на реальных узких и Г-образных формах. ---- */

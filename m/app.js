@@ -27,6 +27,7 @@ const I = {
   money:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="2" x2="12" y2="22"/><path d="M17 6H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>',
   plan:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h7V3"/><path d="M10 9v12"/><path d="M10 15h11"/></svg>',
   alert:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 3 2 20h20L12 3z"/><line x1="12" y1="9" x2="12" y2="14"/><line x1="12" y1="17" x2="12" y2="17"/></svg>',
+  bld:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="1.5"/><line x1="4" y1="21" x2="20" y2="21"/><rect x="8" y="7" width="3" height="3"/><rect x="13" y="7" width="3" height="3"/><rect x="8" y="12" width="3" height="3"/><rect x="13" y="12" width="3" height="3"/><rect x="10" y="17" width="4" height="4"/></svg>',
   grid:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
   check:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
   caret:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>',
@@ -348,9 +349,17 @@ function wireInputs(){
 function renderTabs(){
   const tabs = [['home', 'Home', I.home], ['payments', 'Payments', I.money],
     ['plan', 'Plan', I.plan], ['more', 'More', I.grid]];
+  // Пятая кнопка — выбор здания (просьба оператора 2026-08-16: «вынеси в
+  // нижнее меню»). Подпись — код ТЕКУЩЕГО здания: видно, где находишься,
+  // не открывая ничего. Тап открывает шит выбора (builtin 'switcher').
+  const b = (S.scope !== 'all') ? curBld() : null;
+  const bLabel = S.scope === 'all' ? 'All' : (b ? codeOf(b) : '…');
   tabbarEl.innerHTML = tabs.map(t =>
     '<button class="tab" type="button" data-act="tab" data-k="' + t[0] + '" aria-selected="' + (S.tab === t[0]) + '">'
-    + t[2] + '<span>' + t[1] + '</span></button>').join('');
+    + t[2] + '<span>' + t[1] + '</span></button>').join('')
+    + '<button class="tab" type="button" data-act="switcher" aria-selected="' + (S.sheet === 'switcher') + '"'
+    + ' aria-label="Switch building — now in ' + esc(scopeName()) + '">'
+    + I.bld + '<span>' + esc(bLabel) + '</span></button>';
 }
 /* Постоянной панели переключения зданий больше нет: оператор работает в одном
    здании и меняет его редко, а панель занимала полосу над таб-баром на каждом
