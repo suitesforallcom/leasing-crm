@@ -84,7 +84,10 @@ function findUnit(snap, buildingId, unitId) {
   return null;
 }
 const isOccupied = (u) => !!u && (u.status === 'occupied' || !!(u.tenant || u.company));
-const suiteLabel = (u) => 'Suite ' + (u ? u.id : '—');
+// Зеркало money.isAptType (локальная копия — как esc): suiteLabel попадает в
+// описание Stripe-счёта (defaultMemo) — его читает арендатор, квартире пишем «Apt».
+const isAptType = (t) => String(t || '').slice(0, 4) === 'apt_';
+const suiteLabel = (u) => ((u && isAptType(u.type)) ? 'Apt ' : 'Suite ') + (u ? u.id : '—');
 // Member мульти-сьют лизы держит пустые денежные поля: биллинг идёт на head.
 function headOf(ctx, hit) {
   const u = hit && hit.unit;

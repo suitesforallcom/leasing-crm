@@ -182,7 +182,10 @@ function dataIssues(){
       const rectSeen = new Map();
       for (const u of ((f && f.units) || [])){
         if (!u || u.deletedAt || u.archivedAt || u.rentable === false) continue;
-        if (u.type && u.type !== 'office') continue;
+        // Жилые apt_* — сдаваемые: детекторы смотрят и на квартиры. Гвард на
+        // случай старого кэшированного money.js без isAptType: тогда ведём себя
+        // ровно как раньше (fail-safe — квартиры просто не проверяются).
+        if (u.type && u.type !== 'office' && !(typeof money.isAptType === 'function' && money.isAptType(u.type))) continue;
         // Финансовые тени пропускаем — как это делает денежная модель. У членов
         // мульти-сьютовой лизы своей почты нет по устройству (она на head'е), и
         // без этого фильтра карточка ругалась бы на 8 исправных сьютов из 9.

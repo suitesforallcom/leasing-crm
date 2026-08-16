@@ -46,7 +46,10 @@ function todayYm() {
    поэтому показывал и считал удалённые (в проде их 2, напр. сьют 111).
    Проверяем ОБА поля: archivedAt оставляем на случай старых записей. */
 const isArchived = (u) => !!(u && (u.deletedAt || u.archivedAt));
-const isRentable = (u) => !!u && !isArchived(u) && u.rentable !== false && (!u.type || u.type === 'office');
+/* Зеркало money.isAptType — локальная копия, как esc/todayYm: у модульных
+   констант нет ctx. Жилые apt_* сдаются и красятся статусом, как офис. */
+const isAptType = (t) => String(t || '').slice(0, 4) === 'apt_';
+const isRentable = (u) => !!u && !isArchived(u) && u.rentable !== false && (!u.type || u.type === 'office' || isAptType(u.type));
 
 /* Словарь типов 1:1 с десктопом (TYPE_LABELS, MONO:27027). Там все общие зоны
    залиты ОДНИМ серым (COMMON_GREY #EBE8E2), а различаются подписью внутри
@@ -226,7 +229,7 @@ function planSvg(ctx, b, f, ym, zoom) {
       + (rentable
         ? ' data-act="unit" data-b="' + esc(b.id) + '" data-floor="' + esc(f.id || '') + '" data-id="' + esc(u.id) + '"'
           + ' style="cursor:pointer" role="button" tabindex="0"'
-          + ' aria-label="' + esc('Suite ' + u.id + ' — ' + ariaWord(st, m.overdue)) + '"'
+          + ' aria-label="' + esc((isAptType(u.type) ? 'Apt ' : 'Suite ') + u.id + ' — ' + ariaWord(st, m.overdue)) + '"'
         : ' aria-hidden="true"');
     body += s.kind === 'rect'
       ? '<rect x="' + s.x + '" y="' + s.y + '" width="' + s.w + '" height="' + s.h + '" rx="' + (vw / 900) + '"' + attrs + '/>'

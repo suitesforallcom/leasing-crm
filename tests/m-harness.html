@@ -102,6 +102,13 @@ const snap = {
         // обязана появиться в увеличенном. Так проверяется, что зум реально
         // меняет порог, а не просто растягивает картинку.
         u('449', { tenant: '', status: 'vacant', tenantContact: '', email: '', tel: '', rent: 400, x: 214, y: 110, w: 26, h: 18 }),
+
+        // Жилой юнит (apt_2_1, таксономия 2026-08): квартира обязана считаться
+        // в деньгах, рисоваться на плане с номером и статусной заливкой и
+        // зваться «Apt», а не «Suite». Занята и без счёта → overdue (заливка
+        // статуса, не серая common). Проверки — секция 10.
+        u('450', { type: 'apt_2_1', tenant: 'Rita Flores', tenantContact: 'Rita',
+          email: 'rita@flores.test', rent: 1900, x: 250, y: 110, w: 120, h: 90 }),
       ] },
     ] },
     { id: 'b2', name: 'Second Building', address: '1 Main St', code: 'SEC', floors: [{ id: 'f1', name: '1', units: [u('100')] }] },
@@ -621,7 +628,7 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   let expect = 0;
   for (const fl of snap.buildings[0].floors) for (const un of fl.units) {
     if (!un || un.deletedAt || un.archivedAt || un.rentable === false) continue;
-    if (un.type && un.type !== 'office') continue;
+    if (un.type && un.type !== 'office' && !money.isAptType(un.type)) continue;
     if (money.isFinanceShadow(un, snap)) continue;
     expect++;
   }
@@ -1193,7 +1200,7 @@ try {
       return { cx: bb.x + bb.width / 2, cy: bb.y + bb.height / 2, w: bb.width, h: bb.height };
     });
     const rentable = (f.units || []).filter(u => u && !u.deletedAt && !u.archivedAt
-      && u.rentable !== false && (!u.type || u.type === 'office'));
+      && u.rentable !== false && (!u.type || u.type === 'office' || money.isAptType(u.type)));
     const texts = [...el.querySelectorAll('text')];
     const shown = new Set(texts.map(t => t.textContent.trim()));
     const miss = rentable.map(u => String(u.id)).filter(id => !shown.has(id));
@@ -1244,6 +1251,13 @@ try {
   const sBody = document.getElementById('sheetBody');
   const prev = { w: stage.style.width, pos: stage.style.position, left: stage.style.left };
   stage.style.cssText = 'position:fixed;left:0;top:0;width:390px;visibility:hidden';
+  // .app в реальном приложении — position:fixed; inset:0 (от ВЬЮПОРТА, не от
+  // сцены). Замер внутри сцены поэтому шёл по случайной геометрии: то по
+  // ширине окна, то по схлопнутому нулю (ложный «input 4px»). На время замера
+  // прижимаем .app к сцене — все экраны меряются на честных 390px телефона.
+  const tapFix = document.createElement('style');
+  tapFix.textContent = '#stage .app{position:static !important;inset:auto !important;height:auto !important;overflow:visible !important;width:390px !important;}';
+  document.head.appendChild(tapFix);
 
   const tiny = [];
   const measure = (label) => {
@@ -1280,10 +1294,81 @@ try {
   S.sheet = null; screen.innerHTML = ''; sBody.innerHTML = '';
   document.getElementById('sheetFoot').innerHTML = '';
   stage.style.cssText = ''; stage.style.width = prev.w; stage.style.position = prev.pos; stage.style.left = prev.left;
+  tapFix.remove();
 
   if (tiny.length) { say('bad', `tap targets under 24px: ${[...new Set(tiny)].slice(0, 8).join('; ')}`); bad++; }
   else say('ok', 'every rendered tap target is at least 24x24');
 }
+
+/* ---- 10. жилые типы apt_ (таксономия 2026-08): квартира — сдаваемый юнит ----
+       Фикстура — квартира 450 (apt_2_1) на этаже f4: занята, счёта нет.
+       Обязана (a) считаться в buildingStats, (b) рисоваться на плане с номером
+       и статусной заливкой (не серой «общей зоной»), (c) зваться «Apt 450» на
+       карточке, (d) стоять в списке Payments. Неизвестный тип ведёт себя как
+       раньше (fail-safe): не сдаётся и в деньги не попадает. ---- */
+{
+  const ymSave = S.ym; S.ym = YM;      // секция 7k увела S.ym на настоящий месяц
+
+  // предикаты экспортированы и согласованы с монолитом (_isAptType/_isRentableType)
+  if (typeof money.isAptType !== 'function' || typeof money.isRentableType !== 'function') {
+    say('bad', 'money.js не экспортирует isAptType/isRentableType'); bad++;
+  } else {
+    const wrong = ['apt_loft_1', 'apt_1_1', 'apt_2_1', 'apt_3_1', 'apt_2_2', 'apt_3_2']
+      .filter(k => !money.isAptType(k) || !money.isRentableType(k));
+    if (money.isAptType('office') || money.isRentableType('stairs')
+        || !money.isRentableType('') || !money.isRentableType('office') || money.isAptType('apartment')) {
+      wrong.push('границы');
+    }
+    if (wrong.length) { say('bad', 'предикаты apt_ отвечают неверно: ' + wrong.join(', ')); bad++; }
+    else say('ok', 'isAptType/isRentableType: шесть apt_* сдаются, stairs/пустой тип — как раньше');
+  }
+
+  // (a) деньги: с квартирой и без неё сводка расходится ровно на одну квартиру
+  const uApt = snap.buildings[0].floors[1].units.find(x => String(x.id) === '450');
+  if (!uApt || uApt.type !== 'apt_2_1') { say('bad', 'фикстура: квартиры 450 (apt_2_1) нет на этаже f4'); bad++; }
+  const stApt = money.buildingStats(snap.buildings[0], YM, snap);
+  const bNo = JSON.parse(JSON.stringify(snap.buildings[0]));
+  for (const fl of bNo.floors) fl.units = fl.units.filter(x => String(x.id) !== '450');
+  const stNo = money.buildingStats(bNo, YM, snap);
+  const dif = [];
+  if (stApt.units !== stNo.units + 1) dif.push(`units ${stNo.units}→${stApt.units}`);
+  if (stApt.occupied !== stNo.occupied + 1) dif.push(`occupied ${stNo.occupied}→${stApt.occupied}`);
+  if (Math.round(stApt.expected - stNo.expected) !== 1900) dif.push(`expected +${(stApt.expected - stNo.expected).toFixed(0)}`);
+  if (dif.length) { say('bad', 'квартира не считается в buildingStats: ' + dif.join('; ')); bad++; }
+  else say('ok', 'квартира входит в occupancy и expected (+$1,900)');
+
+  // (b) план: кликабельная фигура со статусной заливкой и номером
+  S.sheet = null; S.tab = 'plan'; S.planFloor = 'f4';
+  const hp = plan.render(ctx());
+  const shape = (hp.match(/<rect[^>]*data-id="450"[^>]*\/>/) || [])[0] || '';
+  if (!shape) { say('bad', 'квартира не нарисована на плане (или не кликабельна)'); bad++; }
+  else if (/var\(--plan-common\)/.test(shape)) { say('bad', 'квартира залита серым как общая зона'); bad++; }
+  else say('ok', 'квартира на плане кликабельна и залита статусом, не серым');
+  if (!/>450<\/text>/.test(hp)) { say('bad', 'у квартиры нет номера на плане'); bad++; }
+  else say('ok', 'номер квартиры подписан на плане');
+  if (!/aria-label="Apt 450/.test(hp)) { say('bad', 'скринридер зовёт квартиру не «Apt 450»'); bad++; }
+  else say('ok', 'скринридеру квартира представляется как «Apt 450»');
+  S.tab = 'home'; S.planFloor = null;
+
+  // (c) карточка юнита: «Apt 450», и «Suite 450» к ней не липнет
+  S.sheet = 'unit';
+  const aid = { buildingId: 'b1', floorId: 'f4', unitId: '450' };
+  S.sheetPayload = aid; S.sheetArg = aid; S.payload = aid;
+  const ah = unit.render(ctx());
+  if (!/Apt 450/.test(ah)) { say('bad', 'карточка квартиры не озаглавлена «Apt 450»'); bad++; }
+  else if (/Suite 450/.test(ah)) { say('bad', 'карточка квартиры всё ещё пишет «Suite 450»'); bad++; }
+  else say('ok', 'карточка квартиры говорит «Apt 450»');
+  S.sheet = null; S.sheetPayload = null; S.sheetArg = null; S.payload = null;
+
+  // (d) список Payments: строка есть и подписана «Apt»
+  S.tab = 'payments'; S.q = ''; S.filter = 'all'; S.limit = 0;
+  const ap = payments.render(ctx());
+  if (!/data-id="450"/.test(ap)) { say('bad', 'квартиры нет в списке Payments'); bad++; }
+  else if (!/Apt 450/.test(ap)) { say('bad', 'строка квартиры в Payments подписана не «Apt»'); bad++; }
+  else say('ok', 'квартира стоит в списке Payments как «Apt 450»');
+  S.tab = 'home'; S.ym = ymSave;
+}
+
 
 document.getElementById('log').innerHTML = out.join('\n') + `\n\n${bad ? `<span class="bad">${bad} FAILURES</span>` : '<span class="ok">all render checks passed</span>'}`;
 window.__harness = { bad, missing, calls };

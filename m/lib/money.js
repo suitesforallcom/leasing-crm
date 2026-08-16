@@ -30,6 +30,16 @@ export const STATUS_LABELS = Object.freeze({
 // Статусы «деньги не получены» — ровно те, что _computeUnitMoneyImpl кладёт в outstanding.
 export const UNPAID = new Set(['due', 'overdue']);
 
+// ── Таксономия типов: жилые юниты (2026-08) ─────────────────────────────────
+// Ключи стабильные, grep-able: apt_loft_1 · apt_1_1 · apt_2_1 · apt_3_1 ·
+// apt_2_2 · apt_3_2. ЗЕРКАЛО _isAptType/_isRentableType монолита (рядом с
+// TYPE_LABELS :27028) — правь обе копии. Деньги у квартиры считаются ровно как
+// у офиса; неизвестный тип НЕ сдаваемый (fail-safe: ведёт себя как сегодня —
+// общая зона, в деньги не попадает).
+export function isAptType(t) { return String(t || '').slice(0, 4) === 'apt_'; }
+export function isRentableType(t) { return !t || t === 'office' || isAptType(t); }
+
+
 const DISK_KEY = 'sfa_inv_buckets_v1';
 
 // ── Snapshot-scoped indexes (замена _invIndexEnsure/_invRowsForUnit/_unitsInGroup).
@@ -595,7 +605,7 @@ export function buildingStats(building, ym, snap) {
     for (const u of ((f && f.units) || [])) {
       // deletedAt — архивация десктопа (MONO:30443); archivedAt в базе нет.
       if (!u || u.deletedAt || u.archivedAt || u.rentable === false) continue;
-      if (u.type && u.type !== 'office') continue;
+      if (!isRentableType(u.type)) continue;           // офисы и квартиры; неизвестный тип — нет
       if (isFinanceShadow(u, snap)) continue;          // каждый лиз считаем один раз
       out.units++;
       if (u.status === 'occupied') out.occupied++;
@@ -635,7 +645,7 @@ export function buildingStats(building, ym, snap) {
     for (const u of ((f && f.units) || [])) {
       // deletedAt — архивация десктопа (MONO:30443); archivedAt в базе нет.
       if (!u || u.deletedAt || u.archivedAt || u.rentable === false) continue;
-      if (u.type && u.type !== 'office') continue;
+      if (!isRentableType(u.type)) continue;
       if (isFinanceShadow(u, snap)) continue;
       const st = uiStatus(u, ym, snap);
       if (out.n[st] === undefined) out.n[st] = 0;

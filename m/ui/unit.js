@@ -89,6 +89,17 @@ const digits = s => String(s == null ? '' : s).replace(/\D+/g, '');
 const rentOf = u => (+(u && u.contractRent) || +(u && u.rent) || 0);
 const isSettled = st => st === 'paid' || st === 'free';
 
+
+/* Жилой ли юнит (apt_*). Канон — ctx.money.isAptType; локальный фолбэк на случай
+   старого закэшированного money.js без экспорта (fail-safe: ведём себя как офис
+   не будем — просто прочитаем префикс сами, как esc/todayYm-копии). */
+function isAptUnit(ctx, u) {
+  try {
+    if (ctx && ctx.money && typeof ctx.money.isAptType === 'function') return !!ctx.money.isAptType(u && u.type);
+  } catch (_) { /* деньги молчат */ }
+  return String((u && u.type) || '').slice(0, 4) === 'apt_';
+}
+
 function canSend(snap) {
   const r = snap && snap.role;
   if (!r || !KNOWN_ROLES[r]) return true;
@@ -276,7 +287,9 @@ export function render(ctx) {
   const ym = S.ym || todayYm();
   const v = verdictOf(ctx, u, ym);
   const st = v.status || 'idle';
-  const apt = !!(b && (b.apt || b.residential || b.kind === 'residential'));
+  // Тип юнита сильнее флага здания (жилые apt_*); флаг остаётся запасным
+  // вариантом для целиком жилого корпуса.
+  const apt = isAptUnit(ctx, u) || !!(b && (b.apt || b.residential || b.kind === 'residential'));
   const suite = (apt ? 'Apt ' : 'Suite ') + String(u.id || '');
   const name = u.tenant || u.company || 'Vacant unit';
   const rent = rentShown(ctx, u);
@@ -405,7 +418,7 @@ export function foot(ctx) {
 function smsBody(u, ctx) {
   const who = String((u && (u.tenantContact || u.contact)) || '').trim().split(/\s+/)[0] || '';
   const suite = String((u && (u.label || u.name || u.id)) || '').trim();
-  return 'Hi' + (who ? ' ' + who : '') + ', this is ' + orgName(ctx) + (suite ? ' about Suite ' + suite : '') + '. ';
+  return 'Hi' + (who ? ' ' + who : '') + ', this is ' + orgName(ctx) + (suite ? ' about ' + (isAptUnit(ctx, u) ? 'Apt ' : 'Suite ') + suite : '') + '. ';
 }
 function orgName(ctx) {
   const st = (ctx && ctx.snap && ctx.snap.settings) || {};

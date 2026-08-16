@@ -50,6 +50,10 @@ const SOURCE_LABEL = {
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => (
   { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+
+/* Зеркало money.isAptType — локальная копия (как esc): жилые типы apt_*. */
+const isAptType = t => String(t || '').slice(0, 4) === 'apt_';
+
 const num = n => (Number.isFinite(+n) ? +n : 0);
 
 function todayYm() {
@@ -270,12 +274,12 @@ function answerRow(ctx, hit, scopeKey, ym) {
   const b = hit.building;
   const v = safeVerdict(ctx, u, ym);
   const s = normStatus(v.status);
-  const name = u.tenant || u.company || (s === 'vacant' ? 'Vacant' : 'Suite ' + (u.id || ''));
+  const name = u.tenant || u.company || (s === 'vacant' ? 'Vacant' : (isAptType(u.type) ? 'Apt ' : 'Suite ') + (u.id || ''));
   const bid = String((b && b.id) || '');
   const inScope = scopeKey !== 'all' && bid === scopeKey;
   const place = inScope ? (floorLabel(hit) || (b && b.name) || '') : ((b && b.name) || bid);
   const prov = (s === 'paid') ? sourceLabel(v.source) : '';
-  const where = ['Suite ' + esc(u.id), place ? esc(place) : '', prov ? esc(prov) : '']
+  const where = [(isAptType(u.type) ? 'Apt ' : 'Suite ') + esc(u.id), place ? esc(place) : '', prov ? esc(prov) : '']
     .filter(Boolean).join(' · ');
   const detail = v.detail || v.label || '';
   const fid = String((hit.floor && hit.floor.id) || '');

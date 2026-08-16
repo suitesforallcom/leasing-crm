@@ -27029,7 +27029,21 @@ const TYPE_LABELS = {
   office:'Office', kitchen:'Kitchen', storage:'Storage',
   toilet:'Restroom', conf:'Conference Room', mechanical:'Mechanical',
   stairs:'Stairs', elevator:'Elevator', atrium:'Atrium',
+  // Residential built-ins (2026-08): стабильные grep-able ключи apt_*.
+  // Money-семантика и rentable-поведение идентичны office; заливка по
+  // статусу — как office, т.е. БЕЗ записи в TYPE_FILL (не-rentable типы
+  // падают в TYPE_FILL/common-grey внутри _computeUnitFillImpl).
+  apt_loft_1:'Loft · 1 bath', apt_1_1:'1 bed · 1 bath',
+  apt_2_1:'2 bed · 1 bath',   apt_3_1:'3 bed · 1 bath',
+  apt_2_2:'2 bed · 2 bath',   apt_3_2:'3 bed · 2 bath',
 };
+
+// Общие предикаты типов (residential-контракт, 2026-08). apt_* —
+// квартирные built-in'ы; rentable = пустой тип / office / apt_*.
+// Custom-типы (c_*) и common-типы, как и раньше, НЕ rentable.
+// Зеркало в мобильном клиенте: m/lib/money.js (isAptType/isRentableType).
+function _isAptType(t) { return String(t || '').slice(0, 4) === 'apt_'; }
+function _isRentableType(t) { return !t || t === 'office' || _isAptType(t); }
 
 // === Custom unit types ===
 // Operators can extend the type catalogue per-workspace via
@@ -27039,7 +27053,16 @@ const TYPE_LABELS = {
 // so they never collide with the built-ins above (and never accidentally
 // clash with a future built-in we ship).
 const BUILTIN_UNIT_TYPE_KEYS = new Set(Object.keys(TYPE_LABELS));
-const _UNIT_TYPE_ORDER = ['office','conf','kitchen','storage','toilet','mechanical','stairs','elevator','atrium'];
+const _UNIT_TYPE_ORDER = ['office','apt_loft_1','apt_1_1','apt_2_1','apt_3_1','apt_2_2','apt_3_2','conf','kitchen','storage','toilet','mechanical','stairs','elevator','atrium'];
+
+// === Customer-facing noun helpers (Apartments, 2026-08) ===
+// Апартаменты (apt_*) в клиентских текстах — «Apt», всё остальное —
+// «Suite», как раньше. Rent-строка инвойса аналогично: «Apartment Rent»
+// vs «Office Rent». ТОЛЬКО формулировки — денежная семантика идентична
+// офисам. Внутренние логи / аудит / бэкапы остаются 'Suite'.
+function _unitNoun(u) { return _isAptType(u && u.type) ? 'Apt' : 'Suite'; }
+function _rentLineName(u) { return _isAptType(u && u.type) ? 'Apartment Rent' : 'Office Rent'; }
+
 
 function _mergeCustomTypeLabels() {
   const list = state && state.settings && state.settings.customUnitTypes;
@@ -27074,9 +27097,14 @@ function _slugUnitTypeKey(label) {
 function buildUnitTypeOptions(currentValue) {
   const all = getAllUnitTypes();
   const safe = (s) => (typeof esc === 'function' ? esc(String(s)) : String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])));
-  const opts = all.map(t =>
-    `<option value="${safe(t.key)}" ${t.key === currentValue ? 'selected' : ''}>${safe(t.label)}</option>`
-  );
+  const optOf = (t) =>
+    `<option value="${safe(t.key)}" ${t.key === currentValue ? 'selected' : ''}>${safe(t.label)}</option>`;
+  // Квартирные типы — отдельной optgroup сразу после Office, чтобы шесть
+  // bed/bath-вариантов не смешивались с common-типами и custom'ами.
+  const aptTypes  = all.filter(t => _isAptType(t.key));
+  const restTypes = all.filter(t => !_isAptType(t.key));
+  const opts = restTypes.map(optOf);
+  if (aptTypes.length) opts.splice(1, 0, `<optgroup label="Apartments">${aptTypes.map(optOf).join('')}</optgroup>`);
   // Gate the "Add new type" entry behind canEdit() so viewers don't see it.
   // canEdit() may not be defined yet at script-parse time, so guard it.
   const allowAdd = (typeof canEdit === 'function') ? canEdit() : true;
@@ -28367,7 +28395,7 @@ function loadState() {
             let detected = 'multi-suite';
             try {
               const leasable = (f.units || []).filter(u =>
-                u.rentable !== false && (!u.type || u.type === 'office'));
+                u.rentable !== false && _isRentableType(u.type));
               const totalSqft = leasable.reduce((s, u) => s + (+u.sqft || 0), 0);
               if (totalSqft > 0) {
                 const groupSqft = new Map();
@@ -29084,7 +29112,7 @@ function _localBackupSummary(stateObj) {
     for (const b of (stateObj.buildings || [])) {
       for (const f of (b.floors || [])) {
         for (const u of (f.units || [])) {
-          if (u.type !== 'office' || u.rentable === false) continue;
+          if (!_isRentableType(u.type) || u.rentable === false) continue;
           units++;
           if ((u.tenant && u.tenant.trim()) || (u.company && u.company.trim())) tenants++;
           if (u.status === 'occupied') rentRoll += +u.contractRent || +u.rent || 0;
@@ -31824,7 +31852,7 @@ function _computeUnitFillCached(u, mode) {
 }
 function computeUnitFill(u) { return _computeUnitFillCached(u, getMapViewMode()); }
 function _computeUnitFillImpl(u, mode) {
-  const isRentable = u && u.rentable !== false && u.type === 'office';
+  const isRentable = u && u.rentable !== false && (u.type === 'office' || _isAptType(u.type));
 
   // Common areas always share one neutral tone regardless of view mode.
   if (!isRentable) return (TYPE_FILL[u.type] || '#d4d4d8');
@@ -32136,7 +32164,7 @@ function unitMatchesFilters(u, filterSet) {
   // configured window (default 30d). Common areas (non-rentable) are
   // never matches.
   if (filterSet.has('new-tenants')) {
-    const isRentable = u.rentable !== false && u.type === 'office';
+    const isRentable = u.rentable !== false && (u.type === 'office' || _isAptType(u.type));
     if (!isRentable) return false;
     // A vacant unit can still carry residual lease fields (leaseStart,
     // signedPdf, tenantHistory…) left over from a prior move-out. Without
@@ -39020,7 +39048,7 @@ function updateTopbarOutstandingPill() {
     for (const f of b.floors || []) {
       for (const u of f.units || []) {
         if (isArchived(u)) continue;
-        if (u.rentable === false || (u.type && u.type !== 'office')) continue;
+        if (u.rentable === false || !_isRentableType(u.type)) continue;
         // Grouped-suite дедуп: 9-комнатный лиз = ОДИН тенант с ОДНИМ
         // overdue, не девять. _computeUnitMoney(member) редиректит на
         // head и возвращает headовы owed/outstanding — без этого
@@ -39540,7 +39568,7 @@ function _buildForecastFloorPicker() {
   //            покажем нереалистично высокий потенциал.
   const _allLeasableInScope = (typeof _stRentableUnits === 'function')
     ? (f) => _stRentableUnits(f)
-    : (f) => (f.units || []).filter(u => u.rentable !== false && (!u.type || u.type === 'office'));
+    : (f) => (f.units || []).filter(u => u.rentable !== false && _isRentableType(u.type));
   const tally  = {};
   const maxMRR = {};
   for (const f of (b.floors || [])) {
@@ -39872,7 +39900,7 @@ function _computeRevenueForecast(nonRenewalPct, floorFilter, paceMultiplier, bui
       // в monthly-loop применяем 3% годовую эскалацию (стандарт CRE).
       const _floorLeasableUnits = _allLeasableInScope
         ? _allLeasableInScope(f)
-        : (f.units || []).filter(u => u.rentable !== false && (!u.type || u.type === 'office'));
+        : (f.units || []).filter(u => u.rentable !== false && _isRentableType(u.type));
       const _floorLeasableSqft = _floorLeasableUnits.reduce((s, u) => s + (+u.sqft || 0), 0);
       // Бакетизация: groupId → массив members, или 'solo:'+u.id для
       // одиночных юнитов. Берём ВСЕ leasable-юниты этажа, чтобы
@@ -39950,7 +39978,7 @@ function _computeRevenueForecast(nonRenewalPct, floorFilter, paceMultiplier, bui
       } else {
         // Фолбэк, если хелпер недоступен: грубый подсчёт без дедупа.
         for (const u of (f.units || [])) {
-          if (u.rentable === false || (u.type && u.type !== 'office')) continue;
+          if (u.rentable === false || !_isRentableType(u.type)) continue;
           if (u.status === 'occupied') continue;
           const ask = +u.contractRent || +u.rent || 0;
           if (ask > 0) _floorVacancy += ask;
@@ -41880,7 +41908,7 @@ function _investBuildTenantsByBuildingImpl(buildings) {
     for (const f of (b.floors || [])) {
       for (const u of (f.units || [])) {
         if (u.rentable === false) continue;
-        if (u.type && u.type !== 'office') continue;
+        if (!_isRentableType(u.type)) continue;
         const key = u.groupId ? ('g:' + u.groupId) : ('solo:' + u.id);
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push(u);
@@ -44683,7 +44711,7 @@ function _investBuildingMetrics(buildingId) {
     for (const u of (f.units || [])) {
       // Те же фильтры, что rent-roll/forecast.
       if (u.rentable === false) continue;
-      if (u.type && u.type !== 'office') continue;
+      if (!_isRentableType(u.type)) continue;
       unitCount++;
       const askRent = +u.contractRent || +u.rent || 0;
       stabilizedRent_monthly += askRent;
@@ -55561,7 +55589,7 @@ function renderHomeInvest() {
     let totalSqft = 0;
     for (const f of (bldg?.floors || [])) {
       for (const u of (f.units || [])) {
-        if (u.rentable === false || (u.type && u.type !== 'office')) continue;
+        if (u.rentable === false || !_isRentableType(u.type)) continue;
         totalSqft += +u.sqft || 0;
       }
     }
@@ -57087,7 +57115,7 @@ function _compute30DayActivity() {
       for (const u of f.units || []) {
         if (typeof isArchived === 'function' && isArchived(u)) continue;
         if (u.rentable === false) continue;
-        if (u.type && u.type !== 'office') continue;
+        if (!_isRentableType(u.type)) continue;
 
         // Occupancy snapshot — counts PHYSICAL suites (e.g. "9/10
         // occupied"), so non-head group members DO count here. MRR sum
@@ -57598,7 +57626,7 @@ function _apComputeManagerBreakdown() {
     for (const f of b.floors || []) {
       for (const u of f.units || []) {
         if (typeof isArchived === 'function' && isArchived(u)) continue;
-        if (u.rentable === false || (u.type && u.type !== 'office')) continue;
+        if (u.rentable === false || !_isRentableType(u.type)) continue;
         if (!u.tenant && !u.company) continue;
         const isRented = (u.status === 'occupied') || !!u.tenant;
         if (!isRented) continue;
@@ -61925,7 +61953,7 @@ function showStackingPlan() {
 
 function stackingUnitStatus(u) {
   // Priority: non-office types first (common areas), then lease-end based.
-  if (u.type && u.type !== 'office') return 'common';
+  if (!_isRentableType(u.type)) return 'common';
   if (u.status === 'reserved') return 'reserved';
   // (u.tenant || u.company) — company-only лизы не «vacant» (Suite 421 класс).
   if (u.status !== 'occupied' || (!u.tenant && !u.company)) return 'vacant';
@@ -62150,7 +62178,7 @@ function _isInactiveSubRoom(u) {
 function _stIsOffice(u) {
   if (!u) return false;
   if (typeof isArchived === 'function' && isArchived(u)) return false;
-  if (u.type !== 'office' || u.rentable === false) return false;
+  if (!_isRentableType(u.type) || u.rentable === false) return false;
   if (_isInactiveSubRoom(u)) return false;
   return true;
 }
@@ -62671,7 +62699,7 @@ function _renderStackingSidebar(b) {
   const s = _stState(); const metric = s.metric || 'status';
   const focusFloor = s.focusFloor !== null ? (b.floors || []).find(f => f.number === s.focusFloor) : null;
   const allUnits = (b.floors || []).flatMap(f => (f.units || [])
-    .filter(u => !isArchived(u) && u.rentable !== false && u.type === 'office'));
+    .filter(u => !isArchived(u) && u.rentable !== false && _isRentableType(u.type)));
 
   const fmtMoney = n => n >= 1_000_000 ? `$${(n/1_000_000).toFixed(1)}M`
                      : n >= 10_000 ? `$${Math.round(n/1000)}k`
@@ -62701,7 +62729,7 @@ function _renderStackingSidebar(b) {
   `);
 
   if (focusFloor) {
-    const rentable = (focusFloor.units || []).filter(u => !isArchived(u) && u.rentable !== false && u.type === 'office');
+    const rentable = (focusFloor.units || []).filter(u => !isArchived(u) && u.rentable !== false && _isRentableType(u.type));
     const totalSqft = rentable.reduce((x, u) => x + (+u.sqft || 0), 0);
     const mrr = rentable.reduce((x, u) => x + (+u.contractRent || +u.rent || 0), 0);
     blocks.push(`
@@ -63014,7 +63042,7 @@ function stackingExport() {
   const rows = [['Floor','Suite','Tenant','Company','Sqft','Rent/mo','$/ft²/yr','Status','Lease end']];
   for (const f of (b.floors || []).slice().sort((a, c) => (a.number || 0) - (c.number || 0))) {
     for (const u of f.units || []) {
-      if (isArchived(u) || u.rentable === false || u.type !== 'office'
+      if (isArchived(u) || u.rentable === false || !_isRentableType(u.type)
           || (typeof _isInactiveSubRoom === 'function' && _isInactiveSubRoom(u))) continue; // аудит M4: исключаем неактивные суб-комнаты родителя
       const rent = +u.contractRent || +u.rent || 0;
       const rate = u.sqft ? (rent * 12 / u.sqft) : 0;
@@ -63055,7 +63083,7 @@ async function stackingSendReminders(buildingId, btn) {
   const overdue = [];
   for (const f of b.floors || []) {
     for (const u of f.units || []) {
-      if (isArchived(u) || u.rentable === false || u.type !== 'office') continue;
+      if (isArchived(u) || u.rentable === false || !_isRentableType(u.type)) continue;
       if (stackingUnitStatus(u) !== 'expired') continue;
       overdue.push({ u, f });
     }
@@ -63935,7 +63963,7 @@ function _bonusAutoCreateOnDepositPaid() {
     const bldgMgr = b.assignedManagerUid || null;
     for (const f of (b.floors || [])) {
       for (const u of (f.units || [])) {
-        if (u.rentable === false || (u.type && u.type !== 'office')) continue;
+        if (u.rentable === false || !_isRentableType(u.type)) continue;
         if (u.status !== 'occupied') continue;
         if (!u.tenant && !u.company) continue;
         const dep = u.stripe?.depositInvoice;
@@ -65985,7 +66013,7 @@ function bmAutoFillRentable() {
     const src = df._existingId && (b.floors || []).find(fl => fl.id === df._existingId);
     if (!src) return;
     const sqft = (src.units || [])
-      .filter(u => u.rentable !== false && (!u.type || u.type === 'office'))
+      .filter(u => u.rentable !== false && _isRentableType(u.type))
       .reduce((s, u) => s + (+u.sqft || 0), 0);
     if (sqft > 0) { df.rentableSqft = sqft; filled++; total += sqft; }
   });
@@ -66623,7 +66651,7 @@ function brfeSave() {
       if (typeof _isFinanceShadow === 'function' && _isFinanceShadow(u)) continue;
       if (typeof isArchived === 'function' && isArchived(u)) continue;
       if (u.rentable === false) continue;
-      if (u.type && u.type !== 'office') continue;
+      if (!_isRentableType(u.type)) continue;
       if (typeof _isUnitOverdue !== 'function' || !_isUnitOverdue(u)) continue;
       const rent = +u.contractRent || +u.proformaRent || 0;
       const lfPrev = (typeof lateFeePreviewFor === 'function')
@@ -66833,7 +66861,7 @@ function brOpenDryRun() {
       if (typeof _isFinanceShadow === 'function' && _isFinanceShadow(u)) continue;
       if (typeof isArchived === 'function' && isArchived(u)) continue;
       if (u.rentable === false) continue;
-      if (u.type && u.type !== 'office') continue;
+      if (!_isRentableType(u.type)) continue;
       // Auto-invoice — узнаём, должен ли инвойс быть выпущен в эти "today".
       const aiCfg = (typeof getEffectiveAutoInvoiceConfig === 'function')
         ? getEffectiveAutoInvoiceConfig(u) : null;
@@ -67095,7 +67123,7 @@ function brComputeAffected(scope) {
       // строка лжёт о scope.
       if (typeof isArchived === 'function' && isArchived(u)) continue;
       if (u.rentable === false) continue;
-      if (u.type && u.type !== 'office') continue;
+      if (!_isRentableType(u.type)) continue;
 
       const suite = u.id || (u.suiteNumber ? String(u.suiteNumber) : '?');
       const tenant = u.tenant || u.tenantName || '';
@@ -67616,7 +67644,7 @@ function saveBuildingModal() {
           if (typeof _isFinanceShadow === 'function' && _isFinanceShadow(u)) continue;
           if (typeof isArchived === 'function' && isArchived(u)) continue;
           if (u.rentable === false) continue;
-          if (u.type && u.type !== 'office') continue;
+          if (!_isRentableType(u.type)) continue;
           // getLateFeeConfig каскадирует workspace → building → floor → unit;
           // если floor ИЛИ unit override отключил — здесь не billим.
           const cfg = (typeof getLateFeeConfig === 'function') ? getLateFeeConfig(u) : null;
@@ -68934,7 +68962,7 @@ function renderUnits() {
     if (_selUnit && _selUnit.groupId) _activeGroupId = _selUnit.groupId;
   }
   units.forEach(u => {
-    const isRentable = u.rentable !== false && u.type === 'office';
+    const isRentable = u.rentable !== false && (u.type === 'office' || _isAptType(u.type));
     // Fill respects the active map view mode (lease status / unit type /
     // rent heatmap). Vacant rentable units in "lease" mode get a dashed
     // outline instead of the STATUS_FILL green, matching the redesign mock.
@@ -70247,7 +70275,7 @@ function renderUnits() {
   // Operator can drag the stripe in edit mode to relocate it.
   units.forEach(u => {
     if (!u.window) return;
-    const isRentable = u && u.rentable !== false && u.type === 'office';
+    const isRentable = u && u.rentable !== false && (u.type === 'office' || _isAptType(u.type));
     if (!isRentable) return;
     const side   = u.windowSide   || 'top';
     const offset = (typeof u.windowOffset === 'number') ? u.windowOffset : 0.5;
@@ -71464,7 +71492,7 @@ function _unitEdgeNearestToPoint(p, maxDist) {
   if (!f) return null;
   let best = null;
   for (const u of (f.units || [])) {
-    if (u.rentable === false || u.type !== 'office') continue;
+    if (u.rentable === false || !_isRentableType(u.type)) continue;
     if (typeof isArchived === 'function' && isArchived(u)) continue;
     const x = +u.x || 0, y = +u.y || 0, w = +u.w || 0, h = +u.h || 0;
     if (w < 30 || h < 30) continue;  // too small to split usefully
@@ -73954,7 +73982,7 @@ function onLabelDragStart(e, u) {
     startDX = u.labelDX;
     startDY = u.labelDY;
   } else {
-    const _isCommonArea = !(u && u.rentable !== false && u.type === 'office');
+    const _isCommonArea = !(u && u.rentable !== false && _isRentableType(u.type));
     if (_isCommonArea) {
       const isPoly = Array.isArray(u.points) && u.points.length >= 3;
       if (isPoly && typeof _polygonCentroid === 'function') {
@@ -73993,7 +74021,7 @@ function _labelAnchorAbs(other) {
     dx = other.labelDX;
     dy = other.labelDY;
   } else {
-    const _isCommon = !(other && other.rentable !== false && other.type === 'office');
+    const _isCommon = !(other && other.rentable !== false && _isRentableType(other.type));
     if (_isCommon) {
       // Common-area label рендерится в центроиде polygon'а или центре rect.
       const isPoly = Array.isArray(other.points) && other.points.length >= 3;
@@ -74279,7 +74307,7 @@ svg.addEventListener('pointerdown', e => {
       _unitSplitAt(unitHit.unitId, unitHit.edge, unitHit.projX, unitHit.projY);
     } else if (typeof toast === 'function') {
       const wallCount = (currentWalls() || []).length;
-      const unitCount = (currentFloor()?.units || []).filter(u => u.rentable !== false && u.type === 'office').length;
+      const unitCount = (currentFloor()?.units || []).filter(u => u.rentable !== false && _isRentableType(u.type)).length;
       toast(`No wall or unit edge within 24 px. Aim closer to a line. (${wallCount} wall${wallCount === 1 ? '' : 's'}, ${unitCount} unit${unitCount === 1 ? '' : 's'} on this floor)`, 'error');
     }
   } else if (mode === 'door-single' || mode === 'door-double') {
@@ -75268,7 +75296,7 @@ function _nestedRentableGuardCheck(u, f) {
   try {
     if (!u || !f || !Array.isArray(f.units)) return;
     if (typeof isArchived === 'function' && isArchived(u)) return;
-    const _rentable = (x) => !!x && x.rentable !== false && (!x.type || x.type === 'office');
+    const _rentable = (x) => !!x && x.rentable !== false && _isRentableType(x.type);
     if (!_rentable(u)) return;                       // common area — не проверяем
     let bestOuter = null, bestFrac = 0;              // лучший контейнер для u
     const innersOfU = [];                            // юниты, оказавшиеся внутри u
@@ -75356,7 +75384,7 @@ function renderFloorStats() {
     // square foot once. Use simple rule: if u.parentId set AND parent
     // exists, skip the child (parent's bbox already covers the area).
     if (u.parentId) continue;
-    const isOffice = (u.type === 'office') && (u.rentable !== false);
+    const isOffice = _isRentableType(u.type) && (u.rentable !== false);
     if (isOffice) usefulSqft += sqft;
     else otherSqft += sqft;
   }
@@ -76771,7 +76799,7 @@ function openGroupAssignModal(prebuiltDraft, prefill) {
   if (prebuiltDraft && Array.isArray(prebuiltDraft.units)) {
     // Whole-floor режим: набор юнитов уже сформирован вызывающим
     // (openFloorLeaseModal прогнал гарды и Edit-Mode auto-enable).
-    units = prebuiltDraft.units.filter(u => u && u.type === 'office' && u.rentable !== false);
+    units = prebuiltDraft.units.filter(u => u && _isRentableType(u.type) && u.rentable !== false);
     if (units.length < 1) {
       if (typeof toast === 'function') toast('No rentable office suites on this floor', 'error');
       return;
@@ -76798,7 +76826,7 @@ function openGroupAssignModal(prebuiltDraft, prefill) {
     units = selectedIds
       .map(id => currentUnits().find(u => u.id === id))
       .filter(Boolean)
-      .filter(u => u.type === 'office' && u.rentable !== false);
+      .filter(u => _isRentableType(u.type) && u.rentable !== false);
     if (units.length < 2) {
       if (typeof toast === 'function') toast('Need 2+ rentable office suites in selection', 'error');
       return;
@@ -77665,7 +77693,7 @@ function renderDetail() {
 
   const u = currentUnits().find(x => x.id === selectedIds[0]);
   if (!u) { el.className = 'detail-card empty'; el.innerHTML = 'Unit not found'; return; }
-  const isRentable = u.rentable !== false && u.type === 'office';
+  const isRentable = u.rentable !== false && (u.type === 'office' || _isAptType(u.type));
   const status = u.status || 'vacant';
 
   // Non-blocking prefetch: pull Stripe invoices once per session so the
@@ -77811,7 +77839,7 @@ function renderDetail() {
           // не только этого юнита). Показываем только для rentable office юнитов
           // — для уборных/коридоров/лифтов это бессмысленно. Read-only вне editOn,
           // как у соседних toggle-rows.
-          if (u.type !== 'office' || u.rentable === false) return '';
+          if (!_isRentableType(u.type) || u.rentable === false) return '';
           const _f = (typeof currentFloor === 'function') ? currentFloor() : null;
           if (!_f) return '';
           const lt = _f.leaseType || 'multi-suite';
@@ -78594,7 +78622,7 @@ function _renderUnitV2Header(u, editOn) {
   // Proforma reference). Source-of-truth is status alone; downstream
   // code handles missing names gracefully.
   const isOccupied = status === 'occupied';
-  const showLedgerBtn = u.rentable !== false && u.type === 'office' && isOccupied;
+  const showLedgerBtn = u.rentable !== false && _isRentableType(u.type) && isOccupied;
   const bId = esc(currentBuilding()?.id || '');
   const fId = esc(currentFloor()?.id || '');
   const uId = esc(u.id);
@@ -79118,7 +79146,7 @@ function _renderUnitV2Header(u, editOn) {
       <!-- Title row — Suite name + status pill on the right.
            In edit mode the kebab menu collapses into Save/Cancel. -->
       <div class="upv2-h-titlebar">
-        <h2 class="upv2-h-title">Suite ${esc(u.id)}</h2>
+        <h2 class="upv2-h-title">${_unitNoun(u)} ${esc(u.id)}</h2>
         ${(pillLabel === 'Awaiting Deposit' && typeof canEdit === 'function' && canEdit())
           ? `<button type="button" class="upv2-pill ${pillCls} upv2-pill-clickable" onclick="event.stopPropagation(); openMarkDepositPaidModal('${esc(u.id)}')" title="Click to mark deposit as paid — opens a form to record method (cash / check / wire / ACH / card / other) + description"><span class="rd-dot"></span>${esc(pillLabel)} →</button>`
           : `<span class="upv2-pill ${pillCls}"><span class="rd-dot"></span>${esc(pillLabel)}</span>`}
@@ -79975,7 +80003,7 @@ function _editProformaRent(unitId) { return _editUnitRent(unitId, 'proforma'); }
 function isRentableForCard(u) {
   if (!u) return false;
   if (u.rentable === false) return false;
-  if (u.type && u.type !== 'office') return false;
+  if (!_isRentableType(u.type)) return false;
   return true;
 }
 
@@ -81007,7 +81035,7 @@ function _renderUnitLeaseProgress(u) {
 
 // Overview pane — at-a-glance summary.
 function _renderUnitOverviewPane(u, editOn, ro) {
-  const isRentable = u.rentable !== false && u.type === 'office';
+  const isRentable = u.rentable !== false && (u.type === 'office' || _isAptType(u.type));
   const status = u.status || 'vacant';
 
   // Vacant CTA — if unit is vacant, show prominent CTA instead of empty stats.
@@ -81403,7 +81431,7 @@ function _fmtRelativeWhen(iso) {
 
 // Tenant pane — contact info, paperclip, notes
 function _renderUnitTenantPane(u, editOn, ro) {
-  const isRentable = u.rentable !== false && u.type === 'office';
+  const isRentable = u.rentable !== false && (u.type === 'office' || _isAptType(u.type));
   if (!isRentable) {
     return '<div class="upv2-files-empty">This unit type is not rentable.</div>';
   }
@@ -81646,7 +81674,7 @@ function _renderLeaseDates(u, editOn, ro, hasLease) {
 // helpers so each can be independently improved without touching the
 // others (single-responsibility).
 function _renderUnitLeasePane(u, editOn, ro) {
-  const isRentable = u.rentable !== false && u.type === 'office';
+  const isRentable = u.rentable !== false && (u.type === 'office' || _isAptType(u.type));
   if (!isRentable) return '<div class="upv2-files-empty">No lease for this unit type.</div>';
 
   const timeline = _renderLeaseTimeline(u);
@@ -82544,8 +82572,8 @@ async function _sendInvoiceWithLateFees(unitId, totalFee, opts) {
   }
 
   const desc = months.length
-    ? `Late fees · Suite ${u.id} · ${months.join(', ')}`
-    : `Late fees · Suite ${u.id}`;
+    ? `Late fees · ${_unitNoun(u)} ${u.id} · ${months.join(', ')}`
+    : `Late fees · ${_unitNoun(u)} ${u.id}`;
 
   const btn = (typeof event !== 'undefined' && event?.currentTarget) ? event.currentTarget : null;
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Sending…'; }
@@ -82634,7 +82662,7 @@ async function _sendInvoiceWithLateFees(unitId, totalFee, opts) {
 // Firebase Functions which call the real UniFi Access API.
 // =============================================================
 function _renderUnitAccessPane(u, editOn, ro) {
-  const isRentable = u.rentable !== false && u.type === 'office';
+  const isRentable = u.rentable !== false && (u.type === 'office' || _isAptType(u.type));
   if (!isRentable) {
     return '<div class="upv2-files-empty">Access control only applies to rentable units.</div>';
   }
@@ -82944,7 +82972,7 @@ function reissueAccess(unitId) {
 
 // Finance pane — rent, deposit, payments, prorate, auto-invoice, late fee
 function _renderUnitFinancePane(u, editOn, ro) {
-  const isRentable = u.rentable !== false && u.type === 'office';
+  const isRentable = u.rentable !== false && (u.type === 'office' || _isAptType(u.type));
   if (!isRentable) return '<div class="upv2-files-empty">No finance for this unit type.</div>';
   const hasPayments = u.payments && Object.keys(u.payments).length > 0;
   const status = u.status || 'vacant';
@@ -83178,7 +83206,7 @@ function _renderUnitActiveServices(u) {
   const rentRow = showRent ? `
     <div class="rd-recur-row">
       <div style="min-width: 0;">
-        <div class="rd-recur-name"><span>Office Rent</span></div>
+        <div class="rd-recur-name"><span>${_rentLineName(u)}</span></div>
         ${rentSub}
       </div>
       <div class="rd-recur-amt">${fmt$(rentAmt)}<span class="rd-recur-freq">/mo</span></div>
@@ -83320,7 +83348,7 @@ async function _toggleMonthlyAutoSync(unitId, source) {
   // Build the warning line — operator should see exactly what's about to change.
   const itemList = [];
   const rent = +u.contractRent || +u.rent || 0;
-  if (rent > 0) itemList.push(`  • Office Rent — $${rent.toLocaleString()}/mo`);
+  if (rent > 0) itemList.push(`  • ${_rentLineName(u)} — $${rent.toLocaleString()}/mo`);
   for (const s of activeMonthly) {
     itemList.push(`  • ${s.name || '(unnamed service)'} — $${(+s.amount || 0).toLocaleString()}/mo`);
   }
@@ -83329,7 +83357,7 @@ async function _toggleMonthlyAutoSync(unitId, source) {
     return;
   }
   const sourceLabel = source === 'rent'
-    ? 'Office Rent'
+    ? _rentLineName(u)
     : (activeMonthly.find(s => s.id === String(source).replace(/^svc:/, ''))?.name || 'this item');
   // Confirm dialog text — kept short so the native browser modal
   // doesn't grow a scrollbar. Two variants:
@@ -83541,7 +83569,7 @@ if (typeof window !== 'undefined' && !window.__ttPortalWired) {
 }
 
 function _renderUnitInvoiceHistory(u) {
-  if (!u || u.type !== 'office' || u.rentable === false) return '';
+  if (!u || !_isRentableType(u.type) || u.rentable === false) return '';
   // Lease-head redirect — for any non-head member of a multi-suite group,
   // route to the head so invoice history reads off the lease's single
   // Stripe customer. Without this, members of a 9-suite group showed an
@@ -88645,7 +88673,7 @@ function _isUnitOverdue(u) {
 // vacant suites and for tenants whose lease + deposit + first rent are
 // all completed — those don't need attention.
 function _isUnitPendingOnboarding(u) {
-  if (!u || u.rentable === false || (u.type && u.type !== 'office')) return false;
+  if (!u || u.rentable === false || !_isRentableType(u.type)) return false;
   if (typeof isArchived === 'function' && isArchived(u)) return false;
   if (u.status !== 'occupied' && u.status !== 'reserved') return false;
   if (!u.tenant && !u.company) return false;
@@ -89206,7 +89234,7 @@ async function createMoveInInvoices(mode) {
       b, f, u,
       purpose: 'deposit',
       amount: deposit,
-      desc: `Security deposit — Suite ${u.id}`,
+      desc: `Security deposit — ${_unitNoun(u)} ${u.id}`,
     });
   }
 }
@@ -89437,8 +89465,8 @@ async function _sendMoveInDirect(mode, btn) {
       }
     }
     const depDesc = depMonthLabel
-      ? `Security deposit — Suite ${u.id} · move-in ${depMonthLabel}`
-      : `Security deposit — Suite ${u.id}`;
+      ? `Security deposit — ${_unitNoun(u)} ${u.id} · move-in ${depMonthLabel}`
+      : `Security deposit — ${_unitNoun(u)} ${u.id}`;
     const res = await stripeCreateInvoice({
       buildingId: b.id, floorId: f.id, unitId: u.id,
       daysUntilDue: 7,
@@ -89725,7 +89753,7 @@ function openMoveTenantModal(buildingId, floorId, unitId) {
       if (cand === u) continue;
       if (cand.groupId) continue;
       if (cand.rentable === false) continue;
-      if (cand.type !== 'office') continue;
+      if (!_isRentableType(cand.type)) continue;
       if (cand.status === 'occupied' || cand.tenant || cand.company) continue;
       candidates.push({
         floor: fl,
@@ -96533,8 +96561,8 @@ async function _ntoSendDeposit(btn) {
       }
     }
     const depDesc = depMonthLabel
-      ? `Security deposit — Suite ${u.id} · move-in ${depMonthLabel}`
-      : `Security deposit — Suite ${u.id}`;
+      ? `Security deposit — ${_unitNoun(u)} ${u.id} · move-in ${depMonthLabel}`
+      : `Security deposit — ${_unitNoun(u)} ${u.id}`;
     const res = await _withTimeout(stripeCreateInvoice({
       buildingId: ctx.buildingId, floorId: ctx.floorId, unitId: ctx.unitId,
       daysUntilDue: 7,
@@ -96844,7 +96872,7 @@ async function _triggerAutoInvoiceNowIfNeeded(u) {
       daysUntilDue: cfg.daysUntilDue,
       dueDateUnix: _rentDueUnix((u.contractRent || u.rent || 0), ym, (u.leaseStart || u.signed || ''), u),   // Entry 60
       purpose: 'rent',
-      description: `Rent for ${_fmtMonthName(ym)} · Suite ${u.id}`,
+      description: `Rent for ${_fmtMonthName(ym)} · ${_unitNoun(u)} ${u.id}`,
       emailOverride: u.email,
       tenantNameOverride: u.tenant || u.company || '',
       // auto flag — tells the backend to use the "RA-" prefix in
@@ -103729,7 +103757,7 @@ function calcStatsForUnits(units) {
   let wRentAnnual=0, wSqft=0, iRentAnnual=0, iSqft=0;
   units.forEach(u => {
     if (isArchived(u)) return;
-    if (u.rentable === false || u.type !== 'office') return;
+    if (u.rentable === false || !_isRentableType(u.type)) return;
     // Skip sub-rooms whose parent is whole-rented / group-leased —
     // counting them adds phantom vacant suites + double-counts area.
     if (typeof _isInactiveSubRoom === 'function' && _isInactiveSubRoom(u)) return;
@@ -103939,7 +103967,7 @@ function _buildNeedsAttention() {
     for (const f of (b.floors || [])) {
       for (const u of (f.units || [])) {
         if (isArchived(u)) continue;
-        if (u.rentable === false || (u.type && u.type !== 'office')) continue;
+        if (u.rentable === false || !_isRentableType(u.type)) continue;
         const rent = +u.contractRent || +u.rent || 0;
         const tenantName = u.tenant || u.company || '';
 
@@ -104174,7 +104202,7 @@ function _buildNewTenantsList() {
     for (const f of (b.floors || [])) {
       for (const u of (f.units || [])) {
         if (isArchived(u)) continue;
-        if (u.rentable === false || (u.type && u.type !== 'office')) continue;
+        if (u.rentable === false || !_isRentableType(u.type)) continue;
         if (u.status !== 'occupied' && u.status !== 'reserved') continue;
         if (!u.tenant && !u.company) continue;
 
@@ -112137,6 +112165,25 @@ function getDocuSignDefaults() {
     replyEmail:            s.replyEmail || DS_DEFAULTS.replyEmail,
   };
 }
+// Apt-юниты: стоковые DocuSign subject/message упоминают «Suite {suite}».
+// Если оператор НЕ кастомизировал текст (байтовое совпадение со стоковым
+// DS_DEFAULTS), для apt_-юнита подменяем Suite→Apt. Кастомные тексты не
+// трогаем — оператор написал их сознательно. getDocuSignDefaults отдаёт
+// свежий объект на каждый вызов — мутируем локальную копию, не глобал.
+function _dsDefaultsForUnit(u) {
+  const cfg = getDocuSignDefaults();
+  if (_isAptType(u && u.type)) {
+    if (cfg.defaultSubject === DS_DEFAULTS.defaultSubject) {
+      cfg.defaultSubject = 'Please sign your lease — Apt {suite}';
+    }
+    if (cfg.defaultMessage === DS_DEFAULTS.defaultMessage) {
+      cfg.defaultMessage = DS_DEFAULTS.defaultMessage.replace(/\bSuite\b/g, 'Apt');
+    }
+  }
+  return cfg;
+}
+
+
 function saveDocuSignDefaults(patch) {
   state.settings = state.settings || {};
   state.settings.docusign = Object.assign({}, state.settings.docusign || {}, patch);
@@ -121531,6 +121578,35 @@ function _resolveLeaseTemplate(u, kind, opts) {
       }
     }
   }
+  // Шаг 3c (apartments): apt_-юнит без явного pin'а (unit / floor /
+  // building) предпочитает встроенный FL Residential lease. Явный выбор
+  // оператора на любом уровне выше ПЕРЕКРЫВАЕТ этот дефолт. Workspace-
+  // дефолты ниже — офисной эпохи: офисный договор на квартиру уходить
+  // не должен. Шаблон в корзине / не найден / рендер упал → каскад
+  // продолжается как раньше. Не-apt юниты в ветку не заходят вообще.
+  if (kind === 'lease' && typeof _isAptType === 'function' && _isAptType(u && u.type)
+      && typeof _findLeaseTpl === 'function' && typeof _renderLeaseTemplateById === 'function') {
+    const aptTpl = _findLeaseTpl('tpl_fl_residential_lease');
+    if (aptTpl) {
+      try {
+        const fields = opts.asRawTemplate
+          ? _placeholderLeaseFields()
+          : _liveLeaseFields(u || {}, opts.liveOverrides);
+        const recipientName  = opts.asRawTemplate ? '{{tenant_name}}'  : (u?.tenant || u?.company || '(Tenant)');
+        const recipientEmail = opts.asRawTemplate ? '{{tenant_email}}' : (u?.email || '');
+        const html = _renderLeaseTemplateById(aptTpl.id, fields, recipientName, recipientEmail, !!opts.asRawTemplate);
+        if (html) {
+          return {
+            source: 'library-apt-default',
+            tpl: { name: aptTpl.name, html, _libraryId: aptTpl.id, _libraryType: aptTpl.type },
+          };
+        }
+      } catch (e) {
+        console.warn('[lease-resolve] apt-default render failed, falling back:', e);
+      }
+    }
+  }
+
   const workspace = state.settings && state.settings.leaseTemplates;
   if (workspace && workspace[kind] && workspace[kind].html) {
     return { source: 'workspace', tpl: workspace[kind] };
@@ -127728,7 +127804,7 @@ function _leaseCollectAll() {
         // ценна сама по себе даже для архивных юнитов.
         if (typeof isArchived === 'function' && isArchived(u)) continue;
         if (u.rentable === false) continue;
-        if (u.type && u.type !== 'office') continue;
+        if (!_isRentableType(u.type)) continue;
 
         // Собираем distinct event-months для юнита.
         // ym → { kind: 'signed' | 'deposit' | 'signed+deposit', date: 'YYYY-MM-DD' }
@@ -129516,7 +129592,7 @@ function renderLeasingModelPanel() {
     const win = []; const noWin = [];
     for (const u of (f?.units || [])) {
       if (typeof isArchived === 'function' && isArchived(u)) continue;
-      if (u.type && u.type !== 'office') continue;
+      if (!_isRentableType(u.type)) continue;
       if (u.rentable === false) continue;
       const sqft = +u.sqft || 0;
       if (sqft <= 0) continue;
@@ -130623,7 +130699,7 @@ function acceptDetected() {
     );
     const sqft = Math.round((b.w * b.h) / 100);
     const detectedType = b.type || 'office';
-    const rentable = detectedType === 'office';
+    const rentable = _isRentableType(detectedType);
     const id = (b.label && b.label.length < 12) ? b.label : String(nextNum + i);
     return {
       id,
@@ -132305,7 +132381,7 @@ function buildAutoBillingRows() {
         // видит расхождение между «14 overdue» сверху и «18 firing» снизу.
         if (typeof isArchived === 'function' && isArchived(u)) continue;
         if (u.rentable === false) continue;
-        if (u.type && u.type !== 'office') continue;
+        if (!_isRentableType(u.type)) continue;
         const ctx = (typeof _resolveBuildingFloorForUnit === 'function')
           ? _resolveBuildingFloorForUnit(u) : { b, f, u };
         // ===== Auto-invoice — effective config + source ===============
@@ -134073,7 +134149,7 @@ function _pfBuildingArea(bId){
   for (const f of (b?.floors || [])){
     gross += +f.grossSqft || 0;
     for (const u of (f.units || [])){
-      if (u.rentable === false || (u.type && u.type !== 'office')) continue;
+      if (u.rentable === false || !_isRentableType(u.type)) continue;
       const sf = +u.sqft || 0;
       rentable += sf;
       if (u.status === 'occupied') leased += sf;
@@ -136155,7 +136231,7 @@ function renderHomeView() {
     for (const f of (b.floors || [])) {
       for (const u of (f.units || [])) {
         if (typeof isArchived === 'function' && isArchived(u)) continue;
-        if (u.rentable === false || (u.type && u.type !== 'office')) continue;
+        if (u.rentable === false || !_isRentableType(u.type)) continue;
         // Multi-suite group lease: skip member shadows. _isUnitOverdue +
         // _computeUnitMoney редиректят member'а на head — без guard'а очередь
         // дублировала overdue по числу Suite в группе. Фильтр rent>0 ниже
@@ -136330,7 +136406,7 @@ function renderHomeView() {
         if (typeof _matchesActiveBuilding === 'function' && !_matchesActiveBuilding(b.id)) continue;
         for (const f of (b.floors || [])) {
           for (const u of (f.units || [])) {
-            if (u.rentable === false || (u.type && u.type !== 'office')) continue;
+            if (u.rentable === false || !_isRentableType(u.type)) continue;
             if (u.status !== 'occupied') continue;
             if (!u.tenant && !u.company) continue;
             const startStr = u.leaseStart || u.signed || '';
@@ -136584,7 +136660,7 @@ function _hvRenderPortfolio() {
     let suites = 0, occupied = 0, mrr = 0, attn = 0;
     for (const f of (b.floors || [])) {
       for (const u of (f.units || [])) {
-        if (u.rentable === false || (u.type && u.type !== 'office')) continue;
+        if (u.rentable === false || !_isRentableType(u.type)) continue;
         suites++;
         if (u.status === 'occupied') occupied++;
         const rent = +u.contractRent || +u.rent || 0;
@@ -137345,7 +137421,7 @@ function renderCommissions() {
     for (const f of b.floors || []) {
       for (const u of f.units || []) {
         if (isArchived(u)) continue;
-        if (u.rentable === false || u.type !== 'office') continue;
+        if (u.rentable === false || !_isRentableType(u.type)) continue;
         // (u.tenant || u.company) — company-only лизы (Suite 421 / LLC) тоже
         // приносят комиссию; голый u.tenant терял их полностью (аудит P1).
         const _commTenant = String(u.tenant || u.company || '').trim();
@@ -139795,8 +139871,9 @@ async function rrBulkSendLeases() {
         building: buildingLabel(b),
         email: u.email || '',
       };
-      const subject = _dsInterpolate(cfg.defaultSubject, ictx);
-      const message = _dsInterpolate(cfg.defaultMessage, ictx);
+      const cfgU = _dsDefaultsForUnit(u);
+      const subject = _dsInterpolate(cfgU.defaultSubject, ictx);
+      const message = _dsInterpolate(cfgU.defaultMessage, ictx);
       const templateId = localStorage.getItem(DS_LS.TEMPLATE) || null;
       const todayLong = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York', year:'numeric', month:'long', day:'numeric'});
       // Signatory's personal name (e.g. "Ann Noel") and title ("Authorized
@@ -140197,7 +140274,7 @@ function renderBillingKpiStrip() {
     for (const f of (b.floors || [])) {
       for (const u of (f.units || [])) {
         if (typeof isArchived === 'function' && isArchived(u)) continue;
-        if (u.rentable === false || (u.type && u.type !== 'office')) continue;
+        if (u.rentable === false || !_isRentableType(u.type)) continue;
         // Skip non-head members of multi-suite leases — head holds the
         // combined rent, so summing across all members would multiply
         // outstanding/overdue by the group size.
@@ -140521,7 +140598,7 @@ function _collectionsBridgeRows(yms) {
     for (const f of (b.floors || [])) {
       for (const u of (f.units || [])) {
         if (typeof isArchived === 'function' && isArchived(u)) continue;
-        if (u.rentable === false || (u.type && u.type !== 'office')) continue;
+        if (u.rentable === false || !_isRentableType(u.type)) continue;
         // EQ-2: члены группового лиза — тени; вся финансовая правда на head.
         if (typeof _isFinanceShadow === 'function' && _isFinanceShadow(u)) continue;
 
@@ -141675,7 +141752,7 @@ function renderBilling() {
     for (const f of b.floors || []) {
       for (const u of f.units || []) {
         if (isArchived(u)) continue;
-        if (u.rentable === false || (u.type && u.type !== 'office')) continue;
+        if (u.rentable === false || !_isRentableType(u.type)) continue;
         if (u.status !== 'occupied') continue;  // only occupied suites are billable
         // Ghost-occupied (no tenant) = inconsistent data, not billable.
         if (!u.tenant && !u.company) continue;
@@ -147860,8 +147937,8 @@ function agingQuickEmail(buildingId, floorId, unitId) {
   const r = _agingResolveSel(`${buildingId}|${floorId}|${unitId}`);
   if (!r) return;
   if (!r.u.email) { toast('No email on file', 'error'); return; }
-  const subj = `Past due rent — Suite ${r.u.id}`;
-  const body = `Hi ${r.u.tenant || ''},\n\nFriendly reminder that there's a past due balance on Suite ${r.u.id}.\n\nThanks,`;
+  const subj = `Past due rent — ${_unitNoun(r.u)} ${r.u.id}`;
+  const body = `Hi ${r.u.tenant || ''},\n\nFriendly reminder that there's a past due balance on ${_unitNoun(r.u)} ${r.u.id}.\n\nThanks,`;
   window.location.href = `mailto:${encodeURIComponent(r.u.email)}?subject=${encodeURIComponent(subj)}&body=${encodeURIComponent(body)}`;
   recordOutreach(r.u, 'email', `Mailto opened to ${r.u.email}`);
   saveState();
@@ -150615,7 +150692,7 @@ function _ciBuildAllLines() {
       // месяц, чтобы тенант и оператор сразу видели разницу).
       const lineType = (idx === 0) ? 'recurring' : 'advance';
       lines.push({
-        description: `Office Rent — Suite ${u.id}` + (monthLbl ? ` · ${monthLbl}` : '') + suffix,
+        description: `${_rentLineName(u)} — ${_unitNoun(u)} ${u.id}` + (monthLbl ? ` · ${monthLbl}` : '') + suffix,
         amount: lineBilled,
         qty: 1,
         type: lineType,
@@ -152234,7 +152311,7 @@ async function ciSubmit() {
         // для Stripe-инвойса (см. functions/index.js → extraLineItems map).
         if (fullRent > 0) {
           extraLineItems.push({
-            description: `Office Rent — Suite ${u?.id || ''} · ${lbl}`.slice(0, 250),
+            description: `${_rentLineName(u)} — ${_unitNoun(u)} ${u?.id || ''} · ${lbl}`.slice(0, 250),
             amount: fullRent,
             type: 'advance',
           });
@@ -152656,7 +152733,7 @@ function openSendLeaseModal(buildingId, floorId, unitId) {
   // Interpolate subject + message from workspace defaults. Placeholders
   // get current tenant / unit / building context substituted in. The
   // user can still edit freely — this is just the starting point.
-  const cfg = getDocuSignDefaults();
+  const cfg = _dsDefaultsForUnit(u);
   const ctx = {
     name: fillName || 'there',
     tenant: fillName || u.tenant || '',
@@ -152682,7 +152759,7 @@ function openSendLeaseModal(buildingId, floorId, unitId) {
       const r = _resolveLeaseTemplate(u, 'lease', { asRawTemplate: true });
       if (r && r.tpl && r.tpl.name) { _tplName = r.tpl.name; _tplSrc = r.source || ''; }
     } catch (e) {}
-    const _srcLabel = ({ 'library-unit': 'suite pick', 'library-floor': 'floor default', 'library-building': 'building default', 'library-default': 'workspace default', unit: 'suite override', workspace: 'workspace template', generated: 'built-in' })[_tplSrc] || '';
+    const _srcLabel = ({ 'library-unit': 'suite pick', 'library-floor': 'floor default', 'library-building': 'building default', 'library-apt-default': 'apartment default', 'library-default': 'workspace default', unit: 'suite override', workspace: 'workspace template', generated: 'built-in' })[_tplSrc] || '';
     info.innerHTML = `<b>Inline mode</b> — <b>${esc(_tplName)}</b>${_srcLabel ? ` <span style="color:var(--muted);">(${esc(_srcLabel)})</span>` : ''} will be generated on the fly with every value filled in. DocuSign only collects the tenant's signature and date.${workflow}`;
   }
   document.getElementById('sendLeaseModal').classList.add('active');
@@ -158238,14 +158315,14 @@ function payEmailTenant(buildingId, floorId, unitId, ym) {
   const balance = _paymRowBalance(u, currentYm);
   const tenant = (u.tenant || '').trim() || 'Tenant';
   const subject = balance.outstanding > 0
-    ? `Rent reminder — Suite ${u.id} — $${balance.outstanding.toLocaleString()} due`
-    : `Rent statement — Suite ${u.id}`;
+    ? `Rent reminder — ${_unitNoun(u)} ${u.id} — $${balance.outstanding.toLocaleString()} due`
+    : `Rent statement — ${_unitNoun(u)} ${u.id}`;
   const lines = [
     `Hello ${tenant},`,
     '',
     balance.outstanding > 0
-      ? `This is a friendly reminder that your account currently shows an outstanding balance of $${balance.outstanding.toLocaleString()} for Suite ${u.id}.`
-      : `Thank you for your continued tenancy at Suite ${u.id}. Your account is currently in good standing.`,
+      ? `This is a friendly reminder that your account currently shows an outstanding balance of $${balance.outstanding.toLocaleString()} for ${_unitNoun(u)} ${u.id}.`
+      : `Thank you for your continued tenancy at ${_unitNoun(u)} ${u.id}. Your account is currently in good standing.`,
     '',
     `Year-to-date paid: $${balance.ytdPaid.toLocaleString()}`,
     `Monthly rent:      $${(+u.contractRent || +u.rent || 0).toLocaleString()}`,
@@ -158295,7 +158372,7 @@ function renderPayments() {
       if (floors.length > 0 && !floors.includes(f.id)) continue;
       for (const u of f.units) {
         if (isArchived(u)) continue;
-        if (u.rentable === false || (u.type && u.type !== 'office')) continue;
+        if (u.rentable === false || !_isRentableType(u.type)) continue;
         if (statusSet && !statusSet.has(u.status)) continue;
         // Lease-head: не-head членов мульти-сьютовых лизов скрываем — их
         // финансы (rent/payments/deposit) живут на head'е. Без этого 9
@@ -158776,7 +158853,7 @@ function exportPaymentsCSV() {
   for (const b of state.buildings) {
     for (const f of b.floors) {
       for (const u of f.units) {
-        if (u.rentable === false || (u.type && u.type !== 'office')) continue;
+        if (u.rentable === false || !_isRentableType(u.type)) continue;
         const row = [u.id, u.tenant || '', u.company || ''];
         months.forEach(m => {
           const p = u.payments?.[m.ym];

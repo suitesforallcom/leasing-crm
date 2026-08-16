@@ -34,7 +34,10 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g,
 const usd = (ctx, n) => (ctx.fmt && ctx.fmt.money) ? ctx.fmt.money(n) : '$' + Math.round(+n || 0).toLocaleString('en-US');
 const dlong = (ctx, iso) => (iso && ctx.fmt && ctx.fmt.dateLong) ? ctx.fmt.dateLong(iso) : (iso || '—');
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;      // строже десктопного /@/ — договор уходит НАВСЕГДА
-const suiteLabel = (u) => 'Suite ' + (u ? u.id : '—');
+// Зеркало money.isAptType (локальная копия — как esc): «Apt» уходит в тему
+// письма DocuSign и в текст для арендатора — квартире нельзя писать «Suite».
+const isAptType = (t) => String(t || '').slice(0, 4) === 'apt_';
+const suiteLabel = (u) => ((u && isAptType(u.type)) ? 'Apt ' : 'Suite ') + (u ? u.id : '—');
 // Конец лизы считает money.js (конвенция _leaseEndFromStartTerm); m2m — открытая.
 function endOf(ctx, L) {
   if (L.term === 'mtm' || !ctx.money || !ctx.money.leaseEndFromStartTerm) return '';
@@ -79,7 +82,7 @@ function findUnit(snap, buildingId, unitId) {
 function isOccupied(u) { return !!u && (u.status === 'occupied' || !!(u.tenant || u.company)); }
 function isLeasable(u) {
   if (!u || u.deletedAt || u.archivedAt || u.rentable === false) return false;
-  if (u.type && u.type !== 'office') return false;               // общие зоны не сдаются (DATA: isRentable)
+  if (u.type && u.type !== 'office' && !isAptType(u.type)) return false;   // общие зоны не сдаются (DATA: isRentable); apt_* сдаются
   return !(u.groupId && u.groupRole !== 'primary');               // member мульти-сьют лизы — финансовая тень
 }
 

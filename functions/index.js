@@ -588,6 +588,20 @@ function _unitProrationCreditCF(unit, ym) {
   return Math.max(0, Math.min(1, totalFraction));
 }
 
+// ── Жилая таксономия (apt_-контракт, 2026-08) ────────────────────────────
+// Локальные копии предикатов монолита (рядом с TYPE_LABELS, MONO:27028) и
+// m/lib/money.js — CF не может импортировать ни то, ни другое. Держать
+// байт-в-байт синхронно во всех трёх местах (grep-контракт: apt_).
+function _isAptType(t) { return String(t || '').slice(0, 4) === 'apt_'; }
+function _isRentableType(t) { return !t || t === 'office' || _isAptType(t); }
+// Customer-facing wording: жилой юнит — «Apt» вместо «Suite», rent-строка —
+// «Apartment Rent» вместо «Monthly rent». ТОЛЬКО слова: money-семантика,
+// metadata и дедуп-ключи не меняются. Fail-safe: неизвестный тип ведёт себя
+// как сегодня (Suite / Monthly rent).
+function _unitNoun(t) { return _isAptType(t) ? 'Apt' : 'Suite'; }
+function _rentLineLabel(t) { return _isAptType(t) ? 'Apartment Rent' : 'Monthly rent'; }
+
+
 function unitRentCents(unit, ym) {
   const r = Number(unit.contractRent) || Number(unit.rent) || 0;
   // Опциональный ym — когда передан, применяем waiver-credit (см.
@@ -1323,7 +1337,12 @@ exports.createStripeInvoice = onCall(
       deposit:   {label: 'Security deposit', verb: 'Security deposit for'},
       custom:    {label: 'Service charge',   verb: 'Service charge for'},
     };
-    const copy = PURPOSE_COPY[invPurpose] || PURPOSE_COPY.custom;
+    // apt_-контракт: у жилого юнита клиент видит «Apt» и «Apartment Rent».
+    // Только rent-purpose меняет label; verb «Rent for» нейтрален и общий.
+    const unitNoun = _unitNoun(unit.type);
+    const copy = (invPurpose === 'rent' && _isAptType(unit.type))
+      ? {label: _rentLineLabel(unit.type), verb: PURPOSE_COPY.rent.verb}
+      : (PURPOSE_COPY[invPurpose] || PURPOSE_COPY.custom);
 
     // Top-of-invoice header.
     // EVERY invoice — rent or not — now includes the human-readable
@@ -1332,19 +1351,19 @@ exports.createStripeInvoice = onCall(
     // the charge was issued, so the operator never has to guess
     // "which month was that key charge from?" when scanning Stripe.
     const topSummary = customDesc
-      ? `${copy.label}: ${customDesc} — Suite ${unitId} · ${monthLabel} ${year}`
+      ? `${copy.label}: ${customDesc} — ${unitNoun} ${unitId} · ${monthLabel} ${year}`
       : (invPurpose === 'rent'
-        ? `${copy.label} — Suite ${unitId} · ${monthLabel} ${year}`
-        : `${copy.label} — Suite ${unitId} · ${monthLabel} ${year}`);
+        ? `${copy.label} — ${unitNoun} ${unitId} · ${monthLabel} ${year}`
+        : `${copy.label} — ${unitNoun} ${unitId} · ${monthLabel} ${year}`);
 
     // Line-item description in charges table. Always stamp the period
     // so the PDF line reads e.g. "Replacement keys for April 2026 —
     // Suite A4, 123 Main St" instead of a bare "Replacement keys".
     const lineDesc = invPurpose === 'rent'
-      ? `${copy.verb} ${monthLabel} ${year} — Suite ${unitId}${addressLine ? ', ' + addressLine : ''}`
+      ? `${copy.verb} ${monthLabel} ${year} — ${unitNoun} ${unitId}${addressLine ? ', ' + addressLine : ''}`
       : (customDesc
-          ? `${copy.label}: ${customDesc} — ${monthLabel} ${year} · Suite ${unitId}${addressLine ? ', ' + addressLine : ''}`
-          : `${copy.verb} ${monthLabel} ${year} — Suite ${unitId}${addressLine ? ', ' + addressLine : ''}`);
+          ? `${copy.label}: ${customDesc} — ${monthLabel} ${year} · ${unitNoun} ${unitId}${addressLine ? ', ' + addressLine : ''}`
+          : `${copy.verb} ${monthLabel} ${year} — ${unitNoun} ${unitId}${addressLine ? ', ' + addressLine : ''}`);
 
     // Footer: bottom-of-PDF context. Extra line appended later if
     // auto-charge is active for this invoice (see collectionMethod
@@ -1362,7 +1381,7 @@ exports.createStripeInvoice = onCall(
     const landlordName  = String(_wsSettings.invoiceLandlordName  || 'SuitesForAll').trim();
     const footerParts = [
       `Property: ${addressLine}${floorLabel ? ` · ${floorLabel}` : ''}`,
-      `Suite: ${unitId}`,
+      `${unitNoun}: ${unitId}`,
       invPurpose === 'rent' ? `Billing period: ${monthLabel} ${year}` : `Charge type: ${copy.label}`,
       `Invoice issued: ${nowIso}`,
       _dueFooter,                          // Entry 60: точная дата для rent, иначе «within N days»
@@ -1480,7 +1499,7 @@ exports.createStripeInvoice = onCall(
       // decode what they're paying for at a glance. Stripe caps
       // custom_fields at 4, so Property is only included when it fits.
       custom_fields: ([
-        {name: 'Suite',          value: String(unitId)},
+        {name: unitNoun,         value: String(unitId)},
         {name: 'Charge type',    value: copy.label},
         {name: 'Billing month',  value: `${monthLabel} ${year}`},
         ...(addressLine ? [{name: 'Property', value: addressLine}] : []),
@@ -1842,7 +1861,7 @@ exports.startAutoPay = onCall(
         price_data: {
           currency: 'usd',
           product_data: {
-            name: `Monthly rent — ${building.name || building.address || ''} · Suite ${unitId}`,
+            name: `${_rentLineLabel(unit.type)} — ${building.name || building.address || ''} · ${_unitNoun(unit.type)} ${unitId}`,
           },
           unit_amount: rentCents,
           recurring: {interval: 'month'},
@@ -2753,6 +2772,11 @@ exports.bulkConnectStripeCustomers = onCall(
           // legitimate tenants like salons/retail marked with a custom type.
           if (u.rentable === false) continue;
           const NON_RENTABLE_TYPES = new Set(['stairs','elevator','toilet','mechanical','atrium']);
+
+          // apt_* (жилой контракт 2026-08) в denylist НЕ входят — квартиры
+          // rentable и проходят дальше наравне с office/custom. НЕ сужать до
+          // _isRentableType: этот гейт НАМЕРЕННО шире предиката (салоны/retail
+          // с кастомным типом — легитимные арендаторы, см. коммент выше).
           if (u.type && NON_RENTABLE_TYPES.has(u.type)) continue;
           if (u.status !== 'occupied') continue;
           const email = u.email ? u.email.toLowerCase() : '';
@@ -5307,7 +5331,7 @@ const _runAutoInvoicesHandler = async (opts) => {
               _rollInCandidate = null;
             }
 
-            const description = `Monthly rent — ${nm.toLocaleString('en-US', {month:'long', year:'numeric', timeZone:'UTC'})} · Suite ${u.id}`;
+            const description = `${_rentLineLabel(u.type)} — ${nm.toLocaleString('en-US', {month:'long', year:'numeric', timeZone:'UTC'})} · ${_unitNoun(u.type)} ${u.id}`;
             const due = Math.floor((Date.now() + dueDays * 86400_000) / 1000);
 
             // Idempotency key: версионирован (AUTO_INV_KEY_VER, module scope).
@@ -5359,7 +5383,7 @@ const _runAutoInvoicesHandler = async (opts) => {
               : `Payment due: within ${dueDays} days`;
             const _autoFooter = [
               `Property: ${b.address || b.name || ''}${f.name ? ' · ' + f.name : ''}`,
-              `Suite: ${u.id}`,
+              `${_unitNoun(u.type)}: ${u.id}`,
               `Billing period: ${_autoMonthLabel} ${_autoYear}`,
               `Invoice issued: ${new Date().toISOString().slice(0, 10)}`,
               _acDueFooter,
@@ -6336,7 +6360,7 @@ async function _runAutoLateFeesHandler(opts) {
               logger.warn(`[auto-late-fee] ${u.id}/${o.ym}: dup-search failed (${searchErr.message}); proceeding with idempotency-key`);
             }
 
-            const description = `Late fee — ${o.monthLabel} unpaid · Suite ${u.id}`;
+            const description = `Late fee — ${o.monthLabel} unpaid · ${_unitNoun(u.type)} ${u.id}`;
             const dueDays = 0;  // late fees due IMMEDIATELY — penalty за rent, без дополнительного grace
             // Ключ версионирован (AUTO_INV_KEY_VER, как в rent-cron): invoice-first
             // меняет параметры invoices.create — старый ключ `auto-lf-…` в
@@ -6376,7 +6400,7 @@ async function _runAutoLateFeesHandler(opts) {
               : `$${cfg.amount} flat`;
             const _autoFooter = [
               `Property: ${b.address || b.name || ''}${f.name ? ' · ' + f.name : ''}`,
-              `Suite: ${u.id}`,
+              `${_unitNoun(u.type)}: ${u.id}`,
               `Late fee for: ${o.monthLabel}`,
               `Calculated: ${_calcLabel}`,
               `Grace period: ${cfg.graceDays || 0} days`,

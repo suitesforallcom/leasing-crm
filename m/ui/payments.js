@@ -65,10 +65,12 @@ function within1(a, b) {
 
 /* ---------- выборка юнитов ---------- */
 /* Виден на экране: не архивный, арендуемый, не общая зона.
-   type может отсутствовать в старых записях — тогда считаем офисом. */
+   type может отсутствовать в старых записях — тогда считаем офисом.
+   Жилые типы apt_* (таксономия 2026-08) — сдаваемые, как офис. */
+const isAptType = (t) => String(t || '').slice(0, 4) === 'apt_';   // зеркало money.isAptType (локальная копия — как esc/todayYm)
 function isVisible(u) {
   // deletedAt — поле архивации десктопа (MONO:30443); archivedAt в базе нет.
-  return !!(u && u.id) && !u.deletedAt && !u.archivedAt && u.rentable !== false && (!u.type || u.type === 'office');
+  return !!(u && u.id) && !u.deletedAt && !u.archivedAt && u.rentable !== false && (!u.type || u.type === 'office' || isAptType(u.type));
 }
 /* Финансовая тень мульти-сьютовой лизы: вся касса живёт на groupRole==='primary'.
    Из СУММ и счётчиков такие юниты исключаем (иначе двойной счёт), но из поиска
@@ -150,7 +152,8 @@ function currentBuilding(ctx, blds) {
   return blds.find(b => b && (b.id === key || b.code === key)) || blds[0] || null;
 }
 function suiteLabel(b, u) {
-  const apt = !!(b && (b.apt || b.residential || b.kind === 'residential'));
+  // Тип юнита сильнее флага здания; флаг остаётся запасным (жилой корпус целиком).
+  const apt = (u && isAptType(u.type)) || !!(b && (b.apt || b.residential || b.kind === 'residential'));
   return (apt ? 'Apt ' : 'Suite ') + String((u && u.id) || '');
 }
 function floorLabel(f, idx) {
