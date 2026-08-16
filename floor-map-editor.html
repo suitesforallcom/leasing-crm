@@ -27051,6 +27051,48 @@ function _isRentableType(t) { return !t || t === 'office' || _isAptType(t); }
 // читают их через эти хелперы, тумблеры в редакторе для apt_ скрыты.
 function _unitHasWindow(u) { return !!(u && u.window) || _isAptType(u && u.type); }
 function _unitHasSink(u)   { return !!(u && u.sink)   || _isAptType(u && u.type); }
+// Заливка режима «Unit type» для квартирных типов. Дефолты — пастели в
+// семье карты, НЕ совпадающие со статусными цветами (paid/due/overdue/
+// reserved/prospect). Оператор меняет цвет прямо в легенде вкладки
+// (color-picker) — выбор хранится в state.settings.typeFillColors.
+// Палитра ПОДОБРАНА оптимизатором (2026-08-16, scratchpad/pick_palette.mjs):
+// светлота двух уровней (0.905/0.845 — дальтоник различает светлоту), цветность
+// на максимуме sRGB-гамута, оттенки перебором до max(min ΔE) между типами.
+// Итог: худшая пара типов ΔE 7.1 (у первой ручной версии было 1.7 —
+// неразличимо), тёплые → холодные по числу спален. Чёрный номер читается
+// на каждом. Оператор может переопределить любой цвет пикером в легенде
+// (per-building, b.typeFillColors).
+const DEFAULT_APT_TYPE_FILL = {
+  apt_studio_1: '#FDD5CF',   // персиковая роза
+  apt_loft_1:   '#EDC67F',   // золото
+  apt_1_1:      '#CDEDA4',   // зелень
+  apt_2_1:      '#77E1D8',   // бирюза
+  apt_3_1:      '#B9E8FD',   // небо
+  apt_2_2:      '#CFC3FB',   // барвинок
+  apt_3_2:      '#FDCEFD',   // орхидея
+};
+// Хранение — В ЗДАНИИ (b.typeFillColors), не в настройках workspace:
+// «эти настройки для каждого здания уникальны» (Tony 2026-08-16). Поле
+// едет вместе с документом здания через building-зеркало.
+function _typeFillFor(t, b) {
+  const bb = b || ((typeof currentBuilding === 'function') ? currentBuilding() : null);
+  const ov = bb && bb.typeFillColors;
+  return (ov && ov[t]) || DEFAULT_APT_TYPE_FILL[t] || '#EAE6F5';
+}
+// Смена цвета из легенды — пишется в ТЕКУЩЕЕ здание.
+function _setTypeFill(t, color) {
+  if (typeof requireLeaderTab === 'function' && !requireLeaderTab('Changing type colors')) return;
+  if (!/^#[0-9a-fA-F]{6}$/.test(String(color || ''))) return;
+  const b = (typeof currentBuilding === 'function') ? currentBuilding() : null;
+  if (!b) return;
+  b.typeFillColors = b.typeFillColors || {};
+  b.typeFillColors[t] = color;
+  saveState();
+  if (typeof renderAll === 'function') renderAll();
+  if (typeof renderMapLegendBar === 'function') try { renderMapLegendBar(); } catch (e) {}
+}
+window._setTypeFill = _setTypeFill;
+
 // Подпись типа этажа: «(apartments)», когда сдаваемые юниты этажа — квартиры.
 function _floorLeaseNoun(f) {
   const us = (f && f.units) || [];
@@ -31727,11 +31769,25 @@ function renderMapLegendBar() {
       ];
     }
     if (mode === 'type') {
-      return [
-        { color: '#E8EFE4', label: 'Window' },
-        { color: '#F4F2EE', label: 'Interior' },
-        { color: '#EBE8E2', label: 'Common area' },
-      ];
+      // Легенда динамическая: только типы, реально присутствующие в текущем
+      // здании (просьба оператора 2026-08-16). Квартирные строки несут
+      // color-picker — настройка заливки прямо на вкладке.
+      const b = (typeof currentBuilding === 'function') ? currentBuilding() : null;
+      const present = new Set();
+      let hasOffice = false, hasCommon = false;
+      for (const f of ((b && b.floors) || [])) for (const u of (f.units || [])) {
+        if (!u || u.deletedAt || u.archivedAt) continue;
+        if (_isAptType(u.type)) present.add(u.type);
+        else if (_isRentableType(u.type) && u.rentable !== false) hasOffice = true;
+        else hasCommon = true;
+      }
+      const out = [];
+      for (const k of _UNIT_TYPE_ORDER) {
+        if (present.has(k)) out.push({ color: _typeFillFor(k, b), label: TYPE_LABELS[k] || k, aptKey: k });
+      }
+      if (hasOffice) { out.push({ color: '#E8EFE4', label: 'Window' }, { color: '#F4F2EE', label: 'Interior' }); }
+      if (hasCommon) out.push({ color: '#EBE8E2', label: 'Common area' });
+      return out.length ? out : [{ color: '#EBE8E2', label: 'Common area' }];
     }
     if (mode === 'payment') {
       // Динамическая легенда, синхронизирована с _computeUnitFillImpl
@@ -31768,6 +31824,13 @@ function renderMapLegendBar() {
     wrap.innerHTML = items.map(it => {
       if (it.dashed) {
         return `<div class="mlb-item"><span class="mlb-swatch mlb-swatch-dashed"></span>${it.label}</div>`;
+      }
+      if (it.aptKey && typeof canEdit === 'function' && canEdit()) {
+        // Квартирный тип: свотч = живой color-picker (input поверх свотча).
+        return `<div class="mlb-item" title="Click the swatch to change the ${esc(it.label)} fill">`
+          + `<label class="mlb-swatch" style="background:${it.color}; border-color:${it.color}; cursor:pointer; position:relative; overflow:hidden;">`
+          + `<input type="color" value="${it.color}" onchange="_setTypeFill('${esc(it.aptKey)}', this.value)"`
+          + ` style="position:absolute; inset:0; opacity:0; width:100%; height:100%; cursor:pointer; border:0; padding:0;"></label>${it.label}</div>`;
       }
       return `<div class="mlb-item"><span class="mlb-swatch" style="background:${it.color}; border-color:${it.color}"></span>${it.label}</div>`;
     }).join('');
@@ -31872,7 +31935,10 @@ function _computeUnitFillImpl(u, mode) {
   if (!isRentable) return (TYPE_FILL[u.type] || '#d4d4d8');
 
   if (mode === 'type') {
-    // Window vs interior — warm-neutral pastels from the mock.
+    // Квартиры красятся ПО ТИПУ (Loft/1bed/…): у них окно подразумевается,
+    // и офисная пара Window/Interior делала весь жилой этаж одноцветным.
+    if (_isAptType(u.type)) return _typeFillFor(u.type);
+    // Офисы: window vs interior — warm-neutral pastels from the mock.
     return _unitHasWindow(u) ? '#E8EFE4' : '#F4F2EE';
   }
   if (mode === 'payment') {
