@@ -619,6 +619,32 @@ export function buildingStats(building, ym, snap) {
  * monthStatus говорит на языке денежной модели (free/upcoming/ended/no_lease);
  * экраны знают только семь значений легенды плана этажа. Одна точка перевода.
  */
+/**
+ * Заливка КАРТЫ — отдельно от денежной правды. Это сознательное разделение.
+ *
+ * Десктоп красит «счёт выставлен» синим РАНЬШЕ, чем проверяет просрочку
+ * (floor-map-editor.html:31960 против :32024, там же комментарий «ПОРЯДОК
+ * КРИТИЧЕН… не поднимать выше blue-проверки»). Но его же денежная модель
+ * считает такой юнит просроченным — то есть синий на карте МАСКИРУЕТ долг.
+ *
+ * Решение оператора (2026-08-16): цвет как на десктопе, но просрочку не
+ * терять — отдаём её отдельным флагом, и карта рисует пометку поверх заливки.
+ *
+ * ВАЖНО: uiStatus НЕ меняется. Он кормит денежные счётчики (buildingStats,
+ * «Overdue $13k» на главной), и подмена там превратила бы долг в «счёт
+ * выставлен» — ровно та потеря сигнала, которой мы избегаем.
+ */
+export function mapStatus(unit, ym, snap) {
+  const base = uiStatus(unit, ym, snap);
+  const overdue = base === 'overdue';
+  // Синий выигрывает только у просрочки. Оплаченное, свободное, зарезервированное
+  // и «аренда впереди» остаются собой.
+  if (overdue && _hasOpenInvoice(leaseHead(unit, snap) || unit, ym, snap)) {
+    return { status: 'invoiced', overdue: true };
+  }
+  return { status: base, overdue };
+}
+
 export function uiStatus(unit, ym, snap) {
   if (!unit) return 'vacant';
   if (unit.status === 'reserved') return 'reserved';

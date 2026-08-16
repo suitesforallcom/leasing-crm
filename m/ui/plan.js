@@ -62,11 +62,21 @@ function typeLabel(u, snap) {
   return TYPE_LABELS[k] || (k.charAt(0).toUpperCase() + k.slice(1).replace(/_/g, ' '));
 }
 
+/**
+ * Статус ЗАЛИВКИ + отдельный флаг просрочки (money.mapStatus).
+ * Цвет как на десктопе: «счёт выставлен» синим бьёт просрочку. Но сам факт
+ * просрочки не теряем — по нему рисуем пометку поверх заливки, иначе синий
+ * маскировал бы долг (болезнь десктопной карты).
+ */
 function stOf(ctx, u, ym) {
   try {
+    if (typeof ctx.money.mapStatus === 'function') {
+      const r = ctx.money.mapStatus(u, ym, ctx.snap);
+      if (r && typeof r.status === 'string') return r;
+    }
     const s = ctx.money.uiStatus(u, ym, ctx.snap);
-    return typeof s === 'string' ? s : 'vacant';
-  } catch (e) { return 'vacant'; }
+    return { status: typeof s === 'string' ? s : 'vacant', overdue: s === 'overdue' };
+  } catch (e) { return { status: 'vacant', overdue: false }; }
 }
 
 /** Прямоугольник или полигон — приводим к одному описанию для отрисовки. */
@@ -174,6 +184,7 @@ function planSvg(ctx, b, f, ym, zoom) {
   //   2) сдаваемые юниты — поверх, иначе коридор закрывает сьют (видели на 401);
   //   3) подписи — поверх всего, иначе номер прячется под соседней фигурой.
   const labels = [];
+  const overlays = [];   // пометки просрочки: поверх заливки, под подписями
   // Внутри каждой группы — от БОЛЬШИХ к маленьким. В данных крупный сьют и его
   // под-комнаты пересекаются по координатам (2-й этаж: 205 площадью 444k
   // накрывает 20510/20511/20512, а 204 и 207 — 201 и 2041). Без сортировки
@@ -185,13 +196,14 @@ function planSvg(ctx, b, f, ym, zoom) {
   });
   for (const { u, s } of ordered) {
     const rentable = isRentable(u);
-    const st = rentable ? stOf(ctx, u, ym) : 'common';
+    const m = rentable ? stOf(ctx, u, ym) : { status: 'common', overdue: false };
+    const st = m.status;
     const fill = rentable ? 'var(--plan-' + st + ')' : 'var(--plan-common)';
     const attrs = ' fill="' + fill + '" stroke="var(--plan-line)" stroke-width="' + (vw / 520) + '"'
       + (rentable
         ? ' data-act="unit" data-b="' + esc(b.id) + '" data-floor="' + esc(f.id || '') + '" data-id="' + esc(u.id) + '"'
           + ' style="cursor:pointer" role="button" tabindex="0"'
-          + ' aria-label="' + esc('Suite ' + u.id + ' — ' + st) + '"'
+          + ' aria-label="' + esc('Suite ' + u.id + ' — ' + st + (m.overdue ? ', payment overdue' : '')) + '"'
         : ' aria-hidden="true"');
     body += s.kind === 'rect'
       ? '<rect x="' + s.x + '" y="' + s.y + '" width="' + s.w + '" height="' + s.h + '" rx="' + (vw / 900) + '"' + attrs + '/>'
@@ -201,6 +213,20 @@ function planSvg(ctx, b, f, ym, zoom) {
     const [w, h] = sizeOf(s);
     // Сдаваемому — номер сьюта, общей зоне — тип, как на десктопе.
     const txt = rentable ? String(u.id) : typeLabel(u, ctx.snap).toUpperCase();
+    // Пометка просрочки поверх синей заливки: заливка совпадает с десктопом,
+    // но «не заплатили» не исчезает. Рисуем ВТОРЫМ контуром внутрь фигуры —
+    // он не мешает тапу (pointer-events выключены) и виден на любом фоне.
+    if (m.overdue && st !== 'overdue') {
+      const inset = vw / 300;
+      overlays.push(s.kind === 'rect'
+        ? '<rect x="' + (s.x + inset) + '" y="' + (s.y + inset) + '" width="' + Math.max(0, s.w - inset * 2)
+          + '" height="' + Math.max(0, s.h - inset * 2) + '" fill="none" stroke="var(--plan-overdue-mark)"'
+          + ' stroke-width="' + (vw / 300) + '" stroke-dasharray="' + (vw / 90) + ' ' + (vw / 180) + '"'
+          + ' pointer-events="none"/>'
+        : '<polygon points="' + s.pts.map(p => p[0] + ',' + p[1]).join(' ') + '" fill="none"'
+          + ' stroke="var(--plan-overdue-mark)" stroke-width="' + (vw / 300) + '"'
+          + ' stroke-dasharray="' + (vw / 90) + ' ' + (vw / 180) + '" pointer-events="none"/>');
+    }
     if (!txt) continue;
     // Кегль подбираем так, чтобы номер ПОМЕЩАЛСЯ: по высоте — доля фигуры,
     // по ширине — исходя из ширины моноширинного знака (~0.62 кегля).
@@ -217,7 +243,7 @@ function planSvg(ctx, b, f, ym, zoom) {
       + ' pointer-events="none" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">'
       + esc(txt) + '</text>');
   }
-  body += labels.join('');
+  body += overlays.join('') + labels.join('');
 
   return '<svg class="plan-svg" viewBox="' + vx + ' ' + vy + ' ' + vw + ' ' + vh + '"'
     + ' preserveAspectRatio="xMidYMid meet" role="img"'
@@ -259,7 +285,9 @@ export function render(ctx) {
   const L = [['paid', 'Paid'], ['invoiced', 'Invoice sent'], ['due', 'Due'], ['overdue', 'Overdue'],
     ['idle', 'Not billed'], ['reserved', 'Reserved'], ['vacant', 'Vacant']];
   h += '<div class="legend" style="padding:2px 16px 10px">' + L.map(([k, t]) =>
-    '<span><i style="background:var(--plan-' + k + ');border:1px solid var(--plan-line)"></i>' + t + '</span>').join('') + '</div>';
+    '<span><i style="background:var(--plan-' + k + ');border:1px solid var(--plan-line)"></i>' + t + '</span>').join('')
+    + '<span><i style="background:var(--plan-invoiced);border:1.5px dashed var(--plan-overdue-mark)"></i>'
+    + 'Invoice sent · past due</span></div>';
   return h;
 }
 

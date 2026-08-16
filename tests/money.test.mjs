@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import {
   monthStatus, isMonthSettled, verdict, buildingStats, monthAmount,
   leaseEndFromStartTerm, isMonthToMonth, isFinanceShadow, leaseHead,
-  UNPAID, STATUS_LABELS,
+  UNPAID, STATUS_LABELS, mapStatus, uiStatus,
 } from '../m/lib/money.js';
 
 let pass = 0, fail = 0;
@@ -332,6 +332,35 @@ t('cold cache: a moveInRent stamp still settles (rent-only by construction)', ()
   const u = tenant({ stripe: { moveInRent: { ym: YM, invoiceId: 'in_RENT' } } });
   const snap = snapOf([u], { invoices: [], invoiceBuckets: { in_RENT: 'paid' } });
   assert.equal(isMonthSettled(u, YM, snap), 'stripe-paid');
+});
+
+// ── 13. Заливка карты vs денежная правда (решение оператора 2026-08-16) ──
+// Десктоп красит «счёт выставлен» синим ПОВЕРХ просрочки (MONO:31960 vs :32024),
+// но его же деньги считают такой месяц долгом. Мы повторяем цвет и НЕ теряем долг.
+t('карта: просрочка со счётом красится как «счёт выставлен», но помечается', () => {
+  const u = tenant();
+  const s = snapOf([u], { invoices: [inv('in_open', { status: 'open', bucket: 'open' })] });
+  const m = mapStatus(u, YM, s);
+  assert.equal(m.status, 'invoiced', 'цвет обязан совпасть с десктопом');
+  assert.equal(m.overdue, true, 'долг нельзя терять — иначе синий его маскирует');
+});
+t('карта: просрочка БЕЗ счёта остаётся просрочкой', () => {
+  const u = tenant();
+  const m = mapStatus(u, YM, snapOf([u]));
+  assert.equal(m.status, 'overdue');
+  assert.equal(m.overdue, true);
+});
+t('ДЕНЬГИ не меняются: uiStatus по-прежнему говорит overdue', () => {
+  const u = tenant();
+  const s = snapOf([u], { invoices: [inv('in_open', { status: 'open', bucket: 'open' })] });
+  assert.equal(uiStatus(u, YM, s), 'overdue',
+    'подмена здесь превратила бы «Overdue $13k» на главной в «счёт выставлен»');
+});
+t('оплаченный месяц пометки не получает', () => {
+  const u = tenant({ payments: { [YM]: { status: 'paid' } } });
+  const m = mapStatus(u, YM, snapOf([u]));
+  assert.equal(m.status, 'paid');
+  assert.equal(m.overdue, false);
 });
 
 // ── done ────────────────────────────────────────────────────────────────────

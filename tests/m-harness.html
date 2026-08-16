@@ -105,7 +105,11 @@ const snap = {
   ],
   invoices: [{ id: 'in_1U4mHY2nq2bZh3q62SEa9jp4', number: 'R-CEN-301-2026-08', status: 'open', bucket: 'open',
     total: 2400, amountPaid: 0, dueDate: '2026-08-05', description: 'Rent — 301',
-    metadata: { unitId: '301', purpose: 'rent', ym: YM } }],
+    metadata: { unitId: '301', purpose: 'rent', ym: YM } },
+    // 445 — занят, просрочен И счёт выставлен: карта обязана покрасить синим
+    // и поставить пометку просрочки (решение оператора 2026-08-16).
+    { id: 'in_445', number: 'R-CEN-445', status: 'open', bucket: 'past_due', total: 2400, amountPaid: 0,
+      dueDate: '2026-08-05', description: 'Rent — 445', metadata: { unitId: '445', purpose: 'rent', ym: YM } }],
   invoicesAvailable: true, invoiceBuckets: {},
   settings: {
     landlordName: 'Crestview Holdings',
@@ -550,6 +554,21 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   const nZoom = (plz.match(/<text/g) || []).length;
   if (nZoom <= nFit) { say('bad', `зум не добавил подписей (${nFit} → ${nZoom})`); bad++; }
   else say('ok', `зум показывает больше подписей (${nFit} → ${nZoom})`);
+  // Заливка карты = десктоп, но просрочка не потеряна: синий + пометка.
+  {
+    const blue = /data-id="445"[^>]*/.exec(plh) || [''];
+    const fillOk = /var\(--plan-invoiced\)/.test(plh);
+    const markOk = /stroke="var\(--plan-overdue-mark\)"/.test(plh);
+    if (!fillOk) { say('bad', 'просроченный юнит со счётом не покрашен как «счёт выставлен»'); bad++; }
+    else say('ok', 'просрочка со счётом красится как на десктопе (синий)');
+    if (!markOk) { say('bad', 'пометка просрочки не нарисована — синий маскирует долг'); bad++; }
+    else say('ok', 'поверх синей заливки стоит пометка просрочки');
+    // и в ДЕНЬГАХ этот юнит по-прежнему просрочка
+    const u445 = snap.buildings[0].floors[1].units.find(x => String(x.id) === '445');
+    if (u445 && money.uiStatus(u445, YM, snap) !== 'overdue') {
+      say('bad', 'денежный статус подменился — «Overdue» на главной схлопнется'); bad++;
+    } else say('ok', 'денежный статус остался просрочкой (суммы не поехали)');
+  }
   // Порядок: крупный юнит обязан быть НИЖЕ мелкого, иначе он его закрывает.
   // На 2-м этаже прода 205 (площадь 444k) накрывал 20510/20511/20512.
   {
