@@ -241,6 +241,21 @@ else
 fi
 
 echo
+echo "Entry 16 — follower-tab guard on destructive actions:"
+# Follower-вкладка не пушит и не зеркалит (защита от инцидента 2026-06-08), но
+# сами действия не были заблокированы: удаление сьюта отрабатывало локально,
+# карта его убирала, а onSnapshot возвращал его через пару секунд. Оператор
+# удалял Suite 418 трижды подряд, каждый раз видя успех.
+if grep -qE "^function requireLeaderTab\(what\)" "$HTML" \
+   && grep -qE "requireLeaderTab\('Archiving Suite " "$HTML" \
+   && grep -qE "requireLeaderTab\('Deleting Suite " "$HTML"; then
+  echo "  ✓ requireLeaderTab present and wired into archive + delete"
+else
+  echo "  ✗ Entry 16 — requireLeaderTab missing or unwired: a read-only tab can delete a suite that silently comes back"
+  FAIL=1
+fi
+
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."

@@ -528,7 +528,10 @@ export function verdict(unit, ym, snap) {
 
   if (c.status === 'paid' && c.settle.via === 'local') {
     detail = (p && +p.amount > 0) ? `${_usd(p.amount)} received` : 'Recorded as paid';
-    source = ['marked manually', p && p.paidVia, p && p.date].filter(Boolean).join(' · ');
+    // p.date — сырой ISO ('2026-08-13'). В тексте для оператора его быть не
+    // должно (правило стенда): на проде это видно на сьюте 204 за сентябрь.
+    source = ['marked manually', p && p.paidVia, p && p.date ? _human(p.date, snap) : '']
+      .filter(Boolean).join(' · ');
   } else if (c.status === 'paid') {
     const amt = _stripePaidAmount(u, ym, snap);
     detail = amt != null ? `${_usd(amt)} received` : 'Paid on Stripe';

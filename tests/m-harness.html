@@ -991,6 +991,55 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   }
 }
 
+/* ---- 7f. месяц ДО начала аренды: ни фантомной ренты, ни зова выставить счёт.
+       На проде это сьюты 201 и 204 (аренда с 1 сентября): в августе карточка
+       писала «August rent $4,000» рядом с балансом $0 и главной кнопкой
+       предлагала выставить счёт. ---- */
+{
+  const YM = '2026-08';
+  const ctxOf = (snap, S) => ({ S, snap, money, fmt, canSend: () => true,
+    callCF: () => Promise.resolve({}), building: snap.buildings[0],
+    go(){}, openSheet(){}, closeSheet(){}, toast(){}, refresh(){} });
+  const u = { id: '204', type: 'office', status: 'occupied', tenant: 'Luka Gogic',
+    email: 'l@g.co', rent: 4000, contractRent: 4000, deposit: 4000,
+    leaseStart: '2026-09-01', leaseEnd: '', payments: {} };
+  const b = { id: 'b1', name: 'B', floors: [{ id: 'f1', name: '1', units: [u] }] };
+  const snap = { buildings: [b], units: [{ unit: u, building: b, floor: b.floors[0] }],
+    unitsIndex: { 'b1|204': { unit: u, building: b, floor: b.floors[0] } },
+    invoices: [], invoicesAvailable: true, invoiceBuckets: {}, settings: {} };
+  const ids = { buildingId: 'b1', floorId: 'f1', unitId: '204' };
+  const S = { ym: YM, scope: 'b1', sheet: 'unit', sheetPayload: ids, payload: ids, sheetArg: ids };
+  const r = unit.render(ctxOf(snap, S));
+  const ft = unit.foot(ctxOf(snap, S));
+
+  if (money.monthStatus(u, YM, snap) !== 'upcoming') { say('warn', 'фикстура 7f не даёт upcoming — проверка ослабла'); }
+  else {
+    const verdict = (r.match(/class="verdict"[\s\S]*?<\/div>\s*<\/div>/) || [''])[0];
+    if (/August rent/.test(verdict)) { say('bad', 'card quotes rent for a month BEFORE the lease starts'); bad++; }
+    else say('ok', 'no rent quoted for a month before the lease starts');
+    // «Send invoice» остаётся доступен (доп.услуга), но не главной кнопкой.
+    if (/^<button class="big-btn"(?![^>]*ghost)/.test(ft.trim())) {
+      say('bad', 'a not-yet-started lease gets a LOUD "Send invoice" as the primary action'); bad++;
+    } else say('ok', 'a not-yet-started lease offers no loud invoice CTA');
+  }
+}
+
+/* ---- 7g. дата ручной отметки — по-человечески, без ISO. ---- */
+{
+  const YM = '2026-09';
+  const u = { id: '205', type: 'office', status: 'occupied', tenant: 'T', rent: 4000,
+    leaseStart: '2026-01-01', payments: { [YM]: { status: 'paid', amount: 4000, date: '2026-08-13' } } };
+  const b = { id: 'b1', name: 'B', floors: [{ id: 'f1', name: '1', units: [u] }] };
+  const snap = { buildings: [b], units: [{ unit: u, building: b, floor: b.floors[0] }],
+    invoices: [], invoicesAvailable: true, invoiceBuckets: {}, settings: {} };
+  const v = money.verdict(u, YM, snap);
+  if (/\d{4}-\d{2}-\d{2}/.test(String(v.source || ''))) {
+    say('bad', `manual-payment source shows a raw ISO date: "${v.source}"`); bad++;
+  } else if (!/marked manually/i.test(String(v.source || ''))) {
+    say('bad', 'manual payment lost its "marked manually" provenance'); bad++;
+  } else say('ok', 'manual-payment date is human-readable, never ISO');
+}
+
 /* ---- 8. план на НАСТОЯЩЕЙ геометрии прода (tests/fixtures/plan-geometry.json)
        Синтетический этаж из одного квадрата ничего не доказывает: беда с
        подписями вылезает только на реальных узких и Г-образных формах. ---- */

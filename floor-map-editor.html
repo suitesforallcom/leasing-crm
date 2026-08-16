@@ -30428,6 +30428,8 @@ async function archiveUnit(buildingId, floorId, unitId, reason, note) {
   if (!u) { toast('Unit not found', 'error'); return; }
   if (!canArchive()) { toast('Your role cannot archive units', 'error'); return; }
   if (isArchived(u)) { toast('Already archived', 'error'); return; }
+  // Follower-вкладка archive не сохранит: сьют исчезнет и вернётся со снимком.
+  if (!requireLeaderTab('Archiving Suite ' + u.id)) return;
 
   // Pre-mutation safety snapshot — archive is reversible via Restore in
   // Settings → Archive, but the local backup also captures the full
@@ -30628,6 +30630,8 @@ function deleteUnitFromMenu(buildingId, floorId, unitId) {
     if (typeof toast === 'function') toast('Your role cannot delete units', 'error');
     return;
   }
+  // Раньше здесь спрашивали подтверждение, удаляли — и всё молча откатывалось.
+  if (typeof requireLeaderTab === 'function' && !requireLeaderTab('Deleting Suite ' + unitId)) return;
   const b = state.buildings.find(x => x.id === buildingId);
   const f = b?.floors.find(x => x.id === floorId);
   const u = f?.units.find(x => x.id === unitId);
@@ -33402,6 +33406,40 @@ const _sfaTabSync = (() => {
     onChange: (fn) => { _onLeadershipChange = fn; },
   };
 })();
+/**
+ * Страж разрушающих действий во follower-вкладке.
+ *
+ * ПОЧЕМУ: follower не пушит (fbPushNow → reason:'follower') и не зеркалит
+ * здания — это защита от инцидента 2026-06-08. Но сами действия НЕ были
+ * заблокированы: удаление сьюта отрабатывало в памяти вкладки, карта его
+ * убирала, а через пару секунд onSnapshot возвращал состояние с сервера —
+ * и сьют появлялся снова. Оператор удалял Suite 418 трижды подряд, потому
+ * что приложение каждый раз показывало успех.
+ *
+ * Возвращает true, если действие можно выполнять.
+ */
+function requireLeaderTab(what) {
+  try {
+    if (typeof _sfaTabSync === 'undefined' || !_sfaTabSync
+        || typeof _sfaTabSync.isLeader !== 'function' || _sfaTabSync.isLeader()) return true;
+  } catch (e) { return true; }          // страж не должен сам ломать действие
+  const label = what ? String(what) : 'This change';
+  if (typeof toast === 'function') {
+    toast(label + ' cannot be saved from a read-only tab — press "Take over" at the top first.', 'error');
+  }
+  try {
+    const banner = document.getElementById('sfaTabFollowerBanner');
+    if (banner) banner.scrollIntoView({ block: 'nearest' });
+    else if (_sfaTabSync && typeof _sfaTabSync.takeOver === 'function') {
+      // Баннер закрыли крестиком — без него оператору некуда нажать.
+      if (confirm(label + ' cannot be saved: another tab is the active editor.\n\nTake over editing in this tab?')) {
+        _sfaTabSync.takeOver();
+      }
+    }
+  } catch (e) {}
+  return false;
+}
+
 // Запускаем election сразу — до первого fbPushNow.
 if (typeof window !== 'undefined') {
   _sfaTabSync.init().catch(err => console.warn('[tab-sync] init failed', err));

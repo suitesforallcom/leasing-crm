@@ -228,6 +228,10 @@ function plan(ctx, hit, v, ym) {
   const occupied = u.status === 'occupied' || !!(u.tenant || u.company);
   if (!occupied || st === 'vacant') return { kind: 'lease' };
   if (isSettled(st)) return { kind: 'quiet' };
+  // Месяц ДО начала аренды (или после её конца) выставлять не за что: главной
+  // кнопкой был «Send invoice», и одно касание открывало счёт за август
+  // арендатору, который въезжает 1 сентября. Счёт остаётся доступен, но тихо.
+  if (['upcoming', 'ended', 'no_lease', 'reserved'].includes(v.status)) return { kind: 'quiet' };
   const inv = openInvoice(ctx, u, ym);
   /* Напоминать можно только о существующем счёте — «Remind» без счёта
      это письмо в никуда, поэтому просроченный без счёта идёт на выставление. */
@@ -284,7 +288,12 @@ export function render(ctx) {
     + '<p>' + esc(sub) + '</p></div>' + close + '</div>';
 
   /* --- вердикт: слово, деталь, происхождение --- */
-  const detail = [v.detail || labelOf(ctx, st), monthLong(ym) + ' rent ' + m$(ctx, rent)]
+  // Ренту за месяц дописываем ТОЛЬКО когда она за этот месяц причитается.
+  // У сьютов 201 и 204 аренда начинается 1 сентября, а карточка за август
+  // писала «August rent $4,000» рядом с балансом $0 — оператор читает это
+  // как долг, которого нет.
+  const owes = !['upcoming', 'ended', 'reserved', 'no_lease', 'vacant'].includes(v.status);
+  const detail = [v.detail || labelOf(ctx, st), owes ? monthLong(ym) + ' rent ' + m$(ctx, rent) : '']
     .filter(Boolean).join(' · ');
   const prov = provenance(v) || (isSettled(st) ? 'Source not recorded' : '');
   h += '<div class="verdict" data-s="' + esc(st) + '"><span class="vi">' + (STATUS_ICON[st] || I.dash) + '</span>'
