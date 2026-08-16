@@ -95,11 +95,36 @@ async function loadSdk() {
   throw new Error('Could not load the Firebase library. Check your connection and reopen the app. ('
     + ((lastErr && lastErr.message) || lastErr) + ')');
 }
+/**
+ * Домен входа — собственный origin, если приложение открыто с одного из доменов
+ * Hosting этого проекта (<site>.web.app или <site>.firebaseapp.com).
+ *
+ * Зачем: по умолчанию authDomain всегда <site>.firebaseapp.com, поэтому на
+ * web.app весь OAuth шёл МЕЖДУ доменами. Safari на iPhone режет межсайтовое
+ * хранилище (ITP) — и вход оканчивался ошибкой Google «400 … malformed».
+ * Совпадение origin убирает третью сторону целиком: popup и redirect работают
+ * в любом браузере.
+ *
+ * Оба адреса внесены в Authorized redirect URIs OAuth-клиента (web.app добавил
+ * оператор 2026-08-16). Список выводим ИЗ КОНФИГА, а не хардкодим: подменять
+ * authDomain на чужом домене нельзя — Google ответит redirect_uri_mismatch, и
+ * вход сломается уже на всех устройствах.
+ */
+function preferSameOriginAuth(cfg) {
+  try {
+    const base = String(cfg.authDomain || '').replace(/\.(firebaseapp\.com|web\.app)$/, '');
+    if (!base) return cfg;
+    const allowed = [base + '.web.app', base + '.firebaseapp.com'];
+    if (allowed.indexOf(location.host) > -1) cfg.authDomain = location.host;
+  } catch (e) { /* остаёмся на значении из конфига */ }
+  return cfg;
+}
+
 async function readConfig() {
   // Tier 1 в репозитории пуст: apiKey === '' (MONO:32645) — хардкодить нечего.
   try {                                            // Tier 2 — Firebase Hosting (MONO:32663)
     const r = await fetch('/__/firebase/init.json', { cache: 'no-store' });
-    if (r.ok) { const c = await r.json(); if (c && c.apiKey && c.projectId) return c; }
+    if (r.ok) { const c = await r.json(); if (c && c.apiKey && c.projectId) return preferSameOriginAuth(c); }
   } catch {}
   try {                                            // Tier 3 — локальная отладка (MONO:32680)
     const projectId = localStorage.getItem('sfa_firebase_project');
