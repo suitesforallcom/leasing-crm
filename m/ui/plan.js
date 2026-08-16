@@ -135,6 +135,13 @@ function currentFloor(ctx, b) {
   return list.find(f => String(f.id) === String(S.planFloor)) || list[0];
 }
 
+/** Слово для скринридера: то же различие, что в легенде. */
+function ariaWord(st, overdue) {
+  if (st === 'invoiced') return overdue ? 'invoice sent, payment past due' : 'invoice sent';
+  if (st === 'overdue') return 'not billed, payment past due';
+  return st;
+}
+
 /* ---------- сам план ---------- */
 function planSvg(ctx, b, f, ym, zoom) {
   const units = Array.isArray(f && f.units) ? f.units : [];
@@ -203,7 +210,7 @@ function planSvg(ctx, b, f, ym, zoom) {
       + (rentable
         ? ' data-act="unit" data-b="' + esc(b.id) + '" data-floor="' + esc(f.id || '') + '" data-id="' + esc(u.id) + '"'
           + ' style="cursor:pointer" role="button" tabindex="0"'
-          + ' aria-label="' + esc('Suite ' + u.id + ' — ' + st + (m.overdue ? ', payment overdue' : '')) + '"'
+          + ' aria-label="' + esc('Suite ' + u.id + ' — ' + ariaWord(st, m.overdue)) + '"'
         : ' aria-hidden="true"');
     body += s.kind === 'rect'
       ? '<rect x="' + s.x + '" y="' + s.y + '" width="' + s.w + '" height="' + s.h + '" rx="' + (vw / 900) + '"' + attrs + '/>'
@@ -282,8 +289,14 @@ export function render(ctx) {
   // Легенда — те же слова, что на экране Payments.
   // Reserved модель отдаёт (money.uiStatus) и план его красит — значит он обязан
   // быть в легенде, иначе оператор видит цвет, которому нет объяснения.
-  const L = [['paid', 'Paid'], ['invoiced', 'Invoice sent'], ['due', 'Due'], ['overdue', 'Overdue'],
-    ['idle', 'Not billed'], ['reserved', 'Reserved'], ['vacant', 'Vacant']];
+  /* Слова легенды называют ДЕЙСТВИЕ, а не только состояние. На карте (mapStatus)
+     «overdue» означает ровно «срок прошёл, а счёта не видно» — синюю заливку
+     такие юниты не получают. Значит оператору надо ВЫСТАВИТЬ счёт, а не гнаться
+     за арендатором; на проде это 2 юнита из 11 просроченных, остальные 9 —
+     синие с пометкой. Писать на них «Overdue» значит подсказывать не то. */
+  const L = [['paid', 'Paid'], ['invoiced', 'Invoice sent'], ['due', 'Due'],
+    ['overdue', 'Not billed · past due'], ['idle', 'Not billed yet'],
+    ['reserved', 'Reserved'], ['vacant', 'Vacant']];
   h += '<div class="legend" style="padding:2px 16px 10px">' + L.map(([k, t]) =>
     '<span><i style="background:var(--plan-' + k + ');border:1px solid var(--plan-line)"></i>' + t + '</span>').join('')
     + '<span><i style="background:var(--plan-invoiced);border:1.5px dashed var(--plan-overdue-mark)"></i>'

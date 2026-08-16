@@ -620,6 +620,19 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   S.tab = 'home'; S.planFloor = null;
 }
 
+/* ---- 4k. слова карты называют ДЕЙСТВИЕ + противоречия видны оператору ---- */
+{
+  S.tab = 'plan'; S.planFloor = 'f4';
+  const h = plan.render(ctx());
+  painted.push(h);
+  // «просрочено, но счёта нет» = надо ВЫСТАВИТЬ счёт, а не гнаться за жильцом
+  if (!/Not billed · past due/.test(h)) { say('bad', 'легенда плана не отличает «не выставили» от «не заплатили»'); bad++; }
+  else say('ok', 'легенда плана называет действие, а не только состояние');
+  if (/>Overdue</.test(h)) { say('bad', 'в легенде плана осталось безадресное «Overdue»'); bad++; }
+  else say('ok', 'безадресного «Overdue» в легенде плана нет');
+  S.tab = 'home'; S.planFloor = null;
+}
+
 /* ---- 5. каждое data-act действие кто-то обрабатывает (ловит тупики) ---- */
 {
   const acts = new Set();

@@ -23,6 +23,7 @@ const I = {
   home:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9.5"/></svg>',
   money:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="2" x2="12" y2="22"/><path d="M17 6H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>',
   plan:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h7V3"/><path d="M10 9v12"/><path d="M10 15h11"/></svg>',
+  alert:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 3 2 20h20L12 3z"/><line x1="12" y1="9" x2="12" y2="14"/><line x1="12" y1="17" x2="12" y2="17"/></svg>',
   grid:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
   check:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
   caret:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>',
@@ -140,6 +141,62 @@ function syncLine(){
   const txt = on ? (when ? 'synced ' + when : 'syncing…') : ('offline · last synced ' + (when || 'never'));
   return '<div class="sync"><i data-s="' + (on ? 'live' : 'off') + '"></i>' + esc(txt) + '</div>';
 }
+/**
+ * Данные, которые сами себе противоречат и БЛОКИРУЮТ действие с телефона.
+ * Не выдумываем «качество данных вообще» — только то, из-за чего оператор
+ * упирается в стену и не понимает почему.
+ *
+ * Историй за такими юнитами могут быть совершенно разные (проверено на проде
+ * 2026-08-16: у одного аренда живая и оплаченная, у другого закончилась, у
+ * третьего договор на пять лет без единого платежа, у четвёртого отскочили
+ * чеки). Поэтому приложение НЕ чинит их само и ничего не удаляет — показывает
+ * и отдаёт решение человеку.
+ */
+function dataIssues(){
+  const out = [];
+  const list = buildings();
+  for (const b of list){
+    for (const f of ((b && b.floors) || [])){
+      for (const u of ((f && f.units) || [])){
+        if (!u || u.deletedAt || u.archivedAt || u.rentable === false) continue;
+        if (u.type && u.type !== 'office') continue;
+        // Финансовые тени пропускаем — как это делает денежная модель. У членов
+        // мульти-сьютовой лизы своей почты нет по устройству (она на head'е), и
+        // без этого фильтра карточка ругалась бы на 8 исправных сьютов из 9.
+        try { if (money.isFinanceShadow(u, snap)) continue; } catch (e) { /* деньги молчат */ }
+        const who = String(u.tenant || u.company || '').trim();
+        const ref = { buildingId: b.id, floorId: f && f.id, unitId: u.id };
+        if (u.status === 'vacant' && who){
+          out.push({ ref, suite: u.id, bld: b.name || b.id,
+            title: 'Marked vacant, but still carries ' + who,
+            why: 'A new lease cannot be written here — the occupancy check counts it as taken.' });
+        } else if ((u.status === 'occupied' || who) && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(u.email || '').trim())){
+          out.push({ ref, suite: u.id, bld: b.name || b.id,
+            title: 'Occupied, but no email on file',
+            why: 'Stripe emails the invoice, so nothing can be billed from the phone.' });
+        }
+      }
+    }
+  }
+  return out;
+}
+function issuesCard(){
+  const items = dataIssues();
+  if (!items.length) return '';
+  const shown = items.slice(0, 8);
+  return '<div class="card"><div class="card-h"><h3>Needs a human</h3>'
+    + '<span class="ch-sub">' + items.length + '</span></div>'
+    + shown.map(x => '<button class="arow" data-act="unit" data-b="' + esc(x.ref.buildingId) + '"'
+      + ' data-floor="' + esc(x.ref.floorId || '') + '" data-id="' + esc(x.ref.unitId) + '">'
+      + '<span class="astat" data-s="due">' + I.alert + '</span>'
+      + '<span class="amain"><span class="aname">' + esc('Suite ' + x.suite + ' · ' + x.title) + '</span>'
+      + '<span class="await">' + esc(x.bld + ' — ' + x.why) + '</span></span></button>').join('')
+    + (items.length > shown.length
+      ? '<div class="hintline" style="padding:8px 14px">and ' + (items.length - shown.length) + ' more</div>' : '')
+    + '<div class="hintline" style="padding:0 14px 12px">Nothing is changed automatically — these need your '
+    + 'judgement, and fixing them lives in the full version.</div></div>';
+}
+
 const more = {
   render(){
     const u = (snap && snap.user) || {};
@@ -157,6 +214,7 @@ const more = {
       + esc(u.email || u.uid || 'signed in') + ' · ' + esc((snap && snap.role) || 'member')
       + ' · workspace ' + esc((snap && snap.workspace) || 'default') + '</div>'
       + moreRow('signout', '', I.user, 'Sign out', 'Google will be asked again on this phone') + '</div>';
+    h += issuesCard();
     h += '<div class="card"><div class="card-h"><h3>No bulk actions here</h3></div>'
       + '<div style="padding:0 14px 14px;font-size:13px;color:var(--ink-2);line-height:1.5">'
       + 'Reminders and invoices go out one tenant at a time, on purpose. Anything that sends in batches stays in the full version.</div></div>';

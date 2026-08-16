@@ -366,13 +366,16 @@ function glance(ctx, b, rows, ym, agg) {
           + (c.overdue && c.status !== 'overdue' ? ' data-od="1"' : '')
           + ' data-act="unit" data-b="' + esc(b.id) + '" data-floor="' + esc(f && f.id) + '"'
           + ' data-id="' + esc(r.u.id) + '" aria-label="'
-          + esc(suiteLabel(b, r.u) + ' — ' + labelOf(ctx, c.status) + (c.overdue ? ', payment overdue' : '')) + '"></button>';
+          + esc(suiteLabel(b, r.u) + ' — '
+            + (c.status === 'overdue' ? 'not billed, payment past due'
+              : labelOf(ctx, c.status) + (c.overdue ? ', payment past due' : ''))) + '"></button>';
       }).join('') + '</div></div>';
   }
 
   h += '<div class="legend">'
     + '<span><i style="background:var(--ok)"></i>Paid</span><span><i style="background:var(--info)"></i>Invoice sent</span>'
-    + '<span><i style="background:var(--warn)"></i>Due</span><span><i style="background:var(--bad)"></i>Overdue</span>'
+    + '<span><i style="background:var(--warn)"></i>Due</span>'
+    + '<span><i style="background:var(--bad)"></i>Not billed · past due</span>'
     + '<span><i style="background:var(--bad-deep)"></i>2+ months</span>'
     + '<span><i style="background:var(--idle-soft);border:1px solid var(--line-2)"></i>Not billed</span>'
     + '<span><i style="border:1px dashed var(--line-2)"></i>Vacant</span>'
