@@ -269,16 +269,16 @@ async function bootstrapMember(user) {
   const email = (user.email || '').trim();
   try {
     const snap = await S.sdk.getDoc(S.sdk.doc(S.db, 'workspaces', WORKSPACE_ID, 'members', user.uid));
-    if (!snap.exists()) return { rejected: true, reason: 'not-invited', message: 'This workspace is invitation-only. Ask an admin to add ' + (email || 'your account') + ', then sign in again.' };
+    if (!snap.exists()) return { rejected: true, reason: 'not-invited', email, message: 'This workspace is invitation-only. Ask an admin to add ' + (email || 'your account') + ', then sign in again.' };
     const m = snap.data() || {};
-    if (m.archived === true && m.rootAdmin !== true) return { rejected: true, reason: 'archived', message: 'This account has been archived' + (m.archivedByEmail ? ' by ' + m.archivedByEmail : '') + '. Contact an admin to restore access.' };
+    if (m.archived === true && m.rootAdmin !== true) return { rejected: true, reason: 'archived', email, message: 'This account has been archived' + (m.archivedByEmail ? ' by ' + m.archivedByEmail : '') + '. Contact an admin to restore access.' };
     return {
       role: m.role || 'viewer',
       buildings: Array.isArray(m.buildings) ? m.buildings : [],   // пустой массив = БЕЗ ограничений (MONO:37619)
       canEditMap: typeof m.canEditMap === 'boolean' ? m.canEditMap : undefined,
     };
   } catch (e) {
-    return { rejected: true, reason: (e && e.code) || 'read-failed', message: 'Could not verify your access (' + ((e && e.code) || (e && e.message) || 'error') + '). Try again, or ask an admin to check your membership.' };
+    return { rejected: true, reason: (e && e.code) || 'read-failed', email, message: 'Could not verify your access (' + ((e && e.code) || (e && e.message) || 'error') + '). Try again, or ask an admin to check your membership.' };
   }
 }
 export async function signOut() {

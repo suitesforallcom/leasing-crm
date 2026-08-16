@@ -1278,6 +1278,27 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   } catch (e) { say('bad', 'проверка клавиатуры шторки упала: ' + e.message); bad++; }
 }
 
+/* ---- 7o. Гейт называет аккаунт и причину отказа ----
+       Прод-инцидент: телефон тихо вошёл под архивным Google-аккаунтом, а гейт
+       сказал общее «no access» — не понять, под кем вошли. ---- */
+{
+  try {
+    const src = await (await fetch('../m/app.js?v=' + Date.now(), { cache: 'no-store' })).text();
+    const m = src.match(/function gateDenyText\(res\)\{[\s\S]*?\n\}/);
+    if (!m) { say('bad', 'gateDenyText не найден в m/app.js'); bad++; }
+    else {
+      const fn = new Function('res', m[0] + '\nreturn gateDenyText(res);');
+      const t1 = fn({ rejected: { reason: 'archived', email: 'tony.zukov@gmail.com',
+        message: 'This account has been archived by tony@al-en.com. Contact an admin to restore access.' } });
+      const t2 = fn({ rejected: null });
+      if (!/Signed in as tony\.zukov@gmail\.com/.test(t1)) { say('bad', 'гейт не называет аккаунт при отказе'); bad++; }
+      else if (!/archived/.test(t1) || !/different account/.test(t1)) { say('bad', 'гейт не даёт причину/подсказку'); bad++; }
+      else if (!/no access/.test(t2)) { say('bad', 'гейт без rejected потерял общий текст'); bad++; }
+      else say('ok', 'гейт называет аккаунт, причину и подсказку «Use a different account»');
+    }
+  } catch (e) { say('bad', 'проверка гейта упала: ' + e.message); bad++; }
+}
+
 /* ---- 8. план на НАСТОЯЩЕЙ геометрии прода (tests/fixtures/plan-geometry.json)
        Синтетический этаж из одного квадрата ничего не доказывает: беда с
        подписями вылезает только на реальных узких и Г-образных формах. ---- */

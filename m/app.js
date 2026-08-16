@@ -584,13 +584,25 @@ function afterAuth(){
   doRefresh(true);            // холодный старт: кэш уже на экране, тихо обновляем
   return true;
 }
+/* Текст отказа на гейте. Скрывать, ПОД КЕМ вошли, нельзя: у оператора два
+   Google-аккаунта (рабочий и архивный), телефон молча выбрал архивный, и по
+   общей фразе «no access» причину было не понять (прод-инцидент 2026-08-16).
+   Теперь: «Signed in as tony.zukov@gmail.com — This account has been
+   archived…» + подсказка про «Use a different account». */
+function gateDenyText(res){
+  const rej = res && typeof res === 'object' ? res.rejected : null;
+  const who = rej && rej.email ? ('Signed in as ' + rej.email + ' — ') : '';
+  const why = (rej && rej.message) || 'this account has no access to the workspace.';
+  const hint = (rej && (rej.reason === 'archived' || rej.reason === 'not-invited'))
+    ? ' If that is the wrong account, tap “Use a different account”.' : '';
+  return who + why + hint;
+}
 async function onGateBtn(){
   gateState('loading', 'Opening Google…');
   try {
     const signIn = data.signIn || data.signInWithGoogle || data.login;
-    if (typeof signIn === 'function') await signIn();
-    else await initApp();
-    if (!afterAuth()) gateState('error', 'Signed in, but this account has no access to the workspace.');
+    const res = (typeof signIn === 'function') ? await signIn() : await initApp();
+    if (!afterAuth()) gateState('error', gateDenyText(res));
   } catch (e){
     // Safari срезал окно входа, а redirect отсюда невозможен (разные origin у
     // приложения и домена входа — именно это давало ошибку Google 400).
@@ -623,7 +635,7 @@ async function boot(){
     const res = await initApp();
     clearTimeout(stuck);
     if (res && typeof res === 'object' && (res.rejected || res.ok === false || res.error)){
-      gateState('error', friendly((res.rejected && (res.rejected.message || res.rejected.reason)) || res.reason || res.error || 'This account has no access to the workspace.'));
+      gateState('error', gateDenyText(res));
       return;
     }
     if (afterAuth()) return;
