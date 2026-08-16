@@ -363,6 +363,28 @@ t('оплаченный месяц пометки не получает', () => 
   assert.equal(m.overdue, false);
 });
 
+// ── 14. Счёт чужого здания не должен попадать в юнит с тем же номером ──
+// В проде 208 номеров сьютов из 815 повторяются между зданиями (MONO:80445).
+t('счёт с ЧУЖИМ buildingId игнорируется', () => {
+  const u = tenant();                       // сьют 300 в здании b1
+  const foreign = inv('in_other', { buildingId: 'b-other', bucket: 'paid', status: 'paid' });
+  const s = snapOf([u], { invoices: [foreign] });
+  assert.equal(isMonthSettled(u, YM, s), null,
+    'оплата чужого здания закрыла месяц — это ложное «оплачено»');
+});
+t('счёт СВОЕГО здания по-прежнему считается', () => {
+  const u = tenant();
+  const mine = inv('in_mine', { buildingId: 'b1', bucket: 'paid', status: 'paid' });
+  const s = snapOf([u], { invoices: [mine] });
+  assert.equal(isMonthSettled(u, YM, s), 'stripe-paid');
+});
+t('старый счёт БЕЗ buildingId принимается (не теряем историю)', () => {
+  const u = tenant();
+  const legacy = inv('in_legacy', { bucket: 'paid', status: 'paid' });   // поля здания нет
+  const s = snapOf([u], { invoices: [legacy] });
+  assert.equal(isMonthSettled(u, YM, s), 'stripe-paid');
+});
+
 // ── done ────────────────────────────────────────────────────────────────────
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);

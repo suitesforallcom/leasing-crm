@@ -34,14 +34,14 @@ const DISK_KEY = 'sfa_inv_buckets_v1';
 
 // ── Snapshot-scoped indexes (замена _invIndexEnsure/_invRowsForUnit/_unitsInGroup).
 // Новый снапшот === новый объект === новый индекс: семантика _invoicesCacheEpoch.
-const EMPTY_IX = { byId: new Map(), byUnit: new Map(), groups: new Map(), floorOf: new Map() };
+const EMPTY_IX = { byId: new Map(), byUnit: new Map(), groups: new Map(), floorOf: new Map(), bldOf: new Map() };
 const _ixCache = new WeakMap();
 
 function _ix(snap) {
   if (!snap || typeof snap !== 'object') return EMPTY_IX;
   const hit = _ixCache.get(snap);
   if (hit) return hit;
-  const ix = { byId: new Map(), byUnit: new Map(), groups: new Map(), floorOf: new Map() };
+  const ix = { byId: new Map(), byUnit: new Map(), groups: new Map(), floorOf: new Map(), bldOf: new Map() };
   for (const r of (Array.isArray(snap.invoices) ? snap.invoices : [])) {
     if (!r) continue;
     if (r.id) ix.byId.set(r.id, r);
@@ -57,6 +57,7 @@ function _ix(snap) {
       for (const u of ((f && f.units) || [])) {
         if (!u) continue;
         ix.floorOf.set(u, f);
+        ix.bldOf.set(u, b);      // нужно, чтобы не путать одинаковые номера сьютов между зданиями
         if (!u.groupId) continue;
         let g = ix.groups.get(u.groupId);
         if (!g) { g = []; ix.groups.set(u.groupId, g); }
@@ -168,7 +169,29 @@ function _diskBuckets(snap) {
   } catch { _diskMemo = {}; }
   return _diskMemo;
 }
-function _rowsForUnit(unitId, snap) { return _ix(snap).byUnit.get(String(unitId || '')) || []; }
+/**
+ * Счета юнита. Номер сьюта уникален только внутри здания (MONO:80445): в проде
+ * 208 номеров из 815 встречаются в нескольких зданиях, и 2 из них заняты
+ * одновременно в разных — там счёт чужого здания попадал бы в этот юнит, красил
+ * бы карту и подставлялся в кнопку «Remind».
+ *
+ * Правило: строку с ЧУЖИМ buildingId отбрасываем всегда; строку без buildingId
+ * (старые счета, до того как CF начал его писать — functions/index.js:1475)
+ * принимаем как раньше, иначе потеряли бы историю.
+ *
+ * unit передаём объектом: по нему находим здание через индекс снимка.
+ */
+function _rowsForUnit(unit, snap) {
+  const uid = String((unit && unit.id != null) ? unit.id : (unit || ''));
+  const rows = _ix(snap).byUnit.get(uid) || [];
+  const b = (unit && typeof unit === 'object') ? _ix(snap).bldOf.get(unit) : null;
+  const bid = b && b.id != null ? String(b.id) : '';
+  if (!bid) return rows;
+  return rows.filter((r) => {
+    const rb = String((r && (r.buildingId || (r.metadata && r.metadata.buildingId))) || '');
+    return !rb || rb === bid;
+  });
+}
 function _lookupInvoiceRow(id, snap) { return id ? (_ix(snap).byId.get(id) || null) : null; }
 
 // Двухуровневый: память → терминальный localStorage-штамп. Мобильный клиент на том же
@@ -214,7 +237,7 @@ function _lastStampTrustworthy(u, invoiceId, snap) {
 // фолбэка, скоуп по customerId/email ТЕКУЩЕГО тенанта.
 function _rentPaidRowFromCache(u, ym, snap) {
   if (!u || !u.id || !ym) return null;
-  const rows = _rowsForUnit(u.id, snap);
+  const rows = _rowsForUnit(u, snap);
   if (!rows.length) return null;
   const custId = (u.stripe && u.stripe.customerId) || null;
   const email = String(u.email || '').trim().toLowerCase();
@@ -393,7 +416,7 @@ function _invLabel(row) {
 // участвует в вердикте (десктопные finders — тоже display-only).
 function _liveInvoiceForYm(u, ym, snap) {
   let best = null;
-  for (const r of _rowsForUnit(u && u.id, snap)) {
+  for (const r of _rowsForUnit(u, snap)) {
     if (!r || r.bucket === 'void' || r.bucket === 'uncollectible' || r.status === 'void') continue;
     if (((r.metadata && r.metadata.purpose) || r.purpose || 'rent') === 'deposit') continue;
     if ((r.ym || (r.metadata && r.metadata.ym) || null) !== ym) continue;
@@ -412,7 +435,7 @@ function _liveInvoiceForYm(u, ym, snap) {
 export function liveInvoiceFor(unit, purpose, ym, snap) {
   const want = String(purpose || 'rent');
   let best = null;
-  for (const r of _rowsForUnit(unit && unit.id, snap)) {
+  for (const r of _rowsForUnit(unit, snap)) {
     if (!r) continue;
     const b = r.bucket || r.status;
     if (b === 'void' || b === 'uncollectible' || b === 'refunded' || b === 'draft') continue;

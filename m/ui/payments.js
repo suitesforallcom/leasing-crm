@@ -163,6 +163,26 @@ function floorLabel(f, idx) {
   return 'Floor ' + (f.level != null ? f.level : idx + 1);
 }
 
+/**
+ * Статус КЛЕТКИ полосы — тот же принцип, что на плане этажа: заливка как на
+ * десктопе («счёт выставлен» бьёт просрочку), а сама просрочка отдаётся
+ * флагом и рисуется пометкой.
+ *
+ * stOf НЕ трогаем: он кормит счётчики, фильтры и сортировку по срочности.
+ * Подмена там сдвинула бы «сколько не заплатили» — а это цифра, по которой
+ * оператор принимает решения.
+ */
+function cellOf(ctx, r, ym) {
+  try {
+    if (typeof ctx.money.mapStatus === 'function') {
+      const m = ctx.money.mapStatus(r.u, ym, ctx.snap);
+      if (m && typeof m.status === 'string') return m;
+    }
+  } catch (_) { /* деньги молчат — падаем на честный статус */ }
+  const st = stOf(ctx, r, ym);
+  return { status: st, overdue: st === 'overdue' };
+}
+
 /* Провенанс оплаты (улучшение 2): откуда мы знаем, что заплачено. */
 const SOURCE_TEXT = {
   stripe: 'Stripe', 'stripe-paid': 'Stripe', invoice: 'Stripe',
@@ -341,9 +361,12 @@ function glance(ctx, b, rows, ym, agg) {
       + fr.map(r => {
         const s = stOf(ctx, r, ym);
         const age = s === 'overdue' ? overdueDepth(ctx, r.u, ym) : 1;
-        return '<button class="cell" data-s="' + esc(s) + '" data-age="' + age + '"'
+        const c = cellOf(ctx, r, ym);
+        return '<button class="cell" data-s="' + esc(c.status) + '" data-age="' + age + '"'
+          + (c.overdue && c.status !== 'overdue' ? ' data-od="1"' : '')
           + ' data-act="unit" data-b="' + esc(b.id) + '" data-floor="' + esc(f && f.id) + '"'
-          + ' data-id="' + esc(r.u.id) + '" aria-label="' + esc(suiteLabel(b, r.u) + ' — ' + labelOf(ctx, s)) + '"></button>';
+          + ' data-id="' + esc(r.u.id) + '" aria-label="'
+          + esc(suiteLabel(b, r.u) + ' — ' + labelOf(ctx, c.status) + (c.overdue ? ', payment overdue' : '')) + '"></button>';
       }).join('') + '</div></div>';
   }
 
@@ -352,7 +375,9 @@ function glance(ctx, b, rows, ym, agg) {
     + '<span><i style="background:var(--warn)"></i>Due</span><span><i style="background:var(--bad)"></i>Overdue</span>'
     + '<span><i style="background:var(--bad-deep)"></i>2+ months</span>'
     + '<span><i style="background:var(--idle-soft);border:1px solid var(--line-2)"></i>Not billed</span>'
-    + '<span><i style="border:1px dashed var(--line-2)"></i>Vacant</span></div></div>';
+    + '<span><i style="border:1px dashed var(--line-2)"></i>Vacant</span>'
+    + '<span><i style="background:var(--info);outline:1.5px dashed var(--bad);outline-offset:-1px"></i>'
+    + 'Invoice sent · past due</span></div></div>';
   return h;
 }
 

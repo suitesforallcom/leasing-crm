@@ -189,6 +189,9 @@
   .cell[data-s="idle"]{ background:var(--idle-soft); border-color:var(--line-2); }
   .cell[data-s="reserved"]{ background:var(--accent-soft); border:1px dotted var(--accent); }
   .cell[data-s="vacant"]{ background:transparent; border:1px dashed var(--line-2); }
+  /* Счёт выставлен, но срок прошёл: заливка как на десктопе, а долг помечен
+     контуром внутрь — иначе синий маскировал бы просрочку. */
+  .cell[data-od="1"]{ outline:1.5px dashed var(--bad); outline-offset:-2px; }
   .plan-wrap{ margin:8px 12px 6px; padding:8px; background:var(--card); border:1px solid var(--line); border-radius:var(--r-md); overflow:auto; -webkit-overflow-scrolling:touch; }
   .plan-wrap .plan-svg{ display:block; width:100%; height:auto; }
   .plan-wrap.zoom{ }
