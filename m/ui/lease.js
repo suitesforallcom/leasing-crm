@@ -540,8 +540,12 @@ function bindFootFields(ctx, L, fields) {
   setTimeout(() => {
     for (const [key, id] of fields) {
       const inp = document.getElementById(id);
-      if (!inp || inp.dataset.foot) continue;
-      inp.dataset.foot = '1';
+      // ВАЖНО: маркер называется footBound, НЕ foot — атрибут data-foot ловит
+      // hoistFoot оболочки как «подвал в теле» и УДАЛЯЕТ узел. Первая же буква
+      // имени вызывала refreshFoot → hoistFoot съедал само поле ввода
+      // (прод-жалоба: «ввожу первую букву — строка уезжает, не вижу что ввожу»).
+      if (!inp || inp.dataset.footBound) continue;
+      inp.dataset.footBound = '1';
       inp.addEventListener('input', () => {
         L[key] = inp.value;
         if (typeof ctx.refreshFoot === 'function') {

@@ -393,7 +393,10 @@ function scheduleRender(){
 function hoistFoot(){
   // Совместимость: если модуль вместо foot() положил низ внутрь body —
   // поднимаем его. Уже отрендеренный foot() не затираем.
-  const node = sheetBody.querySelector('[data-foot], .sheet-foot');
+  // :not(input…) — защита от коллизии атрибутов: любой data-foot-* маркер на
+  // ПОЛЕ ввода не должен превращать поле в «подвал» и удалять его из формы
+  // (инцидент 2026-08-16: hoistFoot съедал поле имени на первой же букве).
+  const node = sheetBody.querySelector('[data-foot]:not(input):not(textarea):not(select), .sheet-foot:not(input)');
   if (node){ sheetFoot.innerHTML = node.innerHTML; node.remove(); }
   sheetFoot.style.display = sheetFoot.innerHTML.trim() ? 'flex' : 'none';
 }

@@ -1302,6 +1302,37 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   } catch (e) { say('bad', 'проверка гейта упала: ' + e.message); bad++; }
 }
 
+/* ---- 7p. hoistFoot не съедает поле ввода (первая буква имени) ----
+       Прод-инцидент: маркер bindFootFields (data-foot) совпадал с селектором
+       hoistFoot «подвал в теле» — первая буква имени вызывала refreshFoot,
+       и hoistFoot УДАЛЯЛ само поле. Репродукция на извлечённом hoistFoot. ---- */
+{
+  try {
+    const src = await (await fetch('../m/app.js?v=' + Date.now(), { cache: 'no-store' })).text();
+    const m = src.match(/function hoistFoot\(\)\{[\s\S]*?\n\}/);
+    if (!m) { say('bad', 'hoistFoot не найден в m/app.js'); bad++; }
+    else {
+      const body = document.createElement('div'), foot = document.createElement('div');
+      // поле с ЛЮБЫМ data-foot-маркером (легаси data-foot и новый data-foot-bound)
+      body.innerHTML = '<div class="field"><label>Full name</label>'
+        + '<input id="pn" data-foot="1" data-foot-bound="1" value="E"></div>'
+        + '<div data-foot class="realfoot"><button>Continue</button></div>';
+      const run = new Function('sheetBody', 'sheetFoot', m[0] + '\nhoistFoot();');
+      run(body, foot);
+      const inputAlive = !!body.querySelector('#pn');
+      const footHoisted = /Continue/.test(foot.innerHTML) && !body.querySelector('.realfoot');
+      if (!inputAlive) { say('bad', 'hoistFoot СЪЕЛ поле ввода с data-foot маркером'); bad++; }
+      else if (!footHoisted) { say('bad', 'hoistFoot перестал поднимать настоящий подвал'); bad++; }
+      else say('ok', 'hoistFoot: поле ввода живо, настоящий подвал поднят');
+      // и сам биндер больше не ставит опасный атрибут
+      const lsrc = await (await fetch('../m/ui/lease.js?v=' + Date.now(), { cache: 'no-store' })).text();
+      if (/dataset\.foot\s*=/.test(lsrc.replace(/dataset\.footBound/g, ''))) {
+        say('bad', 'bindFootFields снова ставит data-foot — коллизия вернётся'); bad++;
+      } else say('ok', 'bindFootFields помечает поля безопасным data-foot-bound');
+    }
+  } catch (e) { say('bad', 'проверка hoistFoot упала: ' + e.message); bad++; }
+}
+
 /* ---- 8. план на НАСТОЯЩЕЙ геометрии прода (tests/fixtures/plan-geometry.json)
        Синтетический этаж из одного квадрата ничего не доказывает: беда с
        подписями вылезает только на реальных узких и Г-образных формах. ---- */
