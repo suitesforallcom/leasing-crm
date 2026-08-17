@@ -1402,10 +1402,13 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
     const cw = 360, ch = 270;
     const cnv = document.createElement('canvas'); cnv.width = cw; cnv.height = ch;
     const g = cnv.getContext('2d', { willReadFrequently: true });
-    g.fillStyle = '#2A2A2E'; g.fillRect(0, 0, cw, ch);                 // тёмный стол
-    for (let i = 0; i < 500; i++) {                                     // лёгкий шум фона
-      g.fillStyle = 'rgba(255,255,255,0.03)';
-      g.fillRect(Math.random() * cw, Math.random() * ch, 2, 2);
+    // ДЕРЕВЯННЫЙ стол — случай из прода: фактура даёт грани по всему кадру,
+    // детектор v1 растягивал рамку почти на весь снимок («Auto-cropped», а
+    // карта — крошка в углу превью). Тест обязан ловить возврат к v1.
+    for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x += 4) {
+      const v = 55 + 22 * Math.sin(x * 0.12 + y * 0.02) + 14 * Math.sin(y * 0.3) + Math.random() * 18;
+      g.fillStyle = 'rgb(' + (v | 0) + ',' + ((v * 0.82) | 0) + ',' + ((v * 0.6) | 0) + ')';
+      g.fillRect(x, y, 4, 1);
     }
     const card = { x: 70, y: 60, w: 220, h: 139 };                      // карта ~1.58
     g.fillStyle = '#E8E4DA'; g.fillRect(card.x, card.y, card.w, card.h);
@@ -1419,7 +1422,9 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
     const inter = Math.max(0, ax - ix) * Math.max(0, ay - iy);
     const iou = inter / (box.w * box.h + card.w * card.h - inter);
     if (iou < 0.6) { say('bad', `детектор не нашёл карту: IoU ${iou.toFixed(2)} (бокс ${JSON.stringify(box)})`); bad++; }
-    else say('ok', `автообрезка находит карту (IoU ${iou.toFixed(2)}, conf ${box.confidence.toFixed(2)})`);
+    else if (box.w * box.h > card.w * card.h * 2.2) {
+      say('bad', `рамка рыхлая: ${box.w}×${box.h} при карте ${card.w}×${card.h} — фон снова растягивает кроп`); bad++;
+    } else say('ok', `автообрезка находит карту на ДЕРЕВЕ (IoU ${iou.toFixed(2)}, conf ${box.confidence.toFixed(2)})`);
     const snapped = idp.snapToCardAspect(box, cw, ch);
     const ar = snapped.w / snapped.h;
     if (Math.abs(ar - idp.CARD_ASPECT) > 0.03 && snapped.w < cw) { say('bad', `прижим к формату карты дал ${ar.toFixed(2)}`); bad++; }

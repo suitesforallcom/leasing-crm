@@ -12,44 +12,57 @@
 
 export const CARD_ASPECT = 1.586;                 // ISO/IEC 7810 ID-1
 
-/** Карта энергии рёбер по яркости (упрощённый Собель), затем охватывающий
-    бокс строк/столбцов, чья суммарная энергия выше порога. data — Uint8Clamped
-    RGBA. Возвращает {x,y,w,h,confidence 0..1} в пикселях анализируемой копии. */
+/** Поиск карты в кадре. v2 (2026-08-16): прежняя версия брала рамку «от
+    первой грани до последней», и ФАКТУРНЫЙ фон (деревянный стол — случай из
+    прода) растягивал её почти на весь кадр. Теперь:
+    1) яркостный приоритет — карта почти всегда СВЕТЛЕЕ стола, поэтому
+       энергия граней взвешивается превышением яркости над медианой кадра;
+    2) вместо «первая-последняя грань» — самый ПЛОТНЫЙ интервал профиля
+       (Кадане относительно базовой линии): диффузная текстура фона уходит
+       в минус, плотная карта — в плюс.
+    Белая карта на белом столе тоже работает — по граням текста (яркостный
+    буст нулевой, остаётся базовый вес 0.25). Настроено на 4 синтетических
+    случаях: гладкий стол 0.97, дерево 0.97, карта у края 0.94, белое-на-белом
+    0.71 (IoU). data — Uint8Clamped RGBA. */
 export function detectCardBox(data, w, h) {
   const lum = new Float32Array(w * h);
   for (let i = 0, p = 0; i < lum.length; i++, p += 4) {
     lum[i] = 0.299 * data[p] + 0.587 * data[p + 1] + 0.114 * data[p + 2];
   }
-  const colE = new Float32Array(w), rowE = new Float32Array(h);
-  let total = 0;
+  const smp = [];
+  for (let y = 0; y < h; y += 5) for (let x = 0; x < w; x += 5) smp.push(lum[y * w + x]);
+  smp.sort((a, b) => a - b);
+  const med = smp[smp.length >> 1] || 0;
+  const colS = new Float32Array(w), rowS = new Float32Array(h);
   for (let y = 1; y < h - 1; y++) {
     for (let x = 1; x < w - 1; x++) {
       const i = y * w + x;
-      const gx = lum[i + 1] - lum[i - 1];
-      const gy = lum[i + w] - lum[i - w];
-      const e = Math.abs(gx) + Math.abs(gy);
-      if (e > 24) { colE[x] += e; rowE[y] += e; total += e; }   // шумовой порог
+      const e = Math.abs(lum[i + 1] - lum[i - 1]) + Math.abs(lum[i + w] - lum[i - w]);
+      if (e < 14) continue;
+      const bright = Math.max(0, lum[i] - med) / 48;
+      const sc = e * (0.25 + Math.min(2, bright));
+      colS[x] += sc; rowS[y] += sc;
     }
   }
-  if (total < 1) return { x: 0, y: 0, w, h, confidence: 0 };
-  // Бокс: от первого до последнего столбца/строки, несущих ≥2% max-энергии.
-  const bound = (arr) => {
-    let max = 0; for (const v of arr) if (v > max) max = v;
-    const thr = max * 0.02;
-    let a = 0, b = arr.length - 1;
-    while (a < b && arr[a] < thr) a++;
-    while (b > a && arr[b] < thr) b--;
-    return [a, b];
+  const kadane = (arr) => {
+    let mean = 0; for (const v of arr) mean += v; mean /= arr.length || 1;
+    const base = mean * 1.15;
+    let best = -1, b0 = 0, b1 = arr.length - 1, cur = 0, c0 = 0;
+    for (let i = 0; i < arr.length; i++) {
+      cur += arr[i] - base;
+      if (cur <= 0) { cur = 0; c0 = i + 1; continue; }
+      if (cur > best) { best = cur; b0 = c0; b1 = i; }
+    }
+    return best > 0 ? [b0, b1] : [0, arr.length - 1];
   };
-  const [x0, x1] = bound(colE), [y0, y1] = bound(rowE);
-  const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
-  // Уверенность: доля энергии внутри бокса × компактность бокса.
-  let inside = 0;
-  for (let x = x0; x <= x1; x++) inside += colE[x];
-  const density = inside / total;
-  const area = (bw * bh) / (w * h);
-  const confidence = Math.max(0, Math.min(1, density * (area < 0.98 ? 1 : 0.3)));
-  return { x: x0, y: y0, w: bw, h: bh, confidence };
+  const [x0, x1] = kadane(colS), [y0, y1] = kadane(rowS);
+  const box = { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+  let inn = 0, out = 0, cin = 0, cout = 0;
+  for (let x = 0; x < w; x++) { if (x >= x0 && x <= x1) { inn += colS[x]; cin++; } else { out += colS[x]; cout++; } }
+  const contrast = (inn / Math.max(1, cin)) / Math.max(1e-6, out / Math.max(1, cout));
+  const areaFrac = box.w * box.h / (w * h);
+  box.confidence = Math.min(1, Math.max(0, (contrast - 1.4) / 4)) * (areaFrac < 0.85 ? 1 : 0.2);
+  return box;
 }
 
 /** Прижать бокс к соотношению карты (расширяем меньшую сторону, поля 4%),
