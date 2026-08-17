@@ -87618,6 +87618,25 @@ function _renderUnitFilesPane(u, editOn, ro) {
     ${_filesPaneRenderLeaseDocsSection(u)}
     ${_filesPaneRenderProspectDocsSection(u)}
     <div class="upv2-section-title">Tenant documents (${docs})</div>
+    ${(() => {
+      // Фото-документы (права с телефона, kind dl-front/dl-back) — ВИДИМЫМИ
+      // миниатюрами, а не строчкой «2 documents attached» (оператор 2026-08-16:
+      // «я не вижу здесь фотографии»). Клик открывает полный размер.
+      const imgs = (u.tenantDocs || []).filter(d => d && d.url
+        && (/^image\//.test(String(d.mime || '')) || /\.(jpe?g|png|webp)(\?|$)/i.test(String(d.fileName || d.url))));
+      if (!imgs.length) return '';
+      const cap = (d) => d.kind === 'dl-front' ? "Driver's license — front"
+        : d.kind === 'dl-back' ? "Driver's license — back" : esc(d.fileName || 'Photo');
+      return `<div class="unit-photos"><div class="unit-photos-strip">
+        ${imgs.map((d) => `
+          <a class="unit-photo-tile" href="${esc(_safeHttpUrl(d.url))}" target="_blank" rel="noopener"
+             title="${cap(d)}" style="text-decoration:none;">
+            <img src="${esc(_safeHttpUrl(d.url))}" alt="${cap(d)}">
+            <span style="position:absolute;left:0;right:0;bottom:0;font-size:9.5px;line-height:1.2;padding:3px 4px;
+              background:rgba(20,19,16,.62);color:#fff;border-radius:0 0 8px 8px;">${cap(d)}</span>
+          </a>`).join('')}
+      </div></div>`;
+    })()}
     <div class="upv2-svc-card">
       <div class="upv2-svc-desc">${docs > 0 ? `${docs} document${docs===1?'':'s'} attached — click Manage to view, download, or remove.` : 'None yet.'}</div>
       <div class="upv2-svc-cta">
