@@ -8890,6 +8890,9 @@
     border: 1px solid var(--rd-border);
   }
   .unit-photo-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  /* Фото-документы (права) — плитка пропорций карты ID-1, а не квадрат:
+     в 86×86 от альбомной карты видна треть (запрос оператора 2026-08-16). */
+  .unit-photo-tile.tile-card { width: 152px; height: 96px; }
   .unit-photo-tile .up-x {
     position: absolute; top: 2px; right: 2px;
     width: 18px; height: 18px; border-radius: 50%;
@@ -24970,7 +24973,7 @@
      certificate, etc.) with upload + remove. Storage under
      workspaces/{wid}/tenantDocs/. -->
 <div class="stripe-modal" id="tenantDocsModal">
-  <div class="stripe-modal-card" style="max-width: 520px;">
+  <div class="stripe-modal-card" style="max-width: 720px;">
     <h3><span style="color: var(--accent);">📎 Tenant documents</span></h3>
     <div class="sub" id="tdmContext">—</div>
 
@@ -87629,7 +87632,7 @@ function _renderUnitFilesPane(u, editOn, ro) {
         : d.kind === 'dl-back' ? "Driver's license — back" : esc(d.fileName || 'Photo');
       return `<div class="unit-photos"><div class="unit-photos-strip">
         ${imgs.map((d) => `
-          <a class="unit-photo-tile" href="${esc(_safeHttpUrl(d.url))}" target="_blank" rel="noopener"
+          <a class="unit-photo-tile tile-card" href="${esc(_safeHttpUrl(d.url))}" target="_blank" rel="noopener"
              title="${cap(d)}" style="text-decoration:none;">
             <img src="${esc(_safeHttpUrl(d.url))}" alt="${cap(d)}">
             <span style="position:absolute;left:0;right:0;bottom:0;font-size:9.5px;line-height:1.2;padding:3px 4px;
@@ -89739,16 +89742,30 @@ function _tdmRenderList() {
     : (d.name || d.fileName || 'Document');
   const _tdIsImg = (d) => /^image\//.test(String(d.mime || ''))
     || /\.(jpe?g|png|webp)(\?|$)/i.test(String(d.fileName || d.name || d.url || ''));
-  host.innerHTML = docs.map((d, i) => `
+  // Фото — сразу КРУПНО (запрос оператора 2026-08-16: «хочу видеть в большом
+  // размере сразу же»): во всю ширину модала, клик открывает оригинал.
+  // Прочие документы (PDF и т.п.) остаются компактными строками ниже.
+  const _imgDocs = [], _fileDocs = [];
+  docs.forEach((d, i) => (_tdIsImg(d) ? _imgDocs : _fileDocs).push([d, i]));
+  const _imgCards = _imgDocs.map(([d, i]) => `
+    <figure style="margin: 0; background: var(--surface-2); border: 1px solid var(--rd-border, #ddd); border-radius: 8px; overflow: hidden;">
+      <a href="${esc(_safeHttpUrl(d.url))}" target="_blank" rel="noopener" title="Open full size">
+        <img src="${esc(_safeHttpUrl(d.url))}" alt="${esc(_tdLabel(d))}" style="display: block; width: 100%; max-height: 430px; object-fit: contain; background: var(--surface-2);">
+      </a>
+      <figcaption style="display: flex; align-items: center; gap: 10px; padding: 7px 12px; font-size: 12.5px; border-top: 1px solid var(--rd-border, #ddd);">
+        <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(_tdLabel(d))}</span>
+        <span style="color: var(--muted); font-size: 10.5px;">${d.size ? `${Math.round(d.size/1024)} KB` : ''}</span>
+        ${canEdit() ? `<button onclick="_tdmRemoveDoc(${i})" style="border: none; background: none; color: var(--danger); cursor: pointer; font-size: 15px;" title="Remove">×</button>` : ''}
+      </figcaption>
+    </figure>`).join('');
+  const _fileRows = _fileDocs.map(([d, i]) => `
     <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--surface-2); border-radius: 6px; font-size: 12.5px;">
-      ${_tdIsImg(d)
-        ? `<img src="${esc(_safeHttpUrl(d.url))}" alt="" style="flex: 0 0 auto; width: 46px; height: 30px; object-fit: cover; border-radius: 4px; border: 1px solid var(--rd-border, #ddd);">`
-        : `<span style="flex: 0 0 auto;">📎</span>`}
+      <span style="flex: 0 0 auto;">📎</span>
       <a href="${esc(_safeHttpUrl(d.url))}" target="_blank" rel="noopener" style="flex: 1; color: var(--accent); text-decoration: underline; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(_tdLabel(d))}</a>
       <span style="color: var(--muted); font-size: 10.5px;">${d.size ? `${Math.round(d.size/1024)} KB` : ''}</span>
       ${canEdit() ? `<button onclick="_tdmRemoveDoc(${i})" style="border: none; background: none; color: var(--danger); cursor: pointer; font-size: 14px;" title="Remove">×</button>` : ''}
-    </div>
-  `).join('');
+    </div>`).join('');
+  host.innerHTML = _imgCards + _fileRows;
   // Update the count badge in the form
   const badge = document.getElementById('fTenantDocCount');
   if (badge) {

@@ -1466,7 +1466,12 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
     const paints = [];
     const idp7 = await import('../m/lib/idphoto.js?v=' + Date.now());
     const ctxDl = () => Object.assign(ctx(), {
-      idphoto: idp7,                                 // без него обработчик падал синхронно и busy не успевал в замер
+      // canvas-движок принудительно: UI-прогону не нужен OpenCV на 10 МБ,
+      // а офлайн-стенд не должен зависеть от загрузки vendor-скриптов
+      idphoto: Object.assign({}, idp7, {
+        processIdPhoto: (f, t) => idp7.processIdPhoto(f, t, { engine: 'canvas' }),
+        prewarmScanEngine: () => {},
+      }),
       // шпион перерисовки: как настоящий openSheet — рендер того же листа
       openSheet: (name) => { paints.push(name); sb.innerHTML = lease.render(ctxDl()); },
       uploadDoc: async (b) => ({ url: 'https://firebasestorage.googleapis.com/v0/b/x/o/t.jpg',
@@ -1500,6 +1505,92 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
     }
     S.lease = null; S.sheet = null; sb.innerHTML = '';
   } catch (e) { say('bad', 'полный прогон слота упал: ' + e.message); bad++; }
+}
+
+/* ---- 7u. OpenCV-движок (jscanify): карта С ПЕРСПЕКТИВОЙ на дереве ----
+       Основной путь конвейера: вершины трапеции → выравнивание. Заодно
+       ловит пропажу /vendor/*.js из раздачи: без них тест валится. ---- */
+{
+  try {
+    const idp8 = await import('../m/lib/idphoto.js?v=' + Date.now());
+    const cw = 720, ch = 540;
+    const pc = document.createElement('canvas'); pc.width = cw; pc.height = ch;
+    const pg = pc.getContext('2d', { willReadFrequently: true });
+    for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x += 4) {   // дерево
+      const v = 52 + 20 * Math.sin(x * 0.11 + y * 0.02) + 12 * Math.sin(y * 0.31) + Math.random() * 16;
+      pg.fillStyle = 'rgb(' + (v | 0) + ',' + ((v * 0.8) | 0) + ',' + ((v * 0.58) | 0) + ')';
+      pg.fillRect(x, y, 4, 1);
+    }
+    // карта-трапеция (наклон + перспектива), пропорции ~1.6
+    pg.fillStyle = '#E9E5DC';
+    pg.beginPath();
+    pg.moveTo(150, 130); pg.lineTo(560, 108); pg.lineTo(590, 372); pg.lineTo(168, 398);
+    pg.closePath(); pg.fill();
+    pg.fillStyle = '#57616E';
+    pg.save(); pg.transform(1, -0.05, 0.04, 1, 0, 0);
+    for (let i = 0; i < 5; i++) pg.fillRect(200, 180 + i * 44, 300, 14);
+    pg.restore();
+    const blob8 = await new Promise(r => pc.toBlob(r, 'image/jpeg', 0.92));
+    const p8 = await idp8.processIdPhoto(new File([blob8], 'p.jpg', { type: 'image/jpeg' }), 1280);
+    if (p8.engine !== 'opencv') {
+      say('bad', 'OpenCV-путь не сработал (engine=' + p8.engine + ') — vendor/*.js не грузится или четырёхугольник отвергнут'); bad++;
+    } else {
+      const r8 = p8.width / p8.height;
+      // после выравнивания в кадре должна остаться в основном карта — тёмного фона мало
+      const vc = document.createElement('canvas'); vc.width = 64; vc.height = Math.round(64 / r8);
+      const vg = vc.getContext('2d', { willReadFrequently: true });
+      const bmp8 = await createImageBitmap(p8.blob);
+      vg.drawImage(bmp8, 0, 0, vc.width, vc.height);
+      const dd = vg.getImageData(0, 0, vc.width, vc.height).data;
+      let dark = 0, tot = 0;
+      for (let i = 0; i < dd.length; i += 4) { tot++; if (0.299 * dd[i] + 0.587 * dd[i + 1] + 0.114 * dd[i + 2] < 90) dark++; }
+      const darkFrac = dark / tot;
+      if (r8 < 1.15 || r8 > 2.4) { say('bad', `opencv: соотношение результата ${r8.toFixed(2)} вне карты`); bad++; }
+      else if (darkFrac > 0.30) { say('bad', `opencv: тёмного фона ${(darkFrac * 100) | 0}% — перспектива/кроп не сработали`); bad++; }
+      else say('ok', `opencv-движок: трапеция выправлена (${p8.width}×${p8.height}, фона ${(darkFrac * 100) | 0}%)`);
+    }
+  } catch (e) { say('bad', 'opencv-путь упал: ' + e.message); bad++; }
+}
+
+/* ---- 7v. Кнопка ↻ Rotate на заполненном слоте прав ----
+       Автомат не знает, где у боковой карты верх (реальный кадр 2026-08-16:
+       текст вверх ногами) — поворот руками обязан работать. ---- */
+{
+  try {
+    const idp9 = await import('../m/lib/idphoto.js?v=' + Date.now());
+    S.lease = null; S.sheet = 'lease'; S.sheetPayload = null; S.sheetArg = null; S.payload = null;
+    const sb9 = document.getElementById('sheetBody');
+    const ctx9 = () => Object.assign(ctx(), {
+      idphoto: idp9,
+      openSheet: () => { sb9.innerHTML = lease.render(ctx9()); },
+      uploadDoc: async (b) => ({ url: 'https://firebasestorage.googleapis.com/v0/b/x/o/r.jpg',
+        storagePath: 'workspaces/default/tenantDocs/r.jpg', fileName: 'r.jpg',
+        mime: 'image/jpeg', size: b.size, addedAt: 1, addedBy: 'op@x.co' }),
+      toast: () => {},
+    });
+    lease.render(ctx9());
+    const L9 = S.lease; L9.step = 2; L9.who = 'new';
+    L9.unitId = '302'; L9.buildingId = 'b1'; L9.floorId = 'f1';
+    // заполненный слот: маленький JPEG 40×20 как «обработанный» снимок
+    const c9 = document.createElement('canvas'); c9.width = 40; c9.height = 20;
+    c9.getContext('2d').fillStyle = '#ccc'; c9.getContext('2d').fillRect(0, 0, 40, 20);
+    const b9 = await new Promise(r => c9.toBlob(r, 'image/jpeg', 0.8));
+    L9.dl = { front: { kind: 'dl-front', url: 'https://firebasestorage.googleapis.com/v0/b/x/o/0.jpg',
+      storagePath: 'workspaces/default/tenantDocs/0.jpg', fileName: '0.jpg', mime: 'image/jpeg',
+      size: b9.size, thumb: 'data:image/jpeg;base64,x', detected: true, _blob: b9 } };
+    sb9.innerHTML = lease.render(ctx9());
+    if (!/data-act="lease:dlrotate"/.test(sb9.innerHTML)) { say('bad', 'кнопки ↻ Rotate нет на заполненном слоте'); bad++; }
+    else {
+      const el9 = { getAttribute: (n) => n === 'data-side' ? 'front' : null };
+      const t0 = L9.dl.front.thumb;
+      lease.handle('lease:dlrotate', el9, ctx9());
+      for (let i = 0; i < 100 && (L9.dl.frontBusy || L9.dl.front.thumb === t0); i++) await new Promise(r => setTimeout(r, 30));
+      if (L9.dl.err) { say('bad', 'поворот упал: ' + L9.dl.err); bad++; }
+      else if (L9.dl.front.thumb === t0) { say('bad', 'после ↻ превью не сменилось'); bad++; }
+      else say('ok', 'кнопка ↻: снимок повёрнут, перезагружен, превью обновлено');
+    }
+    S.lease = null; S.sheet = null; sb9.innerHTML = '';
+  } catch (e) { say('bad', 'проверка ↻ упала: ' + e.message); bad++; }
 }
 
 /* ---- 8. план на НАСТОЯЩЕЙ геометрии прода (tests/fixtures/plan-geometry.json)

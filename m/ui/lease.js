@@ -551,8 +551,11 @@ function keepQueryVisible(inp) {
  * срабатывал readForm). Слушаем ввод и просим оболочку перерисовать подвал.
  */
 /* Права водительские — две стороны, с телефона. Снимок обрезается и
-   выравнивается сам (m/lib/idphoto.js, чистый canvas), грузится в Storage
-   сразу; в договор уходят только ссылки. Слот можно переснять или убрать. */
+   выравнивается сам (m/lib/idphoto.js: jscanify/OpenCV с перспективой,
+   canvas-фолбэк офлайн), грузится в Storage сразу; в договор уходят только
+   ссылки. Слот можно переснять, а боковой снимок — довернуть кнопкой ↻
+   (автомат не знает, где у карты верх). _blob остаётся в черновике ДЛЯ
+   поворота и в payload не сериализуется. */
 function dlBlock(L) {
   const dl = L.dl || (L.dl = {});
   const slot = (side, label) => {
@@ -567,6 +570,7 @@ function dlBlock(L) {
         + '<span class="mid"><span class="t">' + label + ' ✓</span><span class="s">'
         + (d.detected === false ? 'Cropped to full frame — check it looks right' : 'Auto-cropped') + ' · '
         + Math.max(1, Math.round((d.size || 0) / 1024)) + ' KB</span></span>'
+        + '<button class="chg" data-act="lease:dlrotate" data-side="' + side + '" aria-label="Rotate">\u21bb</button>'
         + '<button class="chg" data-act="lease:dlretake" data-side="' + side + '">Retake</button></div>';
     }
     return '<label class="picked" style="cursor:pointer"><span class="doc">' + I.doc + '</span>'
@@ -585,6 +589,8 @@ function bindDlSlots(ctx, L) {
   // этой ошибки оператор снял фото и не увидел ни «Processing…», ни превью
   // (прод-жалоба 2026-08-16). Ошибка теперь ещё и тостом — немых сбоев нет.
   const repaint = () => { try { if (ctx.S && ctx.S.sheet) ctx.openSheet(ctx.S.sheet); } catch (e) {} };
+  // Прогрев: OpenCV ~10.5 МБ едет, пока оператор ещё заполняет имя/почту.
+  try { ctx.idphoto && ctx.idphoto.prewarmScanEngine && ctx.idphoto.prewarmScanEngine(); } catch (e) {}
   setTimeout(() => {
     for (const inp of document.querySelectorAll('input[data-dl]')) {
       if (inp.dataset.bound) continue;
@@ -601,7 +607,7 @@ function bindDlSlots(ctx, L) {
           const up = await ctx.uploadDoc(p.blob, 'dl-' + side + '.jpg');
           dl[side] = { kind: 'dl-' + side, url: up.url, storagePath: up.storagePath,
             fileName: up.fileName, mime: up.mime, size: up.size,
-            thumb: p.thumb, detected: p.detected };
+            thumb: p.thumb, detected: p.detected, _blob: p.blob };
         } catch (e) {
           console.error('[m] dl photo failed:', e);
           dl.err = 'Could not process the photo — try again with the card on a dark table.';
@@ -828,6 +834,34 @@ export function handle(act, el, ctx) {
   if (act === 'lease:dlretake') {
     const side = el.getAttribute('data-side');
     if (L.dl) { delete L.dl[side]; L.dl.err = null; }
+    return true;
+  }
+  if (act === 'lease:dlrotate') {
+    const side = el.getAttribute('data-side');
+    const dl = L.dl || (L.dl = {});
+    const d = dl[side];
+    if (!d || dl[side + 'Busy']) return true;
+    (async () => {
+      dl[side + 'Busy'] = true; dl.err = null;
+      try { ctx.openSheet(S.sheet); } catch (e) {}
+      try {
+        // Свежая загрузка держит blob в черновике; после перезахода в лист
+        // его нет — забираем загруженный файл обратно (same-bucket, CORS ок).
+        let src = d._blob;
+        if (!src) src = await (await fetch(d.url)).blob();
+        const r = await ctx.idphoto.rotateProcessed(src);
+        const up = await ctx.uploadDoc(r.blob, 'dl-' + side + '.jpg');
+        dl[side] = { kind: d.kind, url: up.url, storagePath: up.storagePath,
+          fileName: up.fileName, mime: up.mime, size: up.size,
+          thumb: r.thumb, detected: d.detected, _blob: r.blob };
+      } catch (e) {
+        console.error('[m] dl rotate failed:', e);
+        dl.err = 'Could not rotate the photo — try again.';
+        try { ctx.toast(dl.err); } catch (e2) {}
+      }
+      dl[side + 'Busy'] = false;
+      try { ctx.openSheet(S.sheet); } catch (e) {}
+    })();
     return true;
   }
   if (act === 'lease:invoice') {

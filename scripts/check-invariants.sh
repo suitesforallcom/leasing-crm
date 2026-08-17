@@ -301,6 +301,20 @@ else
   FAIL=1
 fi
 
+# ── Движок фото документов: vendor-файлы существуют и совпадают с путями в
+# idphoto.js (2026-08-16). Файлы именуются С ВЕРСИЕЙ и не перезаписываются;
+# пропажа vendor/ из раздачи молча роняет OpenCV-путь в canvas-фолбэк.
+IDP="$(dirname "$HTML")/m/lib/idphoto.js"
+VOK=1
+for var in VENDOR_CV VENDOR_SCANNER; do
+  vp=$(grep -oE "export const $var = '[^']+'" "$IDP" | sed "s/.*'\(.*\)'/\1/")
+  if [ -z "$vp" ] || [ ! -s "$(dirname "$HTML")$vp" ]; then
+    echo "  ✗ $var: '$vp' — файла нет или он пуст (vendor не поедет в деплой)"
+    VOK=0; FAIL=1
+  fi
+done
+[ "$VOK" -eq 1 ] && echo "  ✓ vendor-движок фото (OpenCV+jscanify) на месте и путями совпадает"
+
 echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
