@@ -24973,21 +24973,28 @@
      certificate, etc.) with upload + remove. Storage under
      workspaces/{wid}/tenantDocs/. -->
 <div class="stripe-modal" id="tenantDocsModal">
-  <div class="stripe-modal-card" style="max-width: 720px;">
-    <h3><span style="color: var(--accent);">📎 Tenant documents</span></h3>
+  <!-- Крупные превью сделали карточку выше экрана: шапка (с крестиком) и Done
+       зафиксированы, прокручивается только середина (max-height 92vh). -->
+  <div class="stripe-modal-card" style="max-width: 720px; max-height: 92vh; display: flex; flex-direction: column;">
+    <h3 style="justify-content: space-between;"><span style="color: var(--accent);">📎 Tenant documents</span>
+      <button type="button" onclick="closeTenantDocsModal()" aria-label="Close"
+              style="border: none; background: none; color: var(--muted); cursor: pointer; font-size: 20px; line-height: 1; padding: 2px 6px;">×</button>
+    </h3>
     <div class="sub" id="tdmContext">—</div>
 
-    <div id="tdmList" style="display: flex; flex-direction: column; gap: 6px; margin: 14px 0;">
-      <div style="color: var(--muted); font-size: 12px; padding: 8px; text-align: center;">
-        No documents attached yet.
+    <div style="overflow-y: auto; flex: 1; min-height: 0;">
+      <div id="tdmList" style="display: flex; flex-direction: column; gap: 6px; margin: 14px 0 14px 0;">
+        <div style="color: var(--muted); font-size: 12px; padding: 8px; text-align: center;">
+          No documents attached yet.
+        </div>
       </div>
-    </div>
 
-    <div style="padding: 12px; background: var(--surface-2); border: 1px dashed var(--border); border-radius: 8px;">
-      <div style="font-size: 12.5px; margin-bottom: 6px; font-weight: 600;">Upload document(s)</div>
-      <input type="file" id="tdmUpload" multiple accept="application/pdf,image/*" onchange="_tdmUploadFiles(this)" style="font-size: 12px;">
-      <div id="tdmUploadStatus" style="font-size: 11px; color: var(--muted); margin-top: 6px;">
-        PDFs and images up to 25 MB · e.g. ID copy, W-9, insurance cert, pay stubs
+      <div style="padding: 12px; background: var(--surface-2); border: 1px dashed var(--border); border-radius: 8px;">
+        <div style="font-size: 12.5px; margin-bottom: 6px; font-weight: 600;">Upload document(s)</div>
+        <input type="file" id="tdmUpload" multiple accept="application/pdf,image/*" onchange="_tdmUploadFiles(this)" style="font-size: 12px;">
+        <div id="tdmUploadStatus" style="font-size: 11px; color: var(--muted); margin-top: 6px;">
+          PDFs and images up to 25 MB · e.g. ID copy, W-9, insurance cert, pay stubs
+        </div>
       </div>
     </div>
 
@@ -89750,7 +89757,7 @@ function _tdmRenderList() {
   const _imgCards = _imgDocs.map(([d, i]) => `
     <figure style="margin: 0; background: var(--surface-2); border: 1px solid var(--rd-border, #ddd); border-radius: 8px; overflow: hidden;">
       <a href="${esc(_safeHttpUrl(d.url))}" target="_blank" rel="noopener" title="Open full size">
-        <img src="${esc(_safeHttpUrl(d.url))}" alt="${esc(_tdLabel(d))}" style="display: block; width: 100%; max-height: 430px; object-fit: contain; background: var(--surface-2);">
+        <img src="${esc(_safeHttpUrl(d.url))}" alt="${esc(_tdLabel(d))}" style="display: block; width: 100%; max-height: min(430px, 44vh); object-fit: contain; background: var(--surface-2);">
       </a>
       <figcaption style="display: flex; align-items: center; gap: 10px; padding: 7px 12px; font-size: 12.5px; border-top: 1px solid var(--rd-border, #ddd);">
         <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(_tdLabel(d))}</span>
