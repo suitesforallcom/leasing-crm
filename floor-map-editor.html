@@ -89730,10 +89730,21 @@ function _tdmRenderList() {
     host.innerHTML = `<div style="color: var(--muted); font-size: 12px; padding: 8px; text-align: center;">No documents attached yet.</div>`;
     return;
   }
+  // Подпись и превью (2026-08-16, «в окне те же безликие Document»):
+  // схема терпима к ОБЕИМ формам имени (десктоп исторически писал name,
+  // телефон и uploadDocumentAsIs пишут fileName); фото прав с телефона
+  // (kind dl-front/dl-back) получают человеческую подпись и миниатюру.
+  const _tdLabel = (d) => d.kind === 'dl-front' ? "Driver's license — front"
+    : d.kind === 'dl-back' ? "Driver's license — back"
+    : (d.name || d.fileName || 'Document');
+  const _tdIsImg = (d) => /^image\//.test(String(d.mime || ''))
+    || /\.(jpe?g|png|webp)(\?|$)/i.test(String(d.fileName || d.name || d.url || ''));
   host.innerHTML = docs.map((d, i) => `
     <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--surface-2); border-radius: 6px; font-size: 12.5px;">
-      <span style="flex: 0 0 auto;">📎</span>
-      <a href="${esc(_safeHttpUrl(d.url))}" target="_blank" rel="noopener" style="flex: 1; color: var(--accent); text-decoration: underline; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(d.name || 'Document')}</a>
+      ${_tdIsImg(d)
+        ? `<img src="${esc(_safeHttpUrl(d.url))}" alt="" style="flex: 0 0 auto; width: 46px; height: 30px; object-fit: cover; border-radius: 4px; border: 1px solid var(--rd-border, #ddd);">`
+        : `<span style="flex: 0 0 auto;">📎</span>`}
+      <a href="${esc(_safeHttpUrl(d.url))}" target="_blank" rel="noopener" style="flex: 1; color: var(--accent); text-decoration: underline; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(_tdLabel(d))}</a>
       <span style="color: var(--muted); font-size: 10.5px;">${d.size ? `${Math.round(d.size/1024)} KB` : ''}</span>
       ${canEdit() ? `<button onclick="_tdmRemoveDoc(${i})" style="border: none; background: none; color: var(--danger); cursor: pointer; font-size: 14px;" title="Remove">×</button>` : ''}
     </div>
