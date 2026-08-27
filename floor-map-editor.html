@@ -93570,10 +93570,10 @@ async function saveQuickAddTenant() {
   const _emailishRe = /[^\s@]+@[^\s@]+\.[^\s@]+/;
   if (_emailishRe.test(tenant))  return showErr('Tenant name looks like an email address. Put the person\'s NAME here — the email goes in the Email field (it becomes the invoice / DocuSign recipient).');
   if (_emailishRe.test(company)) return showErr('Company looks like an email address. Put the legal entity NAME here — the email goes in the Email field.');
-  // Month-to-month leases have no fixed end date; DocuSign templates
-  // usually need one. Block M2M from the quick-add path — operator can
-  // still use the right-panel Lease tab for M2M setups later.
-  if (term === 'mtm') return showErr('Month-to-month leases cannot be created from quick add — set a fixed term (e.g. 12 months) so the lease end date is known.');
+  // M2M разрешён и из quick add (Tony 2026-08-27): генератор договора имеет
+  // помесячную ветку (isM2M в _dsBuildInlineLeaseHtml), дата окончания не нужна.
+  // Форма держит qatLeaseEnd пустым/выключенным при term='mtm' (_qatRecalcEnd),
+  // а u.until ниже для 'mtm' сознательно не выводится из срока.
 
   pushHistory();
 
@@ -111641,9 +111641,21 @@ function _dsBuildInlineLeaseHtml(f, recipientName, recipientEmail) {
   const deposit        = h(_money(m.deposit));
   const term           = h(m.term || '—');
   const leaseStart     = h(m.lease_start || '—');
-  const leaseEnd       = h(m.lease_end || '—');
-  const termType       = h(m.term_type || 'Fixed term, auto-renewing');
-  const autoRenewal    = h(m.automatic_renewal || 'Successive terms equal to initial Term');
+  // M2M-ветка (Tony 2026-08-27): помесячный договор без даты окончания.
+  // Триггер — ЯВНЫЙ 'mtm'/'m2m' в term (все пути отправки кладут туда
+  // u.leaseTerm) либо явный term_type. Сознательно НЕ _isMonthToMonth(u):
+  // он трактует term='1' как M2M — это молча поменяло бы текст уже
+  // используемых 1-месячных фикс-договоров.
+  const isM2M = ['mtm', 'm2m'].includes(String(m.term || '').trim().toLowerCase())
+             || /month.?to.?month/i.test(String(m.term_type || ''));
+  let leaseEnd         = h(m.lease_end || '—');
+  let termType         = h(m.term_type || 'Fixed term, auto-renewing');
+  let autoRenewal      = h(m.automatic_renewal || 'Successive terms equal to initial Term');
+  if (isM2M) {
+    leaseEnd    = 'Month-to-Month &mdash; no fixed end date';
+    termType    = 'Month-to-Month';
+    autoRenewal = 'One (1) month';
+  }
 
   // --- Jurisdiction --------------------------------------------------------
   const governingState = h(m.governing_state || 'Florida');
@@ -111903,8 +111915,10 @@ function _dsBuildInlineLeaseHtml(f, recipientName, recipientEmail) {
     reasonably updated by Provider with notice.</li>
   <li><b>&ldquo;Business Days/Hours&rdquo;</b> Monday through Friday, excluding federal
     holidays, during posted operating hours unless otherwise stated.</li>
-  <li><b>&ldquo;Term&rdquo;</b> The period from the Start Date to the End Date identified
-    in Schedule A, as renewed in accordance with this Agreement.</li>
+  ${isM2M ? `<li><b>&ldquo;Term&rdquo;</b> A month-to-month term commencing on the Start
+    Date identified in Schedule A and continuing until terminated in accordance with
+    this Agreement.</li>` : `<li><b>&ldquo;Term&rdquo;</b> The period from the Start Date to the End Date identified
+    in Schedule A, as renewed in accordance with this Agreement.</li>`}
 </ol>
 
 <h2>II. NATURE OF AGREEMENT; NO TENANCY</h2>
@@ -111925,7 +111939,19 @@ function _dsBuildInlineLeaseHtml(f, recipientName, recipientEmail) {
 
 <h2>III. TERM; RENEWAL; TERMINATION</h2>
 <ol class="sec">
-  <li><b>Term.</b> The Term commences on the Start Date and ends on the End Date set
+  ${isM2M ? `<li><b>Term.</b> The Term commences on the Start Date set forth in Schedule A and
+    continues on a month-to-month basis until terminated as provided in this
+    Agreement.</li>
+  <li><b>Renewal; Termination.</b> This Agreement automatically renews for successive
+    one (1) month periods. Either party may terminate this Agreement effective as of
+    the end of any monthly period by giving at least fifteen (15) days&rsquo; prior
+    written notice to the other party. Provider may adjust the Base Fee effective as
+    of any monthly renewal by written notice delivered at least fifteen (15) days in
+    advance.</li>
+  <li><b>Early Termination.</b> Not applicable to a month-to-month Term. Client may
+    terminate under Section III.2 by fifteen (15) days&rsquo; written notice; no Early
+    Termination Fee applies. Client remains liable for all fees accrued through the
+    effective date of termination.</li>` : `<li><b>Term.</b> The Term commences on the Start Date and ends on the End Date set
     forth in Schedule A.</li>
   <li><b>Automatic Renewal.</b> This Agreement auto-renews for successive Terms unless
     either party gives sixty (60) days&rsquo; prior written notice of non-renewal. As
@@ -111936,7 +111962,7 @@ function _dsBuildInlineLeaseHtml(f, recipientName, recipientEmail) {
     term.</li>
   <li><b>Early Termination.</b> Client may terminate with 90 days&rsquo; written notice
     and by paying an Early Termination Fee equal to the lesser of three months&rsquo;
-    Base Fee or the remaining Term&rsquo;s Base Fees, plus any unpaid charges.</li>
+    Base Fee or the remaining Term&rsquo;s Base Fees, plus any unpaid charges.</li>`}
   <li><b>Termination for Cause.</b> Provider may terminate with written notice, if
     Client fails to pay, breaches without cure, becomes insolvent, if law/ownership
     requires, or if Client causes safety, illegal, or disruptive issues.</li>
@@ -111968,9 +111994,11 @@ function _dsBuildInlineLeaseHtml(f, recipientName, recipientEmail) {
   <li><b>Suspension; Access Disablement.</b> Provider may suspend Services and deny
     access (including deactivating credentials) for nonpayment or material breach
     after notice and opportunity to cure as stated herein.</li>
-  <li><b>Fee Adjustments.</b> Base Fee is fixed during the Term. Upon renewal,
+  ${isM2M ? `<li><b>Fee Adjustments.</b> Base Fee is fixed during each monthly Term.
+    Provider may adjust the Base Fee effective as of any monthly renewal by written
+    notice delivered at least fifteen (15) days in advance.</li>` : `<li><b>Fee Adjustments.</b> Base Fee is fixed during the Term. Upon renewal,
     Provider may adjust the Base Fee to thencurrent market rates plus up to 3%, as
-    specified in Schedule A.</li>
+    specified in Schedule A.</li>`}
 </ol>
 
 <h2>V. PERMITTED USE; CONDUCT; GUESTS; SUBLICENSES</h2>
@@ -112165,7 +112193,7 @@ ${sigBlock()}
   <li>Billing Contact email: ${tenantEmail || '&mdash;'}</li>
   <li>Billing Contact phone: ${tenantPhone || '&mdash;'}</li>
   <li>Notices Contact (mailing address/email):</li>
-  <li>Renewal Adjustment: Market Rate</li>
+  <li>Renewal Adjustment: ${isM2M ? 'Per Section III.2' : 'Market Rate'}</li>
   <li>Payment Method: To be provided to Client.</li>
   <li>Payor Information: <b><u>${providerLegalName}</u></b></li>
   <li>Payee Information: To be provided by Client.</li>
