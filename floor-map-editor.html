@@ -26602,11 +26602,42 @@
       ← Change type
     </button>
 
+    <!-- ШАГ 0 (Entry 79, только kind='renewal') — «меняются ли условия?».
+         Договор с auto-renewal клаузой продлевается сам; если условия не
+         меняются, подписывать нечего — записываем факт продления без
+         документа и без DocuSign. Выбор 'auto' прячет source/details. -->
+    <div id="addLeaseDocTermsQ" style="display:none;">
+      <div class="panel-title" style="margin-top: 4px;">Are the contract terms changing?</div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 4px;">
+        <label class="lease-doc-source-card" data-source="auto" id="addLeaseDocTermsAutoCard">
+          <input type="radio" name="addLeaseDocTermsMode" value="auto" id="addLeaseDocTermsAuto"
+                 onchange="_addLeaseDocOnTermsModeChange()" />
+          <div class="lease-doc-source-card-icon">♻️</div>
+          <div class="lease-doc-source-card-title">No — renews per contract</div>
+          <div class="lease-doc-source-card-sub">Nothing to sign. Record that the current agreement auto-renewed on its own terms.</div>
+        </label>
+        <label class="lease-doc-source-card" data-source="changed">
+          <input type="radio" name="addLeaseDocTermsMode" value="changed" id="addLeaseDocTermsChanged" checked
+                 onchange="_addLeaseDocOnTermsModeChange()" />
+          <div class="lease-doc-source-card-icon">✍️</div>
+          <div class="lease-doc-source-card-title">Yes — terms change</div>
+          <div class="lease-doc-source-card-sub">New rent, term or clauses — prepare a document for signature.</div>
+        </label>
+      </div>
+      <div id="addLeaseDocAutoPanel" style="display:none; margin-top: 10px; border: 1px solid #E8E5DF; border-radius: 10px; padding: 12px 14px; background: #FAF9F7;">
+        <div style="font-weight: 700; margin-bottom: 6px;">Automatic renewal — terms unchanged</div>
+        <div id="addLeaseDocAutoSummary" style="font-size: 13px; line-height: 1.55;"></div>
+        <div style="font-size: 11px; color: var(--muted); margin-top: 8px;">
+          Different term or rent? Pick “Yes — terms change” instead: that is an amendment, not an automatic renewal.
+        </div>
+      </div>
+    </div>
+
     <!-- ШАГ 1 — SOURCE: главное решение. Перенесён в самый верх потому что
          от выбора зависят все последующие поля (template / file / nothing).
          Раньше был внизу — операторы заполняли всё подряд и недоумевали
          почему «Lease template» торчит. Теперь это первое что они видят. -->
-    <div class="panel-title" style="margin-top: 4px; display: flex; align-items: center; gap: 8px;">
+    <div class="panel-title" id="addLeaseDocSourceTitle" style="margin-top: 4px; display: flex; align-items: center; gap: 8px;">
       <span style="background: var(--accent); color: white; width: 18px; height: 18px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; flex-shrink: 0;">1</span>
       <span>How are you handling this document?</span>
     </div>
@@ -26674,13 +26705,13 @@
     </div>
 
     <!-- ШАГ 2 — детали документа. Разделитель показывает что Source выбран. -->
-    <div class="panel-title" style="margin-top: 18px; display: flex; align-items: center; gap: 8px;">
+    <div class="panel-title" id="addLeaseDocStep2Title" style="margin-top: 18px; display: flex; align-items: center; gap: 8px;">
       <span style="background: var(--accent); color: white; width: 18px; height: 18px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; flex-shrink: 0;">2</span>
       <span id="addLeaseDocStep2Label">Document details</span>
     </div>
 
     <!-- Title -->
-    <div class="field" style="margin-top: 8px;">
+    <div class="field" id="addLeaseDocTitleWrap" style="margin-top: 8px;">
       <label>Title</label>
       <input type="text" id="addLeaseDocTitleInput" placeholder="e.g. Original lease, Q4 rent increase…" />
     </div>
@@ -26689,7 +26720,7 @@
          For kind='lease'/'renewal' the term dropdown auto-fills the
          Expires date below. For 'amendment'/'addendum'/'termination'
          the term row hides; expires also hides since it doesn't apply. -->
-    <div class="field-row">
+    <div class="field-row" id="addLeaseDocDatesRow">
       <div class="field">
         <label>Effective date <span style="color:var(--muted); font-weight:400;">(rent begins)</span></label>
         <input type="date" id="addLeaseDocEffective" onchange="_addLeaseDocRecalcEnd()" />
@@ -39429,7 +39460,7 @@ window._expGoUnit = _expGoUnit;
 // u.renewal = {decision:'ending', decidedAt, by} через стандартный
 // saveState() (strip-mirror сам подхватит). НИКАКИХ статус/биллинг-правок.
 // =========================================================================
-function openRenewalFlow(buildingId, floorId, unitId) {
+function openRenewalFlow(buildingId, floorId, unitId, opts) {
   const unit = _findUnitByRef(buildingId, floorId, unitId);
   if (!unit) { toast('Unit not found', 'error'); return; }
   if (typeof _openAddLeaseDocModal !== 'function') { toast('Renewal flow unavailable', 'error'); return; }
@@ -39463,6 +39494,12 @@ function openRenewalFlow(buildingId, floorId, unitId) {
     const termNumEl = document.getElementById('addLeaseDocTerm');
     if (termNumEl) termNumEl.value = '';
     _rnwInjectQuickPicks();
+    // Entry 79: вход с кнопки «Record auto-renewal» — предвыбираем режим
+    // «условия не меняются» (setup в _openAddLeaseDocModal отработал с
+    // дефолтом 'changed'; здесь переустанавливаем с opts).
+    if (opts && opts.mode === 'auto' && typeof _addLeaseDocSetupTermsQ === 'function') {
+      _addLeaseDocSetupTermsQ(unit, 'renewal', { mode: 'auto' });
+    }
   } catch (e) { console.warn('openRenewalFlow prefill failed', e); }
 }
 
@@ -78675,7 +78712,10 @@ function _renderRenewalAlert(u) {
   const endMs = new Date(endIso + 'T00:00:00').getTime();
   if (isNaN(endMs)) return '';
   const daysLeft = Math.round((endMs - Date.now()) / 86400000);
-  if (daysLeft < 0 || daysLeft > RENEWAL_WINDOW_DAYS) return '';
+  // Entry 79: daysLeft < 0 (истёкший срок) больше НЕ гасит алерт — раньше
+  // плашка исчезала ровно в день, когда серверный авто-инвойсинг
+  // останавливался (гейт по u.until в runAutoInvoices). Теперь expired-ветка.
+  if (daysLeft > RENEWAL_WINDOW_DAYS) return '';
   const bId = (typeof currentBuilding === 'function' && currentBuilding()?.id) || '';
   const fId = (typeof currentFloor === 'function' && currentFloor()?.id) || '';
   const urgent = daysLeft <= 30;
@@ -78692,16 +78732,45 @@ function _renderRenewalAlert(u) {
       ${note ? `<div class="upv2-renewal-note">${_rdIc('note', 13)}<span>${esc(note)}</span></div>` : ''}
     </div>`;
   }
+  // Entry 79: кнопка «зафиксировать авто-продление» — если договор
+  // продлевается сам (числовой терм, не M2M) и условия не меняются.
+  const _arElig = (typeof _autoRenewEligible === 'function') ? _autoRenewEligible(u) : { ok: false };
+  const _arNewEndLbl = _arElig.ok
+    ? esc((typeof formatDisplayDate === 'function') ? formatDisplayDate(_arElig.newUntil) : _arElig.newUntil)
+    : '';
+  const autoBtn = _arElig.ok
+    ? `<button class="rd-btn2" onclick="openRenewalFlow('${esc(bId)}','${esc(fId)}','${esc(u.id)}',{mode:'auto'})" title="Terms unchanged — record the contract's automatic renewal (no document, no signature)" style="white-space:nowrap;">Record auto-renewal</button>`
+    : '';
+  if (daysLeft < 0) {
+    // Истёкший срок у живой tenancy: авто-инвойсинг уже остановлен.
+    // Красная плашка вместо прежней тишины.
+    const ago = Math.abs(daysLeft);
+    return `<div class="upv2-renewal urgent">
+      <div class="upv2-renewal-top">
+        <div class="upv2-renewal-title">${_rdIc('clock', 14)}Lease ended ${endLbl} (${ago}d ago) — auto-invoicing is stopped</div>
+        <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;">
+          ${autoBtn}
+          <button class="rd-btn2" onclick="openRenewalFlow('${esc(bId)}','${esc(fId)}','${esc(u.id)}')" title="Open the renewal document flow (prefilled)" style="white-space:nowrap;">Renew…</button>
+          <button class="rd-btn2" onclick="confirmLeaseEnding('${esc(bId)}','${esc(fId)}','${esc(u.id)}')" title="Tenant is leaving — confirm the lease ends (no billing/status change)" style="white-space:nowrap;">Ends — confirm</button>
+        </div>
+      </div>
+      <div class="upv2-renewal-sub">${_arElig.ok
+        ? `If the contract auto-renews and nothing changed, record it — new end ${_arNewEndLbl}, invoicing resumes.`
+        : 'Renew the lease, or confirm the tenancy is ending.'}</div>
+      ${note ? `<div class="upv2-renewal-note">${_rdIc('note', 13)}<span>${esc(note)}</span></div>` : ''}
+    </div>`;
+  }
   return `<div class="upv2-renewal${urgent ? ' urgent' : ''}">
     <div class="upv2-renewal-top">
       <div class="upv2-renewal-title">${_rdIc('clock', 14)}Lease expires in ${daysLeft} day${daysLeft === 1 ? '' : 's'} — start renewal outreach</div>
       <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;">
+        ${autoBtn}
         <button class="rd-btn2" onclick="openRenewalFlow('${esc(bId)}','${esc(fId)}','${esc(u.id)}')" title="Open the renewal document flow (prefilled)" style="white-space:nowrap;">Renew…</button>
         <button class="rd-btn2" onclick="confirmLeaseEnding('${esc(bId)}','${esc(fId)}','${esc(u.id)}')" title="Tenant is leaving — confirm the lease ends (no billing/status change)" style="white-space:nowrap;">Ends — confirm</button>
         <button class="rd-btn2" onclick="editRenewalNote('${esc(bId)}','${esc(fId)}','${esc(u.id)}')" title="Add / edit renewal note" style="white-space:nowrap;">${_rdIc('pencil', 12)}Note</button>
       </div>
     </div>
-    <div class="upv2-renewal-sub">Ends ${endLbl}.</div>
+    <div class="upv2-renewal-sub">Ends ${endLbl}.${_arElig.ok ? ` Auto-renews for ${_arElig.termN} mo unless 60-day notice — record it if nothing changes.` : ''}</div>
     ${note ? `<div class="upv2-renewal-note">${_rdIc('note', 13)}<span>${esc(note)}</span></div>` : ''}
   </div>`;
 }
@@ -98104,6 +98173,11 @@ function _renderLeaseDocCard(doc, u, b, f, editOn) {
         return `v${activeVersion.v} · ${esc(vMeta.label)}${ext ? ' · ' + ext : ''}${sizeKb ? ' · ' + sizeKb : ''}${vWho}`;
       }
       if (doc.source === 'external') {
+        // Entry 79: запись авто-продления — файла нет и не будет, продлил
+        // сам договор своей renewal-клаузой.
+        if (doc.autoRenewal) {
+          return '<em style="color:var(--muted);">Automatic renewal per contract — no document required.</em>';
+        }
         return '<em style="color:var(--muted);">External tracking — no file uploaded yet.</em>';
       }
       const sizeKb = doc.pdfSize ? Math.round(doc.pdfSize / 1024) + ' KB' : '';
@@ -98176,7 +98250,7 @@ function _renderLeaseDocCard(doc, u, b, f, editOn) {
   // Upload new version — главное добавление этого PR'а. Показываем для
   // upload + external doc'ов; DocuSign-doc'ам версионирование делаем
   // через resend, не через файлы (envelope = single source of truth).
-  if (_hasEdit && (doc.source === 'upload' || doc.source === 'external')) {
+  if (_hasEdit && !doc.autoRenewal && (doc.source === 'upload' || doc.source === 'external')) {
     const verb = activeVersion ? 'Upload new version' : 'Upload first version';
     actions.push(`<button type="button" class="rd-btn2" onclick="event.stopPropagation(); _openUploadVersionModal('${esc(doc.id)}')" title="Add another version to this document — previous versions stay in history">${_rdIc('upload', 13)}${verb}</button>`);
   }
@@ -112445,6 +112519,9 @@ function _leaseStatusMeta(status) {
 //     status:        'pending' | 'signed' | 'voided' | 'declined' | 'uploaded',
 //     rentChange:    { from: 550, to: 600 } (optional),
 //     termMonths:    12 (optional, for renewal),
+//     autoRenewal:   true (optional, Entry 79 — запись авто-продления по
+//                    клаузе договора: source='external', файла нет и не
+//                    ожидается, «Upload version» скрыт),
 //     notes:         'free-form text',
 //   }
 
@@ -126263,6 +126340,8 @@ function _openAddLeaseDocModal(buildingId, floorId, unitId, kind) {
   if (vStatusEl) vStatusEl.value = 'signed';
   const vLabelEl = document.getElementById('addLeaseDocVersionLabel');
   if (vLabelEl) vLabelEl.value = '';
+  // Entry 79: шаг 0 «меняются ли условия?» — только для renewal.
+  _addLeaseDocSetupTermsQ(u, kind);
   _addLeaseDocOnSourceChange();
   _addLeaseDocRefreshBodyStatus();
 
@@ -126531,6 +126610,186 @@ function _addLeaseDocOnVersionStatusChange() {
   if (!statusEl || !labelEl) return;
   const meta = _leaseDocVersionStatusMeta(statusEl.value);
   labelEl.placeholder = `e.g. ${meta.label} version`;
+}
+
+// ===== Entry 79: авто-продление без документа («условия не меняются») =====
+// Договор с auto-renewal клаузой продлевается сам по собственным условиям;
+// если оператор ничего не меняет, подписывать нечего — фиксируем факт.
+// Критично для денег: серверный runAutoInvoices гейтится по u.until —
+// незаписанное продление молча останавливает авто-инвойсинг.
+
+// Годовщинная арифметика дат (15 Sep + 6 мес = 15 Mar) — как в самом
+// договоре («successive terms»). СОЗНАТЕЛЬНО не _leaseEndFromStartTerm:
+// та использует end-of-month конвенцию (16 Sep + 6 → 31 Mar), которая
+// разошлась бы с текстом подписанного договора. Переполнение дня (31-е
+// в месяц без 31-го) прижимаем к последнему дню месяца.
+function _autoRenewAddMonths(untilIso, months) {
+  const iso = (typeof toIsoDate === 'function') ? (toIsoDate(untilIso) || '') : String(untilIso || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso) || !(+months > 0)) return '';
+  const [y, m, d] = iso.split('-').map(Number);
+  const t = new Date(y, m - 1 + Math.floor(+months), 1);
+  const last = new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate();
+  t.setDate(Math.min(d, last));
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+}
+
+function _autoRenewNextDay(untilIso) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(untilIso || '')) return '';
+  const d = new Date(untilIso + 'T00:00:00');
+  if (isNaN(d.getTime())) return '';
+  d.setDate(d.getDate() + 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Общий гейт права на авто-продление — для модалки и renewal-алерта.
+// Возвращает { ok, why, termN, oldUntil, newUntil }.
+function _autoRenewEligible(u) {
+  if (!u) return { ok: false, why: 'no unit' };
+  if (typeof _isMonthToMonth === 'function' && _isMonthToMonth(u)) {
+    return { ok: false, why: 'Month-to-month lease — it already rolls monthly' };
+  }
+  if (!(u.status === 'occupied' || u.tenant || u.company)) {
+    return { ok: false, why: 'No active tenancy on this suite' };
+  }
+  const oldUntil = (typeof toIsoDate === 'function') ? (toIsoDate(u.until || '') || '') : (u.until || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(oldUntil)) return { ok: false, why: 'Lease end date is not set' };
+  const termN = parseInt(u.leaseTerm, 10);
+  if (!(termN > 0)) return { ok: false, why: 'Lease term is not set on the unit' };
+  const newUntil = _autoRenewAddMonths(oldUntil, termN);
+  if (!newUntil) return { ok: false, why: 'Cannot compute the renewal end date' };
+  return { ok: true, termN, oldUntil, newUntil };
+}
+
+// Настройка шага 0 при открытии модалки. Для kind!=='renewal' блок скрыт
+// и режим сброшен на 'changed' (обычное поведение). opts.mode==='auto'
+// (вход с кнопки «Record auto-renewal») предвыбирает авто-режим.
+function _addLeaseDocSetupTermsQ(u, kind, opts) {
+  const wrap = document.getElementById('addLeaseDocTermsQ');
+  if (!wrap) return;
+  const chEl   = document.getElementById('addLeaseDocTermsChanged');
+  const autoEl = document.getElementById('addLeaseDocTermsAuto');
+  if (kind !== 'renewal') {
+    wrap.style.display = 'none';
+    if (chEl) chEl.checked = true;
+    if (autoEl) autoEl.checked = false;
+    _addLeaseDocOnTermsModeChange();
+    return;
+  }
+  wrap.style.display = '';
+  const elig = _autoRenewEligible(u);
+  const autoCard = document.getElementById('addLeaseDocTermsAutoCard');
+  if (autoCard && autoEl) {
+    autoEl.disabled = !elig.ok;
+    autoCard.style.opacity = elig.ok ? '' : '0.5';
+    autoCard.title = elig.ok
+      ? 'Record the automatic renewal — no document, no signature'
+      : (elig.why || '');
+  }
+  const preferAuto = !!(opts && opts.mode === 'auto') && elig.ok;
+  if (autoEl && chEl) { autoEl.checked = preferAuto; chEl.checked = !preferAuto; }
+  _addLeaseDocOnTermsModeChange();
+}
+
+// Переключение режима шага 0: 'auto' прячет source/details секции и
+// показывает расчётную панель; 'changed' восстанавливает kind-зависимую
+// видимость (те же правила, что при открытии модалки).
+function _addLeaseDocOnTermsModeChange() {
+  const kind = _addLeaseDocCtx?.kind || '';
+  const isAuto = kind === 'renewal'
+    && (document.querySelector('input[name="addLeaseDocTermsMode"]:checked')?.value === 'auto');
+  const disp = (id, v) => { const el = document.getElementById(id); if (el) el.style.display = v; };
+  if (isAuto) {
+    ['addLeaseDocSourceTitle', 'addLeaseDocSourceCards', 'addLeaseDocSourceOptions',
+     'addLeaseDocStep2Title', 'addLeaseDocTitleWrap', 'addLeaseDocDatesRow',
+     'addLeaseDocExpiresWrap', 'addLeaseDocRentWrap', 'addLeaseDocTermWrap',
+     'rnwQuickPicks'].forEach((id) => disp(id, 'none'));
+    disp('addLeaseDocAutoPanel', '');
+    const { buildingId, floorId, unitId } = _addLeaseDocCtx || {};
+    const b = (state.buildings || []).find(x => x.id === buildingId);
+    const u = (b?.floors || []).find(x => x.id === floorId)?.units?.find(x => x.id === unitId);
+    const elig = _autoRenewEligible(u);
+    const sum = document.getElementById('addLeaseDocAutoSummary');
+    if (sum && elig.ok) {
+      const fmt = (iso) => (typeof formatDisplayDate === 'function') ? formatDisplayDate(iso) : iso;
+      const rent = +u.contractRent || +u.rent || 0;
+      sum.innerHTML = `Current end: <b>${esc(fmt(elig.oldUntil))}</b><br>`
+        + `Renews for: <b>${elig.termN} month${elig.termN === 1 ? '' : 's'}</b> (contract term)<br>`
+        + `New end: <b>${esc(fmt(elig.newUntil))}</b><br>`
+        + `Rent unchanged: <b>$${rent.toLocaleString()}/mo</b>`;
+    }
+    const btn = document.getElementById('addLeaseDocSaveBtn');
+    if (btn) btn.textContent = 'Record renewal';
+  } else {
+    const showRent = (kind === 'lease' || kind === 'amendment' || kind === 'renewal');
+    const showTerm = (kind === 'renewal');
+    const showExp  = (kind === 'lease' || kind === 'renewal');
+    ['addLeaseDocSourceTitle', 'addLeaseDocSourceCards', 'addLeaseDocSourceOptions',
+     'addLeaseDocStep2Title', 'addLeaseDocTitleWrap', 'addLeaseDocDatesRow'].forEach((id) => disp(id, ''));
+    disp('addLeaseDocExpiresWrap', showExp ? '' : 'none');
+    disp('addLeaseDocRentWrap',    showRent ? '' : 'none');
+    disp('addLeaseDocTermWrap',    showTerm ? '' : 'none');
+    disp('addLeaseDocAutoPanel', 'none');
+    const qp = document.getElementById('rnwQuickPicks');
+    if (qp) qp.style.display = 'flex';
+    _addLeaseDocOnSourceChange();   // восстанавливает текст кнопки + source-поля
+  }
+}
+
+// Писатель авто-продления. Акт = подтверждение оператора, что договор
+// продлился по собственной клаузе (§0.2 rule 3: state пишется когда акт
+// завершён — как upload/external со статусом signed). leaseStart НЕ
+// трогается (§3 2026-07-03), рента НЕ трогается — только until + запись
+// в leaseDocuments (source='external', autoRenewal=true, без файла) +
+// outreach/audit след.
+function _saveAutoRenewalRecord() {
+  if (!_addLeaseDocCtx) return;
+  if (typeof canEdit === 'function' && !canEdit()) {
+    if (typeof toast === 'function') toast('Your role cannot record renewals', 'error');
+    return;
+  }
+  if (typeof requireLeaderTab === 'function' && !requireLeaderTab('Renewal record')) return;
+  const { buildingId, floorId, unitId } = _addLeaseDocCtx;
+  const b = (state.buildings || []).find(x => x.id === buildingId);
+  const f = (b?.floors || []).find(x => x.id === floorId);
+  const u = (f?.units  || []).find(x => x.id === unitId);
+  if (!u) { _closeAddLeaseDocModal(); return; }
+  const elig = _autoRenewEligible(u);
+  if (!elig.ok) {
+    if (typeof toast === 'function') toast('Cannot record automatic renewal: ' + (elig.why || 'not eligible'), 'error');
+    return;
+  }
+  const notes = (document.getElementById('addLeaseDocNotes')?.value || '').trim();
+  u.until = elig.newUntil;
+  delete u.renewal;
+  // Честное значение для {{renewal_term}} вместо вечного дефолта
+  // «Monthly, market-adjusted» (поле раньше нигде не писалось).
+  if (!u.renewalTerm) u.renewalTerm = `${elig.termN} months`;
+  const doc = {
+    id: _leaseDocId(),
+    type: 'renewal',
+    title: 'Automatic renewal (per contract)',
+    effectiveDate: _autoRenewNextDay(elig.oldUntil),
+    expiresAt: elig.newUntil,
+    source: 'external',
+    status: 'signed',
+    autoRenewal: true,
+    termMonths: elig.termN,
+    notes: notes || "Automatic renewal under the contract's renewal clause — terms unchanged, no new document required.",
+    uploadedBy: (fbSync?.user?.email || fbSync?.uid || 'admin'),
+    uploadedAt: new Date().toISOString(),
+  };
+  if (!Array.isArray(u.leaseDocuments)) u.leaseDocuments = [];
+  u.leaseDocuments.push(doc);
+  if (typeof recordOutreach === 'function') {
+    recordOutreach(u, 'status',
+      `Auto-renewed per contract — lease end ${elig.oldUntil} → ${elig.newUntil} (${elig.termN} mo, terms unchanged)`,
+      { field: 'until', from: elig.oldUntil, to: elig.newUntil });
+  }
+  try { saveState(); } catch {}
+  try { renderDetail(); } catch {}
+  if (typeof renderUnits === 'function') { try { renderUnits(); } catch {} }
+  if (typeof toast === 'function') toast(`Automatic renewal recorded — lease through ${elig.newUntil}`, 'success');
+  _closeAddLeaseDocModal();
 }
 
 // Build the merge-field context for a doc-in-progress. Pulls live
@@ -127145,7 +127404,17 @@ async function _saveAddLeaseDocModal() {
     if (typeof toast === 'function') toast('Your role cannot add documents', 'error');
     return;
   }
+  // Entry 79 (класс Entry 16): follower-вкладка не пишет — раньше upload/
+  // external ветки мутировали u.* локально, push тихо отклонялся, а
+  // onSnapshot откатывал («ghost success»). Честная ошибка + take over.
+  if (typeof requireLeaderTab === 'function' && !requireLeaderTab('Lease document')) return;
   const { buildingId, floorId, unitId, kind } = _addLeaseDocCtx;
+  // Entry 79: режим «условия не меняются» — отдельный писатель без документа.
+  if (kind === 'renewal'
+      && document.querySelector('input[name="addLeaseDocTermsMode"]:checked')?.value === 'auto') {
+    _saveAutoRenewalRecord();
+    return;
+  }
   const b = (state.buildings || []).find(x => x.id === buildingId);
   const f = (b?.floors || []).find(x => x.id === floorId);
   const u = (f?.units  || []).find(x => x.id === unitId);

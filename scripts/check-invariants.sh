@@ -67,14 +67,16 @@ echo
 # длинных функциях вроде _renderUnitPaymentHealth (700+ строк).
 check_gate() {
   local entry="$1" fn="$2" pattern="$3" window="${4:-100}"
+  # Entry 79: функции бывают и `async function NAME(` — матчим оба вида.
+  local head_re="^(async )?function $fn\("
 
-  if ! grep -q "^function $fn(" "$HTML"; then
+  if ! grep -qE "$head_re" "$HTML"; then
     echo "  ✗ $fn() — function not found (FIXES_LOG Entry $entry)"
     FAIL=1
     return
   fi
 
-  if grep -A "$window" "^function $fn(" "$HTML" | grep -qE "$pattern"; then
+  if grep -A "$window" -E "$head_re" "$HTML" | grep -qE "$pattern"; then
     echo "  ✓ $fn"
   else
     echo "  ✗ $fn — missing gate (FIXES_LOG Entry $entry)"
@@ -305,6 +307,20 @@ echo "Entry 78 — preview does not un-fill live values; renewal envelope carrie
 check_gate 78 _ltPreviewTokenize 'skipAutoExtract' 15
 check_gate 78 _previewLeaseTemplate 'skipAutoExtract: !!u' 80
 check_gate 78 _slBuildPayloadFromForm 'pend \? \(u\.leaseStart \|\| u\.signed' 60
+
+echo
+echo "Entry 79 — no-document auto-renewal: record it, don't fake a signing; leader-tab guard on doc saves:"
+# (1) Договор с auto-renewal клаузой продлевается сам — режим «условия не
+#     меняются» пишет только u.until (годовщинная арифметика, НЕ end-of-month)
+#     + запись в leaseDocuments + outreach; leaseStart/рента не трогаются.
+# (2) Незаписанное продление молча останавливало серверный авто-инвойсинг
+#     (гейт по until) — expired-ветка алерта больше не гаснет.
+# (3) _saveAddLeaseDocModal обязан звать requireLeaderTab (Entry 16-класс).
+check_gate 79 _saveAddLeaseDocModal 'requireLeaderTab' 15
+check_gate 79 _saveAddLeaseDocModal '_saveAutoRenewalRecord\(\)' 25
+check_gate 79 _saveAutoRenewalRecord 'requireLeaderTab' 15
+check_gate 79 _saveAutoRenewalRecord '_autoRenewEligible\(u\)' 30
+check_gate 79 _renderRenewalAlert "mode:'auto'" 60
 
 echo
 echo "Mobile cache-busting — versioned module loading:"

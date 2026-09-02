@@ -60,6 +60,19 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 79. No-document automatic renewal: step 0 «are the terms changing?» + expired-lease alert (lease/renewal-flow + revenue, 2026-09-02)
+
+**Problem (операторский + денежный):** договор Kiwi (и подписанные PDF-оригиналы) содержит auto-renewal клаузу — продлевается сам, подписывать нечего, если условия не меняются. А flow «Add renewal» умел только производить документ (Generate/Upload/Track), и главное: **незаписанное продление молча останавливало биллинг** — серверный `runAutoInvoices` гейтится по `u.until` (functions/index.js ~5208), late fees глохнут через 30 дней, а renewal-алерт (`_renderRenewalAlert`) исчезал ровно в день истечения (`daysLeft < 0 → return ''`) — тишина вместо тревоги.
+
+**Fix:**
+1. **Шаг 0 в Add renewal** (только kind='renewal'): «Are the contract terms changing?» — карточки 'auto' / 'changed'. 'changed' → прежний flow без изменений. 'auto' → расчётная панель (текущий конец, терм, новый конец, рента без изменений) и кнопка «Record renewal» → `_saveAutoRenewalRecord()`: пишет ТОЛЬКО `u.until` (годовщинная арифметика `_autoRenewAddMonths` — 15 Sep + 6 мес = 15 Mar, как в договоре; СОЗНАТЕЛЬНО не end-of-month конвенция `_leaseEndFromStartTerm`), `delete u.renewal`, сеет `u.renewalTerm` (ранее поле нигде не писалось — все конверты уносили дефолт «Monthly, market-adjusted»), кладёт запись в `leaseDocuments` (type='renewal', source='external', `autoRenewal:true`, без файла — «Upload version» скрыт, sourceLine «Automatic renewal per contract»), `recordOutreach('status', …)` → Activity + Audit. `leaseStart` и рента не трогаются (§3). Акт = подтверждение оператора (§0.2 rule 3 — как upload/external signed). Право на 'auto': не-M2M, живая tenancy, валидный `until`, числовой `leaseTerm` (`_autoRenewEligible`).
+2. **Expired-ветка алерта:** `daysLeft < 0` больше не гасит плашку — красный алерт «Lease ended N d ago — auto-invoicing is stopped» с кнопками [Record auto-renewal] (openRenewalFlow с `{mode:'auto'}` — модалка открывается с предвыбранным авто-режимом) / [Renew…] / [Ends — confirm]. В окне 0-60d добавлена та же кнопка + подсказка «Auto-renews for N mo unless 60-day notice».
+3. **`requireLeaderTab` в `_saveAddLeaseDocModal`** (Entry 16-класс, дыра существовала во всём Add-document flow): follower-вкладка раньше мутировала u.* локально, push тихо отклонялся, onSnapshot откатывал — «ghost success». Теперь честная ошибка + предложение take over.
+
+**Invariant:** запись авто-продления НЕ создаёт/не имитирует подписание: никакого envelope, никакого файла, только `u.until` + doc-запись с `autoRenewal:true` + outreach. Expired occupied non-M2M юнит без решения «ending» ОБЯЗАН показывать алерт (билинг остановлен — тишина недопустима). Любой писатель unit-полей в Add-document flow проходит `requireLeaderTab`.
+
+**Verification:** parse-check 4/0; функции `_autoRenewAddMonths`/`_autoRenewEligible`/`_renderRenewalAlert` прогнаны в браузере на localhost:5599 на данных 346-го (15.09.2026 + 6 → 15.03.2027; клампинг 31-го числа; expired-ветка рендерится с обеими кнопками); гейты Entry 77/78/79 зелёные.
+
 ### 78. Preview un-filled real values into bare token chips; renewal envelope carried signing date instead of commencement (lease/preview+send, 2026-09-02)
 
 **Symptom:** после Entry 77 оператор снова видит в Preview·Lease по Suite 346 голый чип `{{lease_start}}` («All 1 field mapped») на месте Start Date — хотя override давно сброшен, каскад уходит в динамический library-default и `u.leaseStart='2026-03-15'` на месте. Вопрос оператора: «почему дата сама не подставляется».
