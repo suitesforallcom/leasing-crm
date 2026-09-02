@@ -21,6 +21,10 @@ Format:
 
 ---
 
+## 2026-09-02
+
+- ⚠️ `ce0f70e` **Продление уносило в DocuSign старую дату окончания** (FIXES_LOG Entry 77) — сохранённые lease-шаблоны (unit-override / workspace) возвращались из `_resolveLeaseTemplate` вербатим: liveOverrides с новыми датами игнорировались, `{{токены}}` уходили клиенту литералами; превью из send-модала не видело отложенных условий `_slPendingRenewal`. Теперь обе ветки подставляют merge-токены через `_liveLeaseFields`, превью получает pending-условия. Верифицировано на localhost:5599. NOT DEPLOYED — firebase reauth needed. 📌 Suite 346: пер-юнитовый override со СТАТИЧНО запечёнными значениями — сбросить (Edit template → Reset) или пересохранить с токенами, иначе конверт по 346 всё ещё несёт старую дату.
+
 ## 2026-08-27
 
 - 🆕 `a9a7db8` **Month-to-month вариант договора + M2M из quick add** — isM2M-ветка в `_dsBuildInlineLeaseHtml` (I.6, III.1–III.3, IV.9, Schedule A): расторжение любой стороной и смена Base Fee уведомлением за 15 дней, БЕЗ потолка повышения (текст согласован Tony); гард в `saveQuickAddTenant` снят. Фикс-срочный договор верифицирован байт-в-байт (SHA-256 до/после совпал). DEPLOYED (meta `a9a7db87ba55`).
