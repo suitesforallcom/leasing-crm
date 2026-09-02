@@ -323,6 +323,20 @@ check_gate 79 _saveAutoRenewalRecord '_autoRenewEligible\(u\)' 30
 check_gate 79 _renderRenewalAlert "mode:'auto'" 60
 
 echo
+echo "Entry 80 — renewal/amendment envelopes carry the Amendment doc, not a second full agreement:"
+# Полный новый договор для продления = два живых контракта + двойная
+# обязанность по депозиту (юр-разбор 2026-09-02). renewal/amendment
+# резолвятся своим kind → генерируемый Amendment (текст согласован Tony);
+# превью и конверт обязаны использовать один и тот же docKind.
+check_gate 80 _dsBuildAmendmentHtml 'No Other Changes' 200
+check_gate 80 _dsBuildAmendmentHtml 'no additional' 200
+check_gate 80 _resolveLeaseTemplate "_dsBuildAmendmentHtml\(fields" 220
+check_gate 80 docusignSendEnvelope 'docKind' 15
+check_gate 80 _slBuildPayloadFromForm 'docKind' 80
+check_gate 80 _slOpenLeasePreview 'previewKind' 30
+check_gate 80 _slRenderPreviewBody 'payload\.docKind' 15
+
+echo
 echo "Mobile cache-busting — versioned module loading:"
 # Статический import без версии Safari на iOS не обновляет никогда (no-store
 # не выселяет уже закэшированный ответ). Оператор дважды сообщал об уже

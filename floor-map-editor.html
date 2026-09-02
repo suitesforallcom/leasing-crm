@@ -110430,6 +110430,7 @@ async function docusignSendEnvelope({
   fields,            // { tenant_name, suite, rent, lease_start, lease_end }
   emailSubject,
   unit,              // Шаг 5: опциональный — для resolver-based выбора lease-шаблона
+  docKind,           // Entry 80: 'renewal'|'amendment' → Amendment-документ вместо полного договора
 }) {
   if (!recipientEmail || !/@/.test(recipientEmail)) throw new Error('Recipient email invalid');
   const cfg = getDocuSignDefaults();
@@ -110506,28 +110507,34 @@ async function docusignSendEnvelope({
     // выберет правильный шаблон (Kiwi Rentals generated, Commercial
     // static, любой пользовательский). Без юнита — старая логика
     // (Kiwi Rentals напрямую) для backward-совместимости.
+    // Entry 80: renewal/amendment резолвятся своим kind — каскад отдаст
+    // пер-юнитовый/workspace-шаблон если есть, иначе генерируемый
+    // одностраничный Amendment. Полный договор — только для kind='lease'.
+    const _dk = (docKind === 'renewal' || docKind === 'amendment') ? docKind : 'lease';
     let html = '';
     if (unit && typeof _resolveLeaseTemplate === 'function') {
       try {
-        const resolved = _resolveLeaseTemplate(unit, 'lease', {
+        const resolved = _resolveLeaseTemplate(unit, _dk, {
           asRawTemplate: false,
           liveOverrides: fields || {},
         });
         if (resolved && resolved.tpl && resolved.tpl.html) {
           html = resolved.tpl.html;
           console.log('[lease-send] template source:', resolved.source,
-                      '| name:', resolved.tpl.name);
+                      '| kind:', _dk, '| name:', resolved.tpl.name);
         }
       } catch (e) {
         console.warn('[lease-send] _resolveLeaseTemplate failed, falling back:', e);
       }
     }
     if (!html) {
-      html = _dsBuildInlineLeaseHtml(fields || {}, recipientName, recipientEmail);
+      html = (_dk !== 'lease' && typeof _dsBuildAmendmentHtml === 'function')
+        ? _dsBuildAmendmentHtml(fields || {}, recipientName, recipientEmail)
+        : _dsBuildInlineLeaseHtml(fields || {}, recipientName, recipientEmail);
     }
     payload.documents = [{
       documentId: '1',
-      name: 'Lease agreement',
+      name: _dk === 'lease' ? 'Lease agreement' : 'Lease amendment',
       fileExtension: 'html',
       documentBase64: btoa(unescape(encodeURIComponent(html))),
     }];
@@ -112369,6 +112376,203 @@ ${sigBlock()}
 
 <footer>
   Office Services Agreement &bull; ${providerLegalName} &bull; Generated ${landlordSignedDate}
+</footer>
+
+</body>
+</html>`;
+}
+
+// =====================================================================
+// AMENDMENT / RENEWAL HTML (Entry 80, текст согласован Tony 2026-09-02).
+// Одностраничный First Amendment к действующему Office Services
+// Agreement — вместо полного нового договора для kind='renewal' /
+// 'amendment' (два параллельных контракта, двойной депозит, отсутствие
+// supersession — см. юр-разбор 2026-09-02). Ссылается на оригинал по
+// его Effective Date ({{lease_start}} = u.leaseStart, Entry 78), несёт
+// только изменяемые условия, депозит carry-over, остальное unchanged.
+// Секции условные: без новой даты конца (чистый amendment ренты) Term-
+// и Automatic-Renewal-пункты опускаются, нумерация пересчитывается.
+// САМОДОСТАТОЧНА: ничего не переиспользует из _dsBuildInlineLeaseHtml
+// (тот обязан оставаться байт-в-байт — SHA-256 проверка при изменениях).
+// =====================================================================
+function _dsBuildAmendmentHtml(f, recipientName, recipientEmail) {
+  const h = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  const defaults = (typeof getLeaseDefaults === 'function') ? getLeaseDefaults() : {};
+  const m = Object.assign({}, defaults, f || {});
+
+  const providerLegalName  = h(m.provider_legal_name  || 'KIWI RENTALS LLC');
+  const providerEntityType = h(m.provider_entity_type || 'Delaware limited liability company');
+  const _settings = (state && state.settings) || {};
+  const landlordName  = h(_settings.landlordName  || 'Ann Noel');
+  const landlordTitle = h(_settings.landlordTitle || 'Authorized Signatory');
+  const _normMDY = (s) => {
+    if (!s) return new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York' });
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? String(s) : d.toLocaleDateString('en-US');
+  };
+  const landlordSignedDate = h(_normMDY(m.landlord_signed_date));
+
+  const clientCompany = h(m.client_company || m.tenant_name || recipientName || '—');
+  const tenantName    = h(m.tenant_name || recipientName || '—');
+  const tenantTitle   = h(m.tenant_title || '');
+  const suite         = h(m.suite || '—');
+  const buildingAddr  = h(m.building_address || m.building_name || '—');
+
+  const _money = (v) => {
+    if (v == null || v === '' || v === '—') return '—';
+    const s = String(v).trim();
+    if (s.startsWith('$')) return s;
+    const n = Number(s.replace(/[,\s]/g, ''));
+    if (Number.isFinite(n)) return '$' + n.toLocaleString('en-US', { maximumFractionDigits: 2 });
+    return s;
+  };
+  const rent          = h(_money(m.rent));
+  const deposit       = h(_money(m.deposit));
+  const origEffective = h(m.lease_start || '—');       // Effective Date оригинала (u.leaseStart)
+  const newEnd        = h(m.lease_end || '');
+  const renewalStart  = h(m.renewal_start || '');
+  // Плейсхолдер-режим ({{lease_end}} и т.п.) обязан включать ВСЕ секции —
+  // редактор показывает полный текст; условность только для live-значений.
+  const isTpl = (s) => /\{\{/.test(String(s));
+  const hasNewEnd = !!newEnd && newEnd !== '—';
+  const hasRent = !!(m.rent != null && m.rent !== '' && m.rent !== '—');
+  const hasDeposit = !!(m.deposit != null && m.deposit !== '' && m.deposit !== '—');
+
+  const secs = [];
+  if (hasNewEnd || isTpl(newEnd)) {
+    secs.push(`<b>Term.</b> The Term of the Agreement is renewed and extended through
+      <span class="val">${newEnd}</span>.${(renewalStart ? ` The renewal term commences ${renewalStart}.` : '')}`);
+  }
+  if (hasRent || isTpl(rent)) {
+    secs.push(`<b>Base Monthly Fee.</b> Effective as of ${renewalStart || 'the renewal term'},
+      the Base Monthly Fee is <span class="val">${rent}</span> per month.`);
+  }
+  if (hasDeposit || isTpl(deposit)) {
+    secs.push(`<b>Deposit.</b> The Deposit/Service Retainer of ${deposit} currently held by
+      Provider shall continue to be held under the Agreement as amended; no additional
+      deposit is due.`);
+  }
+  if (hasNewEnd || isTpl(newEnd)) {
+    secs.push(`<b>Automatic Renewal.</b> Section III.2 of the Agreement (Automatic Renewal)
+      continues to apply to the Term as extended, measured from the new End Date.`);
+  }
+  secs.push(`<b>No Other Changes.</b> Except as expressly amended hereby, all terms of the
+    Agreement remain unchanged and in full force and effect. In the event of a conflict,
+    this Amendment controls.`);
+  secs.push(`<b>Counterparts; E-Signatures.</b> This Amendment may be executed in
+    counterparts, including electronically, each of which is deemed an original.`);
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Amendment to Office Services Agreement — ${providerLegalName}</title>
+<style>
+  @page { size: letter; margin: 0.75in; }
+  body {
+    font-family: "Times New Roman", Times, serif;
+    font-size: 10.5pt;
+    line-height: 1.45;
+    color: #000;
+    max-width: 7in;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 15pt;
+    font-weight: bold;
+    text-align: center;
+    text-transform: uppercase;
+    margin: 0 0 14pt 0;
+    letter-spacing: 0.6pt;
+  }
+  h2 {
+    font-size: 11pt;
+    font-weight: bold;
+    text-transform: uppercase;
+    margin: 12pt 0 4pt 0;
+    letter-spacing: 0.3pt;
+  }
+  p { margin: 4pt 0; text-align: justify; }
+  ol.sec { list-style-type: decimal; margin: 4pt 0 4pt 22pt; padding: 0; }
+  ol.sec > li { margin: 5pt 0; text-align: justify; padding-left: 4pt; }
+  .val { font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }
+  .sig-grid {
+    display: table; width: 100%; margin-top: 22pt;
+    border-top: 1pt solid #333; padding-top: 14pt; page-break-inside: avoid;
+  }
+  .sig-col { display: table-cell; width: 50%; vertical-align: top; padding-right: 14pt; }
+  .sig-col + .sig-col { padding-right: 0; padding-left: 14pt; }
+  .sig-col h3 { font-size: 10pt; text-transform: uppercase; letter-spacing: 0.6pt; margin: 0 0 8pt 0; color: #333; }
+  .sig-row { margin: 4pt 0; font-size: 10.5pt; }
+  .sig-row .label { display: inline-block; width: 48pt; color: #555; }
+  .sig-line { display: inline-block; min-width: 170pt; border-bottom: 0.75pt solid #888; padding: 2pt 4pt; }
+  .anchor { color: #ffffff; }
+  footer {
+    margin-top: 24pt; font-size: 8.5pt; color: #777; text-align: center;
+    border-top: 0.25pt solid #ccc; padding-top: 4pt;
+  }
+</style>
+</head>
+<body>
+
+<h1>Amendment to Office Services Agreement</h1>
+
+<p>
+  This Amendment (the &ldquo;Amendment&rdquo;) is entered into as of
+  <span class="val">${landlordSignedDate}</span> by and between
+  <b>${providerLegalName}</b>, a ${providerEntityType} (&ldquo;Provider&rdquo;), and
+  <span class="val">${clientCompany}</span> (&ldquo;Client&rdquo;).
+</p>
+
+<h2>Recitals</h2>
+<p>
+  Provider and Client are parties to that certain Office Services Agreement dated as of
+  <span class="val">${origEffective}</span> (as previously amended, the
+  &ldquo;Agreement&rdquo;) for Designated Space <span class="val">${suite}</span> at
+  ${buildingAddr}. The parties wish to renew the Term and amend the Agreement as set
+  forth below. NOW, THEREFORE, for good and valuable consideration, the receipt and
+  sufficiency of which are acknowledged, the parties agree:
+</p>
+
+<ol class="sec">
+${secs.map((s) => `  <li>${s}</li>`).join('\n')}
+</ol>
+
+<div class="sig-grid">
+  <div class="sig-col">
+    <h3>Provider</h3>
+    <div class="sig-row"><span class="label">By:</span>
+      ${(landlordName === 'Ann Noel' && typeof KIWI_ANN_NOEL_SIG_URI !== 'undefined')
+        ? `<img src="${KIWI_ANN_NOEL_SIG_URI}" width="195" height="46" style="display:inline-block;vertical-align:middle" alt="Signature of Ann Noel">`
+        : `<span class="sig-line">${landlordName}</span>`}
+    </div>
+    <div class="sig-row"><span class="label">Name:</span> ${landlordName}</div>
+    <div class="sig-row"><span class="label">Title:</span> ${landlordTitle}</div>
+    <div class="sig-row"><span class="label">Date:</span>
+      <span class="sig-line">${landlordSignedDate}</span>
+    </div>
+  </div>
+  <div class="sig-col">
+    <h3>Client</h3>
+    <div class="sig-row"><span class="label">By:</span>
+      <span class="sig-line"><span class="anchor">/signHere/</span></span>
+    </div>
+    <div class="sig-row"><span class="label">Name:</span>
+      <span class="sig-line">${tenantName}</span>
+    </div>
+    <div class="sig-row"><span class="label">Title:</span>
+      <span class="sig-line">${tenantTitle || '&nbsp;'}</span>
+    </div>
+    <div class="sig-row"><span class="label">Date:</span>
+      <span class="sig-line"><span class="anchor">/dateSigned/</span></span>
+    </div>
+  </div>
+</div>
+
+<footer>
+  Amendment to Office Services Agreement &bull; ${providerLegalName} &bull; Generated ${landlordSignedDate}
 </footer>
 
 </body>
@@ -121952,6 +122156,30 @@ function _resolveLeaseTemplate(u, kind, opts) {
       console.warn('[lease-resolve] _dsBuildInlineLeaseHtml failed, falling back to stub:', e);
     }
   }
+  // Entry 80: renewal/amendment без сохранённых шаблонов → генерируемый
+  // одностраничный Amendment (текст согласован Tony 2026-09-02) вместо
+  // 991-байтового stub'а. Пер-юнитовый override и workspace-шаблон выше
+  // по каскаду по-прежнему выигрывают (у PP 402 живёт свой amendment).
+  if ((kind === 'renewal' || kind === 'amendment') && typeof _dsBuildAmendmentHtml === 'function') {
+    try {
+      const fields = opts.asRawTemplate
+        ? _placeholderLeaseFields()
+        : _liveLeaseFields(u || {}, opts.liveOverrides);
+      const recipientName  = opts.asRawTemplate ? '{{tenant_name}}'  : (u?.tenant || u?.company || '(Tenant)');
+      const recipientEmail = opts.asRawTemplate ? '{{tenant_email}}' : (u?.email || '');
+      const html = _dsBuildAmendmentHtml(fields, recipientName, recipientEmail);
+      return {
+        source: 'generated-amendment',
+        tpl: {
+          name: 'Amendment to Office Services Agreement (auto-generated)',
+          html,
+          _generated: true,
+        },
+      };
+    } catch (e) {
+      console.warn('[lease-resolve] _dsBuildAmendmentHtml failed, falling back to stub:', e);
+    }
+  }
   return { source: 'default', tpl: LEASE_TEMPLATE_DEFAULTS[kind] || { name: '', html: '' } };
 }
 
@@ -121967,6 +122195,7 @@ function _placeholderLeaseFields() {
     deposit:               '{{deposit}}',
     term:                  '{{term}}',
     lease_start:           '{{lease_start}}',
+    renewal_start:         '{{renewal_start}}',
     lease_end:             '{{lease_end}}',
     landlord:              '{{landlord}}',
     landlord_name:         '{{landlord_name}}',
@@ -122309,6 +122538,14 @@ function _liveLeaseFields(u, overrides) {
     deposit:               fmtMoney(u?.deposit || 0),
     term:                  (o.term != null && o.term !== '') ? String(o.term) : (u?.leaseTerm || ''),
     lease_start:           fmtLongDate(startRaw),
+    // Entry 80: старт периода продления для Amendment-документа — из
+    // overrides (payload/pending), иначе ТЕКУЩИЙ u.until + 1 день (не
+    // endRaw — тот может уже нести НОВЫЙ конец из liveOverrides; а until
+    // на момент превью/отправки ещё старый — pending применяется после).
+    renewal_start:         fmtLongDate(o.renewal_start
+                             || ((typeof _autoRenewNextDay === 'function' && u?.until)
+                                  ? _autoRenewNextDay(((typeof toIsoDate === 'function') ? toIsoDate(u.until) : u.until) || '')
+                                  : '')),
     lease_end:             fmtLongDate(endRaw),
     landlord:              landlordName,
     landlord_name:         landlordName,
@@ -153317,6 +153554,7 @@ function _slOpenLeasePreview() {
   // юнита показывало СТАРУЮ дату окончания («при продлении дата не
   // меняется»). Прокидываем отложенные значения как liveOverrides.
   let liveOverrides;
+  let previewKind = 'lease';
   const _pr = window._slPendingRenewal;
   if (_pr && _pr.unitId === _slCtx.unitId) {
     liveOverrides = {};
@@ -153324,8 +153562,13 @@ function _slOpenLeasePreview() {
     if (_pr.leaseTerm) liveOverrides.term      = _pr.leaseTerm;
     if (_pr.rentTo > 0) liveOverrides.rent     = _pr.rentTo;
     if (_pr.kind === 'lease' && _pr.effDate) liveOverrides.lease_start = _pr.effDate;
+    // Entry 80: renewal/amendment превьюится как Amendment-документ.
+    if (_pr.kind === 'renewal' || _pr.kind === 'amendment') {
+      previewKind = _pr.kind;
+      if (_pr.effDate) liveOverrides.renewal_start = _pr.effDate;
+    }
   }
-  _previewLeaseTemplate('lease', 'workspace', { unitId: _slCtx.unitId, liveOverrides });
+  _previewLeaseTemplate(previewKind, 'workspace', { unitId: _slCtx.unitId, liveOverrides });
 }
 // Сборка payload-а из текущей формы + state. Чистая — без сайд-эффектов,
 // без UI-апдейтов. Возвращает null + кидает alert-toast если форма
@@ -153368,6 +153611,9 @@ function _slBuildPayloadFromForm() {
     // Без pending — прежний legacy-порядок (signed||leaseStart), не трогаем.
     lease_start: fmtLongDate((pend && pend.kind === 'lease' && pend.effDate) || (pend ? (u.leaseStart || u.signed || '') : leaseStartRaw)),
     lease_end: fmtLongDate((pend && pend.until) || leaseEndRaw),
+    // Entry 80: старт периода продления для Amendment-документа —
+    // Effective date из модалки (u.until+1 префилл openRenewalFlow).
+    renewal_start: fmtLongDate((pend && pend.effDate) || ''),
     landlord: landlordName,
     landlord_name: landlordName,
     landlord_title: landlordTitle,
@@ -153382,7 +153628,9 @@ function _slBuildPayloadFromForm() {
     building_address: b?.address || '',
     ...getLeaseDefaults(),
   };
-  return { u, b, f, buildingId, floorId, unitId, email, name, subject, message, templateId, fields };
+  // Entry 80: renewal/amendment уходят Amendment-документом, не полным договором.
+  const docKind = (pend && (pend.kind === 'renewal' || pend.kind === 'amendment')) ? pend.kind : 'lease';
+  return { u, b, f, buildingId, floorId, unitId, email, name, subject, message, templateId, fields, docKind };
 }
 
 // Главная кнопка модалки больше не отправляет напрямую — открывает
@@ -153427,6 +153675,7 @@ async function _slDoSend(payload) {
       templateId,
       fields,
       unit: payload.u, // Шаг 5: даём resolver контекст для выбора library-шаблона
+      docKind: payload.docKind, // Entry 80: renewal/amendment → Amendment-документ
     });
     // Пере-résolve юнита ПОСЛЕ await: CF зеркалит здание до ответа callable,
     // и listener коллекции buildings мог подменить объект здания во время
@@ -153628,7 +153877,9 @@ function _slRenderPreviewBody(payload) {
   let resolvedSource = '—', resolvedName = '—', resolvedHtml = '';
   try {
     if (typeof _resolveLeaseTemplate === 'function') {
-      const r = _resolveLeaseTemplate(payload.u, 'lease', { asRawTemplate: false, liveOverrides: payload.fields });
+      // Entry 80: превью показывает ровно тот документ, что уйдёт —
+      // Amendment для renewal/amendment, полный договор для lease.
+      const r = _resolveLeaseTemplate(payload.u, payload.docKind || 'lease', { asRawTemplate: false, liveOverrides: payload.fields });
       if (r && r.tpl) {
         resolvedSource = r.source || 'unknown';
         resolvedName = r.tpl.name || '(unnamed)';
