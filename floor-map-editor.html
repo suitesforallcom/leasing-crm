@@ -125491,17 +125491,23 @@ window._ltExtractProseValues = _ltExtractProseValues;
 // Безопасно: проходим только по text-узлам (не по HTML-тегам/атрибутам),
 // не трогаем содержимое <style>, <script>, и уже обёрнутые .merge-token'ы.
 // Возвращает { html, tokens: Map<token, count>, candidates: Map<text, count> }.
-function _ltPreviewTokenize(html) {
+function _ltPreviewTokenize(html, opts) {
   const tokens = new Map();
   const candidates = new Map();
   if (!html) return { html: '', tokens, candidates };
+  // opts.skipAutoExtract (Entry 78): для УЖЕ подставленного live-документа
+  // (превью с реальным юнитом) шаги 0/0b запрещены — иначе smart-map
+  // «выдирает» реальные значения обратно в {{токены}} (Suite 346: prose-rule
+  // 'Start Date:' превращала подставленную дату в голый чип {{lease_start}}).
+  // Для raw-шаблонов (редактор, библиотека) поведение прежнее.
+  const _skipAuto = !!(opts && opts.skipAutoExtract);
   // Шаг 0: Runtime smart-map fallback. Если шаблон загружен ДО введения
   // auto-tokenize-on-upload (или загружен в режиме paste-text без auto-map),
   // [Tenant Name] / «Date: ____» всё ещё могут быть в html. Прогоняем
   // _ltAutoTokenizeHtml по html чтобы preview показал их фиолетовыми с
   // правильными labels. Это RUNTIME — не пишет обратно в state, только в
   // локальную переменную `html`.
-  if (typeof _ltAutoTokenizeHtml === 'function') {
+  if (!_skipAuto && typeof _ltAutoTokenizeHtml === 'function') {
     try {
       const auto = _ltAutoTokenizeHtml(html);
       if (auto && auto.mapped > 0) html = auto.html;
@@ -125510,7 +125516,7 @@ function _ltPreviewTokenize(html) {
   // Шаг 0b: Prose-value runtime fallback. Аналогично, для уже-заполненных
   // шаблонов с inline values в прозе («Building: 18205 Crane Nest Drive…»).
   // Не пишет в state — только меняет локальную копию html для рендера.
-  if (typeof _ltExtractProseValues === 'function') {
+  if (!_skipAuto && typeof _ltExtractProseValues === 'function') {
     try {
       const prose = _ltExtractProseValues(html);
       if (prose && prose.extracted > 0) html = prose.html;
@@ -125907,7 +125913,11 @@ function _previewLeaseTemplate(kind, scope, unitContext) {
   // (всё уже подставлено генератором), поэтому tokens.size === 0 и
   // setMode упадёт обратно в sample автоматически. Кандидаты ([Field
   // Name] стиль) детектятся на тех же raw-данных.
-  const tokenized = _ltPreviewTokenize(sourceHtml);
+  // Entry 78: при живом юните документ уже подставлен (asRawTemplate = !u),
+  // поэтому auto-extract шагов 0/0b отключён — они «раззаполняли» реальные
+  // значения обратно в чипы (Start Date → {{lease_start}}), и модалка
+  // открывалась в fields-режиме с ложным «незаполненным» полем.
+  const tokenized = _ltPreviewTokenize(sourceHtml, { skipAutoExtract: !!u });
   const validation = _ltPreviewValidateTokens(tokenized.tokens, tokenized.candidates);
   // Open the modal — populated below.
   const modal = document.getElementById('leaseTemplatePreviewModal');
@@ -153082,7 +153092,12 @@ function _slBuildPayloadFromForm() {
     term: (pend && pend.leaseTerm) || u.leaseTerm || '',
     // Entry-73 v2: для отложенной НОВОЙ лизы (vacancy-гейт) документ несёт
     // новую дату старта, хотя u.leaseStart ещё не переписан.
-    lease_start: fmtLongDate((pend && pend.kind === 'lease' && pend.effDate) || leaseStartRaw),
+    // Entry 78: для renewal/amendment (pend без effDate) Start Date =
+    // u.leaseStart (commencement, решение §3 2026-07-03 — продление не
+    // двигает старт), а НЕ u.signed: конверт уходил с датой ПОДПИСАНИЯ
+    // (Feb 13) вместо даты начала (Mar 15) и расходился с превью.
+    // Без pending — прежний legacy-порядок (signed||leaseStart), не трогаем.
+    lease_start: fmtLongDate((pend && pend.kind === 'lease' && pend.effDate) || (pend ? (u.leaseStart || u.signed || '') : leaseStartRaw)),
     lease_end: fmtLongDate((pend && pend.until) || leaseEndRaw),
     landlord: landlordName,
     landlord_name: landlordName,

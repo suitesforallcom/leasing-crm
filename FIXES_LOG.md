@@ -60,6 +60,20 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 78. Preview un-filled real values into bare token chips; renewal envelope carried signing date instead of commencement (lease/preview+send, 2026-09-02)
+
+**Symptom:** после Entry 77 оператор снова видит в Preview·Lease по Suite 346 голый чип `{{lease_start}}` («All 1 field mapped») на месте Start Date — хотя override давно сброшен, каскад уходит в динамический library-default и `u.leaseStart='2026-03-15'` на месте. Вопрос оператора: «почему дата сама не подставляется».
+
+**Root cause (два независимых слоя):**
+1. **Превью (косметический, но вводящий в заблуждение):** в документе дата БЫЛА подставлена («March 15, 2026»). Её «раззаполнял» сам превью-токенизатор: `_ltPreviewTokenize` шаги 0/0b (`_ltAutoTokenizeHtml` + `_ltExtractProseValues`) прогонялись и по УЖЕ подставленному live-документу; prose-правило `'Start Date:' → lease_start` (`__date` regex) вырезало реальную дату и ставило на её место литерал `{{lease_start}}` в локальной копии html; tokens.size стал 1 → модалка авто-открылась в fields-режиме → оператор видел чип вместо даты (sample-режим и реальный документ несли верную дату). Один Start Date из всей Schedule A — потому что остальные `<li>` не матчат anchored-правила (Fee ≠ Rent, «Deposit/» ломает `[:\-—]`, и т.д.).
+2. **Отправка (реальный баг в конверте):** `_slBuildPayloadFromForm` строил `leaseStartRaw = u.signed || u.leaseStart` — для renewal/amendment (pend без effDate) конверт уносил дату ПОДПИСАНИЯ старого договора (Feb 13, 2026) вместо даты начала (Mar 15, 2026). Расходился и с превью (оно читает `u.leaseStart` через `_liveLeaseFields`), и с решением §3 (2026-07-03: renewal не двигает start; leaseStart = commencement).
+
+**Fix:** (1) `_ltPreviewTokenize(html, opts)` + `opts.skipAutoExtract`: шаги 0/0b пропускаются; `_previewLeaseTemplate` передаёт `{ skipAutoExtract: !!u }` — для live-документа с реальным юнитом smart-map выключен, tokens.size=0 → модалка сама падает в sample-режим с реальными значениями. Raw-шаблоны (редактор, `_previewLibraryTpl` без opts, workspace-превью с u=null) — прежнее поведение. (2) `_slBuildPayloadFromForm.lease_start`: при pending renewal/amendment — `u.leaseStart || u.signed` (commencement first); новая лиза — `pend.effDate` как раньше; без pending — легаси `u.signed || u.leaseStart` не тронут (bulk-рассылка на ~140117 тоже не тронута).
+
+**Invariant:** превью live-документа (резолв с `asRawTemplate:false`) НЕ прогоняется через auto-extract (шаги 0/0b) — smart-map существует только для raw/недоконвертированных шаблонов. Конверт renewal/amendment несёт Start Date = `u.leaseStart` (commencement), не `u.signed`.
+
+**Verification:** parse-check 4 blocks/0 errors; `_ltPreviewTokenize` вызван напрямую в браузере на localhost:5599 — с `skipAutoExtract:true` подставленный Schedule A возвращает tokens.size=0, без опции воспроизводится вырезание даты; check-invariants Entry 77+78 зелёные.
+
 ### 77. Renewal end date frozen: stored lease templates went to DocuSign verbatim (lease/data-integrity, 2026-09-02)
 
 **Symptom:** оператор продлевает договор (Add document → kind=renewal → Generate & e-sign), в форме Lease End = новая дата — а превью и сам документ несут СТАРУЮ дату окончания текущей лизы («при продлении дата окончания не меняется»). На Suite 346 превью показало End Date: September 15, 2026 при новой дате 03/23/2027, плюс голый чип `{{lease_start}}` («All 1 field mapped»).

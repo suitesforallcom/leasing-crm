@@ -297,6 +297,16 @@ check_gate 77 _renderStoredLeaseTpl '_ldSubstituteMergeTokens\(' 30
 check_gate 77 _slOpenLeasePreview 'liveOverrides\.lease_end = _pr\.until' 30
 
 echo
+echo "Entry 78 — preview does not un-fill live values; renewal envelope carries commencement date:"
+# (1) Smart-map превью «выдирал» подставленные значения обратно в {{токены}}
+# на уже отрендеренном live-документе (Suite 346: Start Date → голый чип).
+# (2) Конверт продления уносил дату ПОДПИСАНИЯ (u.signed) вместо даты начала
+# (u.leaseStart) — расходился и с превью, и с решением §3 (2026-07-03).
+check_gate 78 _ltPreviewTokenize 'skipAutoExtract' 15
+check_gate 78 _previewLeaseTemplate 'skipAutoExtract: !!u' 80
+check_gate 78 _slBuildPayloadFromForm 'pend \? \(u\.leaseStart \|\| u\.signed' 60
+
+echo
 echo "Mobile cache-busting — versioned module loading:"
 # Статический import без версии Safari на iOS не обновляет никогда (no-store
 # не выселяет уже закэшированный ответ). Оператор дважды сообщал об уже
