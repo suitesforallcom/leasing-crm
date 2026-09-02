@@ -21,7 +21,7 @@
       "runtimeArgs": [
         "-y",
         "http-server",
-        "/Users/diskc/Documents/Claude/Projects/Office map",
+        "/Users/diskc/Projects/Claude/Projects/Office map",
         "-p",
         "5599",
         "-c-1",
