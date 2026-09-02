@@ -8323,6 +8323,25 @@
   .lease-doc-source-card:has(input[type="radio"]:checked) .lease-doc-source-card-title {
     color: #1E1B9F;
   }
+  /* Entry 80.1 (Tony): «Add document/renewal» обязан вмещаться без
+     прокрутки. Ужимаем вертикальный ритм ТОЛЬКО этой модалки: карточки
+     компактнее, иконки меньше; карточки шага 0 («terms changing?») —
+     горизонтальные (иконка слева, текст в две строки справа). */
+  #addLeaseDocModal .lease-doc-source-card { padding: 9px 26px 10px 10px; gap: 3px; }
+  #addLeaseDocModal .lease-doc-source-card-icon { font-size: 20px; margin-bottom: 0; }
+  #addLeaseDocModal .lease-doc-source-card-sub { font-size: 10.5px; line-height: 1.3; }
+  #addLeaseDocModal .modal { max-height: calc(100vh - 24px); padding: 18px 22px; }
+  #addLeaseDocModal .field { margin-bottom: 6px; }
+  #addLeaseDocModal h2 { margin-bottom: 3px; }
+  #addLeaseDocModal .modal-sub { margin-bottom: 4px; }
+  #addLeaseDocModal .lease-doc-change-type-btn { margin: 2px 0 6px; }
+  #addLeaseDocTermsQ .lease-doc-source-card {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    column-gap: 10px; row-gap: 2px;
+    align-items: start;
+  }
+  #addLeaseDocTermsQ .lease-doc-source-card-icon { grid-row: 1 / span 2; }
   /* Шаг 6 редизайна (Suite 363 Lease.html, .doc-actions): ряд действий
      отбит верхней линией; кнопки переведены на примитивы .rd-btn /
      .rd-btn2 / .rd-btn-danger — локальные .lease-doc-action-* стили
@@ -26614,14 +26633,14 @@
                  onchange="_addLeaseDocOnTermsModeChange()" />
           <div class="lease-doc-source-card-icon">♻️</div>
           <div class="lease-doc-source-card-title">No — renews per contract</div>
-          <div class="lease-doc-source-card-sub">Nothing to sign. Record that the current agreement auto-renewed on its own terms.</div>
+          <div class="lease-doc-source-card-sub">Nothing to sign — record the automatic renewal.</div>
         </label>
         <label class="lease-doc-source-card" data-source="changed">
           <input type="radio" name="addLeaseDocTermsMode" value="changed" id="addLeaseDocTermsChanged" checked
                  onchange="_addLeaseDocOnTermsModeChange()" />
           <div class="lease-doc-source-card-icon">✍️</div>
           <div class="lease-doc-source-card-title">Yes — terms change</div>
-          <div class="lease-doc-source-card-sub">New rent, term or clauses — prepare a document for signature.</div>
+          <div class="lease-doc-source-card-sub">New rent, term or clauses — document for signature.</div>
         </label>
       </div>
       <div id="addLeaseDocAutoPanel" style="display:none; margin-top: 10px; border: 1px solid #E8E5DF; border-radius: 10px; padding: 12px 14px; background: #FAF9F7;">
@@ -26705,7 +26724,7 @@
     </div>
 
     <!-- ШАГ 2 — детали документа. Разделитель показывает что Source выбран. -->
-    <div class="panel-title" id="addLeaseDocStep2Title" style="margin-top: 18px; display: flex; align-items: center; gap: 8px;">
+    <div class="panel-title" id="addLeaseDocStep2Title" style="margin-top: 10px; display: flex; align-items: center; gap: 8px;">
       <span style="background: var(--accent); color: white; width: 18px; height: 18px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; flex-shrink: 0;">2</span>
       <span id="addLeaseDocStep2Label">Document details</span>
     </div>
@@ -26791,10 +26810,10 @@
     <!-- Notes -->
     <div class="field">
       <label>Notes (optional)</label>
-      <textarea id="addLeaseDocNotes" rows="2" placeholder="Internal note shown alongside this document…"></textarea>
+      <textarea id="addLeaseDocNotes" rows="1" placeholder="Internal note shown alongside this document…"></textarea>
     </div>
 
-    <div class="modal-actions" style="margin-top: 20px;">
+    <div class="modal-actions" style="margin-top: 12px;">
       <button type="button" class="rr-btn" onclick="_closeAddLeaseDocModal()">Cancel</button>
       <button type="button" class="rr-btn primary" id="addLeaseDocSaveBtn" onclick="_saveAddLeaseDocModal()">
         Save document
@@ -39512,7 +39531,7 @@ function _rnwInjectQuickPicks() {
   if (!anchor || !anchor.parentNode) return;
   const row = document.createElement('div');
   row.id = 'rnwQuickPicks';
-  row.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:2px 0 10px;';
+  row.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:2px 0 6px;';
   row.innerHTML = '<span style="font-size:11px;color:var(--muted,#8f887c);font-weight:600;">Quick term:</span>'
     + [3, 6, 12, 24].map(m =>
         `<button type="button" class="rr-btn" style="padding:4px 10px;font-size:12px;" onclick="_rnwPickTerm(${m})">${m} mo</button>`
@@ -78748,7 +78767,7 @@ function _renderRenewalAlert(u) {
     return `<div class="upv2-renewal urgent">
       <div class="upv2-renewal-top">
         <div class="upv2-renewal-title">${_rdIc('clock', 14)}Lease ended ${endLbl} (${ago}d ago) — auto-invoicing is stopped</div>
-        <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;">
+        <div style="display:flex;gap:6px;min-width:0;max-width:100%;flex-wrap:wrap;justify-content:flex-end;">
           ${autoBtn}
           <button class="rd-btn2" onclick="openRenewalFlow('${esc(bId)}','${esc(fId)}','${esc(u.id)}')" title="Open the renewal document flow (prefilled)" style="white-space:nowrap;">Renew…</button>
           <button class="rd-btn2" onclick="confirmLeaseEnding('${esc(bId)}','${esc(fId)}','${esc(u.id)}')" title="Tenant is leaving — confirm the lease ends (no billing/status change)" style="white-space:nowrap;">Ends — confirm</button>
@@ -78763,7 +78782,7 @@ function _renderRenewalAlert(u) {
   return `<div class="upv2-renewal${urgent ? ' urgent' : ''}">
     <div class="upv2-renewal-top">
       <div class="upv2-renewal-title">${_rdIc('clock', 14)}Lease expires in ${daysLeft} day${daysLeft === 1 ? '' : 's'} — start renewal outreach</div>
-      <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;">
+      <div style="display:flex;gap:6px;min-width:0;max-width:100%;flex-wrap:wrap;justify-content:flex-end;">
         ${autoBtn}
         <button class="rd-btn2" onclick="openRenewalFlow('${esc(bId)}','${esc(fId)}','${esc(u.id)}')" title="Open the renewal document flow (prefilled)" style="white-space:nowrap;">Renew…</button>
         <button class="rd-btn2" onclick="confirmLeaseEnding('${esc(bId)}','${esc(fId)}','${esc(u.id)}')" title="Tenant is leaving — confirm the lease ends (no billing/status change)" style="white-space:nowrap;">Ends — confirm</button>
@@ -126960,8 +126979,15 @@ function _addLeaseDocOnTermsModeChange() {
     const showRent = (kind === 'lease' || kind === 'amendment' || kind === 'renewal');
     const showTerm = (kind === 'renewal');
     const showExp  = (kind === 'lease' || kind === 'renewal');
-    ['addLeaseDocSourceTitle', 'addLeaseDocSourceCards', 'addLeaseDocSourceOptions',
-     'addLeaseDocStep2Title', 'addLeaseDocTitleWrap', 'addLeaseDocDatesRow'].forEach((id) => disp(id, ''));
+    // ВАЖНО: у sourceTitle/step2Title/sourceCards display задан ИНЛАЙНОМ
+    // (flex/grid) — restore '' стирал его из style-атрибута, и карточки
+    // источника складывались столбиком (модалка раздувалась в прокрутку).
+    disp('addLeaseDocSourceTitle', 'flex');
+    disp('addLeaseDocSourceCards', 'grid');
+    disp('addLeaseDocSourceOptions', '');
+    disp('addLeaseDocStep2Title', 'flex');
+    disp('addLeaseDocTitleWrap', '');
+    disp('addLeaseDocDatesRow', '');
     disp('addLeaseDocExpiresWrap', showExp ? '' : 'none');
     disp('addLeaseDocRentWrap',    showRent ? '' : 'none');
     disp('addLeaseDocTermWrap',    showTerm ? '' : 'none');
