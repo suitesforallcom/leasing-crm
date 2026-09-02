@@ -287,6 +287,16 @@ fi
 
 
 echo
+echo "Entry 77 — stored lease templates substitute live values on send/preview:"
+# unit/workspace-шаблон возвращался вербатим: liveOverrides (новые даты
+# продления) игнорировались, {{токены}} уходили клиенту литералами —
+# renewal через DocuSign уносил в конверт СТАРУЮ дату окончания.
+check_gate 77 _resolveLeaseTemplate "_renderStoredLeaseTpl\('unit'" 40
+check_gate 77 _resolveLeaseTemplate "_renderStoredLeaseTpl\('workspace'" 200
+check_gate 77 _renderStoredLeaseTpl '_ldSubstituteMergeTokens\(' 30
+check_gate 77 _slOpenLeasePreview 'liveOverrides\.lease_end = _pr\.until' 30
+
+echo
 echo "Mobile cache-busting — versioned module loading:"
 # Статический import без версии Safari на iOS не обновляет никогда (no-store
 # не выселяет уже закэшированный ответ). Оператор дважды сообщал об уже

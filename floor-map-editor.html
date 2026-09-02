@@ -121653,6 +121653,39 @@ function _ldSubstituteMergeTokens(html, fields, recipientName, recipientEmail, o
   });
 }
 
+// Сохранённый шаблон (unit-override / workspace) для resolve. В raw-режиме
+// отдаётся как есть (редакторы работают с {{токенами}}). В live-режиме
+// (send / превью документа) подставляем merge-токены значениями юнита +
+// liveOverrides — тем же способом, что и static library-шаблоны выше.
+// До этого фикса обе ветки возвращали сохранённый HTML вербатим и на
+// отправке: liveOverrides (новые даты/рента продления из формы) молча
+// игнорировались, а {{токены}} уходили клиенту литералами — продление
+// через DocuSign уносило в конверт замороженную старую дату окончания.
+function _renderStoredLeaseTpl(source, tpl, u, opts) {
+  if (opts.asRawTemplate) return { source, tpl };
+  try {
+    const fields = _liveLeaseFields(u || {}, opts.liveOverrides);
+    // rent_table_html — как в _renderLeaseTemplateById: нужен только
+    // Commercial-шаблону, для остальных токен просто не встретится.
+    const enriched = Object.assign({}, fields, {
+      rent_table_html: _buildRentTableHtml(
+        fields.commencement_date_iso || fields.lease_start_iso,
+        fields.term_months,
+        fields.starting_psf_raw,
+        fields.rba_sqft_raw,
+        fields.annual_escalation_pct_raw
+      ),
+    });
+    const recipientName  = u?.tenant || u?.company || '(Tenant)';
+    const recipientEmail = u?.email || '';
+    const html = _ldSubstituteMergeTokens(tpl.html || '', enriched, recipientName, recipientEmail);
+    if (html) return { source, tpl: Object.assign({}, tpl, { html }) };
+  } catch (e) {
+    console.warn('[lease-resolve] stored-template render failed, returning raw:', e);
+  }
+  return { source, tpl };
+}
+
 // Resolve which template should be used for a unit + kind:
 //   1. per-unit override   (u.leaseTemplateOverrides[kind])
 //   1b. kind='lease': library pointers — u.leaseTemplateId →
@@ -121676,7 +121709,7 @@ function _resolveLeaseTemplate(u, kind, opts) {
   opts = opts || {};
   const overrides = u && u.leaseTemplateOverrides;
   if (overrides && overrides[kind] && overrides[kind].html) {
-    return { source: 'unit', tpl: overrides[kind] };
+    return _renderStoredLeaseTpl('unit', overrides[kind], u, opts);
   }
   // Шаг 2: ссылка на библиотечный шаблон, привязанный к юниту.
   // Применимо только для kind='lease' (амендменты/реньюалы у нас пока без
@@ -121791,7 +121824,7 @@ function _resolveLeaseTemplate(u, kind, opts) {
 
   const workspace = state.settings && state.settings.leaseTemplates;
   if (workspace && workspace[kind] && workspace[kind].html) {
-    return { source: 'workspace', tpl: workspace[kind] };
+    return _renderStoredLeaseTpl('workspace', workspace[kind], u, opts);
   }
   // Шаг 5: workspace-уровневый дефолт через library
   // (state.settings.defaultLeaseTemplateId, заведённый в Шаге 1A).
@@ -125830,7 +125863,13 @@ function _previewLeaseTemplate(kind, scope, unitContext) {
   //   _dsBuildInlineLeaseHtml). Раньше тут читали ТОЛЬКО короткую
   //   заглушку LEASE_TEMPLATE_DEFAULTS.lease, поэтому Preview показывал
   //   не тот документ, что уходит арендатору.
-  const resolved = _resolveLeaseTemplate(u || {}, kind, { asRawTemplate: !u });
+  // unitContext.liveOverrides — значения ещё-не-применённых полей (например
+  // отложенное продление из _slPendingRenewal): без них превью показывало
+  // СТАРУЮ дату окончания/ренту, пока новые условия ждали отправки конверта.
+  const resolved = _resolveLeaseTemplate(u || {}, kind, {
+    asRawTemplate: !u,
+    liveOverrides: (unitContext && unitContext.liveOverrides) || undefined,
+  });
   const sourceHtml = (resolved && resolved.tpl && resolved.tpl.html) || '';
   // Флаг для корректной подписи в саб-заголовке: 'generated' = это
   // реальный full-text Kiwi Rentals lease, а не built-in stub.
@@ -152994,7 +153033,20 @@ function _slOpenLeasePreview() {
     if (typeof toast === 'function') toast('Preview not available', 'error');
     return;
   }
-  _previewLeaseTemplate('lease', 'workspace', { unitId: _slCtx.unitId });
+  // Entry 73: у renewal/amendment/new-lease-on-occupied новые условия НЕ
+  // записаны в юнит до отправки конверта (_slPendingRenewal) — превью из
+  // юнита показывало СТАРУЮ дату окончания («при продлении дата не
+  // меняется»). Прокидываем отложенные значения как liveOverrides.
+  let liveOverrides;
+  const _pr = window._slPendingRenewal;
+  if (_pr && _pr.unitId === _slCtx.unitId) {
+    liveOverrides = {};
+    if (_pr.until)     liveOverrides.lease_end = _pr.until;
+    if (_pr.leaseTerm) liveOverrides.term      = _pr.leaseTerm;
+    if (_pr.rentTo > 0) liveOverrides.rent     = _pr.rentTo;
+    if (_pr.kind === 'lease' && _pr.effDate) liveOverrides.lease_start = _pr.effDate;
+  }
+  _previewLeaseTemplate('lease', 'workspace', { unitId: _slCtx.unitId, liveOverrides });
 }
 // Сборка payload-а из текущей формы + state. Чистая — без сайд-эффектов,
 // без UI-апдейтов. Возвращает null + кидает alert-toast если форма

@@ -60,6 +60,20 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 77. Renewal end date frozen: stored lease templates went to DocuSign verbatim (lease/data-integrity, 2026-09-02)
+
+**Symptom:** оператор продлевает договор (Add document → kind=renewal → Generate & e-sign), в форме Lease End = новая дата — а превью и сам документ несут СТАРУЮ дату окончания текущей лизы («при продлении дата окончания не меняется»). На Suite 346 превью показало End Date: September 15, 2026 при новой дате 03/23/2027, плюс голый чип `{{lease_start}}` («All 1 field mapped»).
+
+**Root cause (двухслойный):**
+1. `_resolveLeaseTemplate` для сохранённых шаблонов (`u.leaseTemplateOverrides[kind]` → source='unit'; `state.settings.leaseTemplates[kind]` → source='workspace') возвращал HTML вербатим и в live-режиме: `opts.liveOverrides` (новые lease_end/term/rent из формы продления, приезжающие через `_slBuildPayloadFromForm` overlay Entry 73) молча игнорировались, `{{токены}}` не подставлялись вовсе — `docusignSendEnvelope` кодировал этот HTML в конверт как есть. Все остальные источники (library static/generated) прогоняются через `_liveLeaseFields(u, liveOverrides)` — только эти две ветки были сырыми.
+2. Превью «📄 Preview lease» из send-модала (`_slOpenLeasePreview` → `_previewLeaseTemplate`) рендерило поля из текущего юнита БЕЗ отложенных условий `_slPendingRenewal` (они по Entry 73 сознательно не пишутся в юнит до отправки) — старая дата в превью даже для generated-шаблона.
+
+**Fix:** новый хелпер `_renderStoredLeaseTpl(source, tpl, u, opts)`: raw-режим (редакторы) — вербатим как раньше; live-режим — `_ldSubstituteMergeTokens(tpl.html, _liveLeaseFields(u, opts.liveOverrides) + rent_table_html)` — тот же путь, что у static library-шаблонов; обе ветки resolve переведены на него. `_previewLeaseTemplate` принимает `unitContext.liveOverrides` и прокидывает в resolve; `_slOpenLeasePreview` собирает их из `_slPendingRenewal` (lease_end/term/rent; lease_start только для kind='lease' — renewal не двигает start, решение Tony 2026-07-03 §3). Сохранённый объект шаблона не мутируется (Object.assign-копия). Верифицировано на localhost:5599: unit-override с токенами получает March 23, 2027; raw-режим байт-в-байт; без override каскад уходит в library-default с новой датой и без старой.
+
+**Invariant:** ЛЮБАЯ ветка `_resolveLeaseTemplate`, возвращающая сохранённый HTML, в live-режиме (`asRawTemplate:false`) ОБЯЗАНА подставить merge-токены через `_liveLeaseFields(u, opts.liveOverrides)`. Превью документа с отложенными (ещё не применёнными к юниту) условиями обязано получать их через liveOverrides, а не читать юнит.
+
+**Data caveat (Tony action):** у Suite 346 сохранён пер-юнитовый override, где значения ЗАПЕЧЕНЫ статикой (End Date: September 15, 2026 — текст, не токен). Код-фикс подставляет токены, но статический текст не лечит: override надо сбросить (Add document → Edit template → Reset to workspace default) или пересохранить с `{{lease_end}}`-токенами. До сброса конверт по 346 продолжит нести старую дату.
+
 ### 76. Audit batch-4 CF hygiene: rate-limits on money callables, PII masking, dead-checkpoint removal (robustness/security, 2026-07-03)
 
 **From audit 2026-07-03 P2 (§2 GO Tony). Deployed 3b8935a → 9 function targets.** Rate-limits (reuse createStripeInvoice counter pattern, fail-closed BEFORE Stripe call): stripeDiscountInvoice 40/ws-hr·5/unit-day, markInvoicePaidOutOfBand 40·5, voidOrDeleteStripeInvoice 40/ws-hr (no unitId in req.data). `_maskEmail` on 7 logger.* Cloud-Logging sites (audit docs untouched). Dead checkpoint in runAutoInvoices REMOVED (never called; resume relies on durable autoSentYm stamp) — the WORKING checkpoint in runAutoLateFees is untouched. No money-math change; §0.2 invariants intact.
