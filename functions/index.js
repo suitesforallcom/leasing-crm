@@ -7680,6 +7680,12 @@ exports.finalizeBankConnection = onCall(
           delete existing.disconnectedAt;
           delete existing.needsRelink;
           delete existing.relinkRequiredSince;
+          // Linked through our own session → held by our operator Customer:
+          // not a shared connection any more (Disconnect must detach it).
+          delete existing.sharedConnection;
+          delete existing.dedupeAgainstFcId;
+          delete existing.dedupeUntilUnix;
+          existing.holderType = 'customer';
           reactivatedAccounts.push({ stripeFcAccountId: existing.stripeFcAccountId, displayName: existing.displayName || null });
           continue;
         }
@@ -7737,7 +7743,13 @@ exports.disconnectBankAccount = onCall(
     // the other app's bank feed too.
     const pre = await readWorkspaceState();
     const preConn = (pre.bankConnections || []).find(x => x.stripeFcAccountId === fcAccountId);
-    if (preConn && preConn.sharedConnection) {
+    let holderType = null;
+    try {
+      const a = await stripe.financialConnections.accounts.retrieve(fcAccountId);
+      holderType = (a.account_holder && a.account_holder.type) || null;
+    } catch (_) { /* fall back to the local flag */ }
+    const shared = holderType ? holderType !== 'customer' : !!(preConn && preConn.sharedConnection);
+    if (shared) {
       detachError = 'shared connection — kept at Stripe (used by another app)';
     } else try {
       await stripe.financialConnections.accounts.disconnect(fcAccountId);
@@ -7970,6 +7982,10 @@ exports.syncBankConnections = onCall(
         // older/newer link of the SAME account — e.g. fca_1TSrMQ… for Capital
         // One ····5709, whose 515 duplicate transactions Entry 30 deleted.
         // Re-adding it would start a 365-day backfill under new txn ids.
+        if (s.bankConnections.some(c => Array.isArray(c.supersededFcIds) && c.supersededFcIds.includes(acc.id))) {
+          skippedDuplicates.push({ id: acc.id, status: acc.status || null, duplicateOf: 'superseded' });
+          continue;
+        }
         const dupLast4 = (acc.last4 || '').toLowerCase();
         const dupInst = (acc.institution_name || '').toLowerCase();
         const tracked = dupLast4 && dupInst && s.bankConnections.find(c =>
@@ -8032,8 +8048,8 @@ exports.adoptBankFcAccount = onCall(
     }
     const fromId = String(req.data?.fromFcAccountId || '');
     const toId = String(req.data?.toFcAccountId || '');
-    if (!/^fca_/.test(fromId) || !/^fca_/.test(toId) || fromId === toId) {
-      throw new HttpsError('invalid-argument', 'fromFcAccountId and toFcAccountId (different fca_ ids) are required');
+    if (!/^fca_/.test(fromId) || !/^fca_/.test(toId)) {
+      throw new HttpsError('invalid-argument', 'fromFcAccountId and toFcAccountId (fca_ ids) are required');
     }
     const stripe = getStripe();
     let acc;
@@ -8050,11 +8066,28 @@ exports.adoptBankFcAccount = onCall(
     }
     const state = await readWorkspaceState();
     const conns = state.bankConnections || [];
+    // Resume: a shared record the operator disconnected locally comes back
+    // as-is (its watermark covers the pause) — no new link needed.
+    const existingTo = conns.find(x => x.stripeFcAccountId === toId);
+    if (existingTo) {
+      if (existingTo.status !== 'disconnected' || !existingTo.sharedConnection) {
+        throw new HttpsError('already-exists', `${toId} is already a connection here`);
+      }
+      let resumed = false;
+      await mutateWorkspaceState((s) => {
+        resumed = false;
+        const c = (s.bankConnections || []).find(x => x.stripeFcAccountId === toId);
+        if (!c || c.status !== 'disconnected') return;
+        c.status = 'active';
+        delete c.disconnectedAt;
+        c.resumedAt = new Date().toISOString();
+        resumed = true;
+      });
+      return { adopted: false, resumed, toFcAccountId: toId };
+    }
+    if (fromId === toId) throw new HttpsError('invalid-argument', 'fromFcAccountId and toFcAccountId must differ');
     const c0 = conns.find(x => x.stripeFcAccountId === fromId);
     if (!c0) throw new HttpsError('not-found', `No bank connection record for ${fromId}`);
-    if (conns.some(x => x.stripeFcAccountId === toId)) {
-      throw new HttpsError('already-exists', `${toId} is already a connection here`);
-    }
     const sameBank = (acc.institution_name || '').toLowerCase() === (c0.institutionName || '').toLowerCase()
       && (acc.last4 || '') === (c0.accountLast4 || '')
       && _bankSameAccountKind(c0, acc);
@@ -8086,9 +8119,14 @@ exports.adoptBankFcAccount = onCall(
       c.adoptedFromFcId = fromId;
       c.adoptedAt = nowIso;
       c.adoptedBy = email || null;
+      // The replaced object stays at Stripe under our Customer —
+      // syncBankConnections must never re-add it (it would demand a relink
+      // that knocks the other app's feed out).
+      c.supersededFcIds = [...new Set([...(c.supersededFcIds || []), fromId])];
       if (newest > 0) {
         c.dedupeAgainstFcId = fromId;
         c.dedupeUntilUnix = newest;
+        c.adoptedHorizonUnix = newest;   // permanent: auto-apply guard
         if (!(+c.freshThroughUnix > 0)) c.freshThroughUnix = newest;
       }
       adopted = true;
@@ -8234,6 +8272,43 @@ async function _auditBankRelinkRequired(c, source) {
 function _bankDedupeOf(c) {
   return (c && c.dedupeAgainstFcId && +c.dedupeUntilUnix > 0)
     ? { fcId: c.dedupeAgainstFcId, untilUnix: +c.dedupeUntilUnix } : null;
+}
+
+// Entry 82: two FC objects for the same bank account date the SAME movement
+// differently — kiwi's cached Stripe data (2026-09-25) has fca_1TYXTX… at
+// 00:00Z and fca_1UIeYE… at 12:00Z: 117/117 lines align on amount + UTC
+// calendar day, 0/117 on raw seconds. So identity across objects is
+// (amount, UTC day), as a multiset.
+function _utcDay(ts) { return Math.floor((+ts || 0) / 86400); }
+
+// Index of txns stored under a previous FC object: amount → [{id, day, status}].
+async function _loadPrevAccountTxnIndex(prevFcId, fromUnix) {
+  const idx = new Map();
+  const snap = await db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`)
+    .where('accountId', '==', prevFcId).get();
+  snap.forEach((d) => {
+    const x = d.data() || {};
+    if (x.status === 'void') return;
+    const ts = +x.transactedAt || 0;
+    if (fromUnix && _utcDay(ts) < _utcDay(fromUnix) - 1) return;
+    const k = String(x.amount);
+    if (!idx.has(k)) idx.set(k, []);
+    idx.get(k).push({ id: d.id, day: _utcDay(ts), status: x.status || null });
+  });
+  return idx;
+}
+
+// Remove + return a stored entry with this amount on exactly this UTC day.
+function _prevIdxTakeSameDay(idx, amount, day) {
+  const arr = idx && idx.get(String(amount));
+  const i = arr ? arr.findIndex(e => e.day === day) : -1;
+  return i >= 0 ? arr.splice(i, 1)[0] : null;
+}
+
+// Is there a stored entry with this amount within ±tol UTC days (not consumed)?
+function _prevIdxNear(idx, amount, day, tol) {
+  const arr = idx && idx.get(String(amount));
+  return !!(arr && arr.some(e => Math.abs(e.day - day) <= tol));
 }
 
 // Incremental window lower bound. Anchors at min(lastPolledAt, freshThroughUnix)
@@ -8426,18 +8501,10 @@ async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, stat
   // same-day deposits as two. Deliberately exact (no ±1 day): a fuzzy match
   // could swallow a genuine deposit (silent loss), whereas a missed match is
   // only a visible duplicate that _bankDetectDuplicates flags (Entry 30).
-  let dedupeIdx = null;
-  if (dedupe && dedupe.fcId && +dedupe.untilUnix > 0 && (!sinceUnix || sinceUnix <= +dedupe.untilUnix)) {
-    dedupeIdx = new Map();
-    const oldSnap = await col.where('accountId', '==', dedupe.fcId).get();
-    oldSnap.forEach((d) => {
-      const x = d.data() || {};
-      const ts = +x.transactedAt || 0;
-      if (sinceUnix && ts < sinceUnix) return;
-      const k = String(x.amount);
-      if (!dedupeIdx.has(k)) dedupeIdx.set(k, []);
-      dedupeIdx.get(k).push(ts);
-    });
+  let dedupeIdx = null, dedupHeld = 0;
+  const untilDay = dedupe ? _utcDay(dedupe.untilUnix) : 0;
+  if (dedupe && dedupe.fcId && +dedupe.untilUnix > 0 && (!sinceUnix || _utcDay(sinceUnix) <= untilDay + 3)) {
+    dedupeIdx = await _loadPrevAccountTxnIndex(dedupe.fcId, sinceUnix);
   }
   for (;;) {
     const params = {
@@ -8484,10 +8551,27 @@ async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, stat
       const ref = col.doc(t.id);
       const existing = existingMap.get(t.id);
       const isNew = !existing;
-      if (isNew && dedupeIdx && (+t.transacted_at || 0) <= +dedupe.untilUnix) {
-        const arr = dedupeIdx.get(String(t.amount));
-        const hit = arr ? arr.indexOf(+t.transacted_at || 0) : -1;
-        if (hit >= 0) { arr.splice(hit, 1); dedupSkipped++; continue; }
+      let dedupeSuspect = false;
+      if (isNew && dedupeIdx && _utcDay(t.transacted_at) <= untilDay + 3) {
+        const tDay = _utcDay(t.transacted_at);
+        const hit = tDay <= untilDay ? _prevIdxTakeSameDay(dedupeIdx, t.amount, tDay) : null;
+        if (hit) {
+          // Same bank movement already stored under the previous object —
+          // carry its newer status (pending→posted/void) onto that doc.
+          if (t.status && t.status !== hit.status) {
+            batch.set(col.doc(hit.id), {
+              status: t.status,
+              statusTransitions: t.status_transitions || null,
+              seenAt: admin.firestore.FieldValue.serverTimestamp(),
+            }, { merge: true });
+          }
+          dedupSkipped++;
+          continue;
+        }
+        // Same amount within ±3 days but not the same day: probably the same
+        // movement dated differently — keep it (never silently drop money)
+        // but out of auto-apply, flagged for a human.
+        if (_prevIdxNear(dedupeIdx, t.amount, tDay, 3)) { dedupeSuspect = true; dedupHeld++; }
       }
       // Facts — всегда пишем актуальные данные Stripe (идемпотентно).
       const baseDoc = {
@@ -8523,6 +8607,11 @@ async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, stat
       // checkImageUrl — только для новых doc'ов; existing уже мог иметь
       // загруженное operator'ом изображение чека, перезаписывать null нельзя.
       if (isNew) baseDoc.checkImageUrl = null;
+      if (dedupeSuspect) {
+        baseDoc.autoApplied = false;          // _autoApplyAfterPoll never books it
+        baseDoc.dedupeSuspect = true;
+        baseDoc.dedupeSuspectAccountId = dedupe.fcId;
+      }
       batch.set(ref, baseDoc, { merge: true });
       // «written» = реально новые транзакции (для operator UI «X new pulled»).
       // Re-writes existing doc'ов overlap-окна не считаем как «new» — иначе
@@ -8534,7 +8623,7 @@ async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, stat
     if (!page.has_more) break;
     startingAfter = page.data[page.data.length - 1].id;
   }
-  return { scanned, written, skipped, suggested, dedupSkipped, ...health, ...(notice ? { notice } : {}) };
+  return { scanned, written, skipped, suggested, dedupSkipped, dedupHeld, ...health, ...(notice ? { notice } : {}) };
 }
 
 // Update the watermark + call the matcher after a successful pull.
@@ -8599,7 +8688,7 @@ async function _markAccountPolled({fcAccountId, scanned, written, transactionRef
     delete c.transactionRefreshStatus;
     // Entry 82: once the next window starts after the adopted account's
     // dedupe horizon, the overlap is behind us.
-    if (c.dedupeAgainstFcId && _bankFeedSinceUnix(c, Date.now(), false) > +c.dedupeUntilUnix) {
+    if (c.dedupeAgainstFcId && _bankFeedSinceUnix(c, Date.now(), false) > +c.dedupeUntilUnix + 7 * 86400) {
       delete c.dedupeAgainstFcId;
       delete c.dedupeUntilUnix;
     }
@@ -9400,10 +9489,21 @@ async function _autoApplyAfterPoll(fcAccountId) {
     }
   }
   const heals = [];
+  // Entry 82: on an adopted shared connection, a txn that looks like a
+  // movement already stored under the previous FC object (same amount, UTC
+  // day ±2) is never auto-applied — ingestion dedupe is not the only net.
+  const conn = (state.bankConnections || []).find(x => x.stripeFcAccountId === fcAccountId);
+  const prevHorizonDay = conn && conn.adoptedFromFcId && +conn.adoptedHorizonUnix > 0 ? _utcDay(conn.adoptedHorizonUnix) : null;
+  let prevIdx = null;
+  if (prevHorizonDay !== null && snap.docs.some(d => _utcDay((d.data() || {}).transactedAt) <= prevHorizonDay + 3)) {
+    prevIdx = await _loadPrevAccountTxnIndex(conn.adoptedFromFcId, 0);
+  }
   for (const d of snap.docs) {
     const txn = { id: d.id, ...d.data() };
     // Operator undid an auto-apply → it stays a manual suggestion for good.
     if (txn.autoApplied === false) { skipped++; continue; }
+    if (prevIdx && _utcDay(txn.transactedAt) <= prevHorizonDay + 3
+        && _prevIdxNear(prevIdx, txn.amount, _utcDay(txn.transactedAt), 2)) { skipped++; continue; }
     const held = recByTxn.get(txn.id);
     if (held) { heals.push({ docRef: d.ref, txn, held }); continue; }
     const check = _findAutoApplyCandidate(state, txn);

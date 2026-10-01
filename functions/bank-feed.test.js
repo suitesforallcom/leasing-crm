@@ -258,6 +258,10 @@ function makeWorld({ conns, accounts, txns }) {
     liftFn('_auditBankRelinkRequired'),
     liftFn('_bankFeedSinceUnix'),
     liftFn('_bankDedupeOf'),
+    liftFn('_utcDay'),
+    liftFn('_loadPrevAccountTxnIndex'),
+    liftFn('_prevIdxTakeSameDay'),
+    liftFn('_prevIdxNear'),
     liftFn('_ensureTransactionRefresh'),
     liftFn('_ensureFreshTransactions'),
     liftFn('_pullTransactionsForAccount'),
@@ -669,8 +673,11 @@ const cachedTxns = () => ({
   }
 
   // ── 11. Adopt the other app's shared FC account (Entry 82) ─────────
+  // Real conventions (kiwi's cached Stripe data 2026-09-25): the old FC
+  // object dates movements at 00:00Z, the adopted one at 12:00Z.
   {
     const KIWI = 'fca_1UIeYE2nq2bZh3q62ntKHdfX';
+    const D0 = Math.floor((T_NOW - 14 * DAY) / DAY) * DAY;     // old newest stored day, 00:00Z
     const mkA = (kiwiOver) => {
       const conn = incidentConn({ status: 'inactive', needsRelink: true, relinkRequiredSince: '2026-10-01T19:56:34Z',
         freshThroughUnix: T_FAIL, accountCategory: 'cash', accountSubcategory: 'checking' });
@@ -678,29 +685,32 @@ const cachedTxns = () => ({
         account_holder: { type: 'account' }, permissions: ['payment_method', 'transactions', 'balances'],
         transaction_refresh: { id: 'r', status: 'succeeded', last_attempted_at: T_NOW - 3600, next_refresh_available_at: T_NOW + 3600 },
         ...(kiwiOver || {}) };
-      const w = makeWorld({ conns: [conn], accounts: { [FCA]: inactiveAcct(), [KIWI]: kiwi }, txns: {} });
-      // Stored history under the old account (prod: newest 2026-09-17).
-      for (let i = 0; i < 8; i++) w.docs.set('old_' + i, { id: 'old_' + i, accountId: FCA, amount: 1000 + i, transactedAt: T_NEWEST, matchState: 'unmatched' });
-      w.docs.set('old_pending', { id: 'old_pending', accountId: FCA, amount: 555, transactedAt: T_NEWEST - DAY, status: 'pending', matchState: 'unmatched' });
-      w.docs.set('old_confirmed', { id: 'old_confirmed', accountId: FCA, amount: 220000, transactedAt: T_NEWEST - 3 * DAY, matchState: 'confirmed' });
-      // The same bank movements under the shared account (new ids) + new ones.
+      const w = makeWorld({ conns: [conn], accounts: { [FCA]: { ...inactiveAcct(), account_holder: { type: 'customer' } }, [KIWI]: kiwi }, txns: {} });
+      // Stored history under the old account (00:00Z).
+      for (let i = 0; i < 8; i++) w.docs.set('old_' + i, { id: 'old_' + i, accountId: FCA, amount: 1000 + i, transactedAt: D0, status: 'posted', matchState: 'unmatched' });
+      w.docs.set('old_pending', { id: 'old_pending', accountId: FCA, amount: 555, transactedAt: D0 - DAY, status: 'pending', matchState: 'unmatched' });
+      w.docs.set('old_confirmed', { id: 'old_confirmed', accountId: FCA, amount: 220000, transactedAt: D0 - 3 * DAY, status: 'posted', matchState: 'confirmed' });
+      w.docs.set('old_shift', { id: 'old_shift', accountId: FCA, amount: 99900, transactedAt: D0 - 5 * DAY, status: 'pending', matchState: 'unmatched' });
+      w.docs.set('old_lone', { id: 'old_lone', accountId: FCA, amount: 330000, transactedAt: D0 - 2 * DAY, status: 'posted', matchState: 'confirmed' });
+      // The same movements under the shared account (12:00Z, new ids) + new ones.
       const kt = [];
-      for (let i = 0; i < 8; i++) kt.push({ id: 'k_old_' + i, transacted_at: T_NEWEST, amount: 1000 + i });
-      kt.push({ id: 'k_pending_posted', transacted_at: T_NEWEST - DAY, amount: 555 });     // same movement, now posted
-      kt.push({ id: 'k_day_before_220000', transacted_at: T_NEWEST - 4 * DAY, amount: 220000 }); // genuine, same amount, other day
-      kt.push({ id: 'k_confirmed_copy', transacted_at: T_NEWEST - 3 * DAY, amount: 220000 });
-      kt.push({ id: 'k_second_1000', transacted_at: T_NEWEST, amount: 1000 });            // a genuinely 2nd deposit
-      for (let d = 13; d >= 0; d--) kt.push({ id: 'k_gap_' + d, transacted_at: T_NOW - d * DAY, amount: 7000 + d });
+      for (let i = 0; i < 8; i++) kt.push({ id: 'k_old_' + i, transacted_at: D0 + 12 * 3600, amount: 1000 + i, status: 'posted' });
+      kt.push({ id: 'k_pending_posted', transacted_at: D0 - DAY + 12 * 3600, amount: 555, status: 'posted' });  // same day, now posted
+      kt.push({ id: 'k_confirmed_copy', transacted_at: D0 - 3 * DAY + 12 * 3600, amount: 220000, status: 'posted' });
+      kt.push({ id: 'k_shift_copy', transacted_at: D0 - 4 * DAY + 12 * 3600, amount: 99900, status: 'posted' });   // dated a day later
+      kt.push({ id: 'k_second_1000', transacted_at: D0 + 12 * 3600, amount: 1000, status: 'posted' });           // genuine 2nd deposit
+      kt.push({ id: 'k_day_before_220000', transacted_at: D0 - 4 * DAY + 12 * 3600, amount: 220000, status: 'posted' }); // genuine, other day
+      kt.push({ id: 'k_lone_near', transacted_at: D0 - DAY + 12 * 3600, amount: 330000, status: 'posted' });  // ambiguous: same amount, 1 day off
+      for (let d = 13; d >= 0; d--) kt.push({ id: 'k_gap_' + d, transacted_at: Math.floor((T_NOW - d * DAY) / DAY) * DAY + 12 * 3600, amount: 7000 + d, status: 'posted' });
       w.txns[KIWI] = kt;
       return w;
     };
     const auth = { auth: { token: { email: 'tony@al-en.com' } } };
-    // Guards.
-    for (const [label, over, req] of [
-      ['inactive target', { status: 'inactive' }, null],
-      ['no transactions permission', { permissions: ['payment_method', 'balances'] }, null],
-      ['different last4', { last4: '1305' }, null],
-      ['different account kind', { subcategory: 'savings' }, null],
+    for (const [label, over] of [
+      ['inactive target', { status: 'inactive' }],
+      ['no transactions permission', { permissions: ['payment_method', 'balances'] }],
+      ['different last4', { last4: '1305' }],
+      ['different account kind', { subcategory: 'savings' }],
     ]) {
       const w = mkA(over);
       let threw = false;
@@ -714,32 +724,53 @@ const cachedTxns = () => ({
       try { await w.fns.adoptBankFcAccount({ ...auth, data: { fromFcAccountId: FCA, toFcAccountId: KIWI } }); } catch (e) { threw = true; }
       ok(threw, 'adopt guard: root admin only');
     }
-    // Happy path.
     const w = mkA();
     const r = await w.fns.adoptBankFcAccount({ ...auth, data: { fromFcAccountId: FCA, toFcAccountId: KIWI } });
     eq(r.adopted, true, 'adopt: ok');
     const c = w.conn(KIWI);
     ok(!!c && !w.conn(FCA), 'adopt: record now reads the shared account');
     eq([c.status, c.needsRelink, c.sharedConnection, c.holderType], ['active', undefined, true, 'account'], 'adopt: active, shared, holder=account');
-    eq([c.freshThroughUnix, c.dedupeAgainstFcId, c.dedupeUntilUnix], [T_FAIL, FCA, T_NEWEST], 'adopt: anchor kept, dedupe horizon = newest stored date');
+    eq([c.freshThroughUnix, c.dedupeAgainstFcId, c.dedupeUntilUnix, c.adoptedHorizonUnix, c.supersededFcIds],
+      [T_FAIL, FCA, D0, D0, [FCA]], 'adopt: anchor kept; dedupe horizon, permanent horizon, superseded id');
     eq(w.audit.filter(a => a.action === 'bank.connection.adopted').length, 1, 'adopt: audited');
-    // First poll on the shared account.
     w.listCalls.length = 0;
     const p1 = await w.fns.pollBankTransactions({ data: { stripeFcAccountId: KIWI, manual: false } });
     const a1 = p1.accounts[0];
     eq(w.listCalls[0] && w.listCalls[0].transacted_at.gte, T_FAIL - 14 * DAY, 'adopt poll: window from the anchor');
-    eq(a1.dedupSkipped, 10, 'adopt poll: 8 copies + pending→posted + confirmed copy skipped');
-    eq(a1.written, 16, 'adopt poll: gap (14) + genuine 2nd $10.00 + genuine $2,200 on another day written');
-    ok(w.docs.has('k_second_1000') && w.docs.has('k_gap_0') && w.docs.has('k_day_before_220000'),
-      'adopt poll: genuinely new txns stored (same amount on a different day is NOT swallowed)');
-    ok(!w.docs.has('k_old_0') && !w.docs.has('k_confirmed_copy'), 'adopt poll: duplicates not stored');
-    eq(w.docs.get('old_confirmed').matchState, 'confirmed', 'adopt poll: old history and decisions untouched');
-    eq(w.conn(KIWI).status, 'active', 'adopt poll: stays active');
-    // Shared connection: Disconnect here never detaches it at Stripe.
+    eq(a1.dedupSkipped, 10, 'adopt poll: 00:00Z vs 12:00Z copies matched by UTC day (8 + pending→posted + confirmed)');
+    eq(a1.dedupHeld, 2, 'adopt poll: near-misses (shifted copy, ambiguous same-amount ±1d) kept but held');
+    eq(a1.written, 18, 'adopt poll: gap (14) + 2nd $10.00 + shifted copy + other-day $2,200 + ambiguous $3,300 written');
+    eq(w.docs.get('k_lone_near').autoApplied, false, 'adopt poll: ambiguous one held out of auto-apply');
+    ok(w.docs.has('k_second_1000') && w.docs.has('k_gap_0') && w.docs.has('k_day_before_220000'), 'adopt poll: genuine txns stored (nothing silently dropped)');
+    eq([w.docs.get('k_shift_copy').autoApplied, w.docs.get('k_shift_copy').dedupeSuspect], [false, true], 'adopt poll: shifted copy held out of auto-apply');
+    ok(!w.docs.has('k_old_0') && !w.docs.has('k_confirmed_copy'), 'adopt poll: exact copies not stored');
+    eq(w.docs.get('old_pending').status, 'posted', 'adopt poll: stale pending doc reconciled to posted');
+    eq(w.docs.get('old_confirmed').matchState, 'confirmed', 'adopt poll: old decisions untouched');
+    ok(!!w.conn(KIWI).dedupeAgainstFcId, 'adopt poll: dedupe kept for a week past the horizon');
+    // Auto-apply guard: a copy that slipped through ingestion is never booked.
+    w.docs.set('k_slipped', { id: 'k_slipped', accountId: KIWI, amount: 1003, transactedAt: D0 + 13 * 3600, matchState: 'unmatched' });
+    let finderCalls = 0;
+    const origFinder = w.ctx._findAutoApplyCandidate;
+    w.ctx._findAutoApplyCandidate = (st, txn) => { if (txn.id === 'k_slipped') finderCalls++; return origFinder(st, txn); };
+    w.state.buildings = [{ id: 'b1', floors: [{ id: 'f1', units: [{ id: 'u1' }] }] }];
+    await w.autoApply(KIWI);
+    eq(finderCalls, 0, 'auto-apply guard: look-alike of stored history never reaches the finder');
+    // Shared lifecycle.
     await w.fns.disconnectBankAccount({ ...auth, data: { stripeFcAccountId: KIWI } });
-    eq(w.disconnectCalls || 0, 0, 'shared disconnect: Stripe detach NOT called');
+    eq(w.disconnectCalls || 0, 0, 'shared disconnect: Stripe detach NOT called (holder = account)');
     eq(w.accounts[KIWI].status, 'active', 'shared disconnect: other app keeps its feed');
     eq(w.conn(KIWI).status, 'disconnected', 'shared disconnect: dropped locally');
+    const sy = await w.fns.syncBankConnections(auth);
+    ok(!w.conn(FCA), 'sync after shared disconnect: superseded fca_1TblcG NOT re-added');
+    ok(sy.skippedDuplicates.some(d => d.id === FCA), 'sync: superseded id reported as skipped');
+    const rs = await w.fns.adoptBankFcAccount({ ...auth, data: { fromFcAccountId: KIWI, toFcAccountId: KIWI } });
+    eq([rs.resumed, w.conn(KIWI).status], [true, 'active'], 'resume: shared record reactivated without a new link');
+  }
+  {
+    // Own (customer-held) account: Disconnect still detaches at Stripe.
+    const w = makeWorld({ conns: [incidentConn({ status: 'active' })], accounts: { [FCA]: { ...inactiveAcct(), status: 'active', account_holder: { type: 'customer' } } }, txns: {} });
+    await w.fns.disconnectBankAccount({ auth: { token: { email: 'tony@al-en.com' } }, data: { stripeFcAccountId: FCA } });
+    eq(w.disconnectCalls || 0, 1, 'own disconnect: detached at Stripe');
   }
 
   console.log(`bank-feed.test: ${passed} passed, ${failed} failed`);

@@ -369,11 +369,13 @@ else
 fi
 if fn_has "^exports\.disconnectBankAccount = " "preConn\.sharedConnection" 30 \
    && fn_has "^exports\.adoptBankFcAccount = " "includes\('transactions'\)" 40 \
-   && fn_has "^exports\.adoptBankFcAccount = " "_bankSameAccountKind\(c0, acc\)" 50 \
-   && fn_has "^async function _pullTransactionsForAccount\(" "arr\.indexOf\(\+t\.transacted_at" 140; then
-  echo "  ✓ Entry 82: shared connection never detached at Stripe; adopt guards; exact-match dedupe"
+   && fn_has "^exports\.adoptBankFcAccount = " "_bankSameAccountKind\(c0, acc\)" 90 \
+   && fn_has "^async function _pullTransactionsForAccount\(" "_prevIdxTakeSameDay\(dedupeIdx" 140 \
+   && fn_has "^async function _autoApplyAfterPoll\(" "_prevIdxNear\(prevIdx" 80 \
+   && fn_has "^exports\.syncBankConnections = " "supersededFcIds" 90; then
+  echo "  ✓ Entry 82: shared connection never detached at Stripe; adopt guards; UTC-day dedupe + auto-apply guard; superseded ids"
 else
-  echo "  ✗ Entry 82 guard missing (shared-disconnect / adopt guards / exact dedupe)"
+  echo "  ✗ Entry 82 guard missing (shared-disconnect / adopt guards / UTC-day dedupe / auto-apply guard / superseded ids)"
   FAIL=1
 fi
 
