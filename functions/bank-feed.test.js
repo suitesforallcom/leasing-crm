@@ -275,6 +275,8 @@ function makeWorld({ conns, accounts, txns }) {
     liftExport('adoptBankFcAccount'),
     liftExport('attachStripeInvoiceToUnit'),
     liftExport('confirmBankMatch'),
+    liftFn('_mirrorBuildingV2CF'),
+    liftFn('_buildingForV2CF'),
     liftFn('findUnit'),
     liftExport('disconnectBankAccount'),
   ].join('\n');
@@ -863,6 +865,19 @@ const cachedTxns = () => ({
     let threw4 = false;
     try { await w3.fns.confirmBankMatch({ ...auth, data: { txnId: 'fctxn_DEP', unitId: '442', ym: 'oct' } }); } catch (e) { threw4 = true; }
     ok(threw4, 'confirm: bad ym rejected');
+  }
+
+  // ── 14. Server building write jumps the rev by 2 (Entry 87 hotfix) ──
+  {
+    const w = makeWorld({ conns: [], accounts: {}, txns: {} });
+    w.docs.set('b1', { _schema: 'v2', buildingId: 'b1', _savedRev: 56575, doc: { id: 'b1', floors: [] } });
+    const okW = await w.ctx._mirrorBuildingV2CF({ id: 'b1', floors: [{ id: 'f1', units: [{ id: '442', payments: { x: 1 }, stripe: { depositInvoice: { amount: 2200 } } }] }] });
+    const d = w.docs.get('b1');
+    eq([okW, d._savedRev, d._mirroredBy], [true, 56577, 'cloud-function'], 'mirror: server write = curRev + 2');
+    ok(!d.doc.floors[0].units[0].payments, 'mirror: payments still stripped');
+    // Rule emulation: a tab that applied 56575 stamps 56576 → rejected (< 56577).
+    const rule = (reqRev, curRev) => reqRev >= curRev && reqRev <= curRev + 1000;
+    eq([rule(56576, d._savedRev), rule(56578, d._savedRev)], [false, true], 'rule: stale tab (applied+1) rejected; up-to-date tab (+1 over server) accepted');
   }
 
   console.log(`bank-feed.test: ${passed} passed, ${failed} failed`);

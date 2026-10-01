@@ -387,6 +387,12 @@ else
   echo "  ✗ Entry 84 guard missing (attachStripeInvoiceToUnit)"
   FAIL=1
 fi
+if fn_has "^async function _mirrorBuildingV2CF\(" "_savedRev: curRev \+ 2" 30; then
+  echo "  ✓ Entry 87: server building mirror writes curRev + 2"
+else
+  echo "  ✗ Entry 87 hotfix missing (_mirrorBuildingV2CF must write curRev + 2)"
+  FAIL=1
+fi
 echo
 echo "Entry 86 — stamp self-heal never re-stamps a voided invoice:"
 check_gate 86 _fetchUnitInvoicesFromStripe "_st === 'void' \|\| _st === 'uncollectible'" 120

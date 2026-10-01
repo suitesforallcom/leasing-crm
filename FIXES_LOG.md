@@ -60,6 +60,14 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 87. HOTFIX: server building writes jump `_savedRev` by +2 — a stale tab can no longer erase them (sync, 2026-10-01)
+
+**Problem (reproduced live):** the server mirror wrote building docs at `curRev+1`; a tab that had not yet received that write stamped its own whole-building save `appliedRev+1` = the SAME number, and `firestore.rules` (`>=`) accepted it → the server change was erased silently (Suite 442 `depositInvoice` 2026-10-01; void stamps 2026-09-21). Analysis + full design: session 2026-10-01 workflow `clobber-root-cause` (three-way merge on both writers + strict rule = the real fix, ~4–5 days; Tony chose hotfix only for now).
+
+**Hotfix:** `_mirrorBuildingV2CF` writes `_savedRev: curRev + 2` → a stale tab's `curRev+1` is now < and rejected by the existing rule; an up-to-date tab (applied the server write) writes `curRev+3` normally. Client: every rejection now shows «Your last change in <building> was NOT saved … please repeat» (throttled 20 s/building; was one toast per session → later losses silent).
+
+**Trade-off / still open:** the operator's edit (not the server's money stamp) is what gets dropped, visibly. Not covered: server-vs-client in the other direction (client edit landing between the CF's peek and its mirror is still overwritten by the CF), two quick saves of one tab before the first ack. Full fix pending (merge3 + C1–C4 + strict `>` rule).
+
 ### 86. Stamp self-heal re-stamped a VOIDED invoice as «last rent invoice sent» (invoices/stamps, 2026-10-01)
 
 **Symptom:** Suite 442 — after the $1,850 October invoice was voided (2026-09-21) and its stamps cleared (void webhook; again by hand 2026-10-01), `u.stripe.lastInvoiceId/lastInvoiceYm` came back pointing at the voided invoice → October showed «Sent», the real invoice could not be sent.

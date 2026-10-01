@@ -35425,9 +35425,16 @@ function _mirrorBuildingsToV2() {
         // (сеть/offline) re-pull НЕ дёргает: локальная копия может быть
         // НОВЕЕ облака, re-pull затёр бы несохранённые правки.
         if (code === 'permission-denied') {
-          if (!_buildingMirrorRejectToasted[b.id]) {
-            _buildingMirrorRejectToasted[b.id] = true;
-            try { if (typeof toast === 'function') toast('Cloud rejected building save — refreshing data', 'error'); } catch (e2) {}
+          // Entry 87: after the server-side +2 rev hotfix a rejection is the
+          // normal outcome of «the server changed this building while you
+          // edited» — the operator must know EVERY time that the last change
+          // was not saved (was: one toast per building per session → later
+          // losses were silent). Throttled to one per building per 20 s.
+          const _now = Date.now();
+          if (!_buildingMirrorRejectToasted[b.id] || _now - _buildingMirrorRejectToasted[b.id] > 20000) {
+            _buildingMirrorRejectToasted[b.id] = _now;
+            const _bn = (b && (b.name || b.code)) || 'this building';
+            try { if (typeof toast === 'function') toast(`Your last change in ${_bn} was NOT saved — the server updated it at the same moment. Data reloaded; please repeat the change.`, 'error'); } catch (e2) {}
           }
           try { _v2RepullBuilding(b.id, 'mirror-rejected'); } catch (e2) {}
         }

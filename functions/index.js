@@ -276,7 +276,13 @@ async function _mirrorBuildingV2CF(b) {
         doc: _buildingForV2CF(b),   // полная замена doc — merge тут запрещён (удалённые юниты не должны липнуть)
         _mirroredAt: admin.firestore.FieldValue.serverTimestamp(),
         _mirroredBy: 'cloud-function',
-        _savedRev: curRev + 1,      // монотонно: сохранить и продвинуть гард-пол
+        // FIXES_LOG Entry 87 (hotfix 2026-10-01): +2, not +1. A tab that has
+        // not yet received this write stamps appliedRev+1 = curRev+1; with +1
+        // that equalled ours and the `>=` rule let its stale whole-building
+        // copy erase this server change (Suite 442 depositInvoice 2026-10-01,
+        // void stamps 2026-09-21). With +2 the stale write is < and rejected;
+        // the tab re-pulls and shows «your change was not saved».
+        _savedRev: curRev + 2,
       });
     });
     return true;
