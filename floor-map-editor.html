@@ -110054,6 +110054,15 @@ async function _dsReconcileEnvelopes() {
     // почтой — другое здание, другой сьют, другой договор. Пропустить строку
     // безопаснее, чем привязать договор не туда.
     if (!ctx) {
+      // Nothing to recover (2026-10-01, toast «3 leases … could not be
+      // matched»): the envelope is already on some suite (unit renamed after
+      // the send — NEW-59447 → 4355 Central Ave/104), or it was a test sent
+      // to the sender's own address — never a tenant lease.
+      const _onSomeUnit = allUnits.some(x => (x.u.leaseEnvelopes || [])
+        .some(e => e && (e.envelopeId === r.envelopeId || e.id === r.envelopeId)));
+      const _selfTest = !!(r.recipientEmail && r.callerEmail
+        && String(r.recipientEmail).toLowerCase() === String(r.callerEmail).toLowerCase());
+      if (_onSomeUnit || _selfTest) return;
       if (r.unitId || r.recipientEmail) {
         console.warn('[ds-reconcile] пропущено: не удалось однозначно определить юнит',
           { envelopeId: r.envelopeId, unitId: r.unitId || null, buildingId: r.buildingId || null,
