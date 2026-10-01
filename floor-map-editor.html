@@ -107802,6 +107802,11 @@ async function connectBankAccount() {
     // Status flip'нется в 'warming-up' (свежий connection, lastPolledAt=null),
     // что в _refreshBankSyncBanner НЕ показывает баннер.
     try { if (typeof _checkBankSyncHealth === 'function') _checkBankSyncHealth(); } catch {}
+    // Entry 81: a reactivated/replaced record keeps its watermark — pull the
+    // gap since its last fresh data now (incremental, not a 365-day backfill).
+    for (const a of (finRes.data?.reactivatedAccounts || [])) {
+      if (a && a.stripeFcAccountId) refreshBankAccountNow(a.stripeFcAccountId).catch(() => {});
+    }
     // Phase 2 backfill — fire-and-forget per new account so the operator
     // doesn't have to wait 365 days of pagination synchronously. Each
     // pollBankTransactions call has its own 5-min timeout server-side.
@@ -107890,6 +107895,9 @@ async function syncBankConnectionsFromStripe(opts) {
 //   }
 window._bankSyncHealth = window._bankSyncHealth || null;
 window._bankSyncAlerts = window._bankSyncAlerts || [];
+// Stripe hosted relink lives here: ⋯ next to the account → Request relink
+// (FIXES_LOG Entry 81).
+const _BANK_STRIPE_FC_ACCOUNTS_URL = 'https://dashboard.stripe.com/financial-connections/accounts';
 
 async function _checkBankSyncHealth() {
   try {
@@ -107943,6 +107951,10 @@ async function _checkBankSyncHealth() {
       if (!lastPolledMs) return true;
       return false;
     });
+    // FIXES_LOG Entry 81: Stripe itself reports the bank connection broken
+    // (account `inactive` — bank sign-in expired / access revoked). Stated
+    // as the reason, not inferred from days-stale; the only fix is a relink.
+    const relinkConns = active.filter(c => c.needsRelink === true || c.status === 'inactive');
     if (newestUnix > 0) {
       daysStale = Math.floor((Date.now() - newestUnix * 1000) / (24 * 60 * 60 * 1000));
       // ORPHAN: 0 active connections но есть транзакции в кэше — наш кейс
@@ -107956,12 +107968,18 @@ async function _checkBankSyncHealth() {
       if (active.length === 0) status = 'never';
       else status = isWarmingUp ? 'warming-up' : 'ok';
     }
+    if (relinkConns.length) status = 'relink';
     window._bankSyncHealth = {
       status,
       newestTxnUnix: newestUnix || null,
       daysStale,
       activeConns: active.length,
       totalConns: conns.length,
+      relink: relinkConns.map(c => ({
+        fcId: c.stripeFcAccountId || '',
+        label: `${c.institutionName || 'Bank'}${c.accountLast4 ? ' ····' + c.accountLast4 : ''}`,
+        since: c.relinkRequiredSince || null,
+      })),
       checkedAt: Date.now(),
     };
     _refreshBankSyncBanner();
@@ -107979,7 +107997,7 @@ function _refreshBankSyncBanner() {
   const banner = document.getElementById('bankSyncCriticalBanner');
   if (!banner) return;
   const h = window._bankSyncHealth;
-  if (!h || (h.status !== 'orphan' && h.status !== 'stale')) {
+  if (!h || (h.status !== 'orphan' && h.status !== 'stale' && h.status !== 'relink')) {
     banner.classList.remove('is-visible');
     banner.style.display = 'none';
     return;
@@ -107987,12 +108005,23 @@ function _refreshBankSyncBanner() {
   const newestStr = h.newestTxnUnix
     ? new Date(h.newestTxnUnix * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
     : '—';
-  const headline = h.status === 'orphan'
+  const relinkLabels = (h.relink || []).map(r => r.label).join(', ') || 'Bank account';
+  const headline = h.status === 'relink'
+    ? `${relinkLabels} must be re-linked`
+    : h.status === 'orphan'
     ? `Bank connector lost`
     : `Bank sync is ${h.daysStale} day${h.daysStale === 1 ? '' : 's'} behind`;
-  const detail = h.status === 'orphan'
+  const detail = h.status === 'relink'
+    ? `Stripe marked the bank connection inactive (bank sign-in expired or access revoked) — no new transactions since ${newestStr}. In Stripe: Financial Connections → Accounts → ⋯ → Request relink, then sign in to the bank from Stripe's email.`
+    : h.status === 'orphan'
     ? `0 active connections, ${h.daysStale} days since last transaction (${newestStr}). New deposits aren't being recorded.`
     : `Newest cached transaction: ${newestStr}. Stripe Financial Connections may need a refresh.`;
+  // Entry 81: «Connect bank account» links a NEW Stripe account object and
+  // re-pulls history under new txn ids (Entry 30) — for an inactive account
+  // the action is Stripe's relink, which keeps the same account id.
+  const actionBtn = h.status === 'relink'
+    ? `<a class="bsb-btn" href="${_BANK_STRIPE_FC_ACCOUNTS_URL}" target="_blank" rel="noopener" style="text-decoration:none;" title="Opens Stripe Dashboard → Financial Connections → Accounts. Use ⋯ → Request relink on the inactive account.">Relink in Stripe ↗</a>`
+    : `<button class="bsb-btn" type="button" onclick="_openBankSettingsFromBanner()" title="Open Settings → Integrations → Bank Connections">Reconnect bank →</button>`;
   // Кол-во audit-алертов в истории (заполняется _loadBankSyncAlerts).
   const alerts = Array.isArray(window._bankSyncAlerts) ? window._bankSyncAlerts : [];
   const historyChip = alerts.length > 0
@@ -108004,7 +108033,7 @@ function _refreshBankSyncBanner() {
       <b>${esc(headline)}.</b> <span class="bsb-meta">${esc(detail)}</span>
     </div>
     ${historyChip}
-    <button class="bsb-btn" type="button" onclick="_openBankSettingsFromBanner()" title="Open Settings → Integrations → Bank Connections">Reconnect bank →</button>`;
+    ${actionBtn}`;
   banner.classList.add('is-visible');
   banner.style.display = 'flex';
 }
@@ -108326,17 +108355,22 @@ function _renderBankConnections() {
   // прямо в верхней части Bank Connections card.
   const h = window._bankSyncHealth;
   let orphanWarning = '';
-  if (h && (h.status === 'orphan' || h.status === 'stale')) {
+  if (h && (h.status === 'orphan' || h.status === 'stale' || h.status === 'relink')) {
     const newestStr = h.newestTxnUnix
       ? new Date(h.newestTxnUnix * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
       : '—';
+    const warnTitle = h.status === 'relink'
+      ? `${(h.relink || []).map(r => r.label).join(', ') || 'Bank account'} must be re-linked`
+      : h.status === 'orphan' ? 'Bank connector lost' : `Bank sync is ${h.daysStale} day${h.daysStale === 1 ? '' : 's'} behind`;
     orphanWarning = `
       <div style="background: linear-gradient(135deg, rgba(220,38,38,0.10), rgba(239,68,68,0.06)); border:1px solid rgba(220,38,38,0.30); border-radius:8px; padding:10px 12px; margin-bottom:10px; display:flex; align-items:flex-start; gap:10px;">
         <div style="font-size:20px; line-height:1;">⚠</div>
         <div style="flex:1; font-size:12.5px; line-height:1.45;">
-          <div style="font-weight:700; color:#991b1b; margin-bottom:2px;">${h.status === 'orphan' ? 'Bank connector lost' : `Bank sync is ${h.daysStale} day${h.daysStale === 1 ? '' : 's'} behind`}</div>
+          <div style="font-weight:700; color:#991b1b; margin-bottom:2px;">${esc(warnTitle)}</div>
           <div style="color:#7f1d1d;">
-            ${h.status === 'orphan'
+            ${h.status === 'relink'
+              ? `Stripe marked the bank connection inactive — no new transactions since ${esc(newestStr)}. See the account below for the relink steps.`
+              : h.status === 'orphan'
               ? `Cached bank transactions exist (newest: ${esc(newestStr)}, ${h.daysStale}d ago) but no active Stripe Financial Connections account. Reconnect to resume sync.`
               : `Newest cached transaction: ${esc(newestStr)}. Click <b>↻ Refresh now</b> on an active account below, or reconnect if the issue persists.`}
           </div>
@@ -108356,17 +108390,28 @@ function _renderBankConnections() {
   ];
   host.innerHTML = orphanWarning + conns.map(c => {
     const isActive = c.status !== 'disconnected';
-    const statusColor = isActive ? 'var(--success)' : 'var(--muted)';
-    const statusLabel = isActive ? c.status : 'Disconnected';
+    // Entry 81: inactive at Stripe → red, with relink steps (never the
+    // in-app Connect flow, which makes a new account object + duplicates).
+    const needsRelink = isActive && (c.needsRelink === true || c.status === 'inactive');
+    const statusColor = needsRelink ? 'var(--danger)' : isActive ? 'var(--success)' : 'var(--muted)';
+    const statusLabel = needsRelink ? 'Relink required' : isActive ? c.status : 'Disconnected';
     const last4 = c.accountLast4 ? `····${esc(c.accountLast4)}` : '';
     const sub = c.accountSubcategory ? ` · ${esc(c.accountSubcategory)}` : '';
     const interval = Number.isFinite(+c.pollIntervalHours) ? +c.pollIntervalHours : 24;
-    const polled = c.lastPolledAt
+    const polled = (c.lastPolledAt
       ? `Last poll: ${esc(new Date(c.lastPolledAt).toLocaleString())}` +
-          (typeof c.lastPollWritten === 'number'
+          (typeof c.lastPollWritten === 'number' && !needsRelink
             ? ` · ${c.lastPollWritten} new`
             : '')
-      : 'Never polled';
+      : 'Never polled') +
+      (needsRelink && c.lastPollAttemptAt ? ` · last check: ${esc(new Date(c.lastPollAttemptAt).toLocaleString())}` : '');
+    const relinkNote = needsRelink
+      ? `<div style="font-size:11px; line-height:1.5; color:#7f1d1d; background:rgba(220,38,38,0.08); border:1px solid rgba(220,38,38,0.25); padding:7px 10px; border-radius:6px; margin-left:28px;">
+           ⚠ Stripe marked this account <b>inactive</b>${c.relinkRequiredSince ? ` (detected ${esc(new Date(c.relinkRequiredSince).toLocaleDateString())})` : ''} — the bank sign-in expired or access was revoked, so no new transactions can arrive.<br>
+           <b>Fix:</b> <a href="${_BANK_STRIPE_FC_ACCOUNTS_URL}" target="_blank" rel="noopener">Stripe Dashboard → Financial Connections → Accounts ↗</a> → ⋯ next to <code style="word-break:break-all;">${esc(c.stripeFcAccountId || '')}</code> → <b>Request relink</b>, then sign in to the bank from Stripe's email. Afterwards click <b>↻ Refresh now</b> here — missed transactions are pulled automatically.<br>
+           Don't use “Connect bank account” for this: it links a new account object and re-imports history as duplicates.
+         </div>`
+      : '';
     // Stripe FC sometimes needs 1-2 min to prep transactions on a freshly
     // connected account. While prep is pending the operator's Refresh attempts
     // return 0 — show an inline note so they know to wait, not click again.
@@ -108445,6 +108490,7 @@ function _renderBankConnections() {
             ${diagnoseBtn}
           </div>
         ` : ''}
+        ${relinkNote}
         ${prepNote}
         ${progressBar}
       </div>
@@ -108488,11 +108534,12 @@ function _showBankDiagnosisModal(d) {
     ? new Date(txnRefresh.next_refresh_available_at * 1000).toLocaleString()
     : '—';
   const verdict = (() => {
+    if (d.status === 'inactive') return { color: 'var(--danger)', text: '❌ Stripe marked this account inactive — the bank sign-in expired or access was revoked. Relink it: Stripe Dashboard → Financial Connections → Accounts → ⋯ → Request relink (keeps this account id). Do not use "Connect bank account" — it creates a new account and duplicates history.' };
     if (d.status !== 'active') return { color: 'var(--danger)', text: `❌ Account status is "${d.status}" — Stripe considers this disconnected.` };
     if (!d.hasTransactionsPermission) return { color: 'var(--danger)', text: '❌ Missing "transactions" permission — re-link the account and grant transaction access during Stripe FC consent.' };
     if (!d.listSample?.ok) return { color: 'var(--danger)', text: `❌ list call failed: ${d.listSample?.error || 'unknown'}` };
     if (txnRefresh.status === 'pending') return { color: '#a16207', text: '⏳ Stripe is still preparing transactions. This can take a few minutes after first connect, longer for large accounts. Wait + Refresh again.' };
-    if (txnRefresh.status === 'failed') return { color: 'var(--danger)', text: `❌ Stripe transaction refresh failed: ${(txnRefresh.last_attempted_error?.message) || 'unknown reason'}` };
+    if (txnRefresh.status === 'failed') return { color: 'var(--danger)', text: `❌ Stripe transaction refresh failed: ${(txnRefresh.last_attempted_error?.message) || d.latestRefreshTrigger?.error || 'unknown reason'}` };
     if (d.listSample.count === 0 && txnRefresh.status === 'succeeded') return { color: '#a16207', text: '⚠ Refresh succeeded but Stripe returned 0 transactions. Likely the bank has not yet shared transaction history with Stripe (initial sync can take hours). Wait and Refresh again.' };
     if (d.listSample.count > 0) return { color: 'var(--success)', text: `✓ Stripe returned ${d.listSample.count} sample transactions — listing works. Click Refresh now to load them.` };
     return { color: 'var(--muted)', text: 'No clear verdict — see raw response below.' };
@@ -108574,7 +108621,18 @@ async function refreshBankAccountNow(fcAccountId) {
     const w = data?.totalWritten || 0;
     const acc = data?.accounts?.[0] || {};
     const scanned = acc.scanned ?? 0;
-    if (acc.transactionRefreshTriggered) {
+    if (!data?.polled || acc.error) {
+      // Entry 81: a poll that did not run or failed server-side is not
+      // «✓ Up to date».
+      const why = acc.error || 'this account was not polled (not active on the server)';
+      result = { ok: false, message: `⚠ ${why}` };
+      setIntStatus('bankFeed', 'error', `⚠ ${esc(why)}`);
+    } else if (acc.accountStatus && acc.accountStatus !== 'active') {
+      // Entry 81: Stripe refuses refreshes on an inactive account — say so
+      // instead of «✓ Up to date».
+      result = { ok: false, message: `⚠ Stripe reports this account ${acc.accountStatus} — relink required (Stripe Dashboard → Financial Connections → Accounts → ⋯ → Request relink).` };
+      setIntStatus('bankFeed', 'warn', `⚠ Bank account is ${esc(acc.accountStatus)} at Stripe — relink required.`);
+    } else if (acc.transactionRefreshTriggered) {
       // Stripe FC has not finished preparing transactions for this account.
       // Triggering a refresh kicks off the prep; next poll (in ~1-2 min)
       // should return real data.

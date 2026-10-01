@@ -7578,7 +7578,10 @@ exports.finalizeBankConnection = onCall(
     }
     const operatorEmail = (req.auth?.token?.email || '').toLowerCase();
     const newConnections = [];
+    const reactivatedAccounts = [];
     await mutateWorkspaceState((s) => {
+      newConnections.length = 0;          // txn-retry safety
+      reactivatedAccounts.length = 0;
       s.bankConnections = s.bankConnections || [];
       for (const acc of accounts) {
         // Dedup pass 1: same Stripe FC account id → reactivate.
@@ -7588,12 +7591,15 @@ exports.finalizeBankConnection = onCall(
         // Match by institution + last4 against any disconnected record so
         // the operator's Reconnect flow replaces the ghost cleanly instead
         // of leaving a dead row + a fresh duplicate.
+        // Entry 81: a record that went inactive at Stripe (needs relink) is
+        // a ghost too — otherwise a fresh link pushes a duplicate connection
+        // and the client starts a 365-day backfill under new txn ids.
         if (!existing) {
           const last4 = (acc.last4 || '').toLowerCase();
           const inst = (acc.institution_name || '').toLowerCase();
           if (last4 && inst) {
             existing = s.bankConnections.find(c =>
-              c.status === 'disconnected'
+              (c.status === 'disconnected' || c.status === 'inactive' || c.needsRelink === true)
               && (c.accountLast4 || '').toLowerCase() === last4
               && (c.institutionName || '').toLowerCase() === inst
             );
@@ -7610,6 +7616,9 @@ exports.finalizeBankConnection = onCall(
           existing.permissions = acc.permissions || existing.permissions || [];
           existing.reconnectedAt = new Date().toISOString();
           delete existing.disconnectedAt;
+          delete existing.needsRelink;
+          delete existing.relinkRequiredSince;
+          reactivatedAccounts.push({ stripeFcAccountId: existing.stripeFcAccountId, displayName: existing.displayName || null });
           continue;
         }
         const conn = {
@@ -7645,6 +7654,7 @@ exports.finalizeBankConnection = onCall(
       connected: newConnections.length,
       reactivated: accounts.length - newConnections.length,
       accounts: newConnections,
+      reactivatedAccounts,
     };
   }
 );
@@ -7859,8 +7869,11 @@ exports.syncBankConnections = onCall(
       startingAfter = page.data[page.data.length - 1].id;
     }
     let added = 0, updated = 0;
+    let relinkConns = [], skippedDuplicates = [];
     const operatorEmail = (req.auth?.token?.email || '').toLowerCase();
+    const nowIso = new Date().toISOString();
     await mutateWorkspaceState((s) => {
+      added = 0; updated = 0; relinkConns = []; skippedDuplicates = [];   // txn-retry safety
       s.bankConnections = s.bankConnections || [];
       for (const acc of stripeAccounts) {
         const existing = s.bankConnections.find(c => c.stripeFcAccountId === acc.id);
@@ -7869,13 +7882,33 @@ exports.syncBankConnections = onCall(
           // permissions, and last4/institution (rarely change but possible
           // after a re-auth / institution rename).
           if (existing.status !== (acc.status || existing.status)) updated++;
-          existing.status = acc.status || existing.status || 'active';
+          // Entry 81: status + needs-relink flag + catch-up anchor.
+          if (acc.status) {
+            if (_applyBankAcctStatus(existing, _bankAcctHealthFromStripe(acc), nowIso)) relinkConns.push({ ...existing });
+          } else {
+            existing.status = existing.status || 'active';
+          }
           existing.permissions = acc.permissions || existing.permissions || [];
           existing.institutionName = acc.institution_name || existing.institutionName;
           existing.accountLast4 = acc.last4 || existing.accountLast4;
           existing.accountCategory = acc.category || existing.accountCategory;
           existing.accountSubcategory = acc.subcategory || existing.accountSubcategory;
           existing.lastSyncedAt = new Date().toISOString();
+          continue;
+        }
+        // Entry 81: a second Stripe object for a bank account we already
+        // track (same institution + last4, record not disconnected) is an
+        // older/newer link of the SAME account — e.g. fca_1TSrMQ… for Capital
+        // One ····5709, whose 515 duplicate transactions Entry 30 deleted.
+        // Re-adding it would start a 365-day backfill under new txn ids.
+        const dupLast4 = (acc.last4 || '').toLowerCase();
+        const dupInst = (acc.institution_name || '').toLowerCase();
+        const tracked = dupLast4 && dupInst && s.bankConnections.find(c =>
+          c.status !== 'disconnected'
+          && (c.accountLast4 || '').toLowerCase() === dupLast4
+          && (c.institutionName || '').toLowerCase() === dupInst);
+        if (tracked) {
+          skippedDuplicates.push({ id: acc.id, status: acc.status || null, duplicateOf: tracked.stripeFcAccountId });
           continue;
         }
         s.bankConnections.push({
@@ -7898,10 +7931,12 @@ exports.syncBankConnections = onCall(
         added++;
       }
     });
-    logger.info(`[bank-feed] syncBankConnections: customer=${customerId} stripe=${stripeAccounts.length} added=${added} updated=${updated}`);
+    for (const c of relinkConns) await _auditBankRelinkRequired(c, 'syncBankConnections');
+    logger.info(`[bank-feed] syncBankConnections: customer=${customerId} stripe=${stripeAccounts.length} added=${added} updated=${updated} relink=${relinkConns.length} skippedDup=${skippedDuplicates.map(d => d.id).join(',') || 0}`);
     return {
       added,
       updated,
+      skippedDuplicates,
       total: stripeAccounts.length,
       accounts: stripeAccounts.map(a => ({
         id: a.id, last4: a.last4, status: a.status, institution: a.institution_name,
@@ -7940,6 +7975,92 @@ const BANK_FEED_BACKFILL_DAYS = 365;
 // `_pullTransactionsForAccount` (см. preserveMatchDecision).
 const BANK_FEED_WATERMARK_SAFETY_DAYS = 14;
 
+// Stripe-side health of an FC account (FIXES_LOG Entry 81, 2026-10-01).
+// Incident: Capital One ····5709 (fca_1Tblc…) went `inactive` at Stripe on
+// 2026-09-19 (bank sign-in expired / access revoked). refresh() then throws
+// `financial_connections_account_inactive`, but list() keeps returning the
+// old cache — so every poll "succeeded" with 0 new, lastPolledAt advanced
+// daily, the record stayed `active`, and the only symptom was the generic
+// «Bank sync is N days behind» banner. Worse: the incremental window
+// (lastPolledAt − 14d) slid past the last real data, so the outage gap
+// would have been skipped after recovery.
+//
+// `freshThroughUnix` = transaction_refresh.last_attempted_at of the last
+// SUCCEEDED refresh seen when we listed — Stripe's cache is complete up to
+// roughly that moment. Unlike lastPolledAt it never advances on a poll that
+// read a stale cache (refresh failed / pending / account inactive).
+function _bankAcctHealthFromStripe(acc) {
+  const tr = (acc && acc.transaction_refresh) || null;
+  const attempted = +(tr && tr.last_attempted_at) || null;
+  return {
+    accountStatus: (acc && acc.status) || null,
+    refreshStatus: (tr && tr.status) || null,
+    refreshAttemptedAt: attempted,
+    freshThroughUnix: (tr && tr.status === 'succeeded' && attempted) ? attempted : null,
+  };
+}
+
+// Polling targets: local 'active' plus Stripe-mirrored 'inactive' (the poll
+// keeps retrieving it so a relink done in the Stripe Dashboard is picked up
+// automatically). 'disconnected' is terminal — only a new link revives it.
+function _bankConnPollable(c) {
+  return !!(c && c.stripeFcAccountId && (c.status === 'active' || c.status === 'inactive'));
+}
+
+// Apply the Stripe account status to a state.bankConnections[] record.
+// Returns true when the record has just transitioned into needs-relink
+// (caller writes the one-shot audit alert). Must run inside mutateWorkspaceState.
+function _applyBankAcctStatus(c, {accountStatus, refreshAttemptedAt}, nowIso) {
+  if (!accountStatus) return false;
+  c.status = accountStatus;
+  if (accountStatus !== 'inactive') {
+    delete c.needsRelink;
+    delete c.relinkRequiredSince;
+    return false;
+  }
+  // Anchor the catch-up window at the last moment Stripe could still have
+  // been fresh, so the first poll after the relink re-reads the whole gap.
+  if (!(+c.freshThroughUnix > 0)) {
+    const polled = c.lastPolledAt ? Math.floor(new Date(c.lastPolledAt).getTime() / 1000) : 0;
+    const anchors = [polled, +refreshAttemptedAt || 0].filter(x => Number.isFinite(x) && x > 0);
+    if (anchors.length) c.freshThroughUnix = Math.min(...anchors);
+  }
+  const became = !c.needsRelink;
+  c.needsRelink = true;
+  if (became) c.relinkRequiredSince = nowIso;
+  return became;
+}
+
+async function _auditBankRelinkRequired(c, source) {
+  const label = `${c.institutionName || 'Bank'}${c.accountLast4 ? ' ····' + c.accountLast4 : ''}`;
+  try {
+    await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+      ts: admin.firestore.FieldValue.serverTimestamp(),
+      actor: 'system-watchdog',
+      action: 'bank.sync.relink_required',
+      source,
+      severity: 'critical',
+      stripeFcAccountId: c.stripeFcAccountId,
+      note: `Stripe reports ${label} (${c.stripeFcAccountId}) as inactive — the bank connection expired or access was revoked, so no new transactions can be pulled. Fix: Stripe Dashboard → Financial Connections → Accounts → ⋯ → Request relink (keeps the same account id), then Refresh now in Settings.`,
+    });
+  } catch (e) {
+    logger.warn(`[bank-feed] relink audit write failed: ${e.message}`);
+  }
+}
+
+// Incremental window lower bound. Anchors at min(lastPolledAt, freshThroughUnix)
+// so a stretch of stale-cache polls cannot slide the window past the last
+// real data (Entry 81). Falls back to the 365-day backfill when the watermark
+// is missing or unparsable.
+function _bankFeedSinceUnix(c, nowMs, forceBackfill) {
+  const backfill = Math.floor(nowMs / 1000) - (BANK_FEED_BACKFILL_DAYS * 86400);
+  if (forceBackfill || !c.backfillCompleted || !c.lastPolledAt) return backfill;
+  const polled = Math.floor(new Date(c.lastPolledAt).getTime() / 1000);
+  if (!Number.isFinite(polled)) return backfill;
+  const fresh = +c.freshThroughUnix > 0 ? +c.freshThroughUnix : polled;
+  return Math.max(backfill, Math.min(polled, fresh) - (BANK_FEED_WATERMARK_SAFETY_DAYS * 86400));
+}
+
 // Stripe FC requires an explicit transaction-feature refresh before
 // `transactions.list` will return data on a freshly-connected account.
 // Without it, `list` throws `financial_connections_no_successful_transaction_refresh`.
@@ -7953,8 +8074,8 @@ async function _ensureTransactionRefresh(stripe, fcAccountId) {
     logger.info(`[bank-feed] triggered transaction refresh ${fcAccountId}: status=${r?.transaction_refresh?.status || 'unknown'}`);
     return { ok: true, status: r?.transaction_refresh?.status || null };
   } catch (err) {
-    logger.warn(`[bank-feed] transaction refresh ${fcAccountId} failed: ${err?.message || err}`);
-    return { ok: false, error: err?.message || String(err) };
+    logger.warn(`[bank-feed] transaction refresh ${fcAccountId} failed: ${err?.code || ''} ${err?.message || err}`);
+    return { ok: false, error: err?.message || String(err), code: err?.code || null };
   }
 }
 
@@ -7982,7 +8103,12 @@ async function _ensureTransactionRefresh(stripe, fcAccountId) {
 //     status: string|null, // final transaction_refresh.status seen
 //     cooldownUntil: number|null,  // unix sec, only when in cooldown
 //     waitedMs: number,    // ms spent polling for completion
+//     ...health,           // Entry 81: accountStatus, refreshStatus,
+//                          // refreshAttemptedAt, freshThroughUnix
 //   }
+// An account that is not `active` at Stripe returns immediately with its
+// accountStatus — refresh() is refused on inactive accounts and list() would
+// only replay the stale cache.
 async function _ensureFreshTransactions(stripe, fcAccountId, opts = {}) {
   const waitForCompletion = opts.waitForCompletion === true;
   const MAX_WAIT_MS = 60 * 1000;           // 60s — generous; Stripe usually 5-30s
@@ -7994,15 +8120,22 @@ async function _ensureFreshTransactions(stripe, fcAccountId, opts = {}) {
     acc = await stripe.financialConnections.accounts.retrieve(fcAccountId);
   } catch (err) {
     logger.warn(`[bank-feed] retrieve ${fcAccountId} for refresh-check failed: ${err?.message || err}`);
-    return { triggered: false, status: null, cooldownUntil: null, waitedMs: 0 };
+    return { triggered: false, status: null, cooldownUntil: null, waitedMs: 0, ..._bankAcctHealthFromStripe(null) };
   }
   const tr = acc.transaction_refresh || null;
   const nowUnix = Math.floor(Date.now() / 1000);
+  // Health as of BEFORE we trigger anything: the cache list() reads next is
+  // at least this fresh (Entry 81).
+  const pre = _bankAcctHealthFromStripe(acc);
+  if (acc.status && acc.status !== 'active') {
+    logger.warn(`[bank-feed] refresh ${fcAccountId}: account is ${acc.status} at Stripe (refresh ${pre.refreshStatus || 'n/a'} @ ${pre.refreshAttemptedAt || 'n/a'}) — relink required, skipping`);
+    return { triggered: false, status: pre.refreshStatus, cooldownUntil: null, waitedMs: 0, ...pre };
+  }
   // Step 2: already pending — Stripe is working on it, don't re-trigger.
   if (tr?.status === 'pending') {
     if (!waitForCompletion) {
       logger.info(`[bank-feed] refresh ${fcAccountId}: already pending, skipping wait (cron path)`);
-      return { triggered: false, status: 'pending', cooldownUntil: null, waitedMs: 0 };
+      return { triggered: false, status: 'pending', cooldownUntil: null, waitedMs: 0, ...pre };
     }
     // Wait for completion.
     while (Date.now() - startMs < MAX_WAIT_MS) {
@@ -8017,35 +8150,47 @@ async function _ensureFreshTransactions(stripe, fcAccountId, opts = {}) {
       status: acc.transaction_refresh?.status || 'pending',
       cooldownUntil: null,
       waitedMs: Date.now() - startMs,
+      ..._bankAcctHealthFromStripe(acc),
     };
   }
   // Step 3: in cooldown — Stripe will reject a refresh call. Use whatever
   // is cached and bail. Next cron tick after cooldown expires will refresh.
   if (tr?.status === 'succeeded' && tr.next_refresh_available_at && tr.next_refresh_available_at > nowUnix) {
     logger.info(`[bank-feed] refresh ${fcAccountId}: in cooldown until ${tr.next_refresh_available_at} (${tr.next_refresh_available_at - nowUnix}s remaining)`);
-    return { triggered: false, status: 'cooldown', cooldownUntil: tr.next_refresh_available_at, waitedMs: 0 };
+    return { triggered: false, status: 'cooldown', cooldownUntil: tr.next_refresh_available_at, waitedMs: 0, ...pre };
   }
   // Step 4: trigger refresh (status was null, succeeded+available, or failed).
   const r = await _ensureTransactionRefresh(stripe, fcAccountId);
   if (!r.ok) {
-    return { triggered: false, status: null, cooldownUntil: null, waitedMs: Date.now() - startMs };
+    // Account went inactive between retrieve and refresh.
+    const accountStatus = r.code === 'financial_connections_account_inactive' ? 'inactive' : pre.accountStatus;
+    return { triggered: false, status: null, cooldownUntil: null, waitedMs: Date.now() - startMs, ...pre, accountStatus };
   }
   if (!waitForCompletion) {
     logger.info(`[bank-feed] refresh ${fcAccountId}: triggered (cron path, not waiting)`);
-    return { triggered: true, status: r.status, cooldownUntil: null, waitedMs: 0 };
+    return { triggered: true, status: r.status, cooldownUntil: null, waitedMs: 0, ...pre };
   }
   // Wait for completion (manual path).
   let finalStatus = r.status;
+  let latest = null;
   while (Date.now() - startMs < MAX_WAIT_MS) {
     await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
     try {
       const a = await stripe.financialConnections.accounts.retrieve(fcAccountId);
+      latest = a;
       finalStatus = a.transaction_refresh?.status || finalStatus;
       if (finalStatus && finalStatus !== 'pending') break;
     } catch {}
   }
   logger.info(`[bank-feed] refresh ${fcAccountId}: completed waited=${Date.now() - startMs}ms final=${finalStatus}`);
-  return { triggered: true, status: finalStatus, cooldownUntil: null, waitedMs: Date.now() - startMs };
+  const post = latest ? _bankAcctHealthFromStripe(latest) : pre;
+  return {
+    triggered: true, status: finalStatus, cooldownUntil: null, waitedMs: Date.now() - startMs,
+    ...post,
+    // A refresh that failed or is still pending leaves the cache as fresh as
+    // the previous success — never fresher.
+    freshThroughUnix: post.freshThroughUnix || pre.freshThroughUnix,
+  };
 }
 
 // Pull every transaction Stripe FC has for an account since `sinceUnix`
@@ -8069,6 +8214,20 @@ async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, stat
     waitForCompletion: manual === true,
   });
   if (proactive.triggered) refreshTriggered = true;
+  const health = {
+    accountStatus: proactive.accountStatus || null,
+    refreshStatus: proactive.refreshStatus || null,
+    refreshAttemptedAt: proactive.refreshAttemptedAt || null,
+    freshThroughUnix: proactive.freshThroughUnix || null,
+  };
+  // Entry 81: inactive/disconnected at Stripe → nothing new can arrive; do
+  // not replay the stale cache as a "successful" poll.
+  if (health.accountStatus && health.accountStatus !== 'active') {
+    return {
+      scanned, written, skipped, suggested, ...health,
+      notice: `Stripe reports this account as ${health.accountStatus} — the bank connection must be re-linked before new transactions can arrive.`,
+    };
+  }
   for (;;) {
     const params = {
       account: fcAccountId,
@@ -8088,7 +8247,7 @@ async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, stat
           || /no_successful_transaction_refresh/i.test(err?.message || '')) {
         const r = await _ensureTransactionRefresh(stripe, fcAccountId);
         return {
-          scanned, written, skipped, suggested,
+          scanned, written, skipped, suggested, ...health,
           transactionRefreshTriggered: true,
           transactionRefreshStatus: r.status || 'pending',
           notice: 'Stripe is preparing transactions for this account. Try again in 1-2 minutes.',
@@ -8159,7 +8318,7 @@ async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, stat
     if (!page.has_more) break;
     startingAfter = page.data[page.data.length - 1].id;
   }
-  return { scanned, written, skipped, suggested };
+  return { scanned, written, skipped, suggested, ...health };
 }
 
 // Update the watermark + call the matcher after a successful pull.
@@ -8168,12 +8327,32 @@ async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, stat
 // incremental window will skip the historical transactions Stripe is about to
 // land. `written > 0` flips backfillCompleted=true so we can switch from the
 // 365-day backfill window to incremental polling thereafter.
-async function _markAccountPolled({fcAccountId, scanned, written, transactionRefreshStatus, transactionRefreshTriggered}) {
+//
+// Entry 81: every attempt stamps lastPollAttemptAt + the Stripe-side health
+// (account status, last refresh status/time). An account that is not active
+// at Stripe flips to needs-relink and does NOT advance lastPolledAt — its
+// stale-cache "poll" proves nothing. freshThroughUnix only moves forward on
+// a poll whose cache was confirmed by a succeeded refresh.
+async function _markAccountPolled({fcAccountId, scanned, written, transactionRefreshStatus, transactionRefreshTriggered,
+                                   accountStatus, refreshStatus, refreshAttemptedAt, freshThroughUnix, source}) {
   const nowIso = new Date().toISOString();
+  let relinkConn = null;
   await mutateWorkspaceState((s) => {
+    relinkConn = null;   // txn-retry safety
     if (!Array.isArray(s.bankConnections)) return;
     const c = s.bankConnections.find(x => x.stripeFcAccountId === fcAccountId);
     if (!c) return;
+    c.lastPollAttemptAt = nowIso;
+    if (refreshStatus) c.lastRefreshStatus = refreshStatus;
+    if (+refreshAttemptedAt > 0) c.lastRefreshAttemptAt = new Date(refreshAttemptedAt * 1000).toISOString();
+    if (accountStatus && _applyBankAcctStatus(c, {accountStatus, refreshAttemptedAt}, nowIso)) {
+      relinkConn = { ...c };
+    }
+    if (accountStatus && accountStatus !== 'active') {
+      c.lastPollScanned = scanned;
+      c.lastPollWritten = written;
+      return;
+    }
     if (transactionRefreshTriggered) {
       // Stripe wasn't ready — record the attempt but do not advance the
       // watermark, otherwise the next poll's incremental query will exclude
@@ -8182,6 +8361,14 @@ async function _markAccountPolled({fcAccountId, scanned, written, transactionRef
       c.lastPollScanned = scanned;
       c.lastPollWritten = written;
       return;
+    }
+    if (+freshThroughUnix > 0) {
+      c.freshThroughUnix = Math.max(+c.freshThroughUnix || 0, +freshThroughUnix);
+    } else if (!(+c.freshThroughUnix > 0) && c.lastPolledAt) {
+      // Record from before Entry 81, polled while the refresh was not
+      // confirmed: pin the window at the previous watermark so it can't drift.
+      const prev = Math.floor(new Date(c.lastPolledAt).getTime() / 1000);
+      if (Number.isFinite(prev) && prev > 0) c.freshThroughUnix = prev;
     }
     c.lastPolledAt = nowIso;
     c.lastPollScanned = scanned;
@@ -8195,6 +8382,7 @@ async function _markAccountPolled({fcAccountId, scanned, written, transactionRef
     // whether we got 0 or N transactions back.
     delete c.transactionRefreshStatus;
   });
+  if (relinkConn) await _auditBankRelinkRequired(relinkConn, source || 'poll');
 }
 
 // Manual / on-demand: pull a single account or all active accounts.
@@ -8213,7 +8401,7 @@ exports.pollBankTransactions = onCall(
     const isManual = req.data?.manual !== false;
     const state = await readWorkspaceState();
     const conns = (state.bankConnections || [])
-      .filter(c => c.status === 'active')
+      .filter(_bankConnPollable)
       .filter(c => !targetFcId || c.stripeFcAccountId === targetFcId);
     if (!conns.length) {
       return { polled: 0, totalWritten: 0, accounts: [] };
@@ -8227,12 +8415,11 @@ exports.pollBankTransactions = onCall(
       // would query `transacted_at >= now`, missing every historical txn.
       //
       // Incremental mode: смотрим на BANK_FEED_WATERMARK_SAFETY_DAYS
-      // назад от lastPolledAt — чтобы поздно опубликованные Stripe FC
-      // транзакции (`transacted_at < lastPolledAt < publish_time`)
-      // не проваливались в gap между опросами (FIXES_LOG Entry 32).
-      const since = isBackfill || !c.backfillCompleted || !c.lastPolledAt
-        ? Math.floor(Date.now() / 1000) - (BANK_FEED_BACKFILL_DAYS * 86400)
-        : Math.floor(new Date(c.lastPolledAt).getTime() / 1000) - (BANK_FEED_WATERMARK_SAFETY_DAYS * 86400);
+      // назад от min(lastPolledAt, freshThroughUnix) — чтобы поздно
+      // опубликованные Stripe FC транзакции (`transacted_at < lastPolledAt
+      // < publish_time`) не проваливались в gap между опросами (FIXES_LOG
+      // Entry 32), а опросы устаревшего кэша не сдвигали окно (Entry 81).
+      const since = _bankFeedSinceUnix(c, Date.now(), isBackfill);
       try {
         const r = await _pullTransactionsForAccount({
           stripe,
@@ -8247,6 +8434,11 @@ exports.pollBankTransactions = onCall(
           written: r.written,
           transactionRefreshStatus: r.transactionRefreshStatus,
           transactionRefreshTriggered: r.transactionRefreshTriggered,
+          accountStatus: r.accountStatus,
+          refreshStatus: r.refreshStatus,
+          refreshAttemptedAt: r.refreshAttemptedAt,
+          freshThroughUnix: r.freshThroughUnix,
+          source: 'pollBankTransactions',
         });
         // Auto-apply (Tony 2026-05-21): после успешного pull проходим по
         // suggested txns этого аккаунта и автоматически применяем те, что
@@ -8286,7 +8478,7 @@ exports.bankFeedScheduledPoll = onSchedule(
   },
   async () => {
     const state = await readWorkspaceState();
-    const conns = (state.bankConnections || []).filter(c => c.status === 'active');
+    const conns = (state.bankConnections || []).filter(_bankConnPollable);
     if (!conns.length) {
       // FIXES_LOG Entry 31 — watchdog для orphan-кэша. Tony 2026-05-21
       // (NUHS Suite 101): bank sync застрял ~20 дней назад. Cron каждый
@@ -8354,9 +8546,15 @@ exports.bankFeedScheduledPoll = onSchedule(
       const intervalH = +c.pollIntervalHours;
       const interval = Number.isFinite(intervalH) ? intervalH : 24;
       if (interval === 0) return false;            // manual-only
-      if (!c.lastPolledAt) return true;            // never polled
-      const ageMs = now - new Date(c.lastPolledAt).getTime();
-      return ageMs >= interval * 3600 * 1000;
+      // Entry 81: a needs-relink account keeps lastPolledAt frozen, so pace
+      // its re-checks by the last attempt (one cheap retrieve per interval).
+      // Everything else keeps the old rule — a fresh connection whose first
+      // refresh is still preparing retries every hour.
+      const tPolled = c.lastPolledAt ? new Date(c.lastPolledAt).getTime() || 0 : 0;
+      const tAttempt = c.needsRelink && c.lastPollAttemptAt ? new Date(c.lastPollAttemptAt).getTime() || 0 : 0;
+      const lastMs = Math.max(tPolled, tAttempt);
+      if (!lastMs) return true;                    // never polled
+      return now - lastMs >= interval * 3600 * 1000;
     });
     if (!due.length) {
       logger.info(`[bank-feed] cron: 0/${conns.length} accounts due`);
@@ -8368,11 +8566,9 @@ exports.bankFeedScheduledPoll = onSchedule(
       // Same window logic as the on-demand poller: stay in 365-day backfill
       // mode until backfillCompleted=true (set by _markAccountPolled when the
       // first poll actually writes data). Incremental polls используют
-      // BANK_FEED_WATERMARK_SAFETY_DAYS-day safety margin от lastPolledAt
-      // чтобы поздно опубликованные txn-ы не проваливались (FIXES_LOG 32).
-      const sinceUnix = (!c.backfillCompleted || !c.lastPolledAt)
-        ? Math.floor(now / 1000) - (BANK_FEED_BACKFILL_DAYS * 86400)
-        : Math.floor(new Date(c.lastPolledAt).getTime() / 1000) - (BANK_FEED_WATERMARK_SAFETY_DAYS * 86400);
+      // BANK_FEED_WATERMARK_SAFETY_DAYS-day safety margin от
+      // min(lastPolledAt, freshThroughUnix) (FIXES_LOG 32 + 81).
+      const sinceUnix = _bankFeedSinceUnix(c, now, false);
       try {
         const r = await _pullTransactionsForAccount({
           stripe,
@@ -8387,9 +8583,14 @@ exports.bankFeedScheduledPoll = onSchedule(
           written: r.written,
           transactionRefreshStatus: r.transactionRefreshStatus,
           transactionRefreshTriggered: r.transactionRefreshTriggered,
+          accountStatus: r.accountStatus,
+          refreshStatus: r.refreshStatus,
+          refreshAttemptedAt: r.refreshAttemptedAt,
+          freshThroughUnix: r.freshThroughUnix,
+          source: 'bankFeedScheduledPoll',
         });
         totalWritten += r.written;
-        logger.info(`[bank-feed] cron ${c.stripeFcAccountId}: scanned=${r.scanned} written=${r.written}${r.transactionRefreshTriggered ? ' (refresh-triggered)' : ''}`);
+        logger.info(`[bank-feed] cron ${c.stripeFcAccountId}: scanned=${r.scanned} written=${r.written} stripe=${r.accountStatus || '?'} refresh=${r.refreshStatus || '?'}${r.transactionRefreshTriggered ? ' (refresh-triggered)' : ''}`);
       } catch (err) {
         logger.error(`[bank-feed] cron ${c.stripeFcAccountId} failed:`, err);
       }
@@ -9032,7 +9233,17 @@ async function _autoApplyAfterPoll(fcAccountId) {
   }
 
   // 4. Atomic state mutation — write u.payments[ym] для всех applies.
+  // FIXES_LOG Entry 81 / §0.2 rules 1+5: under syncBuildingsStrip the building
+  // mirror DROPS u.payments (_buildingForV2CF) — the payments collection is
+  // the only ledger. Until 2026-10-01 auto-apply wrote nothing durable while
+  // marking the bank txn 'confirmed' (Suite 106, $2,250, 2026-09-30). Each
+  // rec is captured INSIDE the mutate (reset per txn retry) and mirrored
+  // below; the bank txn is confirmed only after that write is durable.
+  let captured = [];
+  let alreadyRecorded = new Set();
   await mutateWorkspaceState((s) => {
+    captured = [];
+    alreadyRecorded = new Set();
     for (const { txn, candidate } of applies) {
       // Re-resolve по id (ссылки могли инвалидироваться после read).
       const b = (s.buildings || []).find(x => x.id === candidate.b.id);
@@ -9042,6 +9253,7 @@ async function _autoApplyAfterPoll(fcAccountId) {
       // Re-check idempotency in transaction.
       const existing = u.payments?.[candidate.ym];
       if (existing && (existing.status === 'paid' || existing.bankTxnId === txn.id)) {
+        if (existing.bankTxnId === txn.id) alreadyRecorded.add(txn.id);
         continue;
       }
       if (!u.payments) u.payments = {};
@@ -9067,6 +9279,8 @@ async function _autoApplyAfterPoll(fcAccountId) {
         autoMatchDeltaCents: candidate.delta,
         autoMatchRentCents: candidate.rentCents,
       };
+      captured.push({ txnId: txn.id, b: b.id, f: f.id, u: u.id, ym: candidate.ym,
+        rec: JSON.parse(JSON.stringify(u.payments[candidate.ym])) });
       // Activity-trail (Tony 2026-05-28). Push в u.outreach[] чтобы Unit
       // Activity tab показал auto-apply event рядом с manual-payment
       // событиями. Audit collection write уже происходит ниже в batch
@@ -9103,12 +9317,29 @@ async function _autoApplyAfterPoll(fcAccountId) {
     s.autoApplyStats.last7d = s.autoApplyStats.last7d.filter(e => new Date(e.at).getTime() > cutoff);
   });
 
+  // 4a. Ledger write (Entry 81). A failed write leaves the bank txn
+  // unconfirmed, so the next poll retries it (idempotent: the in-mutate
+  // check sees the rec once it is in the collection; outreach dedupes by
+  // bankTxnId).
+  const durable = new Set(alreadyRecorded);
+  const syncState = captured.length ? await _stateIfSyncV2() : null;
+  for (const p of captured) {
+    if (!syncState) { durable.add(p.txnId); continue; }
+    try {
+      await _writePaymentV2(p.b, p.f, p.u, p.ym, p.rec);
+      durable.add(p.txnId);
+    } catch (e) {
+      logger.error(`[auto-apply] ledger write FAILED ${p.b}/${p.u}/${p.ym} txn ${p.txnId} — bank txn left unconfirmed for retry: ${e.message}`);
+    }
+  }
+  const confirmedApplies = applies.filter(a => durable.has(a.txn.id));
+
   // 5. Batch: mark bank txns confirmed + audit log.
   const auditCol = db.collection(`workspaces/${WORKSPACE_ID}/audit`);
   const BATCH_SIZE = 100;
-  for (let i = 0; i < applies.length; i += BATCH_SIZE) {
+  for (let i = 0; i < confirmedApplies.length; i += BATCH_SIZE) {
     const batch = db.batch();
-    const slice = applies.slice(i, i + BATCH_SIZE);
+    const slice = confirmedApplies.slice(i, i + BATCH_SIZE);
     for (const { docRef, txn, candidate } of slice) {
       batch.set(docRef, {
         matchState: 'confirmed',
@@ -9137,9 +9368,11 @@ async function _autoApplyAfterPoll(fcAccountId) {
     await batch.commit();
   }
 
-  logger.info(`[auto-apply] fcAccountId=${fcAccountId}: applied=${applies.length} skipped=${skipped} past=${deferredCounts['past-month-needs-manual']} future=${deferredCounts['future-month-needs-manual']} methodMismatch=${deferredCounts['method-mismatch']} candidates=${snap.size}`);
+  const ledgerWriteFailed = captured.filter(p => !durable.has(p.txnId)).length;
+  logger.info(`[auto-apply] fcAccountId=${fcAccountId}: applied=${confirmedApplies.length}/${applies.length} ledgerWriteFailed=${ledgerWriteFailed} skipped=${skipped} past=${deferredCounts['past-month-needs-manual']} future=${deferredCounts['future-month-needs-manual']} methodMismatch=${deferredCounts['method-mismatch']} candidates=${snap.size}`);
   return {
-    applied: applies.length,
+    applied: confirmedApplies.length,
+    ledgerWriteFailed,
     skipped,
     candidates: snap.size,
     pastMonthSuggested: deferredCounts['past-month-needs-manual'],

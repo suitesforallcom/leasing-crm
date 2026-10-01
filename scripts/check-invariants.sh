@@ -337,6 +337,31 @@ check_gate 80 _slOpenLeasePreview 'previewKind' 30
 check_gate 80 _slRenderPreviewBody 'payload\.docKind' 15
 
 echo
+echo "Entry 81 — inactive Stripe FC account is surfaced as 'relink required', never as a silent successful poll:"
+# 2026-10-01: Capital One ····5709 inactive at Stripe с 2026-09-19 — крон «успешно»
+# читал старый кэш, lastPolledAt полз вперёд, окно опроса уезжало за разрыв,
+# баннер говорил «may need a refresh» и вёл в Connect (новый fca → дубли, Entry 30).
+check_gate 81 _checkBankSyncHealth "needsRelink === true \|\| c\.status === 'inactive'" 80
+check_gate 81 _checkBankSyncHealth "status = 'relink'" 120
+check_gate 81 _refreshBankSyncBanner "h\.status === 'relink'" 40
+check_gate 81 _renderBankConnections 'Request relink' 120
+FN_JS="$ROOT/functions/index.js"
+if grep -qE "^function _bankFeedSinceUnix\(" "$FN_JS" \
+   && grep -A 12 -E "^async function _pullTransactionsForAccount\(" "$FN_JS" | grep -q "_ensureFreshTransactions" \
+   && grep -A 30 -E "^async function _pullTransactionsForAccount\(" "$FN_JS" | grep -qE "accountStatus !== 'active'" \
+   && grep -A 30 -E "^async function _markAccountPolled\(" "$FN_JS" | grep -qE "accountStatus !== 'active'" \
+   && [ "$(grep -cE "_bankFeedSinceUnix\(c, " "$FN_JS")" -ge 2 ] \
+   && grep -A 50 -E "^exports\.finalizeBankConnection = " "$FN_JS" | grep -qE "c\.status === 'inactive'" \
+   && grep -qE "skippedDuplicates\.push" "$FN_JS" \
+   && grep -A 260 -E "^async function _autoApplyAfterPoll\(" "$FN_JS" | grep -qE "_writePaymentV2\(p\.b, p\.f, p\.u, p\.ym, p\.rec\)" \
+   && grep -A 280 -E "^async function _autoApplyAfterPoll\(" "$FN_JS" | grep -qE "confirmedApplies\.slice"; then
+  echo "  ✓ functions/index.js bank-feed: inactive short-circuit, frozen watermark, anchored window, ghost/dup guards, durable auto-apply"
+else
+  echo "  ✗ functions/index.js bank-feed lost an Entry 81 guard (inactive short-circuit / watermark / window / dup guard)"
+  FAIL=1
+fi
+
+echo
 echo "Mobile cache-busting — versioned module loading:"
 # Статический import без версии Safari на iOS не обновляет никогда (no-store
 # не выселяет уже закэшированный ответ). Оператор дважды сообщал об уже
