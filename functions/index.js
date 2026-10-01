@@ -431,6 +431,46 @@ async function _writePaymentV2(buildingId, floorId, unitId, ym, rec) {
   throw lastErr || new Error('payment mirror write failed');
 }
 
+// Entry 81: is the payments collection the ledger? Read from the SAME
+// snapshot the caller mutates (never a separate read that fails open).
+// Any v2/strip flag → yes: under syncBuildingsStrip the building mirror
+// drops u.payments even if syncV2 were rolled back.
+function _ledgerIsCollectionCF(s) {
+  const st = (s && s.settings) || {};
+  return !!(st.syncV2 || st.syncBuildingsStrip || st.syncV2StripPayments);
+}
+
+// A month whose rec is tied to a Stripe invoice (late/open/advance) is not
+// auto-applied from a bank deposit — the invoice could still collect again.
+function _recHasStripeInvoice(rec) {
+  return !!(rec && (rec.stripeInvoiceId || (rec.stripe && rec.stripe.invoiceId)));
+}
+
+// Entry 81: auto-apply ledger write. Transactional so a month that another
+// writer (invoice.paid webhook, operator) already recorded as paid is never
+// blind-overwritten. Same payload shape as _writePaymentV2.
+// Returns 'written' | 'already' (this txn's rec is there) | 'conflict'.
+async function _writeAutoApplyLedgerV2(buildingId, floorId, unitId, ym, rec, bankTxnId) {
+  const ref = db.doc(`workspaces/${WORKSPACE_ID}/payments/${buildingId}__${unitId}__${ym}`);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const cur = snap.exists ? ((snap.data() || {}).rec || null) : null;
+    if (cur && cur.bankTxnId === bankTxnId) return 'already';
+    if (cur && cur.status === 'paid') return 'conflict';
+    tx.set(ref, {
+      _schema: 'v2',
+      buildingId: buildingId || '',
+      floorId: floorId || '',
+      unitId,
+      ym,
+      rec: rec || {},
+      _mirroredAt: admin.firestore.FieldValue.serverTimestamp(),
+      _mirroredBy: 'cloud-function',
+    });
+    return 'written';
+  });
+}
+
 // Точечное удаление одного per-payment дока. Только по явному событию
 // (move-out / undo / explicit delete) — НИКОГДА по diff'у (см. v1 incident
 // 2026-05-30, SCALING_PLAN_v2.md §0). Caller уже проверил gate.
@@ -7602,6 +7642,7 @@ exports.finalizeBankConnection = onCall(
               (c.status === 'disconnected' || c.status === 'inactive' || c.needsRelink === true)
               && (c.accountLast4 || '').toLowerCase() === last4
               && (c.institutionName || '').toLowerCase() === inst
+              && _bankSameAccountKind(c, acc)
             );
             if (existing) {
               // Replace ghost: keep its lastPolledAt watermark but swap in
@@ -7906,7 +7947,8 @@ exports.syncBankConnections = onCall(
         const tracked = dupLast4 && dupInst && s.bankConnections.find(c =>
           c.status !== 'disconnected'
           && (c.accountLast4 || '').toLowerCase() === dupLast4
-          && (c.institutionName || '').toLowerCase() === dupInst);
+          && (c.institutionName || '').toLowerCase() === dupInst
+          && _bankSameAccountKind(c, acc));
         if (tracked) {
           skippedDuplicates.push({ id: acc.id, status: acc.status || null, duplicateOf: tracked.stripeFcAccountId });
           continue;
@@ -8000,6 +8042,14 @@ function _bankAcctHealthFromStripe(acc) {
   };
 }
 
+// institution + last4 is the "same bank account" key; when both sides know
+// the category/subcategory they must agree too (a checking and a savings
+// account at one bank can share last4).
+function _bankSameAccountKind(c, acc) {
+  const eq = (x, y) => !x || !y || String(x).toLowerCase() === String(y).toLowerCase();
+  return eq(c.accountCategory, acc.category) && eq(c.accountSubcategory, acc.subcategory);
+}
+
 // Polling targets: local 'active' plus Stripe-mirrored 'inactive' (the poll
 // keeps retrieving it so a relink done in the Stripe Dashboard is picked up
 // automatically). 'disconnected' is terminal — only a new link revives it.
@@ -8012,6 +8062,10 @@ function _bankConnPollable(c) {
 // (caller writes the one-shot audit alert). Must run inside mutateWorkspaceState.
 function _applyBankAcctStatus(c, {accountStatus, refreshAttemptedAt}, nowIso) {
   if (!accountStatus) return false;
+  // An operator Disconnect is terminal locally — a Stripe snapshot (stale
+  // retrieve racing the disconnect, or a failed detach) never revives it;
+  // only finalizeBankConnection (a new link) does.
+  if (c.status === 'disconnected' && accountStatus !== 'disconnected') return false;
   c.status = accountStatus;
   if (accountStatus !== 'inactive') {
     delete c.needsRelink;
@@ -8220,13 +8274,15 @@ async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, stat
     refreshAttemptedAt: proactive.refreshAttemptedAt || null,
     freshThroughUnix: proactive.freshThroughUnix || null,
   };
-  // Entry 81: inactive/disconnected at Stripe → nothing new can arrive; do
-  // not replay the stale cache as a "successful" poll.
-  if (health.accountStatus && health.accountStatus !== 'active') {
-    return {
-      scanned, written, skipped, suggested, ...health,
-      notice: `Stripe reports this account as ${health.accountStatus} — the bank connection must be re-linked before new transactions can arrive.`,
-    };
+  // Entry 81: not active at Stripe → no refresh is possible. 'inactive' still
+  // lists Stripe's cache (it may hold deposits from the last succeeded
+  // refresh that were never listed) — _markAccountPolled keeps the watermark
+  // frozen either way. Anything else (disconnected) stops here.
+  const notice = (health.accountStatus && health.accountStatus !== 'active')
+    ? `Stripe reports this account as ${health.accountStatus} — the bank connection must be re-linked before new transactions can arrive.`
+    : undefined;
+  if (health.accountStatus && health.accountStatus !== 'active' && health.accountStatus !== 'inactive') {
+    return { scanned, written, skipped, suggested, ...health, notice };
   }
   for (;;) {
     const params = {
@@ -8318,7 +8374,7 @@ async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, stat
     if (!page.has_more) break;
     startingAfter = page.data[page.data.length - 1].id;
   }
-  return { scanned, written, skipped, suggested, ...health };
+  return { scanned, written, skipped, suggested, ...health, ...(notice ? { notice } : {}) };
 }
 
 // Update the watermark + call the matcher after a successful pull.
@@ -9165,8 +9221,23 @@ async function _autoApplyAfterPoll(fcAccountId) {
     'method-mismatch':           [],
   };
   let skipped = 0;
+  // Entry 81 heal: a ledger rec that already references this bank txn (an
+  // earlier run wrote the payment but its confirm batch never landed) — just
+  // confirm the txn. Without this the month now reads paid and the finder
+  // would offer the same deposit for ANOTHER month (double-apply).
+  const recByTxn = new Map();
+  for (const b of state.buildings || []) for (const f of b.floors || []) for (const u of f.units || []) {
+    for (const [ym, rec] of Object.entries(u.payments || {})) {
+      if (rec && rec.bankTxnId) recByTxn.set(rec.bankTxnId, { b, f, u, ym, rec });
+    }
+  }
+  const heals = [];
   for (const d of snap.docs) {
     const txn = { id: d.id, ...d.data() };
+    // Operator undid an auto-apply → it stays a manual suggestion for good.
+    if (txn.autoApplied === false) { skipped++; continue; }
+    const held = recByTxn.get(txn.id);
+    if (held) { heals.push({ docRef: d.ref, txn, held }); continue; }
     const check = _findAutoApplyCandidate(state, txn);
     if (!check.eligible && deferred[check.reason] && check.candidate) {
       deferred[check.reason].push({ docRef: d.ref, txn, candidate: check.candidate });
@@ -9179,6 +9250,9 @@ async function _autoApplyAfterPoll(fcAccountId) {
     if (existing && (existing.status === 'paid' || existing.bankTxnId === txn.id)) {
       skipped++; continue;
     }
+    // Entry 81: a month tied to a Stripe invoice (late/open) needs a human —
+    // the invoice must be voided or it can still collect a second time.
+    if (_recHasStripeInvoice(existing)) { skipped++; continue; }
     applies.push({ docRef: d.ref, txn, candidate: c });
   }
 
@@ -9221,136 +9295,213 @@ async function _autoApplyAfterPoll(fcAccountId) {
     logger.info(`[auto-apply] fcAccountId=${fcAccountId}: ${list.length} ${reason} suggestions written for manual review`);
   }
 
-  if (!applies.length) {
-    return {
-      applied: 0,
-      skipped,
-      candidates: snap.size,
-      pastMonthSuggested: deferredCounts['past-month-needs-manual'],
-      futureMonthSuggested: deferredCounts['future-month-needs-manual'],
-      methodMismatchSuggested: deferredCounts['method-mismatch'],
-    };
-  }
+  const emptyResult = () => ({
+    applied: 0,
+    healed: 0,
+    ledgerWriteFailed: 0,
+    skipped,
+    candidates: snap.size,
+    pastMonthSuggested: deferredCounts['past-month-needs-manual'],
+    futureMonthSuggested: deferredCounts['future-month-needs-manual'],
+    methodMismatchSuggested: deferredCounts['method-mismatch'],
+  });
+  if (!applies.length && !heals.length) return emptyResult();
 
   // 4. Atomic state mutation — write u.payments[ym] для всех applies.
   // FIXES_LOG Entry 81 / §0.2 rules 1+5: under syncBuildingsStrip the building
   // mirror DROPS u.payments (_buildingForV2CF) — the payments collection is
   // the only ledger. Until 2026-10-01 auto-apply wrote nothing durable while
   // marking the bank txn 'confirmed' (Suite 106, $2,250, 2026-09-30). Each
-  // rec is captured INSIDE the mutate (reset per txn retry) and mirrored
-  // below; the bank txn is confirmed only after that write is durable.
+  // rec is captured INSIDE the mutate (reset per txn retry) together with the
+  // ledger gate read from the same transactional snapshot (never from a
+  // separate read that can fail open); the bank txn is confirmed only after
+  // the ledger write is durable.
   let captured = [];
   let alreadyRecorded = new Set();
-  await mutateWorkspaceState((s) => {
-    captured = [];
-    alreadyRecorded = new Set();
-    for (const { txn, candidate } of applies) {
-      // Re-resolve по id (ссылки могли инвалидироваться после read).
-      const b = (s.buildings || []).find(x => x.id === candidate.b.id);
-      const f = b?.floors?.find(x => x.id === candidate.f.id);
-      const u = f?.units?.find(x => x.id === candidate.u.id);
-      if (!u) continue;
-      // Re-check idempotency in transaction.
-      const existing = u.payments?.[candidate.ym];
-      if (existing && (existing.status === 'paid' || existing.bankTxnId === txn.id)) {
-        if (existing.bankTxnId === txn.id) alreadyRecorded.add(txn.id);
-        continue;
-      }
-      if (!u.payments) u.payments = {};
-      const amountDollars = (+txn.amount || 0) / 100;
-      const transactedDate = txn.transactedAt
-        ? new Date(txn.transactedAt * 1000).toISOString().slice(0, 10)
-        : new Date().toISOString().slice(0, 10);
-      const paidVia = _guessMethodFromDescServer(txn.description);
-      u.payments[candidate.ym] = {
-        status: 'paid',
-        amount: amountDollars,
-        paidVia,
-        paidReference: String(txn.description || '').replace(/\s+/g, ' ').trim().slice(0, 80),
-        paidAt: transactedDate,
-        recordedBy: 'auto-match',
-        recordedAt: new Date().toISOString(),
-        bankTxnId: txn.id,
-        bankPaidAt: transactedDate,
-        bankAccountId: txn.accountId || null,
-        // Маркеры auto-apply — клиент покажет 🤖 chip + undo button.
-        autoApplied: true,
-        autoAppliedAt: new Date().toISOString(),
-        autoMatchDeltaCents: candidate.delta,
-        autoMatchRentCents: candidate.rentCents,
-      };
-      captured.push({ txnId: txn.id, b: b.id, f: f.id, u: u.id, ym: candidate.ym,
-        rec: JSON.parse(JSON.stringify(u.payments[candidate.ym])) });
-      // Activity-trail (Tony 2026-05-28). Push в u.outreach[] чтобы Unit
-      // Activity tab показал auto-apply event рядом с manual-payment
-      // событиями. Audit collection write уже происходит ниже в batch
-      // (line ~6266) — здесь только outreach. Idempotency через
-      // existing-check выше + дополнительный scan по bankTxnId на случай
-      // если cron перезапустился после partial commit'а.
-      u.outreach = u.outreach || [];
-      const hasPriorOutreach = u.outreach.some(
-        e => e && e.kind === 'payment' && e.bankTxnId === txn.id
-      );
-      if (!hasPriorOutreach) {
-        u.outreach.push({
-          ts: new Date().toISOString(),
-          kind: 'payment',
-          note: `Bank payment auto-applied · ${candidate.ym} rent · $${amountDollars.toLocaleString()} · ${paidVia} (txn ${(txn.description || '').slice(0, 40)})`,
-          by: 'auto-match',
-          byEmail: null,
-          ym: candidate.ym,
+  let ledgerRequired = _ledgerIsCollectionCF(state);
+  if (applies.length) {
+    await mutateWorkspaceState((s) => {
+      captured = [];
+      alreadyRecorded = new Set();
+      ledgerRequired = _ledgerIsCollectionCF(s);
+      let appliedNow = 0;
+      for (const { txn, candidate } of applies) {
+        // Re-resolve по id (ссылки могли инвалидироваться после read).
+        const b = (s.buildings || []).find(x => x.id === candidate.b.id);
+        const f = b?.floors?.find(x => x.id === candidate.f.id);
+        const u = f?.units?.find(x => x.id === candidate.u.id);
+        if (!u) continue;
+        // Re-check idempotency in transaction.
+        const existing = u.payments?.[candidate.ym];
+        if (existing && (existing.status === 'paid' || existing.bankTxnId === txn.id)) {
+          if (existing.bankTxnId === txn.id) alreadyRecorded.add(txn.id);
+          continue;
+        }
+        if (_recHasStripeInvoice(existing)) continue;
+        if (!u.payments) u.payments = {};
+        const amountDollars = (+txn.amount || 0) / 100;
+        const transactedDate = txn.transactedAt
+          ? new Date(txn.transactedAt * 1000).toISOString().slice(0, 10)
+          : new Date().toISOString().slice(0, 10);
+        const paidVia = _guessMethodFromDescServer(txn.description);
+        // Prior non-paid rec (manual pending/late, discount trail) survives:
+        // discount fields carried over (DISCOUNT_REC_FIELDS rule), the rest
+        // pushed into history (cap 10) like the webhook writers do.
+        const history = Array.isArray(existing?.history) ? existing.history.slice() : [];
+        if (existing && Object.keys(existing).length) {
+          history.push({
+            ts: new Date().toISOString(),
+            status: existing.status || null,
+            amount: existing.amount || 0,
+            replacedReason: 'bank-auto-apply',
+          });
+          while (history.length > 10) history.shift();
+        }
+        u.payments[candidate.ym] = {
+          ..._discountFieldsOf(existing),
+          status: 'paid',
           amount: amountDollars,
-          bankTxnId: txn.id,
-          bankAccountId: txn.accountId || null,
           paidVia,
+          paidReference: String(txn.description || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+          paidAt: transactedDate,
+          recordedBy: 'auto-match',
+          recordedAt: new Date().toISOString(),
+          bankTxnId: txn.id,
+          bankPaidAt: transactedDate,
+          bankAccountId: txn.accountId || null,
+          // Маркеры auto-apply — клиент покажет 🤖 chip + undo button.
           autoApplied: true,
-        });
-        while (u.outreach.length > 100) u.outreach.shift();
+          autoAppliedAt: new Date().toISOString(),
+          autoMatchDeltaCents: candidate.delta,
+          autoMatchRentCents: candidate.rentCents,
+          ...(history.length ? { history } : {}),
+        };
+        captured.push({ txnId: txn.id, b: b.id, f: f.id, u: u.id, ym: candidate.ym,
+          rec: JSON.parse(JSON.stringify(u.payments[candidate.ym])) });
+        appliedNow++;
+        // Activity-trail (Tony 2026-05-28). Push в u.outreach[] чтобы Unit
+        // Activity tab показал auto-apply event рядом с manual-payment
+        // событиями. Audit collection write уже происходит ниже в batch
+        // (line ~6266) — здесь только outreach. Idempotency через
+        // existing-check выше + дополнительный scan по bankTxnId на случай
+        // если cron перезапустился после partial commit'а.
+        u.outreach = u.outreach || [];
+        const hasPriorOutreach = u.outreach.some(
+          e => e && e.kind === 'payment' && e.bankTxnId === txn.id
+        );
+        if (!hasPriorOutreach) {
+          u.outreach.push({
+            ts: new Date().toISOString(),
+            kind: 'payment',
+            note: `Bank payment auto-applied · ${candidate.ym} rent · $${amountDollars.toLocaleString()} · ${paidVia} (txn ${(txn.description || '').slice(0, 40)})`,
+            by: 'auto-match',
+            byEmail: null,
+            ym: candidate.ym,
+            amount: amountDollars,
+            bankTxnId: txn.id,
+            bankAccountId: txn.accountId || null,
+            paidVia,
+            autoApplied: true,
+          });
+          while (u.outreach.length > 100) u.outreach.shift();
+        }
       }
-    }
-    // Weekly counter для UI badge «Auto-applied N this week».
-    if (!s.autoApplyStats) s.autoApplyStats = { totalApplied: 0, last7d: [] };
-    s.autoApplyStats.totalApplied = (s.autoApplyStats.totalApplied || 0) + applies.length;
-    s.autoApplyStats.last7d = s.autoApplyStats.last7d || [];
-    s.autoApplyStats.last7d.push({ at: new Date().toISOString(), count: applies.length });
-    const cutoff = Date.now() - 7 * 86400 * 1000;
-    s.autoApplyStats.last7d = s.autoApplyStats.last7d.filter(e => new Date(e.at).getTime() > cutoff);
-  });
+      // Weekly counter для UI badge «Auto-applied N this week».
+      if (!s.autoApplyStats) s.autoApplyStats = { totalApplied: 0, last7d: [] };
+      s.autoApplyStats.totalApplied = (s.autoApplyStats.totalApplied || 0) + appliedNow;
+      s.autoApplyStats.last7d = s.autoApplyStats.last7d || [];
+      if (appliedNow) s.autoApplyStats.last7d.push({ at: new Date().toISOString(), count: appliedNow });
+      const cutoff = Date.now() - 7 * 86400 * 1000;
+      s.autoApplyStats.last7d = s.autoApplyStats.last7d.filter(e => new Date(e.at).getTime() > cutoff);
+    });
+  }
 
-  // 4a. Ledger write (Entry 81). A failed write leaves the bank txn
-  // unconfirmed, so the next poll retries it (idempotent: the in-mutate
-  // check sees the rec once it is in the collection; outreach dedupes by
-  // bankTxnId).
+  // 4a. Ledger write (Entry 81) — transactional, refuses to overwrite a
+  // month another source already recorded as paid. A failed/refused write
+  // leaves the bank txn unconfirmed (retried next poll; the heal path picks
+  // it up once the rec is in the ledger) and its outreach line is removed.
   const durable = new Set(alreadyRecorded);
-  const syncState = captured.length ? await _stateIfSyncV2() : null;
+  const failed = [];
   for (const p of captured) {
-    if (!syncState) { durable.add(p.txnId); continue; }
+    if (!ledgerRequired) { durable.add(p.txnId); continue; }
     try {
-      await _writePaymentV2(p.b, p.f, p.u, p.ym, p.rec);
-      durable.add(p.txnId);
+      const r = await _writeAutoApplyLedgerV2(p.b, p.f, p.u, p.ym, p.rec, p.txnId);
+      if (r === 'conflict') {
+        logger.warn(`[auto-apply] ${p.b}/${p.u}/${p.ym} already paid by another source — txn ${p.txnId} left for manual review`);
+        failed.push(p);
+      } else {
+        durable.add(p.txnId);
+      }
     } catch (e) {
       logger.error(`[auto-apply] ledger write FAILED ${p.b}/${p.u}/${p.ym} txn ${p.txnId} — bank txn left unconfirmed for retry: ${e.message}`);
+      failed.push(p);
+    }
+  }
+  if (failed.length) {
+    try {
+      const failedIds = new Set(failed.map(p => p.txnId));
+      await mutateWorkspaceState((s) => {
+        for (const p of failed) {
+          const b = (s.buildings || []).find(x => x.id === p.b);
+          const f = b?.floors?.find(x => x.id === p.f);
+          const u = f?.units?.find(x => x.id === p.u);
+          if (!u) continue;
+          if (Array.isArray(u.outreach)) {
+            u.outreach = u.outreach.filter(e => !(e && e.autoApplied && failedIds.has(e.bankTxnId)));
+          }
+          const rec = u.payments?.[p.ym];
+          if (rec && rec.autoApplied && rec.bankTxnId === p.txnId) delete u.payments[p.ym];
+        }
+      });
+    } catch (e) {
+      logger.error(`[auto-apply] compensating cleanup failed: ${e.message}`);
     }
   }
   const confirmedApplies = applies.filter(a => durable.has(a.txn.id));
 
+  // 4b. Heals — rec already in the ledger for this txn (see step 3).
+  const healed = [];
+  for (const h of heals) {
+    const { b, f, u, ym, rec } = h.held;
+    if (ledgerRequired) {
+      try {
+        const r = await _writeAutoApplyLedgerV2(b.id, f.id, u.id, ym, rec, h.txn.id);
+        if (r === 'conflict') continue;
+      } catch (e) {
+        logger.error(`[auto-apply] heal ledger check FAILED ${b.id}/${u.id}/${ym} txn ${h.txn.id}: ${e.message}`);
+        continue;
+      }
+    }
+    healed.push({ docRef: h.docRef, txn: h.txn, rec,
+      candidate: { u, b, f, ym, delta: rec.autoMatchDeltaCents ?? null, rentCents: rec.autoMatchRentCents ?? null } });
+  }
+
   // 5. Batch: mark bank txns confirmed + audit log.
   const auditCol = db.collection(`workspaces/${WORKSPACE_ID}/audit`);
+  const toConfirm = [
+    ...confirmedApplies.map(a => ({ ...a, auditAction: 'payment.auto-applied', confirmedBy: 'auto-match' })),
+    ...healed.map(h => ({ ...h,
+      auditAction: h.rec.autoApplied ? 'payment.auto-applied' : null,
+      confirmedBy: h.rec.autoApplied ? 'auto-match' : (h.rec.confirmedBy || 'ledger-heal') })),
+  ];
   const BATCH_SIZE = 100;
-  for (let i = 0; i < confirmedApplies.length; i += BATCH_SIZE) {
+  for (let i = 0; i < toConfirm.length; i += BATCH_SIZE) {
     const batch = db.batch();
-    const slice = confirmedApplies.slice(i, i + BATCH_SIZE);
-    for (const { docRef, txn, candidate } of slice) {
+    const slice = toConfirm.slice(i, i + BATCH_SIZE);
+    for (const { docRef, txn, candidate, auditAction, confirmedBy } of slice) {
       batch.set(docRef, {
         matchState: 'confirmed',
         confirmedAt: admin.firestore.FieldValue.serverTimestamp(),
-        confirmedBy: 'auto-match',
-        autoApplied: true,
-        autoApplyTargetUnitId: candidate.u.id,
-        autoApplyTargetYm: candidate.ym,
+        confirmedBy,
+        ...(auditAction ? {
+          autoApplied: true,
+          autoApplyTargetUnitId: candidate.u.id,
+          autoApplyTargetYm: candidate.ym,
+        } : {}),
       }, { merge: true });
+      if (!auditAction) continue;
       batch.set(auditCol.doc(), {
-        action: 'payment.auto-applied',
+        action: auditAction,
         ts: admin.firestore.FieldValue.serverTimestamp(),
         actor: 'auto-match',
         bankTxnId: txn.id,
@@ -9368,16 +9519,13 @@ async function _autoApplyAfterPoll(fcAccountId) {
     await batch.commit();
   }
 
-  const ledgerWriteFailed = captured.filter(p => !durable.has(p.txnId)).length;
-  logger.info(`[auto-apply] fcAccountId=${fcAccountId}: applied=${confirmedApplies.length}/${applies.length} ledgerWriteFailed=${ledgerWriteFailed} skipped=${skipped} past=${deferredCounts['past-month-needs-manual']} future=${deferredCounts['future-month-needs-manual']} methodMismatch=${deferredCounts['method-mismatch']} candidates=${snap.size}`);
+  const ledgerWriteFailed = failed.length;
+  logger.info(`[auto-apply] fcAccountId=${fcAccountId}: applied=${confirmedApplies.length}/${applies.length} healed=${healed.length}/${heals.length} ledgerWriteFailed=${ledgerWriteFailed} skipped=${skipped} past=${deferredCounts['past-month-needs-manual']} future=${deferredCounts['future-month-needs-manual']} methodMismatch=${deferredCounts['method-mismatch']} candidates=${snap.size}`);
   return {
+    ...emptyResult(),
     applied: confirmedApplies.length,
+    healed: healed.length,
     ledgerWriteFailed,
-    skipped,
-    candidates: snap.size,
-    pastMonthSuggested: deferredCounts['past-month-needs-manual'],
-    futureMonthSuggested: deferredCounts['future-month-needs-manual'],
-    methodMismatchSuggested: deferredCounts['method-mismatch'],
   };
 }
 
@@ -9513,7 +9661,10 @@ exports.undoAutoAppliedPayment = onCall(
     }
     let undone = false;
     let bankTxnId = null;
+    let ledgerRequired = false;
     await mutateWorkspaceState((s) => {
+      undone = false; bankTxnId = null;          // txn-retry safety
+      ledgerRequired = _ledgerIsCollectionCF(s);  // Entry 81: same snapshot, no fail-open read
       const b = (s.buildings || []).find(x => x.id === buildingId);
       const f = b?.floors?.find(x => x.id === floorId);
       const u = f?.units?.find(x => x.id === unitId);
@@ -9527,6 +9678,18 @@ exports.undoAutoAppliedPayment = onCall(
       delete u.payments[ym];
       undone = true;
     });
+    // Entry 81: remove the ledger rec BEFORE releasing the bank txn, and fail
+    // loudly — a swallowed delete left a paid rec while the txn went back to
+    // suggestions (re-match = double record). Under strip this is the only
+    // copy; a retry of the undo re-hydrates it and tries again.
+    if (undone && ledgerRequired) {
+      try {
+        await _deletePaymentV2(buildingId, unitId, ym);
+      } catch (e) {
+        logger.error(`[mirror-v2:undo] ${buildingId}/${unitId}/${ym}: ${e.message}`);
+        throw new HttpsError('unavailable', 'Could not remove the payment from the ledger — nothing was undone. Try again.');
+      }
+    }
     if (undone && bankTxnId) {
       // Bank txn → suggested (operator может re-match вручную).
       const txnRef = db.doc(`workspaces/${WORKSPACE_ID}/bankTransactions/${bankTxnId}`);
@@ -9545,18 +9708,6 @@ exports.undoAutoAppliedPayment = onCall(
         bankTxnId,
         unitId, buildingId, floorId, ym,
       });
-    }
-    // Phase 1 dual-write — удаляем зеркало из v2-коллекции (explicit event,
-    // НЕ diff-on-push). Только если undone — иначе монолит не менялся.
-    if (undone) {
-      try {
-        const syncState = await _stateIfSyncV2();
-        if (syncState) {
-          await _deletePaymentV2(buildingId, unitId, ym);
-        }
-      } catch (e) {
-        logger.warn(`[mirror-v2:undo] ${buildingId}/${unitId}/${ym}: ${e.message}`);
-      }
     }
     return { undone, bankTxnId };
   }

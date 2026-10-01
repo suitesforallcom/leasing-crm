@@ -125,6 +125,26 @@ function makeWorld({ conns, accounts, txns }) {
       add: async (doc) => { if (p.endsWith('/audit')) world.audit.push(doc); return { id: 'a' + world.audit.length }; },
       where: (field, op, val) => query([{ field, op, val }]),
     }),
+    doc: (p) => {
+      const id = p.split('/').pop();
+      return { id, path: p,
+        set: async (data) => { world.docs.set(id, { ...(world.docs.get(id) || {}), ...clone(data) }); } };
+    },
+    runTransaction: async (fn) => {
+      if (world.failPaymentWrites) throw new Error('simulated ledger write failure');
+      const tx = {
+        get: async (ref) => {
+          if (world.injectConflictKey && ref.id === world.injectConflictKey) {
+            world.paymentsCol.set(ref.id, { ym: ref.id.split('__')[2], rec: { status: 'paid', amount: 2250, source: 'stripe', stripe: { invoiceId: 'in_race' } } });
+            world.injectConflictKey = null;
+          }
+          const d = world.paymentsCol.get(ref.id);
+          return { exists: !!d, data: () => clone(d) };
+        },
+        set: (ref, payload) => { world.paymentsCol.set(ref.id, clone(payload)); },
+      };
+      return fn(tx);
+    },
     getAll: async (...refs) => refs.map(r => ({ exists: world.docs.has(r.id), data: () => world.docs.get(r.id) })),
     batch: () => {
       const ops = [];
@@ -151,10 +171,14 @@ function makeWorld({ conns, accounts, txns }) {
     HttpsError: class HttpsError extends Error { constructor(code, msg) { super(msg); this.code = code; } },
     onCall: (_opts, fn) => fn,
     onSchedule: (_opts, fn) => fn,
-    requireEditor: async () => {},
+    requireEditor: async () => ({ email: 'tony@al-en.com', role: 'admin' }),
+    _deletePaymentV2: async (bId, uId, ym) => {
+      if (world.failPaymentWrites) throw new Error('simulated ledger delete failure');
+      world.paymentsCol.delete(`${bId}__${uId}__${ym}`);
+    },
     getStripe: () => stripe,
     db,
-    readWorkspaceState: async () => clone(world.state),
+    readWorkspaceState: async () => world.hydrate(),
     // Every mutate first runs on a throw-away copy (simulated Firestore txn
     // retry) — closure accumulators that are not reset at the callback top
     // would double-count. Under the simulated buildings strip the persisted
@@ -162,15 +186,7 @@ function makeWorld({ conns, accounts, txns }) {
     // payments from world.paymentsCol (the ledger).
     mutateWorkspaceState: async (fn) => {
       mutateCount++;
-      const hydrate = () => {
-        const s = clone(world.state);
-        for (const b of s.buildings || []) for (const f of b.floors || []) for (const u of f.units || []) {
-          for (const [key, doc] of world.paymentsCol) {
-            if (key.startsWith(`${b.id}__${u.id}__`)) { u.payments = u.payments || {}; u.payments[doc.ym] = clone(doc.rec); }
-          }
-        }
-        return s;
-      };
+      const hydrate = world.hydrate;
       fn(hydrate());
       const s = hydrate();
       fn(s);
@@ -192,6 +208,18 @@ function makeWorld({ conns, accounts, txns }) {
     },
   };
   world.paymentsCol = new Map();
+  // Under the simulated strip, payments live only in paymentsCol and every
+  // read hydrates them into u.payments (prod: _mergePaymentsIntoBuildingsCF).
+  world.hydrate = () => {
+    const s = clone(world.state);
+    if (!world.strip) return s;
+    for (const b of s.buildings || []) for (const f of b.floors || []) for (const u of f.units || []) {
+      for (const [key, doc] of world.paymentsCol) {
+        if (key.startsWith(`${b.id}__${u.id}__`)) { u.payments = u.payments || {}; u.payments[doc.ym] = clone(doc.rec); }
+      }
+    }
+    return s;
+  };
   world.strip = false;
   world.failPaymentWrites = false;
   vm.createContext(ctx);
@@ -200,6 +228,12 @@ function makeWorld({ conns, accounts, txns }) {
     liftConst('BANK_FEED_WATERMARK_SAFETY_DAYS'),
     liftFn('_bankAcctHealthFromStripe'),
     liftFn('_bankConnPollable'),
+    liftFn('_bankSameAccountKind'),
+    liftFn('_ledgerIsCollectionCF'),
+    liftFn('_recHasStripeInvoice'),
+    liftFn('_writeAutoApplyLedgerV2'),
+    'const DISCOUNT_REC_FIELDS = ' + /const DISCOUNT_REC_FIELDS = (\[[\s\S]*?\]);/.exec(SRC)[1] + ';',
+    liftFn('_discountFieldsOf'),
     liftFn('_applyBankAcctStatus'),
     liftFn('_auditBankRelinkRequired'),
     liftFn('_bankFeedSinceUnix'),
@@ -211,6 +245,7 @@ function makeWorld({ conns, accounts, txns }) {
     liftExport('bankFeedScheduledPoll'),
     liftExport('syncBankConnections'),
     liftExport('finalizeBankConnection'),
+    liftExport('undoAutoAppliedPayment'),
   ].join('\n');
   vm.runInContext(code, ctx);
   // Real _autoApplyAfterPoll, lifted into its own sandbox entry so the
@@ -254,6 +289,11 @@ const cachedTxns = () => ({
   // ── 1. Inactive account: cron no longer "succeeds" on the stale cache ──
   {
     const w = makeWorld({ conns: [incidentConn()], accounts: { [FCA]: inactiveAcct() }, txns: cachedTxns() });
+    // As in prod: the 8 cached txns are already in bankTransactions.
+    for (const t of cachedTxns()[FCA]) w.docs.set(t.id, { id: t.id, accountId: FCA, amount: t.amount, transactedAt: t.transacted_at, matchState: 'unmatched' });
+    // A deposit Stripe cached at its last succeeded refresh but we never
+    // listed (e.g. refresh landed after the cron's list): must still arrive.
+    w.txns[FCA].push({ id: 'fctxn_unlisted', transacted_at: T_FAIL - DAY, amount: 4242 });
     // Make it due: interval 1h so the cron picks it up.
     w.state.bankConnections[0].pollIntervalHours = 1;
     await w.fns.bankFeedScheduledPoll();
@@ -265,10 +305,13 @@ const cachedTxns = () => ({
     eq(c.freshThroughUnix, T_FAIL, 'inactive: freshThroughUnix anchored at min(lastPolledAt, failed refresh)');
     eq(c.lastRefreshStatus, 'failed', 'inactive: lastRefreshStatus recorded');
     ok(typeof c.lastPollAttemptAt === 'string', 'inactive: lastPollAttemptAt stamped');
-    eq(w.listCalls.length, 0, 'inactive: stale cache not listed');
+    eq(w.listCalls.length, 1, 'inactive: Stripe cache still listed (no refresh)');
+    eq(w.listCalls[0] && w.listCalls[0].transacted_at.gte, Math.floor(new Date(LAST_POLLED_ISO).getTime() / 1000) - 14 * DAY,
+      'inactive: first detection lists with the pre-detection window');
     eq(w.refreshCalls.length, 0, 'inactive: no refresh() call (Stripe refuses it)');
     eq(w.audit.filter(a => a.action === 'bank.sync.relink_required').length, 1, 'inactive: one critical audit alert');
     eq(w.audit[0] && w.audit[0].severity, 'critical', 'inactive: audit severity critical');
+    ok(w.docs.has('fctxn_unlisted'), 'inactive: cached-but-unlisted deposit still written (list without refresh)');
 
     // Second poll a moment later (manual Refresh now) — still inactive.
     const r = await w.fns.pollBankTransactions({ data: { stripeFcAccountId: FCA, manual: true } });
@@ -394,6 +437,26 @@ const cachedTxns = () => ({
     eq(c.freshThroughUnix, T_FAIL, 'sync: catch-up anchor set');
     eq(w.audit.filter(a => a.action === 'bank.sync.relink_required').length, 1, 'sync: one relink audit');
   }
+  {
+    // Locally disconnected record is terminal: Stripe 'inactive' does not revive it.
+    const accounts = { [FCA]: inactiveAcct() };
+    const w = makeWorld({ conns: [incidentConn({ status: 'disconnected', disconnectedAt: '2026-10-01T00:00:00Z' })], accounts, txns: {} });
+    await w.fns.syncBankConnections({ auth: { token: { email: 'tony@al-en.com' } } });
+    eq(w.conn(FCA).status, 'disconnected', 'sync: local disconnected stays disconnected');
+    eq(w.conn(FCA).needsRelink, undefined, 'sync: no relink flag on a disconnected record');
+    eq(w.audit.length, 0, 'sync: no relink audit for a disconnected record');
+  }
+  {
+    // Same bank + last4 but a different account kind is NOT a duplicate.
+    const accounts = {
+      [FCA]: { ...inactiveAcct(), category: 'cash', subcategory: 'checking' },
+      fca_sav: { id: 'fca_sav', status: 'active', institution_name: 'Capital One', last4: '5709', category: 'cash', subcategory: 'savings', _customer: 'cus_op' },
+    };
+    const w = makeWorld({ conns: [incidentConn({ accountCategory: 'cash', accountSubcategory: 'checking' })], accounts, txns: {} });
+    const r = await w.fns.syncBankConnections({ auth: { token: { email: 'tony@al-en.com' } } });
+    ok(!!w.conn('fca_sav'), 'sync: savings account with the same last4 is added (different kind)');
+    eq(r.skippedDuplicates.length, 0, 'sync: not reported as duplicate');
+  }
 
   // ── 7. finalizeBankConnection: inactive record is replaced, not duplicated ──
   {
@@ -458,11 +521,79 @@ const cachedTxns = () => ({
     const outreach = w2.state.buildings[0].floors[0].units[0].outreach || [];
     eq(outreach.filter(e => e.bankTxnId === 'fctxn_1U1JWT').length, 1, 'retry: outreach entry not duplicated');
 
-    // 8c. Already recorded for this txn (earlier partial run) → just confirmed, not re-written.
+    // 8c. Heal: ledger already holds this txn's rec (confirm batch never landed).
     const w3 = mk();
-    w3.paymentsCol.set(key, { ym: '2026-09', rec: { status: 'paid', amount: 2250, bankTxnId: 'fctxn_1U1JWT' } });
-    await w3.autoApply(FCA);
-    ok(true, 'already-recorded: no throw');
+    w3.paymentsCol.set(key, { ym: '2026-09', rec: { status: 'paid', amount: 2250, bankTxnId: 'fctxn_1U1JWT', autoApplied: true, autoMatchRentCents: 225000, autoMatchDeltaCents: 0 } });
+    const r4 = await w3.autoApply(FCA);
+    eq(w3.docs.get('fctxn_1U1JWT').matchState, 'confirmed', 'heal: txn confirmed');
+    eq(r4.healed, 1, 'heal: reported');
+    eq([...w3.paymentsCol.keys()], [key], 'heal: no second ledger rec (no other month)');
+    eq(w3.audit.filter(a => a.action === 'payment.auto-applied').length, 1, 'heal: exactly one audit row');
+
+    // 8d. Undone by the operator (autoApplied:false) → never re-applied.
+    const w4 = mk();
+    w4.docs.get('fctxn_1U1JWT').autoApplied = false;
+    w4.docs.get('fctxn_1U1JWT').matchState = 'suggested';
+    await w4.autoApply(FCA);
+    eq(w4.paymentsCol.size, 0, 'undo: not re-applied');
+    eq(w4.docs.get('fctxn_1U1JWT').matchState, 'suggested', 'undo: stays a manual suggestion');
+
+    // 8e. Ledger gate does not fail open: strip on, syncV2 off → still written.
+    const w5 = mk();
+    w5.state.settings = { syncBuildingsStrip: true };
+    await w5.autoApply(FCA);
+    ok(w5.paymentsCol.has(key), 'gate: strip alone requires the ledger write');
+
+    // 8f. Race: another source records the month paid between peek and write → refused.
+    const w6 = mk();
+    w6.injectConflictKey = key;
+    const r6 = await w6.autoApply(FCA);
+    eq(w6.paymentsCol.get(key).rec.stripe && w6.paymentsCol.get(key).rec.stripe.invoiceId, 'in_race', 'race: other source rec not overwritten');
+    eq(w6.docs.get('fctxn_1U1JWT').matchState, 'unmatched', 'race: txn left for manual review');
+    eq(r6.ledgerWriteFailed, 1, 'race: reported');
+    const out6 = w6.state.buildings[0].floors[0].units[0].outreach || [];
+    eq(out6.filter(e => e.bankTxnId === 'fctxn_1U1JWT').length, 0, 'race: false «auto-applied» outreach removed');
+
+    // 8g. Month tied to a Stripe invoice → skipped (needs a human).
+    const w7 = mk();
+    w7.paymentsCol.set(key, { ym: '2026-09', rec: { status: 'late', amount: 0, stripe: { invoiceId: 'in_late' } } });
+    await w7.autoApply(FCA);
+    eq(w7.paymentsCol.get(key).rec.stripe.invoiceId, 'in_late', 'stripe-linked: rec untouched');
+    eq(w7.docs.get('fctxn_1U1JWT').matchState, 'unmatched', 'stripe-linked: txn not confirmed');
+
+    // 8h. Prior non-paid rec: discount fields kept, prior state in history.
+    const w8 = mk();
+    w8.paymentsCol.set(key, { ym: '2026-09', rec: { status: 'pending', amount: 0, wasDiscounted: true, discountAmount: 50, originalAmount: 2300 } });
+    await w8.autoApply(FCA);
+    const rec8 = w8.paymentsCol.get(key).rec;
+    eq([rec8.status, rec8.wasDiscounted, rec8.discountAmount, rec8.originalAmount], ['paid', true, 50, 2300], 'prior rec: discount fields carried over');
+    eq(rec8.history && rec8.history[0] && rec8.history[0].status, 'pending', 'prior rec: previous state in history');
+  }
+
+  // ── 9. Undo: ledger delete first, loud on failure ──────────────────
+  {
+    const mkU = () => {
+      const w = makeWorld({ conns: [], accounts: {}, txns: {} });
+      w.strip = true;
+      w.state.settings = { syncV2: true, syncBuildingsStrip: true };
+      w.state.buildings = [{ id: 'b1', floors: [{ id: 'f1', units: [{ id: '106' }] }] }];
+      w.paymentsCol.set('b1__106__2026-09', { ym: '2026-09', rec: { status: 'paid', amount: 2250, bankTxnId: 'fctxn_U', autoApplied: true } });
+      w.docs.set('fctxn_U', { id: 'fctxn_U', matchState: 'confirmed', autoApplied: true });
+      return w;
+    };
+    const req = { auth: {}, data: { buildingId: 'b1', floorId: 'f1', unitId: '106', ym: '2026-09' } };
+    const w = mkU();
+    w.failPaymentWrites = true;
+    let threw = false;
+    try { await w.fns.undoAutoAppliedPayment(req); } catch (e) { threw = true; }
+    ok(threw, 'undo: ledger delete failure surfaces as an error');
+    eq(w.docs.get('fctxn_U').matchState, 'confirmed', 'undo failure: txn NOT released (ledger and txn stay consistent)');
+    ok(w.paymentsCol.has('b1__106__2026-09'), 'undo failure: ledger rec still there');
+    w.failPaymentWrites = false;
+    const r = await w.fns.undoAutoAppliedPayment(req);
+    eq(r.undone, true, 'undo retry: undone');
+    ok(!w.paymentsCol.has('b1__106__2026-09'), 'undo retry: ledger rec removed');
+    eq([w.docs.get('fctxn_U').matchState, w.docs.get('fctxn_U').autoApplied], ['suggested', false], 'undo retry: txn back to suggestions, flagged undone');
   }
 
   console.log(`bank-feed.test: ${passed} passed, ${failed} failed`);

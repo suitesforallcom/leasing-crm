@@ -107868,6 +107868,10 @@ async function syncBankConnectionsFromStripe(opts) {
       if (!total) msg = 'No accounts linked at Stripe yet — click "Connect bank account" to add one.';
       else if (added) msg = `✓ Found ${total} account(s) at Stripe — added ${added} missing record(s)${updated ? `, refreshed ${updated}` : ''}. Each row below has a Disconnect button.`;
       else msg = `✓ In sync — ${total} account(s) at Stripe, ${updated} refreshed. Already showing all of them below.`;
+      // Entry 81: older/newer Stripe objects of an account already tracked
+      // here are deliberately not added (they would re-import its history).
+      const dups = Array.isArray(data?.skippedDuplicates) ? data.skippedDuplicates : [];
+      if (dups.length) msg += ` ${dups.length} duplicate link(s) of an already-connected account skipped: ${dups.map(d => esc(d.id)).join(', ')}.`;
       setIntStatus('bankFeed', 'success', msg);
     }
     _renderBankConnections();
@@ -108337,7 +108341,13 @@ function _renderBankConnections() {
     badge.style.color = '';
     badge.style.borderColor = '';
     const h = window._bankSyncHealth;
-    if (active.length) {
+    if (active.some(c => c.needsRelink === true || c.status === 'inactive')) {
+      // Entry 81: not «✓ connected» while Stripe cannot refresh the account.
+      badge.textContent = '⚠ Relink required';
+      badge.style.background = '#fee2e2';
+      badge.style.color = '#991b1b';
+      badge.style.borderColor = '#fecaca';
+    } else if (active.length) {
       badge.classList.add('active');
       badge.textContent = `✓ ${active.length} connected`;
     } else if (h && h.status === 'orphan') {
@@ -108632,6 +108642,10 @@ async function refreshBankAccountNow(fcAccountId) {
       // instead of «✓ Up to date».
       result = { ok: false, message: `⚠ Stripe reports this account ${acc.accountStatus} — relink required (Stripe Dashboard → Financial Connections → Accounts → ⋯ → Request relink).` };
       setIntStatus('bankFeed', 'warn', `⚠ Bank account is ${esc(acc.accountStatus)} at Stripe — relink required.`);
+    } else if (acc.refreshStatus === 'failed' && !(acc.written > 0)) {
+      // Entry 81: active account, but Stripe could not refresh from the bank.
+      result = { ok: false, message: `⚠ Stripe could not refresh from the bank (last attempt failed) — showing cached data only. Try again later; use 🔍 Diagnose if it persists.` };
+      setIntStatus('bankFeed', 'warn', '⚠ Stripe refresh failed — cached data only.');
     } else if (acc.transactionRefreshTriggered) {
       // Stripe FC has not finished preparing transactions for this account.
       // Triggering a refresh kicks off the prep; next poll (in ~1-2 min)
@@ -154803,7 +154817,9 @@ async function _mpmRefreshBankSuggestionsNow(ev) {
   const btn = ev?.currentTarget || document.querySelector('.mpm-bf-refresh');
   if (btn) btn.classList.add('is-spinning');
   try {
-    const conns = (state.bankConnections || []).filter(c => c.status === 'active');
+    // Entry 81: 'inactive' (needs relink) is still a connection — the poll
+    // reports it instead of pretending there is no bank.
+    const conns = (state.bankConnections || []).filter(c => c && c.status !== 'disconnected');
     if (!conns.length || typeof stripeCallable !== 'function') {
       toast?.('No bank connection to refresh', 'info');
       return;
@@ -154815,9 +154831,15 @@ async function _mpmRefreshBankSuggestionsNow(ev) {
     );
     let totalWritten = 0;
     let anyFailed = false;
+    let needsRelink = false;
     for (const r of results) {
-      if (r.status === 'fulfilled') totalWritten += +(r.value?.data?.totalWritten || 0);
-      else anyFailed = true;
+      if (r.status !== 'fulfilled') { anyFailed = true; continue; }
+      totalWritten += +(r.value?.data?.totalWritten || 0);
+      // Entry 81: per-account errors / inactive accounts are not «Up to date».
+      for (const a of (r.value?.data?.accounts || [])) {
+        if (a?.error) anyFailed = true;
+        if (a?.accountStatus && a.accountStatus !== 'active') needsRelink = true;
+      }
     }
     // Очищаем кэш bank suggestions чтобы _mpmRenderBankSuggestions
     // не показал старый snapshot.
@@ -154829,7 +154851,9 @@ async function _mpmRefreshBankSuggestionsNow(ev) {
     }
     // Также — health re-check (banner мог измениться).
     try { if (typeof _checkBankSyncHealth === 'function') _checkBankSyncHealth(); } catch {}
-    if (totalWritten > 0) {
+    if (needsRelink) {
+      toast?.('Bank account must be re-linked in Stripe — no new transactions can arrive (see Settings → Integrations)', 'error');
+    } else if (totalWritten > 0) {
       toast?.(`✓ ${totalWritten} new transaction${totalWritten === 1 ? '' : 's'} pulled`, 'success');
     } else if (!anyFailed) {
       toast?.('Up to date — no new transactions', 'info');
@@ -154852,7 +154876,9 @@ async function _mpmRenderBankSuggestions(u, ym) {
   // На waived вся карточка скрывается (нет смысла предлагать что-то под $0).
   if (document.getElementById('mpmMethod')?.value === 'waived') { card.innerHTML = ''; return; }
 
-  const conns = (state.bankConnections || []).filter(c => c.status === 'active');
+  // Entry 81: an 'inactive' (needs-relink) account's cached deposits are
+  // still real — keep suggesting them.
+  const conns = (state.bankConnections || []).filter(c => c && c.status !== 'disconnected');
   const hasBank = conns.length > 0 && typeof stripeCallable === 'function';
 
   // ---- Stripe-источник: локальный кэш, ±1 месяц от выбранного ym ----

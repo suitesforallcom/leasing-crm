@@ -346,18 +346,24 @@ check_gate 81 _checkBankSyncHealth "status = 'relink'" 120
 check_gate 81 _refreshBankSyncBanner "h\.status === 'relink'" 40
 check_gate 81 _renderBankConnections 'Request relink' 120
 FN_JS="$ROOT/functions/index.js"
+# grep -c (не -q): под `set -o pipefail` ранний выход grep -q даёт SIGPIPE
+# первому grep на длинном окне → ложный провал гейта.
+fn_has() {  # $1 header regex, $2 pattern, $3 window
+  local n; n=$(grep -A "$3" -E "$1" "$FN_JS" | grep -cE "$2" || true); [ "${n:-0}" -gt 0 ]; }
 if grep -qE "^function _bankFeedSinceUnix\(" "$FN_JS" \
-   && grep -A 12 -E "^async function _pullTransactionsForAccount\(" "$FN_JS" | grep -q "_ensureFreshTransactions" \
-   && grep -A 30 -E "^async function _pullTransactionsForAccount\(" "$FN_JS" | grep -qE "accountStatus !== 'active'" \
-   && grep -A 30 -E "^async function _markAccountPolled\(" "$FN_JS" | grep -qE "accountStatus !== 'active'" \
+   && fn_has "^async function _pullTransactionsForAccount\(" "_ensureFreshTransactions" 12 \
+   && fn_has "^async function _pullTransactionsForAccount\(" "accountStatus !== 'active'" 30 \
+   && fn_has "^async function _markAccountPolled\(" "accountStatus !== 'active'" 30 \
    && [ "$(grep -cE "_bankFeedSinceUnix\(c, " "$FN_JS")" -ge 2 ] \
-   && grep -A 50 -E "^exports\.finalizeBankConnection = " "$FN_JS" | grep -qE "c\.status === 'inactive'" \
+   && fn_has "^exports\.finalizeBankConnection = " "c\.status === 'inactive'" 50 \
    && grep -qE "skippedDuplicates\.push" "$FN_JS" \
-   && grep -A 260 -E "^async function _autoApplyAfterPoll\(" "$FN_JS" | grep -qE "_writePaymentV2\(p\.b, p\.f, p\.u, p\.ym, p\.rec\)" \
-   && grep -A 280 -E "^async function _autoApplyAfterPoll\(" "$FN_JS" | grep -qE "confirmedApplies\.slice"; then
+   && fn_has "^async function _autoApplyAfterPoll\(" "_writeAutoApplyLedgerV2\(p\.b, p\.f, p\.u, p\.ym, p\.rec, p\.txnId\)" 400 \
+   && fn_has "^async function _autoApplyAfterPoll\(" "toConfirm\.slice" 400 \
+   && fn_has "^async function _autoApplyAfterPoll\(" "txn\.autoApplied === false" 60 \
+   && fn_has "^async function _autoApplyAfterPoll\(" "ledgerRequired = _ledgerIsCollectionCF\(s\)" 400; then
   echo "  ✓ functions/index.js bank-feed: inactive short-circuit, frozen watermark, anchored window, ghost/dup guards, durable auto-apply"
 else
-  echo "  ✗ functions/index.js bank-feed lost an Entry 81 guard (inactive short-circuit / watermark / window / dup guard)"
+  echo "  ✗ functions/index.js bank-feed lost an Entry 81 guard (inactive short-circuit / watermark / window / dup guard / durable auto-apply)"
   FAIL=1
 fi
 
