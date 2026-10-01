@@ -129,6 +129,7 @@ function makeWorld({ conns, accounts, txns }) {
     doc: (p) => {
       const id = p.split('/').pop();
       return { id, path: p,
+        get: async () => { const d = world.docs.get(id); return { exists: !!d, data: () => clone(d) }; },
         set: async (data) => { world.docs.set(id, { ...(world.docs.get(id) || {}), ...clone(data) }); } };
     },
     runTransaction: async (fn) => {
@@ -273,6 +274,7 @@ function makeWorld({ conns, accounts, txns }) {
     liftExport('undoAutoAppliedPayment'),
     liftExport('adoptBankFcAccount'),
     liftExport('attachStripeInvoiceToUnit'),
+    liftExport('confirmBankMatch'),
     liftFn('findUnit'),
     liftExport('disconnectBankAccount'),
   ].join('\n');
@@ -818,6 +820,49 @@ const cachedTxns = () => ({
     const di = w.state.buildings[0].floors[0].units[0].stripe.depositInvoice;
     eq([di.invoiceId, di.status, di.amount, di.number], ['in_ZAR', 'open', 500, 'ZAR5KJDC-0001'], 'attach: unit deposit stamp → open (webhook matches it by id)');
     eq(w.audit.filter(a => a.action === 'stripe.invoice.attached').length, 1, 'attach: audited');
+  }
+
+  // ── 13. confirmBankMatch: deposit + durable ledger (Entry 85) ──────
+  {
+    const mkC = () => {
+      const w = makeWorld({ conns: [], accounts: {}, txns: {} });
+      w.strip = true;
+      w.state.settings = { syncV2: true, syncBuildingsStrip: true };
+      w.state.buildings = [
+        { id: 'bX', floors: [{ id: 'fx', units: [{ id: '442', tenant: 'Other building' }] }] },
+        { id: 'b1', floors: [{ id: 'f1-4', units: [{ id: '442', tenant: 'Julie Sanatine', deposit: 1850, stripe: { depositInvoice: { amount: 1850, backfill: true, status: 'paid' } } }] }] },
+      ];
+      w.paymentsCol.set('b1__442__deposit', { ym: 'deposit', rec: { status: 'paid', amount: 1850, paidVia: 'carried', note: 'Deposit carried from Suite 358 (relocation)' } });
+      w.docs.set('fctxn_DEP', { id: 'fctxn_DEP', amount: 220000, transactedAt: 1789603200, matchState: 'suggested', autoApplied: false });
+      return w;
+    };
+    const auth = { auth: { token: { email: 'tony@al-en.com' } } };
+    const w = mkC();
+    const r = await w.fns.confirmBankMatch({ ...auth, data: { txnId: 'fctxn_DEP', unitId: '442', buildingId: 'b1', ym: 'deposit' } });
+    eq([r.buildingId, r.floorId], ['b1', 'f1-4'], 'confirm deposit: buildingId respected (not the first «442»)');
+    const rec = w.paymentsCol.get('b1__442__deposit').rec;
+    eq([rec.status, rec.amount, rec.paidVia, rec.bankTxnId, rec.paidAt.slice(0, 10)], ['paid', 2200, 'bank', 'fctxn_DEP', '2026-09-17'], 'confirm deposit: clean $2,200 record in the ledger');
+    eq([rec.history && rec.history[0].amount, rec.history && rec.history[0].paidVia], [1850, 'carried'], 'confirm deposit: carried $1,850 kept in history');
+    ok(!('note' in rec), 'confirm deposit: old fields not merged into the new record');
+    const di = w.state.buildings[1].floors[0].units[0].stripe.depositInvoice;
+    eq([di.status, di.amount, di.backfill], ['paid', 2200, undefined], 'confirm deposit: deposit stamp consistent');
+    eq([w.docs.get('fctxn_DEP').matchState, w.docs.get('fctxn_DEP').matchedYm, w.docs.get('fctxn_DEP').matchedBuildingId], ['confirmed', 'deposit', 'b1'], 'confirm deposit: txn confirmed as deposit');
+    ok(!w.state.buildings[0].floors[0].units[0].payments, 'confirm deposit: other building untouched');
+    // Ledger write fails → error, txn NOT confirmed.
+    const w2 = mkC();
+    w2.ctx._writePaymentV2 = async () => { throw new Error('boom'); };
+    let threw = false;
+    try { await w2.fns.confirmBankMatch({ ...auth, data: { txnId: 'fctxn_DEP', unitId: '442', buildingId: 'b1', ym: 'deposit' } }); } catch (e) { threw = true; }
+    ok(threw, 'confirm: ledger failure surfaces as an error');
+    eq(w2.docs.get('fctxn_DEP').matchState, 'suggested', 'confirm: txn left unconfirmed when the ledger write fails');
+    // Regular month keeps the old shape.
+    const w3 = mkC();
+    await w3.fns.confirmBankMatch({ ...auth, data: { txnId: 'fctxn_DEP', unitId: '442', buildingId: 'b1', ym: '2026-10' } });
+    const r3 = w3.paymentsCol.get('b1__442__2026-10').rec;
+    eq([r3.status, r3.amount, r3.source], ['paid', 2200, 'bank-feed'], 'confirm month: unchanged behaviour');
+    let threw4 = false;
+    try { await w3.fns.confirmBankMatch({ ...auth, data: { txnId: 'fctxn_DEP', unitId: '442', ym: 'oct' } }); } catch (e) { threw4 = true; }
+    ok(threw4, 'confirm: bad ym rejected');
   }
 
   console.log(`bank-feed.test: ${passed} passed, ${failed} failed`);

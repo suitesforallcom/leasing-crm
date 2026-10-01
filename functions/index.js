@@ -10588,9 +10588,13 @@ exports.confirmBankMatch = onCall(
     const txnId = String(req.data?.txnId || '');
     const unitId = String(req.data?.unitId || '');
     const ym = String(req.data?.ym || '');
+    // Entry 85: optional buildingId — suite numbers repeat across buildings
+    // and the unit lookup below otherwise takes the FIRST match.
+    const buildingIdIn = req.data?.buildingId ? String(req.data.buildingId) : null;
+    const isDeposit = ym === 'deposit';
     const recordPayment = req.data?.recordPayment !== false;   // default true
-    if (!txnId || !unitId || !/^\d{4}-\d{2}$/.test(ym)) {
-      throw new HttpsError('invalid-argument', 'txnId, unitId, ym (YYYY-MM) required');
+    if (!txnId || !unitId || !(isDeposit || /^\d{4}-\d{2}$/.test(ym))) {
+      throw new HttpsError('invalid-argument', 'txnId, unitId, ym (YYYY-MM or "deposit") required');
     }
     const ref = db.doc(`workspaces/${WORKSPACE_ID}/bankTransactions/${txnId}`);
     const snap = await ref.get();
@@ -10605,13 +10609,20 @@ exports.confirmBankMatch = onCall(
     // Entry 70 / audit P0 2026-07-03: сам rec тоже захватываем внутри mutate —
     // post-mutate re-read под strip рехидрировался из ещё-не-обновлённой
     // коллекции и молча зеркалил старый rec (или пропускал зеркало).
+    // Entry 85: ledger gate from the SAME snapshot (never a separate read that
+    // can fail open) and the ledger write happens BEFORE the txn is confirmed
+    // and throws on failure (§0.2 rule 5) — a confirmed txn with no ledger
+    // record is a silently lost payment.
     let capturedB = null;
     let capturedF = null;
     let capturedRec = null;
+    let ledgerRequired = false;
     if (recordPayment) {
       await mutateWorkspaceState((s) => {
         capturedB = null; capturedF = null; capturedRec = null;
+        ledgerRequired = _ledgerIsCollectionCF(s);
         outer: for (const b of s.buildings || []) {
+          if (buildingIdIn && b.id !== buildingIdIn) continue;
           for (const f of b.floors || []) {
             for (const u of f.units || []) {
               if (u.id !== unitId) continue;
@@ -10619,22 +10630,69 @@ exports.confirmBankMatch = onCall(
               capturedF = f.id;
               u.payments = u.payments || {};
               const existing = u.payments[ym] || {};
-              u.payments[ym] = {
-                ...existing,
-                status: 'paid',
-                paidAt: new Date(txn.transactedAt ? txn.transactedAt * 1000 : Date.now()).toISOString(),
-                amount: Math.abs(txn.amount) / 100,
-                source: 'bank-feed',
-                bankTxnId: txnId,
-                confirmedBy: operatorEmail,
-              };
+              const paidAtIso = new Date(txn.transactedAt ? txn.transactedAt * 1000 : Date.now()).toISOString();
+              if (isDeposit) {
+                // A deposit received by bank transfer: a clean record; whatever
+                // stood there (e.g. a deposit carried from another suite) goes
+                // into history, never silently merged into the new one.
+                const history = Array.isArray(existing.history) ? existing.history.slice() : [];
+                if (Object.keys(existing).length) {
+                  history.push({
+                    ts: new Date().toISOString(), status: existing.status || null, amount: existing.amount || 0,
+                    paidVia: existing.paidVia || null, note: existing.note || null, replacedReason: 'bank-deposit-confirmed',
+                  });
+                  while (history.length > 10) history.shift();
+                }
+                u.payments.deposit = {
+                  status: 'paid',
+                  amount: Math.abs(txn.amount) / 100,
+                  paidAt: paidAtIso,
+                  paidVia: 'bank',
+                  source: 'bank-feed',
+                  bankTxnId: txnId,
+                  confirmedBy: operatorEmail,
+                  ...(history.length ? { history } : {}),
+                };
+                // Keep the deposit stamp consistent, unless it points at a real
+                // Stripe invoice (that one must be voided/settled in Stripe).
+                u.stripe = u.stripe || {};
+                if (!u.stripe.depositInvoice || !u.stripe.depositInvoice.invoiceId) {
+                  u.stripe.depositInvoice = {
+                    status: 'paid', amount: Math.abs(txn.amount) / 100,
+                    paidAt: txn.transactedAt ? txn.transactedAt * 1000 : Date.now(),
+                    paidVia: 'bank', bankTxnId: txnId,
+                  };
+                }
+              } else {
+                u.payments[ym] = {
+                  ...existing,
+                  status: 'paid',
+                  paidAt: paidAtIso,
+                  amount: Math.abs(txn.amount) / 100,
+                  source: 'bank-feed',
+                  bankTxnId: txnId,
+                  confirmedBy: operatorEmail,
+                };
+              }
               // Entry 70: захват свежезаписанного rec для зеркала после commit'а.
-              capturedRec = u.payments[ym];
+              capturedRec = JSON.parse(JSON.stringify(u.payments[ym]));
               break outer;
             }
           }
         }
       });
+      if (!capturedB || !capturedRec) {
+        throw new HttpsError('not-found', `Unit ${buildingIdIn ? buildingIdIn + '/' : ''}${unitId} not found — nothing recorded`);
+      }
+      // Phase 1 dual-write — зеркалим bank-confirmed payment в v2-коллекцию.
+      if (ledgerRequired) {
+        try {
+          await _writePaymentV2(capturedB, capturedF, unitId, ym, capturedRec);
+        } catch (e) {
+          logger.error(`[mirror-v2:bank-feed] ${capturedB}/${unitId}/${ym}: ${e.message}`);
+          throw new HttpsError('unavailable', 'Could not record the payment in the ledger — the bank transaction was left unconfirmed. Try again.');
+        }
+      }
     }
 
     await ref.set({
@@ -10642,26 +10700,13 @@ exports.confirmBankMatch = onCall(
       matchedUnitId: unitId,
       matchedTenantId: unitId,
       matchedYm: ym,
+      ...(capturedB ? { matchedBuildingId: capturedB } : {}),
       confirmedAt: admin.firestore.FieldValue.serverTimestamp(),
       confirmedBy: operatorEmail,
     }, { merge: true });
 
-    // Phase 1 dual-write — зеркалим bank-confirmed payment в v2-коллекцию.
-    // Entry 70 / audit P0 2026-07-03: rec захвачен внутри mutate (capturedRec),
-    // re-read убран — под strip он терял свежую мутацию; gate остаётся.
-    if (recordPayment && capturedB && capturedRec) {
-      try {
-        const syncState = await _stateIfSyncV2();
-        if (syncState) {
-          await _writePaymentV2(capturedB, capturedF, unitId, ym, capturedRec);
-        }
-      } catch (e) {
-        logger.warn(`[mirror-v2:bank-feed] ${unitId}/${ym}: ${e.message}`);
-      }
-    }
-
-    logger.info(`[bank-feed] confirmed txn ${txnId} → unit ${unitId} ym ${ym} (paymentRecorded=${recordPayment})`);
-    return { ok: true };
+    logger.info(`[bank-feed] confirmed txn ${txnId} → unit ${capturedB || '?'}/${unitId} ym ${ym} (paymentRecorded=${recordPayment})`);
+    return { ok: true, buildingId: capturedB, floorId: capturedF };
   }
 );
 

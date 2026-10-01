@@ -60,6 +60,14 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 85. `confirmBankMatch`: deposits, buildingId, ledger-before-confirm (bank feed / ledger, 2026-10-01)
+
+**Problem:** a bank transfer that is a security deposit could not be confirmed (ym had to be YYYY-MM); the unit lookup took the FIRST suite with that number across buildings; the v2 ledger write was gated by a separate `_stateIfSyncV2` read (fails open) and its failure was swallowed AFTER the txn was already confirmed — a confirmed bank txn with no ledger record (§0.2 rule 5). Live case: Suite 442's $2,200 «Customer Deposit» 2026-09-17 = Julie Sanatine's deposit.
+
+**Fix:** `ym:'deposit'` accepted → clean deposit record (`paidVia:'bank'`, `bankTxnId`), any prior deposit record (e.g. carried from another suite) moved to `history`, deposit stamp updated unless it points at a real Stripe invoice. Optional `buildingId`. Ledger gate from the mutate snapshot; ledger written BEFORE the txn is confirmed and the call throws on failure; unit not found → error, nothing confirmed.
+
+**Verification:** `node functions/bank-feed.test.js` §13.
+
 ### 84. Hand-made Stripe invoices are invisible to the app and dead-lettered when paid — `attachStripeInvoiceToUnit` (Stripe/invoices, 2026-10-01)
 
 **Problem:** an invoice created directly in the Stripe Dashboard has no SuitesForAll metadata → `listStripeInvoices` never shows it and `handleInvoicePaid` dead-letters it (`not-ours-source` / `missing-metadata`; an unknown customer is rejected as a possible hijack). Live: Suite 360's deposit **ZAR5KJDC-0001** ($500, Alexander Hardman) was sent by hand because the app wrongly showed the deposit as paid (Entry 83); Tony chose to keep it rather than re-issue.
