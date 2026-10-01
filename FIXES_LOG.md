@@ -60,6 +60,16 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 86. Stamp self-heal re-stamped a VOIDED invoice as «last rent invoice sent» (invoices/stamps, 2026-10-01)
+
+**Symptom:** Suite 442 — after the $1,850 October invoice was voided (2026-09-21) and its stamps cleared (void webhook; again by hand 2026-10-01), `u.stripe.lastInvoiceId/lastInvoiceYm` came back pointing at the voided invoice → October showed «Sent», the real invoice could not be sent.
+
+**Root cause:** `_fetchUnitInvoicesFromStripe` self-heal: «unit has no lastInvoiceId → stamp the newest rent invoice of this tenure», with no status filter → picked the voided one and `saveState()`d it on every unit open.
+
+**Fix:** the heal's `eligible` set excludes `void` / `uncollectible` / `deleted` invoices (status or bucket).
+
+**Invariant:** no stamp heal may point `lastInvoiceId` / `depositInvoice` / `moveInRent` at a voided invoice.
+
 ### 85. `confirmBankMatch`: deposits, buildingId, ledger-before-confirm (bank feed / ledger, 2026-10-01)
 
 **Problem:** a bank transfer that is a security deposit could not be confirmed (ym had to be YYYY-MM); the unit lookup took the FIRST suite with that number across buildings; the v2 ledger write was gated by a separate `_stateIfSyncV2` read (fails open) and its failure was swallowed AFTER the txn was already confirmed — a confirmed bank txn with no ledger record (§0.2 rule 5). Live case: Suite 442's $2,200 «Customer Deposit» 2026-09-17 = Julie Sanatine's deposit.

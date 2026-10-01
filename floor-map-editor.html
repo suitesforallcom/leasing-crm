@@ -86003,6 +86003,13 @@ async function _fetchUnitInvoicesFromStripe(u, opts = {}) {
     const eligible = rows.filter(r => {
       if (!r.created) return false;
       if (tenancyStartMs && new Date(r.created).getTime() < tenancyStartMs) return false;
+      // A voided / uncollectible / deleted invoice is not «the last invoice
+      // sent». Re-stamping it brought the void October invoice back onto
+      // Suite 442 (2026-09-21 and again 2026-10-01) right after the void
+      // webhook / operator cleared the stamp → October showed «Sent» and
+      // blocked the real invoice.
+      const _st = String(r.status || r.bucket || '').toLowerCase();
+      if (_st === 'void' || _st === 'uncollectible' || _st === 'deleted') return false;
       return true;
     });
     eligible.sort((a, b) => (b.created || 0) - (a.created || 0));

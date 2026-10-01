@@ -388,6 +388,9 @@ else
   FAIL=1
 fi
 echo
+echo "Entry 86 — stamp self-heal never re-stamps a voided invoice:"
+check_gate 86 _fetchUnitInvoicesFromStripe "_st === 'void' \|\| _st === 'uncollectible'" 120
+echo
 echo "Entry 83 — ledger records are removed durably (repo), never by in-memory wipe on move-out / deposit reverse:"
 check_gate 83 markUnitDepositUnpaid "_deleteLedgerRecDurable\(u, 'deposit'\)" 60
 check_gate 83 submitMoveOut "_wipeUnitLedgerDurable\(u\)" 260
