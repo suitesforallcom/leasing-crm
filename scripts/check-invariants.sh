@@ -380,6 +380,14 @@ else
 fi
 
 echo
+echo "Entry 83 — ledger records are removed durably (repo), never by in-memory wipe on move-out / deposit reverse:"
+check_gate 83 markUnitDepositUnpaid "_deleteLedgerRecDurable\(u, 'deposit'\)" 60
+check_gate 83 submitMoveOut "_wipeUnitLedgerDurable\(u\)" 260
+check_gate 83 submitMoveOut "_ledgerArchiveExtras\(" 140
+check_gate 83 moveOutCurrentTenant "_wipeUnitLedgerDurable\(u\)" 160
+check_gate 83 moveOutCurrentTenant "_ledgerArchiveExtras\(" 120
+check_gate 83 _deleteLedgerRecDurable "repo\.deletePayment" 8
+echo
 echo "Mobile cache-busting — versioned module loading:"
 # Статический import без версии Safari на iOS не обновляет никогда (no-store
 # не выселяет уже закэшированный ответ). Оператор дважды сообщал об уже

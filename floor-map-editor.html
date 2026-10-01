@@ -60934,6 +60934,45 @@ function markUnitDepositPaid(unitId, opts) {
   toast(`✓ Deposit ($${deposit.toLocaleString()}) marked paid for Suite ${u.id}`, 'success');
 }
 
+// FIXES_LOG Entry 83 — under syncV2StripPayments the payments COLLECTION is
+// the ledger: `u.payments = {}` / `delete u.payments.x` only touch the
+// in-memory copy and the next hydration brings the records back. Suite 360
+// (2026-10-01): the previous tenants' $650 deposit (2026-04-06) survived
+// their move-out and showed as Alexander Hardman's «Deposit paid»; seven
+// «Reverse deposit PAID stamp» clicks never touched it. Ledger removals go
+// through repo.deletePayment (outbox-durable per-payment delete).
+function _unitBFIds(u) {
+  for (const b of (state.buildings || [])) for (const f of (b.floors || [])) {
+    if ((f.units || []).includes(u)) return { bId: b.id, fId: f.id };
+  }
+  return null;
+}
+function _deleteLedgerRecDurable(u, ym) {
+  const ids = _unitBFIds(u);
+  if (ids && typeof repo !== 'undefined' && repo.deletePayment) {
+    repo.deletePayment(ids.bId, ids.fId, u.id, ym, { unit: u, save: false });
+  } else if (u.payments) {
+    delete u.payments[ym];
+  }
+}
+function _wipeUnitLedgerDurable(u) {
+  for (const ym of Object.keys((u && u.payments) || {})) {
+    try { _deleteLedgerRecDurable(u, ym); } catch (e) { console.warn('[ledger-wipe]', ym, e); }
+  }
+  u.payments = {};
+}
+// Archive fields for a move-out snapshot: the deposit rec and every record
+// _scopePaymentsToLease leaves out (prior leaks, non-month keys) — the
+// durable wipe deletes them from the ledger, so they must live on here.
+function _ledgerArchiveExtras(payments, scoped) {
+  const out = { depositRec: null, ledgerOutsideLease: {} };
+  for (const [k, v] of Object.entries(payments || {})) {
+    if (k === 'deposit') { out.depositRec = JSON.parse(JSON.stringify(v)); continue; }
+    if (!scoped || !(k in scoped)) out.ledgerOutsideLease[k] = JSON.parse(JSON.stringify(v));
+  }
+  return out;
+}
+
 // Reverse — operator clicked the "✓ paid" badge by accident OR the
 // payment bounced and they want to undo. Asks for confirmation since
 // it removes a paid stamp.
@@ -60962,6 +61001,12 @@ function markUnitDepositUnpaid(unitId) {
     if (!u.stripe.depositInvoice.invoiceId) {
       delete u.stripe.depositInvoice;
     }
+  }
+  // Entry 83: the verdict also reads the ledger rec u.payments.deposit —
+  // remove it durably, otherwise the «paid» stamp comes straight back.
+  const _dp = u.payments && u.payments.deposit;
+  if (_dp && (_dp.status === 'paid' || _dp.status === 'free')) {
+    try { _deleteLedgerRecDurable(u, 'deposit'); } catch (e) { console.warn('[markUnitDepositUnpaid:ledger]', e); }
   }
   // Activity-trail — оператор вернул депозит в unpaid (bounced cheque,
   // ошибочная пометка, refund). Пишем outreach + audit, чтобы Unit
@@ -99406,8 +99451,10 @@ function moveOutCurrentTenant(u) {
     // array to figure out whether the move-in deposit cleared.
     depositStatus: (u.stripe?.depositInvoice?.status === 'bounced' || (u.bouncedDeposits || []).length > 0)
                      ? 'bounced'
-                     : (u.stripe?.depositInvoice?.status === 'paid' ? 'paid' : ''),
+                     : ((u.stripe?.depositInvoice?.status === 'paid' || u.payments?.deposit?.status === 'paid') ? 'paid' : ''),
     payments:      _scopePaymentsToLease(u.payments, _moStart, _moEnd),
+    // Entry 83: everything the durable wipe below removes from the ledger.
+    ..._ledgerArchiveExtras(u.payments, _scopePaymentsToLease(u.payments, _moStart, _moEnd)),
     reason:        (reason || '').trim(),
     note:          u.note         || '',
     movedOutBy:    fbSync?.user?.email || fbSync?.uid || 'admin',
@@ -99452,7 +99499,7 @@ function moveOutCurrentTenant(u) {
   u.note = '';
   u.contractRent = 0;
   u.deposit = 0;
-  u.payments = {};
+  _wipeUnitLedgerDurable(u);   // Entry 83: collection docs too, not just the in-memory copy
   u.collectionStatus = '';
   delete u.promise;
   delete u.renewal;           // решение «Ending confirmed» принадлежит ушедшей лизе —
@@ -103114,8 +103161,10 @@ function submitMoveOut() {
       deposit:       +u.deposit     || 0,
       depositStatus: (u.stripe?.depositInvoice?.status === 'bounced' || (u.bouncedDeposits || []).length > 0)
                        ? 'bounced'
-                       : (u.stripe?.depositInvoice?.status === 'paid' ? 'paid' : ''),
+                       : ((u.stripe?.depositInvoice?.status === 'paid' || u.payments?.deposit?.status === 'paid') ? 'paid' : ''),
       payments:      _scopePaymentsToLease(u.payments, u.leaseStart || u.signed || '', moDate),
+      // Entry 83: everything the durable wipe below removes from the ledger.
+      ..._ledgerArchiveExtras(u.payments, _scopePaymentsToLease(u.payments, u.leaseStart || u.signed || '', moDate)),
       reason:        reasonLabel + (notes ? ': ' + notes : ''),
       note:          u.note         || '',
       // Default-flow extras — present only when this move-out is a
@@ -103248,7 +103297,7 @@ function submitMoveOut() {
   u.signed = ''; u.leaseStart = ''; u.until = ''; u.leaseEnd = '';
   u.leaseTerm = ''; u.note = '';
   u.contractRent = 0; u.deposit = 0;
-  u.payments = {};
+  _wipeUnitLedgerDurable(u);   // Entry 83: collection docs too, not just the in-memory copy
   u.collectionStatus = '';
   delete u.promise;
   delete u._onboardingShown;

@@ -60,6 +60,18 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 83. Previous tenant's ledger leaks into the next tenant under strip — «Deposit paid» that was never paid (payments/ledger, 2026-10-01)
+
+**Symptom (Suite 360 Pinnellas, Alexander Hardman, lease from 2026-11-01):** header chip «Deposit paid · Nov»; Ann clicked «Reverse deposit PAID stamp» 7× (2026-09-23…29) and it kept coming back; she invoiced the deposit manually in Stripe (ZAR5KJDC-0001) because the app believed it was paid.
+
+**Root cause:** under `syncV2StripPayments` the payments COLLECTION is the ledger and `u.payments` is re-hydrated from it. (1) Both move-out paths (`submitMoveOut`, `moveOutCurrentTenant`) archived the tenant and then did `u.payments = {}` — in-memory only, so every per-payment doc of the departed tenant stayed and re-attached to the unit (the Vassilious' `deposit` $650 2026-04-06 + 2026-04…08 → shown as Hardman's). `_scopePaymentsToLease` also never archived the `deposit` key. (2) `markUnitDepositUnpaid` only cleared `u.stripe.depositInvoice`; `_isDepositPaid` reads `u.payments.deposit` first → reversal was a no-op («ghost success», §0.2 rule 5).
+
+**Fix (floor-map-editor.html):** `_deleteLedgerRecDurable` / `_wipeUnitLedgerDurable` remove ledger records through `repo.deletePayment` (outbox-durable per-doc delete; explicit-event deletion as SCALING_PLAN_v2 §0 allows). Both move-outs: archive `depositRec` + `ledgerOutsideLease` (`_ledgerArchiveExtras`) and `depositStatus` also honours `u.payments.deposit`, THEN durable wipe. `markUnitDepositUnpaid` durably deletes a paid/free `u.payments.deposit`. NOT changed: onboarding «Tier A» wipe (it has no archive — a durable delete there would destroy the prior tenant's only copy).
+
+**Data (2026-10-01):** Suite 360 — removed `deposit` + 2026-04…08 (archived in tenantHistory[0]; full rec snapshot in audit `payment.ledger-leak-cleanup`); deposit verdict now unpaid. Scan found the same leak on 23 units; prior tenant's PAID DEPOSIT on a current tenant also on **323 (Nareen Thach ← Wilbur Brown Jr $898)** and **337 (Jeffrey Lee ← Mary Vileinor $550)** — left for Tony's decision. 360 still carries 2024-04…2026-03 from a tenant with no tenantHistory archive (not removed — no other copy).
+
+**Invariant:** never clear a unit's ledger with `u.payments = {}` / `delete u.payments[k]` on a money path — go through `repo.deletePayment`, and archive first.
+
 ### 82. Shared FC connection: adopt the other app's Capital One link instead of relink ping-pong (bank feed, 2026-10-01)
 
 **Problem:** Capital One ····5709 is linked twice on the same Stripe account `acct_1S6zlI2nq2bZh3q6`: SuitesForAll (account_holder = Customer «SuitesForAll Operator», `fca_1TblcG…`) and Tony's other app kiwi (account_holder = the account, `fca_1UHTLp…` 2026-09-19, `fca_1UIeYE…` 2026-09-22). SuitesForAll's link went `inactive` on its first refresh after kiwi's 2026-09-19 link — Capital One appears to keep ONE active consent per login across holders, so a SuitesForAll relink would most likely deactivate kiwi's feed (and vice versa).
