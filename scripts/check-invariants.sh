@@ -367,6 +367,15 @@ else
   echo "  ✗ functions/index.js bank-feed lost an Entry 81 guard (inactive short-circuit / watermark / window / dup guard / durable auto-apply)"
   FAIL=1
 fi
+if fn_has "^exports\.disconnectBankAccount = " "preConn\.sharedConnection" 30 \
+   && fn_has "^exports\.adoptBankFcAccount = " "includes\('transactions'\)" 40 \
+   && fn_has "^exports\.adoptBankFcAccount = " "_bankSameAccountKind\(c0, acc\)" 50 \
+   && fn_has "^async function _pullTransactionsForAccount\(" "arr\.indexOf\(\+t\.transacted_at" 140; then
+  echo "  ✓ Entry 82: shared connection never detached at Stripe; adopt guards; exact-match dedupe"
+else
+  echo "  ✗ Entry 82 guard missing (shared-disconnect / adopt guards / exact dedupe)"
+  FAIL=1
+fi
 
 echo
 echo "Mobile cache-busting — versioned module loading:"

@@ -88,6 +88,7 @@ function makeWorld({ conns, accounts, txns }) {
           };
           return clone(a);
         },
+        disconnect: async (id) => { world.disconnectCalls = (world.disconnectCalls || 0) + 1; world.accounts[id].status = 'disconnected'; return {}; },
         list: async ({ account_holder }) => ({
           data: Object.values(world.accounts).filter(a => a._customer === account_holder.customer).map(clone),
           has_more: false,
@@ -116,7 +117,7 @@ function makeWorld({ conns, accounts, txns }) {
       const docs = [...world.docs.entries()]
         .filter(([, d]) => filters.every(f => f.op === 'in' ? f.val.includes(d[f.field]) : d[f.field] === f.val))
         .map(([id, d]) => ({ id, ref: { id, path: 'bankTransactions/' + id }, data: () => clone(d) }));
-      return { empty: !docs.length, size: docs.length, docs };
+      return { empty: !docs.length, size: docs.length, docs, forEach: (fn) => docs.forEach(fn) };
     },
   });
   const db = {
@@ -211,6 +212,7 @@ function makeWorld({ conns, accounts, txns }) {
       world.state = s;
     },
     _matchTransaction: () => null,
+    _isRootAdmin: async (email) => world.rootAdmin !== false && email === 'tony@al-en.com',
     _autoApplyAfterPoll: async () => ({ applied: 0, skipped: 0, candidates: 0 }),
     _findAutoApplyCandidate: (state, txn) => {
       const b = (state.buildings || [])[0], f = b && b.floors[0], u = f && f.units[0];
@@ -255,6 +257,7 @@ function makeWorld({ conns, accounts, txns }) {
     liftFn('_applyBankAcctStatus'),
     liftFn('_auditBankRelinkRequired'),
     liftFn('_bankFeedSinceUnix'),
+    liftFn('_bankDedupeOf'),
     liftFn('_ensureTransactionRefresh'),
     liftFn('_ensureFreshTransactions'),
     liftFn('_pullTransactionsForAccount'),
@@ -264,6 +267,8 @@ function makeWorld({ conns, accounts, txns }) {
     liftExport('syncBankConnections'),
     liftExport('finalizeBankConnection'),
     liftExport('undoAutoAppliedPayment'),
+    liftExport('adoptBankFcAccount'),
+    liftExport('disconnectBankAccount'),
   ].join('\n');
   vm.runInContext(code, ctx);
   // Real _autoApplyAfterPoll, lifted into its own sandbox entry so the
@@ -661,6 +666,80 @@ const cachedTxns = () => ({
     const r4 = await w4.autoApply(FCA);
     eq(w4.paymentsCol.get(key).rec.stripe.invoiceId, 'in_new', 'ledger tx: fresh Stripe-linked rec not overwritten');
     eq(r4.ledgerWriteFailed, 1, 'ledger tx: refused write reported');
+  }
+
+  // ── 11. Adopt the other app's shared FC account (Entry 82) ─────────
+  {
+    const KIWI = 'fca_1UIeYE2nq2bZh3q62ntKHdfX';
+    const mkA = (kiwiOver) => {
+      const conn = incidentConn({ status: 'inactive', needsRelink: true, relinkRequiredSince: '2026-10-01T19:56:34Z',
+        freshThroughUnix: T_FAIL, accountCategory: 'cash', accountSubcategory: 'checking' });
+      const kiwi = { id: KIWI, status: 'active', institution_name: 'Capital One', last4: '5709', category: 'cash', subcategory: 'checking',
+        account_holder: { type: 'account' }, permissions: ['payment_method', 'transactions', 'balances'],
+        transaction_refresh: { id: 'r', status: 'succeeded', last_attempted_at: T_NOW - 3600, next_refresh_available_at: T_NOW + 3600 },
+        ...(kiwiOver || {}) };
+      const w = makeWorld({ conns: [conn], accounts: { [FCA]: inactiveAcct(), [KIWI]: kiwi }, txns: {} });
+      // Stored history under the old account (prod: newest 2026-09-17).
+      for (let i = 0; i < 8; i++) w.docs.set('old_' + i, { id: 'old_' + i, accountId: FCA, amount: 1000 + i, transactedAt: T_NEWEST, matchState: 'unmatched' });
+      w.docs.set('old_pending', { id: 'old_pending', accountId: FCA, amount: 555, transactedAt: T_NEWEST - DAY, status: 'pending', matchState: 'unmatched' });
+      w.docs.set('old_confirmed', { id: 'old_confirmed', accountId: FCA, amount: 220000, transactedAt: T_NEWEST - 3 * DAY, matchState: 'confirmed' });
+      // The same bank movements under the shared account (new ids) + new ones.
+      const kt = [];
+      for (let i = 0; i < 8; i++) kt.push({ id: 'k_old_' + i, transacted_at: T_NEWEST, amount: 1000 + i });
+      kt.push({ id: 'k_pending_posted', transacted_at: T_NEWEST - DAY, amount: 555 });     // same movement, now posted
+      kt.push({ id: 'k_day_before_220000', transacted_at: T_NEWEST - 4 * DAY, amount: 220000 }); // genuine, same amount, other day
+      kt.push({ id: 'k_confirmed_copy', transacted_at: T_NEWEST - 3 * DAY, amount: 220000 });
+      kt.push({ id: 'k_second_1000', transacted_at: T_NEWEST, amount: 1000 });            // a genuinely 2nd deposit
+      for (let d = 13; d >= 0; d--) kt.push({ id: 'k_gap_' + d, transacted_at: T_NOW - d * DAY, amount: 7000 + d });
+      w.txns[KIWI] = kt;
+      return w;
+    };
+    const auth = { auth: { token: { email: 'tony@al-en.com' } } };
+    // Guards.
+    for (const [label, over, req] of [
+      ['inactive target', { status: 'inactive' }, null],
+      ['no transactions permission', { permissions: ['payment_method', 'balances'] }, null],
+      ['different last4', { last4: '1305' }, null],
+      ['different account kind', { subcategory: 'savings' }, null],
+    ]) {
+      const w = mkA(over);
+      let threw = false;
+      try { await w.fns.adoptBankFcAccount({ ...auth, data: { fromFcAccountId: FCA, toFcAccountId: KIWI } }); } catch (e) { threw = true; }
+      ok(threw && w.conn(FCA), `adopt guard: ${label} → refused, record untouched`);
+    }
+    {
+      const w = mkA();
+      w.rootAdmin = false;
+      let threw = false;
+      try { await w.fns.adoptBankFcAccount({ ...auth, data: { fromFcAccountId: FCA, toFcAccountId: KIWI } }); } catch (e) { threw = true; }
+      ok(threw, 'adopt guard: root admin only');
+    }
+    // Happy path.
+    const w = mkA();
+    const r = await w.fns.adoptBankFcAccount({ ...auth, data: { fromFcAccountId: FCA, toFcAccountId: KIWI } });
+    eq(r.adopted, true, 'adopt: ok');
+    const c = w.conn(KIWI);
+    ok(!!c && !w.conn(FCA), 'adopt: record now reads the shared account');
+    eq([c.status, c.needsRelink, c.sharedConnection, c.holderType], ['active', undefined, true, 'account'], 'adopt: active, shared, holder=account');
+    eq([c.freshThroughUnix, c.dedupeAgainstFcId, c.dedupeUntilUnix], [T_FAIL, FCA, T_NEWEST], 'adopt: anchor kept, dedupe horizon = newest stored date');
+    eq(w.audit.filter(a => a.action === 'bank.connection.adopted').length, 1, 'adopt: audited');
+    // First poll on the shared account.
+    w.listCalls.length = 0;
+    const p1 = await w.fns.pollBankTransactions({ data: { stripeFcAccountId: KIWI, manual: false } });
+    const a1 = p1.accounts[0];
+    eq(w.listCalls[0] && w.listCalls[0].transacted_at.gte, T_FAIL - 14 * DAY, 'adopt poll: window from the anchor');
+    eq(a1.dedupSkipped, 10, 'adopt poll: 8 copies + pending→posted + confirmed copy skipped');
+    eq(a1.written, 16, 'adopt poll: gap (14) + genuine 2nd $10.00 + genuine $2,200 on another day written');
+    ok(w.docs.has('k_second_1000') && w.docs.has('k_gap_0') && w.docs.has('k_day_before_220000'),
+      'adopt poll: genuinely new txns stored (same amount on a different day is NOT swallowed)');
+    ok(!w.docs.has('k_old_0') && !w.docs.has('k_confirmed_copy'), 'adopt poll: duplicates not stored');
+    eq(w.docs.get('old_confirmed').matchState, 'confirmed', 'adopt poll: old history and decisions untouched');
+    eq(w.conn(KIWI).status, 'active', 'adopt poll: stays active');
+    // Shared connection: Disconnect here never detaches it at Stripe.
+    await w.fns.disconnectBankAccount({ ...auth, data: { stripeFcAccountId: KIWI } });
+    eq(w.disconnectCalls || 0, 0, 'shared disconnect: Stripe detach NOT called');
+    eq(w.accounts[KIWI].status, 'active', 'shared disconnect: other app keeps its feed');
+    eq(w.conn(KIWI).status, 'disconnected', 'shared disconnect: dropped locally');
   }
 
   console.log(`bank-feed.test: ${passed} passed, ${failed} failed`);

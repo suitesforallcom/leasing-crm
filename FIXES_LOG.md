@@ -60,6 +60,19 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 82. Shared FC connection: adopt the other app's Capital One link instead of relink ping-pong (bank feed, 2026-10-01)
+
+**Problem:** Capital One ····5709 is linked twice on the same Stripe account `acct_1S6zlI2nq2bZh3q6`: SuitesForAll (account_holder = Customer «SuitesForAll Operator», `fca_1TblcG…`) and Tony's other app kiwi (account_holder = the account, `fca_1UHTLp…` 2026-09-19, `fca_1UIeYE…` 2026-09-22). SuitesForAll's link went `inactive` on its first refresh after kiwi's 2026-09-19 link — Capital One appears to keep ONE active consent per login across holders, so a SuitesForAll relink would most likely deactivate kiwi's feed (and vice versa).
+
+**Fix (functions/index.js + floor-map-editor.html):**
+1. `adoptBankFcAccount({fromFcAccountId, toFcAccountId})` — root admin only. Target must be `active` at Stripe, have `transactions` permission, and be the same bank account (institution + last4 + `_bankSameAccountKind`); not already a record. Swaps the record's id, keeps `lastPolledAt` / `freshThroughUnix` anchor / `backfillCompleted`, sets `sharedConnection:true`, `holderType`, `adoptedFromFcId/At/By`, `dedupeAgainstFcId` + `dedupeUntilUnix` (= newest txn stored under the old account). Audit `bank.connection.adopted`.
+2. `_pullTransactionsForAccount({dedupe})`: up to `dedupeUntilUnix`, a new txn with the SAME amount and SAME `transacted_at` as one stored under the old account is skipped (multiset — two identical same-day deposits stay two). Exact on purpose: a ±1-day fuzzy match could swallow a genuine deposit (silent loss); a missed match is only a visible duplicate (`_bankDetectDuplicates`, Entry 30). Dedupe fields auto-clear once the poll window starts after the horizon.
+3. `disconnectBankAccount`: a `sharedConnection` is only dropped locally — never detached at Stripe (that would cut the other app's feed). Client confirm text + card note «🔗 Shared connection».
+
+**Invariant:** one bank account → one FC connection shared by both apps; SuitesForAll never detaches a shared FC account at Stripe; adoption never re-imports history already stored under the previous account (exact amount+date multiset), and never drops a txn that is not an exact copy. Old account's docs stay as canonical history — do NOT run `cleanupOrphanBankTransactions` on `fca_1TblcG…` (it would delete matched history).
+
+**Verification:** `node functions/bank-feed.test.js` (adopt guards ×5, swap/anchor/dedupe fields, first poll: 10 copies skipped, 16 genuine written incl. same-amount-other-day, old decisions untouched, shared disconnect does not call Stripe).
+
 ### 81. Inactive Stripe FC account: silent «successful» polls, sliding watermark, Reconnect → duplicates (bank feed, 2026-10-01)
 
 **Symptom:** красный баннер «Bank sync is 14 days behind. Newest cached transaction: Sep 16, 2026. Stripe Financial Connections may need a refresh.» при `state.bankConnections[0].status === 'active'`, `lastPolledAt` = сегодня, `lastPollWritten: 0`.

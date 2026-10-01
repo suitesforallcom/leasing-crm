@@ -107840,7 +107840,10 @@ async function connectBankAccount() {
 
 async function disconnectBankAccount(fcAccountId) {
   if (!fcAccountId) return;
-  if (!confirm('Disconnect this bank account? Stripe will stop pulling new transactions. Existing matched payments stay on record.')) return;
+  const _shared = ((state && state.bankConnections) || []).some(c => c.stripeFcAccountId === fcAccountId && c.sharedConnection);
+  if (!confirm(_shared
+    ? 'Stop reading this shared bank connection in SuitesForAll? It stays connected at Stripe for the other app. Existing matched payments stay on record.'
+    : 'Disconnect this bank account? Stripe will stop pulling new transactions. Existing matched payments stay on record.')) return;
   setIntStatus('bankFeed', 'info', '⏳ Disconnecting…');
   try {
     const fn = stripeCallable('disconnectBankAccount');
@@ -108501,6 +108504,7 @@ function _renderBankConnections() {
           </div>
         ` : ''}
         ${relinkNote}
+        ${c.sharedConnection ? `<div style="padding-left:28px; font-size:11px; color:var(--muted);">🔗 Shared connection — linked in another app on this Stripe account; SuitesForAll reads the same feed. Disconnect here only stops SuitesForAll from reading it.</div>` : ''}
         ${prepNote}
         ${progressBar}
       </div>

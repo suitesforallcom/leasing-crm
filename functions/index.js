@@ -7732,7 +7732,14 @@ exports.disconnectBankAccount = onCall(
     const stripe = getStripe();
     let detached = false;
     let detachError = null;
-    try {
+    // Entry 82: a shared connection (adopted from another app on this Stripe
+    // account) is only dropped locally — detaching it at Stripe would cut
+    // the other app's bank feed too.
+    const pre = await readWorkspaceState();
+    const preConn = (pre.bankConnections || []).find(x => x.stripeFcAccountId === fcAccountId);
+    if (preConn && preConn.sharedConnection) {
+      detachError = 'shared connection — kept at Stripe (used by another app)';
+    } else try {
       await stripe.financialConnections.accounts.disconnect(fcAccountId);
       detached = true;
     } catch (e) {
@@ -8008,6 +8015,106 @@ exports.syncBankConnections = onCall(
   }
 );
 
+// Entry 82 (2026-10-01): point an existing connection record at an FC
+// account that ANOTHER app on this Stripe account already linked for the
+// same bank account. Capital One keeps one active consent per login: kiwi's
+// link of ····5709 (2026-09-19) revoked SuitesForAll's, and a relink here
+// would revoke kiwi's in turn. One shared FC account serves both apps.
+// Keeps the record's watermark/anchor so the gap is pulled; the overlap with
+// history stored under the old account is de-duplicated on ingestion
+// (_pullTransactionsForAccount `dedupe`). Root admin only.
+exports.adoptBankFcAccount = onCall(
+  {secrets: [STRIPE_SECRET_KEY], timeoutSeconds: 120, memory: '512MiB'},
+  async (req) => {
+    const {email} = await requireEditor(req.auth);
+    if (!await _isRootAdmin(email)) {
+      throw new HttpsError('permission-denied', 'Root admin only');
+    }
+    const fromId = String(req.data?.fromFcAccountId || '');
+    const toId = String(req.data?.toFcAccountId || '');
+    if (!/^fca_/.test(fromId) || !/^fca_/.test(toId) || fromId === toId) {
+      throw new HttpsError('invalid-argument', 'fromFcAccountId and toFcAccountId (different fca_ ids) are required');
+    }
+    const stripe = getStripe();
+    let acc;
+    try {
+      acc = await stripe.financialConnections.accounts.retrieve(toId);
+    } catch (e) {
+      throw new HttpsError('not-found', `Stripe could not retrieve ${toId}: ${e.message || e}`);
+    }
+    if (acc.status !== 'active') {
+      throw new HttpsError('failed-precondition', `${toId} is ${acc.status} at Stripe — only an active account can be adopted`);
+    }
+    if (!(acc.permissions || []).includes('transactions')) {
+      throw new HttpsError('failed-precondition', `${toId} has no "transactions" permission`);
+    }
+    const state = await readWorkspaceState();
+    const conns = state.bankConnections || [];
+    const c0 = conns.find(x => x.stripeFcAccountId === fromId);
+    if (!c0) throw new HttpsError('not-found', `No bank connection record for ${fromId}`);
+    if (conns.some(x => x.stripeFcAccountId === toId)) {
+      throw new HttpsError('already-exists', `${toId} is already a connection here`);
+    }
+    const sameBank = (acc.institution_name || '').toLowerCase() === (c0.institutionName || '').toLowerCase()
+      && (acc.last4 || '') === (c0.accountLast4 || '')
+      && _bankSameAccountKind(c0, acc);
+    if (!sameBank) {
+      throw new HttpsError('failed-precondition',
+        `${toId} (${acc.institution_name} ····${acc.last4} ${acc.subcategory || ''}) is not the same bank account as ${fromId} (${c0.institutionName} ····${c0.accountLast4} ${c0.accountSubcategory || ''})`);
+    }
+    // Dedupe horizon = newest txn already stored under the old account.
+    const oldSnap = await db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`)
+      .where('accountId', '==', fromId).get();
+    let newest = 0;
+    oldSnap.forEach((d) => { const ts = +(d.data() || {}).transactedAt || 0; if (ts > newest) newest = ts; });
+    const nowIso = new Date().toISOString();
+    let adopted = false;
+    await mutateWorkspaceState((s) => {
+      adopted = false;   // txn-retry safety
+      const list = s.bankConnections || [];
+      const c = list.find(x => x.stripeFcAccountId === fromId);
+      if (!c || list.some(x => x.stripeFcAccountId === toId)) return;
+      c.stripeFcAccountId = toId;
+      c.id = 'bc_' + toId;
+      c.status = 'active';
+      delete c.needsRelink;
+      delete c.relinkRequiredSince;
+      delete c.disconnectedAt;
+      c.permissions = acc.permissions || c.permissions || [];
+      c.sharedConnection = true;
+      c.holderType = (acc.account_holder && acc.account_holder.type) || null;
+      c.adoptedFromFcId = fromId;
+      c.adoptedAt = nowIso;
+      c.adoptedBy = email || null;
+      if (newest > 0) {
+        c.dedupeAgainstFcId = fromId;
+        c.dedupeUntilUnix = newest;
+        if (!(+c.freshThroughUnix > 0)) c.freshThroughUnix = newest;
+      }
+      adopted = true;
+    });
+    if (!adopted) throw new HttpsError('aborted', 'Connections changed while adopting — retry');
+    try {
+      await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+        ts: admin.firestore.FieldValue.serverTimestamp(),
+        actor: email || 'unknown',
+        action: 'bank.connection.adopted',
+        source: 'adoptBankFcAccount',
+        fromFcAccountId: fromId,
+        toFcAccountId: toId,
+        holderType: (acc.account_holder && acc.account_holder.type) || null,
+        oldNewestTxnUnix: newest || null,
+        oldTxnDocs: oldSnap.size,
+        note: `Bank connection ${c0.institutionName || ''} ····${c0.accountLast4 || ''} now reads shared FC account ${toId} (was ${fromId}); overlap up to ${newest ? new Date(newest * 1000).toISOString().slice(0, 10) : 'n/a'} de-duplicated on ingestion.`,
+      });
+    } catch (e) {
+      logger.warn(`[bank-feed] adopt audit write failed: ${e.message}`);
+    }
+    logger.info(`[bank-feed] adoptBankFcAccount ${fromId} → ${toId} by ${email}; old docs=${oldSnap.size} newest=${newest}`);
+    return { adopted: true, fromFcAccountId: fromId, toFcAccountId: toId, dedupeUntilUnix: newest || null, oldTxnDocs: oldSnap.size };
+  }
+);
+
 // =========================================================================
 // ===== Bank Feed Phase 2 — transaction polling ===========================
 // Cron + on-demand puller for incoming bank transactions (rent payments,
@@ -8121,6 +8228,12 @@ async function _auditBankRelinkRequired(c, source) {
   } catch (e) {
     logger.warn(`[bank-feed] relink audit write failed: ${e.message}`);
   }
+}
+
+// Entry 82: dedupe spec for an adopted shared connection (see adoptBankFcAccount).
+function _bankDedupeOf(c) {
+  return (c && c.dedupeAgainstFcId && +c.dedupeUntilUnix > 0)
+    ? { fcId: c.dedupeAgainstFcId, untilUnix: +c.dedupeUntilUnix } : null;
 }
 
 // Incremental window lower bound. Anchors at min(lastPolledAt, freshThroughUnix)
@@ -8277,9 +8390,9 @@ async function _ensureFreshTransactions(stripe, fcAccountId, opts = {}) {
 // (UI path, operator is watching the spinner).
 // opts.manual=false → proactively refresh (cooldown-aware) but don't wait;
 // list returns whatever's cached now, next cron tick picks up the fresh data.
-async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, state, manual}) {
+async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, state, manual, dedupe}) {
   const col = db.collection(`workspaces/${WORKSPACE_ID}/bankTransactions`);
-  let written = 0, skipped = 0, scanned = 0, suggested = 0;
+  let written = 0, skipped = 0, scanned = 0, suggested = 0, dedupSkipped = 0;
   let startingAfter = undefined;
   let refreshTriggered = false;
   // Proactive refresh — без этого Stripe FC будет вечно отдавать кэш
@@ -8304,6 +8417,27 @@ async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, stat
     : undefined;
   if (health.accountStatus && health.accountStatus !== 'active' && health.accountStatus !== 'inactive') {
     return { scanned, written, skipped, suggested, ...health, notice };
+  }
+  // Entry 82: an adopted shared connection is a different Stripe object for
+  // the same bank account — its txn ids differ from the ones already stored
+  // under the previous account. Up to the old account's newest stored date,
+  // a new txn with the SAME amount and the SAME transacted_at as a stored one
+  // is that same bank movement: skip it. Multiset matching keeps two identical
+  // same-day deposits as two. Deliberately exact (no ±1 day): a fuzzy match
+  // could swallow a genuine deposit (silent loss), whereas a missed match is
+  // only a visible duplicate that _bankDetectDuplicates flags (Entry 30).
+  let dedupeIdx = null;
+  if (dedupe && dedupe.fcId && +dedupe.untilUnix > 0 && (!sinceUnix || sinceUnix <= +dedupe.untilUnix)) {
+    dedupeIdx = new Map();
+    const oldSnap = await col.where('accountId', '==', dedupe.fcId).get();
+    oldSnap.forEach((d) => {
+      const x = d.data() || {};
+      const ts = +x.transactedAt || 0;
+      if (sinceUnix && ts < sinceUnix) return;
+      const k = String(x.amount);
+      if (!dedupeIdx.has(k)) dedupeIdx.set(k, []);
+      dedupeIdx.get(k).push(ts);
+    });
   }
   for (;;) {
     const params = {
@@ -8350,6 +8484,11 @@ async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, stat
       const ref = col.doc(t.id);
       const existing = existingMap.get(t.id);
       const isNew = !existing;
+      if (isNew && dedupeIdx && (+t.transacted_at || 0) <= +dedupe.untilUnix) {
+        const arr = dedupeIdx.get(String(t.amount));
+        const hit = arr ? arr.indexOf(+t.transacted_at || 0) : -1;
+        if (hit >= 0) { arr.splice(hit, 1); dedupSkipped++; continue; }
+      }
       // Facts — всегда пишем актуальные данные Stripe (идемпотентно).
       const baseDoc = {
         id: t.id,
@@ -8395,7 +8534,7 @@ async function _pullTransactionsForAccount({stripe, fcAccountId, sinceUnix, stat
     if (!page.has_more) break;
     startingAfter = page.data[page.data.length - 1].id;
   }
-  return { scanned, written, skipped, suggested, ...health, ...(notice ? { notice } : {}) };
+  return { scanned, written, skipped, suggested, dedupSkipped, ...health, ...(notice ? { notice } : {}) };
 }
 
 // Update the watermark + call the matcher after a successful pull.
@@ -8458,6 +8597,12 @@ async function _markAccountPolled({fcAccountId, scanned, written, transactionRef
     // Poll succeeded — clear any stale "preparing" hint regardless of
     // whether we got 0 or N transactions back.
     delete c.transactionRefreshStatus;
+    // Entry 82: once the next window starts after the adopted account's
+    // dedupe horizon, the overlap is behind us.
+    if (c.dedupeAgainstFcId && _bankFeedSinceUnix(c, Date.now(), false) > +c.dedupeUntilUnix) {
+      delete c.dedupeAgainstFcId;
+      delete c.dedupeUntilUnix;
+    }
   });
   if (relinkConn) await _auditBankRelinkRequired(relinkConn, source || 'poll');
 }
@@ -8504,6 +8649,7 @@ exports.pollBankTransactions = onCall(
           sinceUnix: since,
           state,                         // enables inline matching
           manual: isManual,              // wait-for-refresh-completion gate
+          dedupe: _bankDedupeOf(c),
         });
         await _markAccountPolled({
           fcAccountId: c.stripeFcAccountId,
@@ -8653,6 +8799,7 @@ exports.bankFeedScheduledPoll = onSchedule(
           sinceUnix,
           state,                         // enables inline matching
           manual: false,                 // cron — refresh без ожидания, list возвращает что есть, следующий tick подберёт
+          dedupe: _bankDedupeOf(c),
         });
         await _markAccountPolled({
           fcAccountId: c.stripeFcAccountId,
