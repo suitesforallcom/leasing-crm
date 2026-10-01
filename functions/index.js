@@ -445,6 +445,15 @@ function _ledgerIsCollectionCF(s) {
 function _recHasStripeInvoice(rec) {
   return !!(rec && (rec.stripeInvoiceId || (rec.stripe && rec.stripe.invoiceId)));
 }
+// …or the month already has a Stripe invoice issued (auto-invoice cron /
+// manual send stamp it on u.stripe before any ledger rec exists). Live case
+// 2026-10-01: Suite 442's October invoice was out (autoSentYm 2026-10) and a
+// nameless $2,200 «Customer Deposit» was auto-applied to October anyway.
+function _monthHasStripeInvoice(u, ym, rec) {
+  if (_recHasStripeInvoice(rec)) return true;
+  const st = (u && u.stripe) || {};
+  return !!ym && (st.lastInvoiceYm === ym || st.autoSentYm === ym);
+}
 
 // Entry 81: auto-apply ledger write. Transactional so a month that another
 // writer (invoice.paid webhook, operator) already recorded as paid is never
@@ -9264,7 +9273,7 @@ async function _autoApplyAfterPoll(fcAccountId) {
     }
     // Entry 81: a month tied to a Stripe invoice (late/open) needs a human —
     // the invoice must be voided or it can still collect a second time.
-    if (_recHasStripeInvoice(existing)) { skipped++; continue; }
+    if (_monthHasStripeInvoice(c.u, c.ym, existing)) { skipped++; continue; }
     applies.push({ docRef: d.ref, txn, candidate: c });
   }
 
@@ -9349,7 +9358,7 @@ async function _autoApplyAfterPoll(fcAccountId) {
           if (existing.bankTxnId === txn.id) alreadyRecorded.add(txn.id);
           continue;
         }
-        if (_recHasStripeInvoice(existing)) continue;
+        if (_monthHasStripeInvoice(u, candidate.ym, existing)) continue;
         if (!u.payments) u.payments = {};
         const amountDollars = (+txn.amount || 0) / 100;
         const transactedDate = txn.transactedAt

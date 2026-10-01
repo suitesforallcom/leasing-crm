@@ -248,6 +248,7 @@ function makeWorld({ conns, accounts, txns }) {
     liftFn('_bankSameAccountKind'),
     liftFn('_ledgerIsCollectionCF'),
     liftFn('_recHasStripeInvoice'),
+    liftFn('_monthHasStripeInvoice'),
     liftFn('_writeAutoApplyLedgerV2'),
     'const DISCOUNT_REC_FIELDS = ' + /const DISCOUNT_REC_FIELDS = (\[[\s\S]*?\]);/.exec(SRC)[1] + ';',
     liftFn('_discountFieldsOf'),
@@ -577,6 +578,14 @@ const cachedTxns = () => ({
     await w7.autoApply(FCA);
     eq(w7.paymentsCol.get(key).rec.stripe.invoiceId, 'in_late', 'stripe-linked: rec untouched');
     eq(w7.docs.get('fctxn_1U1JWT').matchState, 'unmatched', 'stripe-linked: txn not confirmed');
+
+    // 8g2. Invoice already issued for the month (u.stripe stamp, no ledger rec
+    // yet) → skipped. Live case: Suite 442, October, 2026-10-01.
+    const w7b = mk();
+    w7b.state.buildings[0].floors[0].units[0].stripe = { autoSentYm: '2026-09', lastInvoiceYm: '2026-09' };
+    await w7b.autoApply(FCA);
+    ok(!w7b.paymentsCol.has(key), 'invoice issued: month not auto-applied');
+    eq(w7b.docs.get('fctxn_1U1JWT').matchState, 'unmatched', 'invoice issued: txn left for a human');
 
     // 8h. Prior non-paid rec: discount fields kept, prior state in history.
     const w8 = mk();
