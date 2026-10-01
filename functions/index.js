@@ -456,14 +456,26 @@ async function _writeAutoApplyLedgerV2(buildingId, floorId, unitId, ym, rec, ban
     const snap = await tx.get(ref);
     const cur = snap.exists ? ((snap.data() || {}).rec || null) : null;
     if (cur && cur.bankTxnId === bankTxnId) return 'already';
-    if (cur && cur.status === 'paid') return 'conflict';
+    if (cur && (cur.status === 'paid' || cur.status === 'free' || _recHasStripeInvoice(cur))) return 'conflict';
+    // Carry the discount trail + history from the FRESH rec (the snapshot the
+    // caller built from may be seconds old).
+    let out = rec || {};
+    if (cur && Object.keys(cur).length) {
+      const own = { ...out };
+      delete own.history;
+      for (const k of DISCOUNT_REC_FIELDS) delete own[k];
+      const history = Array.isArray(cur.history) ? cur.history.slice() : [];
+      history.push({ ts: new Date().toISOString(), status: cur.status || null, amount: cur.amount || 0, replacedReason: 'bank-auto-apply' });
+      while (history.length > 10) history.shift();
+      out = { ..._discountFieldsOf(cur), ...own, history };
+    }
     tx.set(ref, {
       _schema: 'v2',
       buildingId: buildingId || '',
       floorId: floorId || '',
       unitId,
       ym,
-      rec: rec || {},
+      rec: out,
       _mirroredAt: admin.firestore.FieldValue.serverTimestamp(),
       _mirroredBy: 'cloud-function',
     });
@@ -9228,7 +9240,7 @@ async function _autoApplyAfterPoll(fcAccountId) {
   const recByTxn = new Map();
   for (const b of state.buildings || []) for (const f of b.floors || []) for (const u of f.units || []) {
     for (const [ym, rec] of Object.entries(u.payments || {})) {
-      if (rec && rec.bankTxnId) recByTxn.set(rec.bankTxnId, { b, f, u, ym, rec });
+      if (rec && rec.bankTxnId && rec.status === 'paid') recByTxn.set(rec.bankTxnId, { b, f, u, ym, rec });
     }
   }
   const heals = [];
@@ -9459,31 +9471,57 @@ async function _autoApplyAfterPoll(fcAccountId) {
   }
   const confirmedApplies = applies.filter(a => durable.has(a.txn.id));
 
-  // 4b. Heals — rec already in the ledger for this txn (see step 3).
-  const healed = [];
+  // 4b. Heals — rec already in the ledger for this txn (see step 3). One
+  // transaction per heal, check-only: the txn must still be unmatched/
+  // suggested and not undone, and (ledger mode) the ledger doc must still
+  // hold a PAID rec for this txn — never re-written from our snapshot (an
+  // undo/delete that landed mid-poll must win).
+  const auditCol = db.collection(`workspaces/${WORKSPACE_ID}/audit`);
+  let healed = 0;
   for (const h of heals) {
     const { b, f, u, ym, rec } = h.held;
-    if (ledgerRequired) {
-      try {
-        const r = await _writeAutoApplyLedgerV2(b.id, f.id, u.id, ym, rec, h.txn.id);
-        if (r === 'conflict') continue;
-      } catch (e) {
-        logger.error(`[auto-apply] heal ledger check FAILED ${b.id}/${u.id}/${ym} txn ${h.txn.id}: ${e.message}`);
-        continue;
-      }
+    const auto = !!rec.autoApplied;
+    try {
+      const ok = await db.runTransaction(async (tx) => {
+        const tSnap = await tx.get(h.docRef);
+        const t = tSnap.exists ? (tSnap.data() || {}) : null;
+        if (!t || !['unmatched', 'suggested'].includes(t.matchState) || t.autoApplied === false) return false;
+        if (ledgerRequired) {
+          const lSnap = await tx.get(db.doc(`workspaces/${WORKSPACE_ID}/payments/${b.id}__${u.id}__${ym}`));
+          const cur = lSnap.exists ? ((lSnap.data() || {}).rec || null) : null;
+          if (!cur || cur.bankTxnId !== h.txn.id || cur.status !== 'paid') return false;
+        }
+        tx.set(h.docRef, {
+          matchState: 'confirmed',
+          confirmedAt: admin.firestore.FieldValue.serverTimestamp(),
+          confirmedBy: auto ? 'auto-match' : (rec.confirmedBy || 'ledger-heal'),
+          ...(auto ? { autoApplied: true, autoApplyTargetUnitId: u.id, autoApplyTargetYm: ym } : {}),
+        }, { merge: true });
+        if (auto) {
+          tx.set(auditCol.doc(), {
+            action: 'payment.auto-applied',
+            ts: admin.firestore.FieldValue.serverTimestamp(),
+            actor: 'auto-match',
+            bankTxnId: h.txn.id,
+            bankAmount: h.txn.amount,
+            bankDescription: (h.txn.description || '').slice(0, 200),
+            bankAccountId: h.txn.accountId || null,
+            unitId: u.id, buildingId: b.id, floorId: f.id, ym,
+            deltaCents: rec.autoMatchDeltaCents ?? null,
+            rentCents: rec.autoMatchRentCents ?? null,
+            healed: true,
+          });
+        }
+        return true;
+      });
+      if (ok) healed++;
+    } catch (e) {
+      logger.error(`[auto-apply] heal FAILED txn ${h.txn.id} (${b.id}/${u.id}/${ym}): ${e.message}`);
     }
-    healed.push({ docRef: h.docRef, txn: h.txn, rec,
-      candidate: { u, b, f, ym, delta: rec.autoMatchDeltaCents ?? null, rentCents: rec.autoMatchRentCents ?? null } });
   }
 
   // 5. Batch: mark bank txns confirmed + audit log.
-  const auditCol = db.collection(`workspaces/${WORKSPACE_ID}/audit`);
-  const toConfirm = [
-    ...confirmedApplies.map(a => ({ ...a, auditAction: 'payment.auto-applied', confirmedBy: 'auto-match' })),
-    ...healed.map(h => ({ ...h,
-      auditAction: h.rec.autoApplied ? 'payment.auto-applied' : null,
-      confirmedBy: h.rec.autoApplied ? 'auto-match' : (h.rec.confirmedBy || 'ledger-heal') })),
-  ];
+  const toConfirm = confirmedApplies.map(a => ({ ...a, auditAction: 'payment.auto-applied', confirmedBy: 'auto-match' }));
   const BATCH_SIZE = 100;
   for (let i = 0; i < toConfirm.length; i += BATCH_SIZE) {
     const batch = db.batch();
@@ -9520,11 +9558,11 @@ async function _autoApplyAfterPoll(fcAccountId) {
   }
 
   const ledgerWriteFailed = failed.length;
-  logger.info(`[auto-apply] fcAccountId=${fcAccountId}: applied=${confirmedApplies.length}/${applies.length} healed=${healed.length}/${heals.length} ledgerWriteFailed=${ledgerWriteFailed} skipped=${skipped} past=${deferredCounts['past-month-needs-manual']} future=${deferredCounts['future-month-needs-manual']} methodMismatch=${deferredCounts['method-mismatch']} candidates=${snap.size}`);
+  logger.info(`[auto-apply] fcAccountId=${fcAccountId}: applied=${confirmedApplies.length}/${applies.length} healed=${healed}/${heals.length} ledgerWriteFailed=${ledgerWriteFailed} skipped=${skipped} past=${deferredCounts['past-month-needs-manual']} future=${deferredCounts['future-month-needs-manual']} methodMismatch=${deferredCounts['method-mismatch']} candidates=${snap.size}`);
   return {
     ...emptyResult(),
     applied: confirmedApplies.length,
-    healed: healed.length,
+    healed,
     ledgerWriteFailed,
   };
 }
@@ -9678,36 +9716,40 @@ exports.undoAutoAppliedPayment = onCall(
       delete u.payments[ym];
       undone = true;
     });
-    // Entry 81: remove the ledger rec BEFORE releasing the bank txn, and fail
-    // loudly — a swallowed delete left a paid rec while the txn went back to
-    // suggestions (re-match = double record). Under strip this is the only
-    // copy; a retry of the undo re-hydrates it and tries again.
-    if (undone && ledgerRequired) {
-      try {
-        await _deletePaymentV2(buildingId, unitId, ym);
-      } catch (e) {
-        logger.error(`[mirror-v2:undo] ${buildingId}/${unitId}/${ym}: ${e.message}`);
-        throw new HttpsError('unavailable', 'Could not remove the payment from the ledger — nothing was undone. Try again.');
+    // Entry 81: the ledger delete, the bank-txn release and the audit row are
+    // ONE atomic batch. Separately, a failure between them left either a paid
+    // rec with a released txn (re-match = double record) or a confirmed txn
+    // with no rec that a retry could no longer find. On failure nothing has
+    // changed in the ledger and the operator can simply retry.
+    if (undone && (ledgerRequired || bankTxnId)) {
+      const batch = db.batch();
+      if (ledgerRequired) {
+        batch.delete(db.doc(`workspaces/${WORKSPACE_ID}/payments/${buildingId}__${unitId}__${ym}`));
       }
-    }
-    if (undone && bankTxnId) {
-      // Bank txn → suggested (operator может re-match вручную).
-      const txnRef = db.doc(`workspaces/${WORKSPACE_ID}/bankTransactions/${bankTxnId}`);
-      await txnRef.set({
-        matchState: 'suggested',
-        confirmedAt: null,
-        confirmedBy: null,
-        autoApplied: false,
-      }, { merge: true });
-      // Audit.
-      await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
-        action: 'payment.auto-applied.undo',
-        ts: admin.firestore.FieldValue.serverTimestamp(),
-        actor: email,
-        actorRole: role,
-        bankTxnId,
-        unitId, buildingId, floorId, ym,
-      });
+      if (bankTxnId) {
+        // Bank txn → suggested (operator может re-match вручную); autoApplied:false
+        // keeps auto-apply from re-booking it.
+        batch.set(db.doc(`workspaces/${WORKSPACE_ID}/bankTransactions/${bankTxnId}`), {
+          matchState: 'suggested',
+          confirmedAt: null,
+          confirmedBy: null,
+          autoApplied: false,
+        }, { merge: true });
+        batch.set(db.collection(`workspaces/${WORKSPACE_ID}/audit`).doc(), {
+          action: 'payment.auto-applied.undo',
+          ts: admin.firestore.FieldValue.serverTimestamp(),
+          actor: email,
+          actorRole: role,
+          bankTxnId,
+          unitId, buildingId, floorId, ym,
+        });
+      }
+      try {
+        await batch.commit();
+      } catch (e) {
+        logger.error(`[undo-auto-apply] ${buildingId}/${unitId}/${ym}: ${e.message}`);
+        throw new HttpsError('unavailable', 'Could not undo — nothing was changed in the ledger. Try again.');
+      }
     }
     return { undone, bankTxnId };
   }

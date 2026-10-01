@@ -132,26 +132,43 @@ function makeWorld({ conns, accounts, txns }) {
     },
     runTransaction: async (fn) => {
       if (world.failPaymentWrites) throw new Error('simulated ledger write failure');
+      if (world.beforeTx) { const f = world.beforeTx; world.beforeTx = null; await f(); }
+      const isLedger = (ref) => String(ref.path).includes('/payments/');
+      const isAudit = (ref) => String(ref.path).includes('/audit/');
+      const writes = [];
       const tx = {
         get: async (ref) => {
-          if (world.injectConflictKey && ref.id === world.injectConflictKey) {
-            world.paymentsCol.set(ref.id, { ym: ref.id.split('__')[2], rec: { status: 'paid', amount: 2250, source: 'stripe', stripe: { invoiceId: 'in_race' } } });
-            world.injectConflictKey = null;
+          if (isLedger(ref)) {
+            if (world.injectConflictKey && ref.id === world.injectConflictKey) {
+              world.paymentsCol.set(ref.id, { ym: ref.id.split('__')[2], rec: { status: 'paid', amount: 2250, source: 'stripe', stripe: { invoiceId: 'in_race' } } });
+              world.injectConflictKey = null;
+            }
+            const d = world.paymentsCol.get(ref.id);
+            return { exists: !!d, data: () => clone(d) };
           }
-          const d = world.paymentsCol.get(ref.id);
+          const d = world.docs.get(ref.id);
           return { exists: !!d, data: () => clone(d) };
         },
-        set: (ref, payload) => { world.paymentsCol.set(ref.id, clone(payload)); },
+        set: (ref, payload, opts) => { writes.push({ ref, payload: clone(payload), opts }); },
       };
-      return fn(tx);
+      const out = await fn(tx);
+      for (const w of writes) {
+        if (isLedger(w.ref)) world.paymentsCol.set(w.ref.id, w.payload);
+        else if (isAudit(w.ref)) world.audit.push(w.payload);
+        else world.docs.set(w.ref.id, { ...(w.opts && w.opts.merge ? (world.docs.get(w.ref.id) || {}) : {}), ...w.payload });
+      }
+      return out;
     },
     getAll: async (...refs) => refs.map(r => ({ exists: world.docs.has(r.id), data: () => world.docs.get(r.id) })),
     batch: () => {
       const ops = [];
       return {
         set: (ref, data, opts) => ops.push({ ref, data, opts }),
+        delete: (ref) => ops.push({ ref, del: true }),
         commit: async () => {
+          if (world.failBatches) throw new Error('simulated batch failure');
           for (const o of ops) {
+            if (o.del) { if (String(o.ref.path).includes('/payments/')) world.paymentsCol.delete(o.ref.id); else world.docs.delete(o.ref.id); continue; }
             if (String(o.ref.path).includes('/audit/')) { world.audit.push(o.data); continue; }
             world.docs.set(o.ref.id, { ...(world.docs.get(o.ref.id) || {}), ...o.data });
           }
@@ -583,17 +600,58 @@ const cachedTxns = () => ({
     };
     const req = { auth: {}, data: { buildingId: 'b1', floorId: 'f1', unitId: '106', ym: '2026-09' } };
     const w = mkU();
-    w.failPaymentWrites = true;
+    w.failBatches = true;
     let threw = false;
     try { await w.fns.undoAutoAppliedPayment(req); } catch (e) { threw = true; }
     ok(threw, 'undo: ledger delete failure surfaces as an error');
     eq(w.docs.get('fctxn_U').matchState, 'confirmed', 'undo failure: txn NOT released (ledger and txn stay consistent)');
     ok(w.paymentsCol.has('b1__106__2026-09'), 'undo failure: ledger rec still there');
-    w.failPaymentWrites = false;
+    eq(w.audit.filter(a => a.action === 'payment.auto-applied.undo').length, 0, 'undo failure: no undo audit');
+    w.failBatches = false;
     const r = await w.fns.undoAutoAppliedPayment(req);
     eq(r.undone, true, 'undo retry: undone');
     ok(!w.paymentsCol.has('b1__106__2026-09'), 'undo retry: ledger rec removed');
     eq([w.docs.get('fctxn_U').matchState, w.docs.get('fctxn_U').autoApplied], ['suggested', false], 'undo retry: txn back to suggestions, flagged undone');
+    eq(w.audit.filter(a => a.action === 'payment.auto-applied.undo').length, 1, 'undo retry: one undo audit');
+  }
+
+  // ── 10. Heal races (hardening verify) ──────────────────────────────
+  {
+    const key = 'b1778422024964__106__2026-09';
+    const mkH = (rec) => {
+      const w = makeWorld({ conns: [], accounts: {}, txns: {} });
+      w.strip = true;
+      w.state.settings = { syncV2: true, syncBuildingsStrip: true };
+      w.state.buildings = [{ id: 'b1778422024964', floors: [{ id: 'f1', units: [{ id: '106', outreach: [] }] }] }];
+      w.docs.set('fctxn_H', { id: 'fctxn_H', accountId: FCA, amount: 1, description: 'X', transactedAt: T_NEWEST, matchState: 'unmatched' });
+      w.paymentsCol.set(key, { ym: '2026-09', rec });
+      return w;
+    };
+    // Non-paid rec referencing the txn → no heal.
+    const w1 = mkH({ status: 'late', amount: 2250, bankTxnId: 'fctxn_H', autoApplied: true });
+    await w1.autoApply(FCA);
+    eq(w1.docs.get('fctxn_H').matchState, 'unmatched', 'heal: non-paid rec does not confirm the txn');
+    // Ledger doc deleted mid-poll (undo/delete raced) → not re-written, not confirmed.
+    const w2 = mkH({ status: 'paid', amount: 2250, bankTxnId: 'fctxn_H', autoApplied: true });
+    w2.beforeTx = async () => { w2.paymentsCol.delete(key); };
+    await w2.autoApply(FCA);
+    ok(!w2.paymentsCol.has(key), 'heal race: deleted rec NOT resurrected from the snapshot');
+    eq(w2.docs.get('fctxn_H').matchState, 'unmatched', 'heal race: txn not confirmed');
+    // Txn undone mid-poll (autoApplied:false lands before the heal tx) → not confirmed.
+    const w3 = mkH({ status: 'paid', amount: 2250, bankTxnId: 'fctxn_H', autoApplied: true });
+    w3.beforeTx = async () => { Object.assign(w3.docs.get('fctxn_H'), { matchState: 'suggested', autoApplied: false }); };
+    await w3.autoApply(FCA);
+    eq([w3.docs.get('fctxn_H').matchState, w3.docs.get('fctxn_H').autoApplied], ['suggested', false], 'heal race: undo wins');
+    // Ledger tx: a fresh Stripe-linked rec written between peek and write → conflict.
+    const w4 = makeWorld({ conns: [], accounts: {}, txns: {} });
+    w4.strip = true;
+    w4.state.settings = { syncV2: true, syncBuildingsStrip: true };
+    w4.state.buildings = [{ id: 'b1778422024964', floors: [{ id: 'f1', units: [{ id: '106', outreach: [] }] }] }];
+    w4.docs.set('fctxn_1U1JWT', { id: 'fctxn_1U1JWT', accountId: FCA, amount: 225000, description: 'Customer Deposit', transactedAt: T_NEWEST, matchState: 'unmatched' });
+    w4.beforeTx = async () => { w4.paymentsCol.set(key, { ym: '2026-09', rec: { status: 'late', amount: 0, stripe: { invoiceId: 'in_new' } } }); };
+    const r4 = await w4.autoApply(FCA);
+    eq(w4.paymentsCol.get(key).rec.stripe.invoiceId, 'in_new', 'ledger tx: fresh Stripe-linked rec not overwritten');
+    eq(r4.ledgerWriteFailed, 1, 'ledger tx: refused write reported');
   }
 
   console.log(`bank-feed.test: ${passed} passed, ${failed} failed`);
