@@ -360,7 +360,8 @@ if grep -qE "^function _bankFeedSinceUnix\(" "$FN_JS" \
    && fn_has "^async function _autoApplyAfterPoll\(" "_writeAutoApplyLedgerV2\(p\.b, p\.f, p\.u, p\.ym, p\.rec, p\.txnId\)" 400 \
    && fn_has "^async function _autoApplyAfterPoll\(" "toConfirm\.slice" 400 \
    && fn_has "^async function _autoApplyAfterPoll\(" "txn\.autoApplied === false" 60 \
-   && fn_has "^async function _autoApplyAfterPoll\(" "ledgerRequired = _ledgerIsCollectionCF\(s\)" 400; then
+   && fn_has "^async function _autoApplyAfterPoll\(" "ledgerRequired = _ledgerIsCollectionCF\(s\)" 400 \
+   && fn_has "^async function _autoApplyAfterPoll\(" "_monthHasStripeInvoice\(c\.u, c\.ym, existing\)" 80; then
   echo "  ✓ functions/index.js bank-feed: inactive short-circuit, frozen watermark, anchored window, ghost/dup guards, durable auto-apply"
 else
   echo "  ✗ functions/index.js bank-feed lost an Entry 81 guard (inactive short-circuit / watermark / window / dup guard / durable auto-apply)"
