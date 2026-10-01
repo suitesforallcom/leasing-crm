@@ -379,6 +379,14 @@ else
   FAIL=1
 fi
 
+if fn_has "^exports\.attachStripeInvoiceToUnit = " "custEmail !== tenantEmail" 60 \
+   && fn_has "^exports\.attachStripeInvoiceToUnit = " "inv\.status !== 'open' && inv\.status !== 'draft'" 40 \
+   && fn_has "^exports\.attachStripeInvoiceToUnit = " "_isRootAdmin\(email\)" 8; then
+  echo "  ✓ Entry 84: attachStripeInvoiceToUnit guards (root admin, open/draft only, tenant-email match)"
+else
+  echo "  ✗ Entry 84 guard missing (attachStripeInvoiceToUnit)"
+  FAIL=1
+fi
 echo
 echo "Entry 83 — ledger records are removed durably (repo), never by in-memory wipe on move-out / deposit reverse:"
 check_gate 83 markUnitDepositUnpaid "_deleteLedgerRecDurable\(u, 'deposit'\)" 60

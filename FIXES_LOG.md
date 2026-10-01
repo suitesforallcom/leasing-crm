@@ -60,6 +60,16 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 84. Hand-made Stripe invoices are invisible to the app and dead-lettered when paid — `attachStripeInvoiceToUnit` (Stripe/invoices, 2026-10-01)
+
+**Problem:** an invoice created directly in the Stripe Dashboard has no SuitesForAll metadata → `listStripeInvoices` never shows it and `handleInvoicePaid` dead-letters it (`not-ours-source` / `missing-metadata`; an unknown customer is rejected as a possible hijack). Live: Suite 360's deposit **ZAR5KJDC-0001** ($500, Alexander Hardman) was sent by hand because the app wrongly showed the deposit as paid (Entry 83); Tony chose to keep it rather than re-issue.
+
+**Fix:** root-admin callable `attachStripeInvoiceToUnit({invoiceNumber|invoiceId, buildingId, floorId, unitId, purpose:'deposit'|'rent', ym?})`. Refuses unless the invoice is open/draft, not tagged by another app, not attached elsewhere, its customer's email == the unit's tenant email, the customer is not another workspace's, and (deposit) the amount == unit deposit. Then: invoice metadata `source:'suitesforall', workspaceId, buildingId, floorId, unitId, suite, purpose[, ym]`; customer metadata `workspaceId` (trusted by the webhook's last-chance check); for deposit, unit stamp `u.stripe.depositInvoice = {invoiceId, number, amount, status:'open'}` (webhook matches it by id → flips to paid). Audit `stripe.invoice.attached`.
+
+**Invariant:** never tag an invoice/customer that is not provably this unit's tenant's own; never attach a paid invoice (the webhook won't fire again — record manually).
+
+**Verification:** `node functions/bank-feed.test.js` §12 — 6 refusal guards (nothing written), happy path metadata/customer/stamp/audit.
+
 ### 83. Previous tenant's ledger leaks into the next tenant under strip — «Deposit paid» that was never paid (payments/ledger, 2026-10-01)
 
 **Symptom (Suite 360 Pinnellas, Alexander Hardman, lease from 2026-11-01):** header chip «Deposit paid · Nov»; Ann clicked «Reverse deposit PAID stamp» 7× (2026-09-23…29) and it kept coming back; she invoiced the deposit manually in Stripe (ZAR5KJDC-0001) because the app believed it was paid.

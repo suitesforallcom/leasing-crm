@@ -8031,6 +8031,112 @@ exports.syncBankConnections = onCall(
   }
 );
 
+// Entry 84 (2026-10-01): attach an invoice created by hand in the Stripe
+// Dashboard (no SuitesForAll metadata) to a unit, so the app shows it and
+// the invoice.paid webhook records it. Without this it is invisible to
+// listStripeInvoices and dead-lettered as 'not-ours-source' when paid.
+// Live case: Suite 360's deposit ZAR5KJDC-0001 ($500, Alexander Hardman),
+// sent manually because the app wrongly showed the deposit as paid
+// (Entry 83). Root admin only; refuses anything that is not clearly the
+// unit's tenant's own open invoice.
+exports.attachStripeInvoiceToUnit = onCall(
+  {secrets: [STRIPE_SECRET_KEY], timeoutSeconds: 60},
+  async (req) => {
+    const {email} = await requireEditor(req.auth);
+    if (!await _isRootAdmin(email)) {
+      throw new HttpsError('permission-denied', 'Root admin only');
+    }
+    const d = req.data || {};
+    const buildingId = String(d.buildingId || ''), floorId = String(d.floorId || ''), unitId = String(d.unitId || '');
+    const purpose = String(d.purpose || '');
+    const ym = d.ym ? String(d.ym) : null;
+    if (!buildingId || !floorId || !unitId) throw new HttpsError('invalid-argument', 'buildingId, floorId, unitId required');
+    if (purpose !== 'deposit' && purpose !== 'rent') throw new HttpsError('invalid-argument', 'purpose must be deposit or rent');
+    if (purpose === 'rent' && !/^\d{4}-\d{2}$/.test(ym || '')) throw new HttpsError('invalid-argument', 'rent needs ym (YYYY-MM)');
+    const stripe = getStripe();
+    let inv;
+    if (d.invoiceId) {
+      inv = await stripe.invoices.retrieve(String(d.invoiceId));
+    } else {
+      const num = String(d.invoiceNumber || '').replace(/["\\]/g, '');
+      if (!num) throw new HttpsError('invalid-argument', 'invoiceId or invoiceNumber required');
+      const r = await stripe.invoices.search({ query: `number:"${num}"`, limit: 2 });
+      if (r.data.length !== 1) throw new HttpsError('not-found', `${r.data.length} invoices with number ${num}`);
+      inv = r.data[0];
+    }
+    if (inv.status !== 'open' && inv.status !== 'draft') {
+      throw new HttpsError('failed-precondition', `${inv.number || inv.id} is ${inv.status} — only an open/draft invoice can be attached (a paid one will not fire the webhook again; record it manually)`);
+    }
+    const meta = inv.metadata || {};
+    if (meta.source && meta.source !== 'suitesforall' && meta.source !== 'auto') {
+      throw new HttpsError('failed-precondition', `${inv.number} belongs to another app (source=${meta.source})`);
+    }
+    if (meta.unitId && (meta.unitId !== unitId || (meta.buildingId && meta.buildingId !== buildingId))) {
+      throw new HttpsError('failed-precondition', `${inv.number} is already attached to ${meta.buildingId}/${meta.unitId}`);
+    }
+    const state = await readWorkspaceState();
+    const found = findUnit(state, {buildingId, floorId, unitId});
+    if (!found) throw new HttpsError('not-found', `Unit ${buildingId}/${unitId} not found`);
+    const u = found.unit;
+    const tenantEmail = String(u.email || '').toLowerCase().trim();
+    const customerId = typeof inv.customer === 'string' ? inv.customer : (inv.customer && inv.customer.id);
+    if (!customerId) throw new HttpsError('failed-precondition', 'Invoice has no customer');
+    const cust = await stripe.customers.retrieve(customerId);
+    const custEmail = String((cust && cust.email) || inv.customer_email || '').toLowerCase().trim();
+    if (!tenantEmail || custEmail !== tenantEmail) {
+      throw new HttpsError('failed-precondition', `Invoice customer email "${custEmail}" is not the unit's tenant email "${tenantEmail}"`);
+    }
+    const custWs = cust.metadata && cust.metadata.workspaceId;
+    if (custWs && custWs !== WORKSPACE_ID) {
+      throw new HttpsError('failed-precondition', `Customer ${customerId} belongs to workspace ${custWs}`);
+    }
+    if (purpose === 'deposit' && +u.deposit > 0 && Math.round(+u.deposit * 100) !== inv.amount_due) {
+      throw new HttpsError('failed-precondition', `Invoice amount $${inv.amount_due / 100} ≠ unit deposit $${u.deposit}`);
+    }
+    const nowIso = new Date().toISOString();
+    await stripe.invoices.update(inv.id, {
+      metadata: {
+        ...meta,
+        workspaceId: WORKSPACE_ID, source: 'suitesforall',
+        buildingId, floorId, unitId, suite: unitId, purpose,
+        ...(ym ? { ym, billingMonth: ym } : {}),
+        attachedBy: email || 'admin', attachedAt: nowIso,
+      },
+    });
+    if (!custWs) {
+      await stripe.customers.update(customerId, {
+        metadata: { ...(cust.metadata || {}), workspaceId: WORKSPACE_ID, unitId, buildingId,
+          ...((cust.metadata && cust.metadata.source) ? {} : { source: 'suitesforall' }) },
+      });
+    }
+    if (purpose === 'deposit') {
+      await mutateWorkspaceState((s) => {
+        const f = findUnit(s, {buildingId, floorId, unitId});
+        if (!f) return;
+        const uu = f.unit;
+        uu.stripe = uu.stripe || {};
+        const prev = uu.stripe.depositInvoice || {};
+        uu.stripe.depositInvoice = {
+          ...prev,
+          invoiceId: inv.id, number: inv.number || null, amount: inv.amount_due / 100,
+          status: 'open', hostedInvoiceUrl: inv.hosted_invoice_url || null, attachedAt: nowIso,
+        };
+        delete uu.stripe.depositInvoice.paidAt;
+      });
+    }
+    try {
+      await db.collection(`workspaces/${WORKSPACE_ID}/audit`).add({
+        ts: admin.firestore.FieldValue.serverTimestamp(),
+        actor: email || 'unknown', action: 'stripe.invoice.attached', source: 'attachStripeInvoiceToUnit',
+        invoiceId: inv.id, invoiceNumber: inv.number || null, customerId, unitId, buildingId, floorId, purpose, ym,
+        amount: inv.amount_due / 100, customerTagged: !custWs,
+        note: `Hand-made Stripe invoice ${inv.number || inv.id} ($${inv.amount_due / 100}) attached to ${buildingId}/${unitId} as ${purpose}${ym ? ' ' + ym : ''}`,
+      });
+    } catch (e) { logger.warn(`[attach-invoice] audit failed: ${e.message}`); }
+    return { invoiceId: inv.id, number: inv.number, customerId, amount: inv.amount_due / 100, status: inv.status, customerTagged: !custWs };
+  }
+);
+
 // Entry 82 (2026-10-01): point an existing connection record at an FC
 // account that ANOTHER app on this Stripe account already linked for the
 // same bank account. Capital One keeps one active consent per login: kiwi's

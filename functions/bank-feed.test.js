@@ -272,6 +272,8 @@ function makeWorld({ conns, accounts, txns }) {
     liftExport('finalizeBankConnection'),
     liftExport('undoAutoAppliedPayment'),
     liftExport('adoptBankFcAccount'),
+    liftExport('attachStripeInvoiceToUnit'),
+    liftFn('findUnit'),
     liftExport('disconnectBankAccount'),
   ].join('\n');
   vm.runInContext(code, ctx);
@@ -771,6 +773,51 @@ const cachedTxns = () => ({
     const w = makeWorld({ conns: [incidentConn({ status: 'active' })], accounts: { [FCA]: { ...inactiveAcct(), status: 'active', account_holder: { type: 'customer' } } }, txns: {} });
     await w.fns.disconnectBankAccount({ auth: { token: { email: 'tony@al-en.com' } }, data: { stripeFcAccountId: FCA } });
     eq(w.disconnectCalls || 0, 1, 'own disconnect: detached at Stripe');
+  }
+
+  // ── 12. Attach a hand-made Stripe invoice to a unit (Entry 84) ─────
+  {
+    const mkI = (invOver, custOver, unitOver) => {
+      const w = makeWorld({ conns: [], accounts: {}, txns: {} });
+      w.state.buildings = [{ id: 'b1', floors: [{ id: 'f1-3', units: [{ id: '360', tenant: 'Alexander Hardman', email: 'alexanderjhardman@gmail.com', deposit: 500, stripe: { customerId: 'cus_OLD' }, ...(unitOver || {}) }] }] }];
+      const inv = { id: 'in_ZAR', number: 'ZAR5KJDC-0001', status: 'open', amount_due: 50000, customer: 'cus_ALEX', metadata: {}, hosted_invoice_url: 'https://invoice.stripe.com/i/x', ...(invOver || {}) };
+      const cust = { id: 'cus_ALEX', email: 'alexanderjhardman@gmail.com', metadata: {}, ...(custOver || {}) };
+      w.invUpdates = []; w.custUpdates = [];
+      const st = w.ctx.getStripe();
+      st.invoices = {
+        search: async ({ query }) => ({ data: query.includes(inv.number) ? [clone(inv)] : [] }),
+        retrieve: async (id) => clone(inv),
+        update: async (id, p) => { w.invUpdates.push(p); Object.assign(inv, p); return clone(inv); },
+      };
+      st.customers = {
+        retrieve: async () => clone(cust),
+        update: async (id, p) => { w.custUpdates.push(p); Object.assign(cust, p); return clone(cust); },
+      };
+      return w;
+    };
+    const req = (over) => ({ auth: { token: { email: 'tony@al-en.com' } }, data: { invoiceNumber: 'ZAR5KJDC-0001', buildingId: 'b1', floorId: 'f1-3', unitId: '360', purpose: 'deposit', ...(over || {}) } });
+    for (const [label, invO, custO, unitO] of [
+      ['already paid', { status: 'paid' }],
+      ['another app (source=kiwi)', { metadata: { source: 'kiwi' } }],
+      ['attached elsewhere', { metadata: { unitId: '323', buildingId: 'b1' } }],
+      ['customer email ≠ tenant email', null, { email: 'someone@else.com' }],
+      ['amount ≠ deposit', { amount_due: 65000 }],
+      ['customer of another workspace', null, { metadata: { workspaceId: 'other' } }],
+    ]) {
+      const w = mkI(invO, custO, unitO);
+      let threw = false;
+      try { await w.fns.attachStripeInvoiceToUnit(req()); } catch (e) { threw = true; }
+      ok(threw && w.invUpdates.length === 0 && w.custUpdates.length === 0, `attach guard: ${label} → refused, nothing written`);
+    }
+    const w = mkI();
+    const r = await w.fns.attachStripeInvoiceToUnit(req());
+    eq([r.invoiceId, r.customerTagged], ['in_ZAR', true], 'attach: ok');
+    const m = w.invUpdates[0].metadata;
+    eq([m.source, m.workspaceId, m.buildingId, m.floorId, m.unitId, m.purpose], ['suitesforall', 'default', 'b1', 'f1-3', '360', 'deposit'], 'attach: invoice carries the routing metadata the webhook needs');
+    eq(w.custUpdates[0].metadata.workspaceId, 'default', 'attach: customer becomes trusted for this workspace');
+    const di = w.state.buildings[0].floors[0].units[0].stripe.depositInvoice;
+    eq([di.invoiceId, di.status, di.amount, di.number], ['in_ZAR', 'open', 500, 'ZAR5KJDC-0001'], 'attach: unit deposit stamp → open (webhook matches it by id)');
+    eq(w.audit.filter(a => a.action === 'stripe.invoice.attached').length, 1, 'attach: audited');
   }
 
   console.log(`bank-feed.test: ${passed} passed, ${failed} failed`);
