@@ -394,6 +394,20 @@ else
   FAIL=1
 fi
 echo
+echo "Entry 88 — suite groups resolve members inside ONE floor, never by bare suite number across buildings:"
+check_gate 88 _groupCreate "scopeFloor\.units\.filter" 40
+if grep -A 40 -E "^function _groupCreate\(" "$HTML" | grep -qE "unitIds\.includes\(u\.id\)"; then
+  echo "  ✗ Entry 88: _groupCreate scans the whole portfolio by bare suite id again"
+  FAIL=1
+fi
+if grep -qE "_groupCreate\(draft\.ids, tenantData, \{ buildingId: draft\.buildingId, floorId: draft\.floorId \}\)" "$HTML" \
+   && grep -qE "_groupCreate\(offices\.map\(u => u\.id\), td, \{ keepStatus: !src, floor: f \}\)" "$HTML"; then
+  echo "  ✓ Entry 88: both _groupCreate callers pass a floor scope"
+else
+  echo "  ✗ Entry 88: a _groupCreate caller lost its floor scope"
+  FAIL=1
+fi
+echo
 echo "Entry 86 — stamp self-heal never re-stamps a voided invoice:"
 check_gate 86 _fetchUnitInvoicesFromStripe "_st === 'void' \|\| _st === 'uncollectible'" 120
 echo

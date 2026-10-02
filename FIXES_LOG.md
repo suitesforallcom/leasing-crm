@@ -60,6 +60,21 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 88. Suite group swallowed same-numbered suites from OTHER buildings — Life Matters October invoice never went out (groups/billing, 2026-10-02)
+
+**Symptom:** Life Matters Counseling Center (Tech Data, Suite 104, lease $2,981.25/mo from 2026-09-01) got no October invoice — neither from the cron (send day 2026-09-21) nor from the New Invoice modal (tenant field empty; every Life Matters row refused with «no rent set» / «no email»).
+
+**Root cause:** `_groupCreate` collected members with `unitIds.includes(u.id)` over EVERY building. Suite numbers repeat across buildings (294 of 675). On 2026-08-24 grouping Tech Data 104 + 1041–1047 also captured Bay Vista Dr/104 (vacant office) and 4355 Central Ave/104 (vacant apartment = the 2026-08-15 NEW-59447 rehearsal unit). Largest-sqft rule made 4355/104 (760 ft²) the head → all rent, the Sep payment and the deposit landed there; its email was empty and its `stripe.customerId` was the bank-feed operator customer (`cus_UaxWKQQTmmtXKK`, tony@al-en.com). Cron bills only the head and skipped it silently at the email gate (`functions/index.js` ~5153; no catch-up); the modal does not resolve a member to its head, so no row could be selected. The modal's own preview showed 8 suites while 10 were written.
+
+**Fix:** `_groupCreate(unitIds, tenantData, opts)` resolves members ONLY inside one floor — `opts.floor` or `opts.buildingId+opts.floorId` — and refuses without a scope or when any id is missing on that floor. Both callers pass their scope: `saveGroupAssign` (draft now carries `buildingId/floorId`) and `_floorFullLeaseEnable` (`floor: f`). Data repaired the same day by admin data-fix (group dissolved; Tech Data/104 is the single lease unit; 1041–1047 → `parentId:'104'` sub-rooms; Bay Vista/104 and 4355/104 restored to their 2026-08-24 vacant listings; Sep payment + deposit moved to Tech Data/104).
+
+**Invariant:** no group/member lookup may resolve units by bare suite number across buildings — same class as `audit_log_reconcile` (07c6d76) and the cron idempotency key without building id (Bay Vista 204 vs Pinellas 204, still open, functions).
+
+- **Status:** active
+- **Regression test:** `scripts/check-invariants.sh` Entry 88 gates (scope filter present, portfolio scan absent, both callers scoped)
+- **Related PR / issue:** none
+- **Still open (not in this fix):** New Invoice modal still does not jump from a group member to the lease head; `stripeCreateInvoice` head redirect swaps only `unitId`; cron skips a head with no email/customer silently and has no catch-up; cron idempotency key lacks building id.
+
 ### 87. HOTFIX: server building writes jump `_savedRev` by +2 — a stale tab can no longer erase them (sync, 2026-10-01)
 
 **Problem (reproduced live):** the server mirror wrote building docs at `curRev+1`; a tab that had not yet received that write stamped its own whole-building save `appliedRev+1` = the SAME number, and `firestore.rules` (`>=`) accepted it → the server change was erased silently (Suite 442 `depositInvoice` 2026-10-01; void stamps 2026-09-21). Analysis + full design: session 2026-10-01 workflow `clobber-root-cause` (three-way merge on both writers + strict rule = the real fix, ~4–5 days; Tony chose hotfix only for now).

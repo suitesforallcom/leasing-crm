@@ -66132,7 +66132,7 @@ function _floorFullLeaseEnable(f) {
     }
     // Вакантный этаж (src нет): статусы юнитов НЕ трогаем (keepStatus) —
     // флаг сам по себе этаж занятым не делает (честная вакансия).
-    const gid = _groupCreate(offices.map(u => u.id), td, { keepStatus: !src });
+    const gid = _groupCreate(offices.map(u => u.id), td, { keepStatus: !src, floor: f });
     if (gid) {
       f.fullFloorGroupId = gid;
       if (!src) {
@@ -76741,18 +76741,41 @@ function _groupPrimary(groupId) {
 // opts.keepStatus — НЕ форсить status='occupied' на членах (нужно для
 // полнопольного лиза по вакантному этажу: группа создаётся заранее, юниты
 // остаются vacant до реального заселения арендатора).
+// FIXES_LOG Entry 88: члены ищутся ТОЛЬКО внутри одного этажа (opts.floor
+// или opts.buildingId+floorId) — НИКОГДА по голому номеру по всему портфелю.
+// Номера сьютов повторяются между зданиями: 2026-08-24 группировка 8 комнат
+// Tech Data (104, 1041–1047) захватила ещё Bay Vista/104 и 4355 Central/104,
+// крупнейший чужой юнит стал головой со всей арендой Life Matters, и счёт
+// за октябрь не ушёл ни автоматически, ни вручную. Без скоупа — отказ.
 function _groupCreate(unitIds, tenantData, opts) {
   if (!Array.isArray(unitIds) || unitIds.length < 2) {
     if (typeof toast === 'function') toast('Need at least 2 units to create a group', 'error');
     return null;
   }
-  const units = [];
-  for (const b of (state.buildings || [])) {
-    for (const f of (b.floors || [])) {
-      for (const u of (f.units || [])) {
-        if (unitIds.includes(u.id)) units.push(u);
-      }
-    }
+  let scopeFloor = (opts && opts.floor) || null;
+  if (!scopeFloor && opts && opts.buildingId && opts.floorId) {
+    const sb = (state.buildings || []).find(b => b && b.id === opts.buildingId);
+    scopeFloor = (sb && Array.isArray(sb.floors)) ? (sb.floors.find(f => f && f.id === opts.floorId) || null) : null;
+  }
+  if (!scopeFloor || !Array.isArray(scopeFloor.units)) {
+    if (typeof toast === 'function') toast('Could not resolve the floor of the selected suites — reload and try again', 'error');
+    return null;
+  }
+  const wantIds = [...new Set(unitIds)];
+  if (wantIds.length < 2) {
+    if (typeof toast === 'function') toast('Need 2 different suites to create a group', 'error');
+    return null;
+  }
+  const _live = u => u && (typeof isArchived === 'function' ? !isArchived(u) : !u.deletedAt);
+  const units = scopeFloor.units.filter(u => _live(u) && wantIds.includes(u.id));
+  if (units.length < wantIds.length) {
+    if (typeof toast === 'function') toast(`Could not find ${wantIds.length - units.length} of the selected suites on this floor — reload and try again`, 'error');
+    return null;
+  }
+  if (units.length > wantIds.length) {
+    // Два живых юнита с одним номером на этаже — голова выбралась бы случайно.
+    if (typeof toast === 'function') toast('Duplicate suite numbers on this floor — run Dedupe first, then group', 'error');
+    return null;
   }
   if (units.length < 2) {
     if (typeof toast === 'function') toast(`Could not find ${unitIds.length - units.length} of the selected units`, 'error');
@@ -77010,6 +77033,9 @@ function openGroupAssignModal(prebuiltDraft, prefill) {
       ids: units.map(u => u.id),
       units,
       wholeFloor: prebuiltDraft.wholeFloor || null,
+      // Entry 88: скоуп этажа для _groupCreate (поиск членов только здесь).
+      buildingId: (prebuiltDraft.wholeFloor && prebuiltDraft.wholeFloor.buildingId) || currentBuilding()?.id || null,
+      floorId:    (prebuiltDraft.wholeFloor && prebuiltDraft.wholeFloor.floorId) || currentFloor()?.id || null,
     };
   } else {
     if (!Array.isArray(selectedIds) || selectedIds.length < 2) {
@@ -77033,7 +77059,8 @@ function openGroupAssignModal(prebuiltDraft, prefill) {
       if (typeof toast === 'function') toast('Need 2+ rentable office suites in selection', 'error');
       return;
     }
-    _groupAssignDraft = { ids: units.map(u => u.id), units };
+    // Entry 88: юниты взяты из currentUnits() — скоуп = текущий этаж.
+    _groupAssignDraft = { ids: units.map(u => u.id), units, buildingId: currentBuilding()?.id || null, floorId: currentFloor()?.id || null };
   }
   // Pre-fill from the largest unit if it already has tenant data — common
   // case: operator already typed tenant info on one suite, now wants to
@@ -77202,7 +77229,7 @@ function saveGroupAssign() {
     delete only.groupId;     // одиночный офис — без группы
     delete only.groupRole;
   } else {
-    groupId = _groupCreate(draft.ids, tenantData);
+    groupId = _groupCreate(draft.ids, tenantData, { buildingId: draft.buildingId, floorId: draft.floorId });
     if (!groupId) return;
   }
 
