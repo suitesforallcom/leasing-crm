@@ -70,6 +70,7 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 **Invariant:** no group/member lookup may resolve units by bare suite number across buildings — same class as `audit_log_reconcile` (07c6d76) and the cron idempotency key without building id (Bay Vista 204 vs Pinellas 204, still open, functions).
 
+- **Data addendum (same day, 18:17Z):** per Tony («связать, ничего не удалять») 1041–1047 were re-linked as a same-floor multi-suite group `g_306b9327` (head 104 $2,981.25, members $0; 104 sqft back to its drawn 262 → group 1,300 sqft) instead of `parentId` sub-rooms. Nothing deleted.
 - **Status:** active
 - **Regression test:** `scripts/check-invariants.sh` Entry 88 gates (scope filter present, portfolio scan absent, both callers scoped)
 - **Related PR / issue:** none
