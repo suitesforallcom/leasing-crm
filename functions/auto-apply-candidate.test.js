@@ -338,5 +338,64 @@ function julie442(stripeStamps) {
   eq(ctx._descNamesOther('ONLINE TRANSFER FROM CHK 1234', { tenant: 'X Corp' }), false, 'online transfer from chk is generic');
 }
 
+
+// ── 19. Fourth-review cases (Entry 89 rev 5) ─────────────────────────────
+{
+  const ctx = makeCtx('2026-11-08T07:07:00Z');
+  // R4-1: live 442 shape (Sep+Oct paid by Stripe, Nov invoice sent) + the open Oct 7 series instance:
+  // the Nov 7 $2,200 must carry the 🔀 method-mismatch warning, not a silent 'ambiguous'.
+  const j = julie442({ lastInvoiceYm: '2026-11', autoSentYm: '2026-11' });
+  j.payments['2026-10'] = webhookRec(2200, '2026-10-13', 'in_oct');
+  const octInst = { id: 'fc_oct7', amount: 220000, transactedAt: unix('2026-10-07T12:00:00Z'), matchState: 'suggested', matchedUnitId: '442', matchedBuildingId: 'b1', status: 'posted' };
+  const r = ctx._findAutoApplyCandidate(state(j), txn('2026-11-07', 2200, 'Customer Deposit'), { pendingTxns: [octInst], recentTxns: [octInst] });
+  eq([r.reason, r.candidate && r.candidate.primaryMethod], ['method-mismatch', 'stripe'], '442 series instance keeps the 🔀 warning');
+}
+{
+  const ctx = makeCtx('2026-10-03T07:07:00Z');
+  const bankPayer = (id, amt) => ({ id, status: 'occupied', tenant: 'Tenant ' + id, email: id + '@x.com', contractRent: amt, leaseStart: '2026-06-01', until: '2027-12-31',
+    payments: Object.fromEntries(['2026-06', '2026-07', '2026-08', '2026-09'].map(m => [m, bankFeedRec(amt, m + '-02', 'fc_' + id + m)])) });
+  const at = (iso, extra) => Object.assign({ id: 'o_' + iso, amount: 220000, transactedAt: unix(iso + 'T12:00:00Z'), status: 'posted' }, extra);
+  // R4-2: a DISMISSED («Not rent») earlier instance still marks the series.
+  eq(ctx._findAutoApplyCandidate(state(bankPayer('230', 2200)), txn('2026-10-02', 2200, 'Customer Deposit'),
+    { pendingTxns: [], recentTxns: [at('2026-09-07', { matchState: 'dismissed' })] }).reason, 'ambiguous', 'dismissed earlier instance → ambiguous');
+  // The tenant's OWN earlier deposits (confirmed to this unit, building missing on old recs) do not count.
+  eq(ctx._findAutoApplyCandidate(state(bankPayer('230', 2200)), txn('2026-10-02', 2200, 'Customer Deposit'),
+    { pendingTxns: [], recentTxns: [at('2026-09-02', { matchState: 'confirmed', matchedUnitId: '230' }), at('2026-08-02', { matchState: 'confirmed', autoApplyTargetUnitId: '230', matchedBuildingId: 'b1' })] }).eligible, true,
+    "own confirmed deposits are not a series");
+  // R4-5: void twins, dedupe twins and stale (>45 d) suggestions do not block.
+  eq(ctx._findAutoApplyCandidate(state(bankPayer('230', 2200)), txn('2026-10-02', 2200, 'Customer Deposit'),
+    { pendingTxns: [at('2026-07-20', { amount: 52000, matchState: 'suggested', matchedUnitId: '230' })],
+      recentTxns: [at('2026-09-30', { status: 'void', matchState: 'unmatched' }), at('2026-09-29', { dedupeSuspect: true, matchState: 'unmatched' })] }).eligible, true,
+    'void / dedupe twins / stale suggestions do not block');
+  const fresh = at('2026-09-28', { amount: 199900, matchState: 'suggested', matchedUnitId: '230', matchedBuildingId: 'b1' });
+  eq(ctx._findAutoApplyCandidate(state(bankPayer('230', 2200)), txn('2026-10-02', 2200, 'Customer Deposit'), { pendingTxns: [fresh], recentTxns: [fresh] }).reason, 'ambiguous',
+    'a fresh open suggestion for the unit still blocks');
+  // R4-3: a recent former tenant at the same rent (any method) is a contender.
+  const vac = { id: '207', status: 'vacant', contractRent: 0, payments: {}, tenantHistory: [{ tenant: 'Gone LLC', contractRent: 1250, movedOut: '2026-08-31', payments: { '2026-08': webhookRec(1250, '2026-08-01', 'i8') } }] };
+  eq(ctx._findAutoApplyCandidate(state(bankPayer('412', 1250), vac), txn('2026-10-02', 1250, 'Customer Deposit'), { pendingTxns: [], recentTxns: [] }).reason, 'ambiguous',
+    'recent former tenant at that rent → ambiguous');
+  // R4-7 M9: the candidate unit's OWN former tenant at the same rent counts too.
+  const own = Object.assign(bankPayer('412', 1250), { tenantHistory: [{ tenant: 'Previous Co', contractRent: 1250, movedOut: '2026-06-10' }] });
+  own.leaseStart = '2026-06-01';
+  eq(ctx._findAutoApplyCandidate(state(own), txn('2026-10-02', 1250, 'Customer Deposit'), { pendingTxns: [], recentTxns: [] }).reason, 'ambiguous',
+    "the unit's own recent former tenant → ambiguous");
+  // …but the SAME tenant relocated from another suite is not «someone else» (R4-6.3).
+  const reloc = { id: '358', status: 'vacant', contractRent: 0, payments: {}, tenantHistory: [{ tenant: 'Tenant 412', email: '412@x.com', relocatedTo: '412', contractRent: 1250, movedOut: '2026-08-31',
+    payments: { '2026-08': bankFeedRec(1250, '2026-08-02', 'fc_r') } }] };
+  eq(ctx._findAutoApplyCandidate(state(bankPayer('412', 1250), reloc), txn('2026-10-02', 1250, 'Customer Deposit'), { pendingTxns: [], recentTxns: [] }).eligible, true,
+    'relocated same tenant does not block');
+  // R4-6: «ONLINE TRANSFER FROM <own company>» is not internal; «…FROM …1305» is.
+  const hd = Object.assign(bankPayer('500', 3000), { tenant: 'Harbor Dental' });
+  eq(ctx._findAutoApplyCandidate(state(hd), txn('2026-10-02', 3000, 'ONLINE TRANSFER FROM HARBOR DENTAL'), { pendingTxns: [], recentTxns: [] }).eligible, true, 'own-name online transfer applies');
+  eq(ctx._findAutoApplyCandidate(state(hd), txn('2026-10-02', 3000, 'TRANSFER DEPOSIT FROM ...1305'), { pendingTxns: [], recentTxns: [] }).reason, 'internal-transfer', 'account transfer is internal');
+  eq(ctx._findAutoApplyCandidate(state(hd), txn('2026-10-02', 3000, 'ONLINE TRANSFER FROM CHK 1234'), { pendingTxns: [], recentTxns: [] }).reason, 'internal-transfer', 'transfer from account digits is internal');
+  // Deposit-paid dates in seconds / Timestamp form are read correctly.
+  const nc = { id: '600', status: 'occupied', contractRent: 900, deposit: 3000, leaseStart: '2026-09-20', until: '2027-09-30', payments: {},
+    stripe: { depositInvoice: { status: 'paid', paidAt: unix('2026-09-18T00:00:00Z') } } };
+  eq(ctx._isAutoApplyContender(nc, 300000, Date.now()), false, 'deposit paidAt in SECONDS → paid');
+  const nc2 = Object.assign({}, nc, { stripe: {}, payments: { deposit: { status: 'paid', paidAt: { _seconds: unix('2026-09-18T00:00:00Z') } } } });
+  eq(ctx._isAutoApplyContender(nc2, 300000, Date.now()), false, 'Timestamp-like paidAt → paid');
+}
+
 console.log(`auto-apply-candidate.test: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

@@ -115,7 +115,7 @@ function makeWorld({ conns, accounts, txns }) {
     where: (field, op, val) => query([...filters, { field, op, val }]),
     get: async () => {
       const docs = [...world.docs.entries()]
-        .filter(([, d]) => filters.every(f => f.op === 'in' ? f.val.includes(d[f.field]) : d[f.field] === f.val))
+        .filter(([, d]) => filters.every(f => f.op === 'in' ? f.val.includes(d[f.field]) : f.op === '>=' ? d[f.field] >= f.val : f.op === '<=' ? d[f.field] <= f.val : d[f.field] === f.val))
         .map(([id, d]) => ({ id, ref: { id, path: 'bankTransactions/' + id }, data: () => clone(d) }));
       return { empty: !docs.length, size: docs.length, docs, forEach: (fn) => docs.forEach(fn) };
     },
@@ -686,6 +686,22 @@ const cachedTxns = () => ({
     await w.autoApply(FCA);
     eq(w.docs.get('fctxn_p').matchState, 'confirmed', 'after posting it auto-applies');
     eq(w.paymentsCol.size, 1, 'exactly one ledger rec');
+  }
+
+  // ── 8h. Entry 89 rev 5: the finder receives the poll context (open txns + recent look-back) ──
+  {
+    const w = makeWorld({ conns: [], accounts: {}, txns: {} });
+    w.strip = true;
+    w.state.settings = { syncV2: true, syncBuildingsStrip: true };
+    w.state.buildings = [{ id: 'b1', floors: [{ id: 'f1', units: [{ id: '101', tenant: 'NUHS', rent: 2250, outreach: [] }] }] }];
+    w.docs.set('fctxn_c', { id: 'fctxn_c', accountId: FCA, amount: 225000, description: 'Customer Deposit', transactedAt: T_NEWEST, matchState: 'unmatched' });
+    w.docs.set('fctxn_dis', { id: 'fctxn_dis', accountId: 'fca_other', amount: 225000, description: 'Customer Deposit', transactedAt: T_NEWEST - 30 * DAY, matchState: 'dismissed' });
+    let seen = null;
+    const fin = w.ctx._findAutoApplyCandidate;
+    w.ctx._findAutoApplyCandidate = (st, txn, ctx) => { seen = ctx; return fin(st, txn, ctx); };
+    await w.autoApply(FCA);
+    ok(seen && Array.isArray(seen.pendingTxns) && seen.pendingTxns.some(t => t.id === 'fctxn_c'), 'context: open txns of the account passed');
+    ok(seen && Array.isArray(seen.recentTxns) && seen.recentTxns.some(t => t.id === 'fctxn_dis'), 'context: look-back includes dismissed txns of other accounts');
   }
 
   // ── 9. Undo: ledger delete first, loud on failure ──────────────────

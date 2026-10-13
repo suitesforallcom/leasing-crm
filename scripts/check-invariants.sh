@@ -359,9 +359,9 @@ if grep -qE "^function _bankFeedSinceUnix\(" "$FN_JS" \
    && grep -qE "skippedDuplicates\.push" "$FN_JS" \
    && fn_has "^async function _autoApplyAfterPoll\(" "_writeAutoApplyLedgerV2\(p\.b, p\.f, p\.u, p\.ym, p\.rec, p\.txnId\)" 400 \
    && fn_has "^async function _autoApplyAfterPoll\(" "toConfirm\.slice" 400 \
-   && fn_has "^async function _autoApplyAfterPoll\(" "txn\.autoApplied === false" 60 \
+   && fn_has "^async function _autoApplyAfterPoll\(" "txn\.autoApplied === false" 120 \
    && fn_has "^async function _autoApplyAfterPoll\(" "ledgerRequired = _ledgerIsCollectionCF\(s\)" 400 \
-   && fn_has "^async function _autoApplyAfterPoll\(" "_monthHasStripeInvoice\(c\.u, c\.ym, existing\)" 110; then
+   && fn_has "^async function _autoApplyAfterPoll\(" "_monthHasStripeInvoice\(c\.u, c\.ym, existing\)" 180; then
   echo "  ✓ functions/index.js bank-feed: inactive short-circuit, frozen watermark, anchored window, ghost/dup guards, durable auto-apply"
 else
   echo "  ✗ functions/index.js bank-feed lost an Entry 81 guard (inactive short-circuit / watermark / window / dup guard / durable auto-apply)"
@@ -371,7 +371,7 @@ if fn_has "^exports\.disconnectBankAccount = " "preConn\.sharedConnection" 30 \
    && fn_has "^exports\.adoptBankFcAccount = " "includes\('transactions'\)" 40 \
    && fn_has "^exports\.adoptBankFcAccount = " "_bankSameAccountKind\(c0, acc\)" 90 \
    && fn_has "^async function _pullTransactionsForAccount\(" "_prevIdxTakeSameDay\(dedupeIdx" 140 \
-   && fn_has "^async function _autoApplyAfterPoll\(" "_prevIdxNear\(prevIdx" 80 \
+   && fn_has "^async function _autoApplyAfterPoll\(" "_prevIdxNear\(prevIdx" 140 \
    && fn_has "^exports\.syncBankConnections = " "supersededFcIds" 90; then
   echo "  ✓ Entry 82: shared connection never detached at Stripe; adopt guards; UTC-day dedupe + auto-apply guard; superseded ids"
 else
@@ -395,23 +395,23 @@ if fn_has "^function _methodFamily\(" "'cash', 'bank'\]" 6 \
    && fn_has "^exports\.bankFeedScheduledPoll = " "await _autoApplyAfterPoll\(c\.stripeFcAccountId\)" 140 \
    && fn_has "^function _recPaymentMethod\(" "p\.bankTxnId \|\| p\.source === .bank-feed." 10 \
    && fn_has "^function _unitPrimaryPaymentMethod\(" "_ymInLease\(u, k\)" 8 \
-   && fn_has "^function _findAutoApplyCandidate\(" "if \(ym < currentYm\) \{" 180 \
-   && fn_has "^function _findAutoApplyCandidate\(" "if \(ym > currentYm\) \{" 180 \
-   && fn_has "^function _findAutoApplyCandidate\(" "_txnYm\(txn\) !== ym" 150 \
-   && fn_has "^function _findAutoApplyCandidate\(" "reason: 'name-conflict'" 120 \
-   && fn_has "^function _findAutoApplyCandidate\(" "_methodFamily\(primary\) !== 'bank' \|\| incomingFamily !== 'bank'" 220 \
+   && fn_has "^function _findAutoApplyCandidate\(" "if \(ym < currentYm\) \{" 260 \
+   && fn_has "^function _findAutoApplyCandidate\(" "if \(ym > currentYm\) \{" 260 \
+   && fn_has "^function _findAutoApplyCandidate\(" "_txnYm\(txn\) !== ym" 260 \
+   && fn_has "^function _findAutoApplyCandidate\(" "reason: 'name-conflict'" 200 \
+   && fn_has "^function _findAutoApplyCandidate\(" "_methodFamily\(primary\) !== 'bank' \|\| incomingFamily !== 'bank'" 260 \
    && fn_has "^function _findAutoApplyCandidate\(" "candidates\.length > 1 \|\| contenders > 0" 80 \
-   && fn_has "^function _findAutoApplyCandidate\(" "_descNamesOther\(txn\.description, cand\.u\)" 120 \
-   && fn_has "^function _findAutoApplyCandidate\(" "reason: 'amount-changed'" 160 \
-   && fn_has "^function _findAutoApplyCandidate\(" "candidate\(\{ ym: oldestOpen \}\)" 220 \
-   && fn_has "^function _findAutoApplyCandidate\(" "_monthInvoicedViaStripe\(cand\.u, ym\)" 230 \
+   && fn_has "^function _findAutoApplyCandidate\(" "_descNamesOther\(txn\.description, cand\.u\)" 200 \
+   && fn_has "^function _findAutoApplyCandidate\(" "reason: 'amount-changed'" 200 \
+   && fn_has "^function _findAutoApplyCandidate\(" "candidate\(\{ ym: oldestOpen \}\)" 260 \
+   && fn_has "^function _findAutoApplyCandidate\(" "_monthInvoicedViaStripe\(cand\.u, ym\)" 260 \
    && fn_has "^function _unitPrimaryPaymentMethod\(" "return 'unknown';" 6 \
-   && fn_has "^async function _autoApplyAfterPoll\(" "const decided = !!\(txn\.autoApplyEvaluatedAt \|\| txn\.autoApplyBlockedReason\)" 80 \
-   && fn_has "^async function _autoApplyAfterPoll\(" "if \(decided\) \{ skipped\+\+; continue; \}" 90 \
-   && fn_has "^async function _autoApplyAfterPoll\(" "_findAutoApplyCandidate\(state, txn, \{ pendingTxns \}\)" 90 \
-   && fn_has "^async function _autoApplyAfterPoll\(" "\['not-posted', 'not-credit'\]\.includes\(check\.reason\)" 100 \
-   && fn_has "^function _findAutoApplyCandidate\(" "reason: 'internal-transfer'" 100 \
-   && fn_has "^function _findAutoApplyCandidate\(" "otherOpen \|\| _amountPaidRecentlyByOther\(state, cand, targetCents, nowMs\)" 120 \
+   && fn_has "^async function _autoApplyAfterPoll\(" "const decided = !!\(txn\.autoApplyEvaluatedAt \|\| txn\.autoApplyBlockedReason\)" 140 \
+   && fn_has "^async function _autoApplyAfterPoll\(" "if \(decided\) \{ skipped\+\+; continue; \}" 160 \
+   && fn_has "^async function _autoApplyAfterPoll\(" "_findAutoApplyCandidate\(state, txn, \{ pendingTxns, recentTxns \}\)" 140 \
+   && fn_has "^async function _autoApplyAfterPoll\(" "\['not-posted', 'not-credit', 'lookback-unavailable'\]\.includes\(check\.reason\)" 160 \
+   && fn_has "^function _findAutoApplyCandidate\(" "reason: 'internal-transfer'" 200 \
+   && fn_has "^function _findAutoApplyCandidate\(" "series \|\| openForUnit \|\| _amountPaidRecentlyByOther\(state, cand, targetCents, nowMs\)" 200 \
    && fn_has "^function _isAutoApplyContender\(" "at\(dep\.paidAt \|\| dep\.date\) >= sinceMs" 25; then
   echo "  ✓ Entry 89: auto-apply — 'bank' family survives the gate, webhook/bank-feed recs carry a method, next month last, cron auto-apply, positive bank evidence, arrival-month + current-month + no-arrears + name/contender/amount/invoice/series/transfer gates, decide-once (pending not stamped)"
 else

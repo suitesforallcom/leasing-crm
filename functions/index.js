@@ -9341,7 +9341,7 @@ const _AUTO_APPLY_TOLERANCE_CENTS = 100; // $1.00
 
 // Entry 89: bank descriptors that name nobody («Customer Deposit»,
 // «TRANSFER DEPOSIT FROM …1305», «ACH CREDIT PPD»).
-const _AUTO_APPLY_GENERIC_WORDS = new Set(['customer', 'deposit', 'deposits', 'mobile', 'atm', 'branch', 'check', 'checks', 'cheque', 'remote', 'online', 'transfer', 'transfers', 'from', 'ach', 'credit', 'payment', 'payments', 'pmt', 'pymt', 'pymnt', 'pymnts', 'ppd', 'ccd', 'web', 'tel', 'edi', 'settlement', 'wire', 'incoming', 'inbound', 'zelle', 'venmo', 'stripe', 'chk', 'capture', 'counter', 'edeposit', 'des', 'indn', 'orig', 'ref', 'trn', 'the', 'and', 'for', 'inc', 'llc', 'corp', 'corporation', 'company', 'ltd', 'pllc', 'llp', 'rent']);
+const _AUTO_APPLY_GENERIC_WORDS = new Set(['customer', 'deposit', 'deposits', 'mobile', 'atm', 'branch', 'check', 'checks', 'cheque', 'remote', 'online', 'transfer', 'transfers', 'from', 'ach', 'credit', 'payment', 'payments', 'pmt', 'pymt', 'pymnt', 'pymnts', 'ppd', 'ccd', 'web', 'tel', 'edi', 'settlement', 'wire', 'incoming', 'inbound', 'zelle', 'venmo', 'stripe', 'chk', 'capture', 'counter', 'edeposit', 'des', 'indn', 'orig', 'ref', 'trn', 'cash', 'direct', 'dep', 'memo', 'book', 'number', 'the', 'and', 'for', 'inc', 'llc', 'corp', 'corporation', 'company', 'ltd', 'pllc', 'llp', 'rent']);
 function _descNameTokens(s) {
   return _normalizeForMatch(s).split(' ')
     .filter(t => t.length >= 3 && !/^\d+$/.test(t) && !_AUTO_APPLY_GENERIC_WORDS.has(t));
@@ -9371,7 +9371,11 @@ function _isAutoApplyContender(u, targetCents, nowMs) {
   // Paid only when it belongs to THIS tenancy (a previous tenant's leaked
   // paid deposit, Entry 83, must not hide the newcomer's unpaid one).
   const sinceMs = Number.isFinite(ls) ? ls - 90 * 86400000 : Infinity;
-  const at = (v) => (typeof v === 'number' ? v : Date.parse(String(v || '')));
+  const at = (v) => {
+    if (typeof v === 'number') return v < 1e12 ? v * 1000 : v;                   // seconds or ms
+    if (v && typeof v === 'object') return (+(v.seconds ?? v._seconds) || 0) * 1000;  // Firestore Timestamp
+    return Date.parse(String(v || ''));
+  };
   const dep = u.payments && u.payments.deposit;
   const di = u.stripe && u.stripe.depositInvoice;
   const depPaid = (dep && dep.status === 'paid' && at(dep.paidAt || dep.date) >= sinceMs)
@@ -9384,14 +9388,25 @@ function _isAutoApplyContender(u, targetCents, nowMs) {
 // rec within ~120 days. Catches a tenant still paying a pre-escalation
 // amount that equals another rent, and a former tenant paying arrears.
 function _amountPaidRecentlyByOther(state, cand, targetCents, nowMs) {
-  const sinceYm = (() => { const d = new Date(nowMs - 120 * 86400000); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`; })();
+  const sinceMs = nowMs - 120 * 86400000;
+  const sinceYm = (() => { const d = new Date(sinceMs); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`; })();
+  const near = (dollars) => { const c = Math.round((+dollars || 0) * 100); return c > 0 && Math.abs(c - targetCents) <= _AUTO_APPLY_TOLERANCE_CENTS; };
   const hit = (pays) => Object.entries(pays || {}).some(([k, p]) => /^\d{4}-\d{2}$/.test(k) && k >= sinceYm
     && p && p.status === 'paid' && Math.abs(Math.round((+p.amount || 0) * 100) - targetCents) <= 1
     && _methodFamily(_recPaymentMethod(p)) === 'bank');
+  const low = (v) => String(v || '').trim().toLowerCase();
+  // The candidate's own current tenant relocated from another suite is not «someone else».
+  const sameTenant = (h) => (h.relocatedTo && String(h.relocatedTo) === String(cand.u.id))
+    || (low(h.email) && low(h.email) === low(cand.u.email))
+    || (low(h.tenant) && low(h.tenant) === low(cand.u.tenant));
+  // A former tenant who moved out recently: a bank-linked rec of this amount,
+  // or (any method) a rent of this amount — arrears are often settled by a
+  // nameless cheque after move-out.
+  const histHit = (u) => (Array.isArray(u.tenantHistory) ? u.tenantHistory : []).some(h => h && !sameTenant(h)
+    && (hit(h.payments) || (Date.parse(String(h.movedOut || '').slice(0, 10) + 'T00:00:00Z') >= sinceMs && near((+h.contractRent) || (+h.rent)))));
   for (const b of (state.buildings || [])) for (const f of (b.floors || [])) for (const u of (f.units || [])) {
-    if (u === cand.u) { if ((u.tenantHistory || []).some(h => hit(h && h.payments))) return true; continue; }
-    if (hit(u.payments)) return true;
-    if ((u.tenantHistory || []).some(h => hit(h && h.payments))) return true;
+    if (histHit(u)) return true;
+    if (u !== cand.u && hit(u.payments)) return true;
   }
   return false;
 }
@@ -9479,34 +9494,6 @@ function _findAutoApplyCandidate(state, txn, ctx) {
   const candidate = (extra) => Object.assign(
     { u: cand.u, b: cand.b, f: cand.f, ym, rentCents: cand.rentCents, delta: cand.delta }, extra || {});
 
-  // Entry 89 rev 4: never auto-apply an internal/owner transfer.
-  if (/\btransfer\b.*\bfrom\b/i.test(String(txn.description || ''))) {
-    return { eligible: false, reason: 'internal-transfer' };
-  }
-  // Entry 89 rev 4: the same amount is also paid by somebody else, or keeps
-  // arriving as an unlinked credit (a recurring outside series — the $2,200
-  // «Customer Deposit» that landed on 442), or this unit already has another
-  // open suggestion (an early payer whose previous deposit nobody linked yet).
-  const pending = (ctx && Array.isArray(ctx.pendingTxns)) ? ctx.pendingTxns : [];
-  const tUnix = +txn.transactedAt || Math.floor(nowMs / 1000);
-  const otherOpen = pending.some(o => o && o.id !== txn.id && +o.amount > 0
-    && ['unmatched', 'suggested'].includes(o.matchState)
-    && ((Math.abs(+o.amount - targetCents) <= 1 && +o.transactedAt < tUnix && +o.transactedAt >= tUnix - 100 * 86400)
-      || (String(o.matchedUnitId || '') === String(cand.u.id) && (!o.matchedBuildingId || o.matchedBuildingId === cand.b.id))));
-  if (otherOpen || _amountPaidRecentlyByOther(state, cand, targetCents, nowMs)) {
-    return { eligible: false, reason: 'ambiguous' };
-  }
-
-  // Entry 89: the ingest-time name matcher pointed this deposit at a
-  // DIFFERENT unit, or the description names somebody else — the
-  // amount-only candidate is not trustworthy.
-  const nameUnit = txn.matchedUnitId && !String(txn.matchSource || '').startsWith('auto-apply') ? String(txn.matchedUnitId) : '';
-  if ((nameUnit && (nameUnit !== String(cand.u.id)
-      || (txn.matchedBuildingId && txn.matchedBuildingId !== cand.b.id)))
-      || _descNamesOther(txn.description, cand.u)) {
-    return { eligible: false, reason: 'name-conflict' };
-  }
-
   // PAYMENT METHOD CONSISTENCY (Tony 2026-05-22 — «обращай внимание на
   // тот как были оплачены предыдущие платежи каким способом»). Lex Wagner
   // Suite 433: всегда платит через Stripe, но cron нашёл $1500 ACH deposit
@@ -9531,6 +9518,46 @@ function _findAutoApplyCandidate(state, txn, ctx) {
   // amount goes to a human.
   if (!_unitRecentBankAmountsCents(cand.u).some(c => Math.abs(c - targetCents) <= 1)) {
     return { eligible: false, reason: 'amount-changed' };
+  }
+
+  // Entry 89: the ingest-time name matcher pointed this deposit at a
+  // DIFFERENT unit, or the description names somebody else — the
+  // amount-only candidate is not trustworthy.
+  const nameUnit = txn.matchedUnitId && !String(txn.matchSource || '').startsWith('auto-apply') ? String(txn.matchedUnitId) : '';
+  if ((nameUnit && (nameUnit !== String(cand.u.id)
+      || (txn.matchedBuildingId && txn.matchedBuildingId !== cand.b.id)))
+      || _descNamesOther(txn.description, cand.u)) {
+    return { eligible: false, reason: 'name-conflict' };
+  }
+
+  // Entry 89 rev 4/5 — checked AFTER the method gate so a Stripe/«unknown»
+  // tenant's suggestion always carries the 🔀 warning.
+  // Internal/owner transfer («TRANSFER DEPOSIT FROM …1305»): never auto.
+  if (/\b(transfer deposit from|internal transfer|book transfer)\b/i.test(String(txn.description || ''))
+      || /\btransfer\b.*\bfrom\b\s*(?:(?:chk|checking|sav|savings|acct|account|dda|x+|\.+|\*+|#)\s*)*\d{3,}\s*$/i.test(String(txn.description || ''))) {
+    return { eligible: false, reason: 'internal-transfer' };
+  }
+  // The same amount keeps arriving from somebody else (a recurring outside
+  // series — the $2,200 one that landed on 442 — incl. dismissed «Not rent»
+  // txns and txns of a superseded bank link), or is paid by another unit / a
+  // recent former tenant, or this unit has another fresh open suggestion
+  // (an early payer whose previous deposit nobody linked yet).
+  const tUnix = +txn.transactedAt || Math.floor(nowMs / 1000);
+  const isLive = (o) => o && o.id !== txn.id && +o.amount > 0 && !o.dedupeSuspect
+    && String(o.status || 'posted').toLowerCase() !== 'void' && !(o.statusTransitions && o.statusTransitions.void_at);
+  const ownLinked = (o) => o.matchState === 'confirmed'
+    && (String(o.matchedUnitId || '') === String(cand.u.id) || String(o.autoApplyTargetUnitId || '') === String(cand.u.id))
+    && (!o.matchedBuildingId || o.matchedBuildingId === cand.b.id);
+  const recent = (ctx && Array.isArray(ctx.recentTxns)) ? ctx.recentTxns : ((ctx && Array.isArray(ctx.pendingTxns)) ? ctx.pendingTxns : []);
+  const series = recent.some(o => isLive(o) && !ownLinked(o) && Math.abs(+o.amount - targetCents) <= 1
+    && +o.transactedAt < tUnix && +o.transactedAt >= tUnix - 100 * 86400);
+  const pending = (ctx && Array.isArray(ctx.pendingTxns)) ? ctx.pendingTxns : [];
+  const openForUnit = pending.some(o => isLive(o) && ['unmatched', 'suggested'].includes(o.matchState)
+    && String(o.status || 'posted').toLowerCase() === 'posted'
+    && +o.transactedAt >= tUnix - 45 * 86400 && +o.transactedAt <= tUnix
+    && String(o.matchedUnitId || '') === String(cand.u.id) && (!o.matchedBuildingId || o.matchedBuildingId === cand.b.id));
+  if (series || openForUnit || _amountPaidRecentlyByOther(state, cand, targetCents, nowMs)) {
+    return { eligible: false, reason: 'ambiguous' };
   }
 
   // CURRENT-MONTH-ONLY GATE (Tony 2026-05-22): ym < current → past, ym >
@@ -9782,7 +9809,18 @@ async function _autoApplyAfterPoll(fcAccountId) {
   }
   const heals = [];
   const firstLook = [];   // Entry 89: first non-eligible outcome → stamped, stays manual
-  const pendingTxns = snap.docs.map(x => ({ id: x.id, ...x.data() }));   // Entry 89 rev 4: series / open-suggestion check
+  // Entry 89 rev 4/5: context for the series / open-suggestion checks — the
+  // open txns of this account (minus ones a heal is about to confirm) and
+  // ALL recent txns of every account, incl. dismissed and superseded links.
+  const pendingTxns = snap.docs.map(x => ({ id: x.id, ...x.data() })).filter(t => !recByTxn.has(t.id));
+  let recentTxns = pendingTxns;
+  try {
+    const rs = await col.where('transactedAt', '>=', Math.floor(Date.now() / 1000) - 130 * 86400).get();
+    recentTxns = rs.docs.map(x => ({ id: x.id, ...x.data() }));
+  } catch (e) {
+    logger.warn(`[auto-apply] recent-txn look-back failed (${e.message}) — auto-apply skipped this run`);
+    recentTxns = null;
+  }
   // Entry 82: on an adopted shared connection, a txn that looks like a
   // movement already stored under the previous FC object (same amount, UTC
   // day ±2) is never auto-applied — ingestion dedupe is not the only net.
@@ -9805,7 +9843,9 @@ async function _autoApplyAfterPoll(fcAccountId) {
     // against changes (rent edits, a twin vacated, a month recorded by hand,
     // invoice stamps moving) and the operator already saw a manual outcome.
     const decided = !!(txn.autoApplyEvaluatedAt || txn.autoApplyBlockedReason);
-    const check = _findAutoApplyCandidate(state, txn, { pendingTxns });
+    const check = recentTxns
+      ? _findAutoApplyCandidate(state, txn, { pendingTxns, recentTxns })
+      : { eligible: false, reason: 'lookback-unavailable' };
     if (!check.eligible && deferred[check.reason] && check.candidate) {
       deferred[check.reason].push({ docRef: d.ref, txn, candidate: check.candidate });
       continue;
@@ -9813,7 +9853,7 @@ async function _autoApplyAfterPoll(fcAccountId) {
     if (!check.eligible) {
       skipped++;
       // A pending (not yet posted) or debit txn is not a judgement — never stamped.
-      if (!decided && !['not-posted', 'not-credit'].includes(check.reason)) {
+      if (!decided && !['not-posted', 'not-credit', 'lookback-unavailable'].includes(check.reason)) {
         firstLook.push({ docRef: d.ref, outcome: check.reason || 'not-eligible' });
       }
       continue;
