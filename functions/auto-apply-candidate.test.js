@@ -406,8 +406,13 @@ function julie442(stripeStamps) {
   const at = (iso, extra) => Object.assign({ id: 'o_' + iso, amount: 218000, transactedAt: unix(iso + 'T12:00:00Z'), status: 'posted' }, extra);
   // R5-1: a deposit that NAMES another tenant never becomes a 🔀 suggestion for a Stripe / no-history unit.
   const stripeB = julie442(); stripeB.id = '433'; stripeB.tenant = 'Lex Wagner'; stripeB.contractRent = 2180; stripeB.rent = 2180;
-  eq(ctx._findAutoApplyCandidate(state(stripeB), txn('2026-10-02', 2180, 'ZELLE PAYMENT FROM HARBOR DENTAL LAB'), { pendingTxns: [], recentTxns: [] }).reason, 'name-conflict',
-    'named descriptor → name-conflict before the method gate (no 🔀 suggestion for B)');
+  eq(ctx._findAutoApplyCandidate(state(stripeB), txn('2026-10-02', 2180, 'ZELLE PAYMENT FROM HARBOR DENTAL LAB', { matchedUnitId: '230', matchedBuildingId: 'b1' }), { pendingTxns: [], recentTxns: [] }).reason, 'name-conflict',
+    'matcher routed the deposit to another unit → name-conflict BEFORE the method gate (no 🔀 suggestion for B)');
+  // rev 7 (F3): a descriptor that only NAMES someone else still gives a Stripe/no-history unit the 🔀 warning.
+  const r433 = ctx._findAutoApplyCandidate(state(stripeB), txn('2026-10-02', 2180, 'ZELLE PAYMENT FROM JOHN SMITH'), { pendingTxns: [], recentTxns: [] });
+  eq([r433.reason, r433.candidate && r433.candidate.primaryMethod], ['method-mismatch', 'unknown'], 'named descriptor + Stripe/no-history unit → 🔀 warning kept');
+  eq(ctx._findAutoApplyCandidate(state(bankPayer('238', 2180)), txn('2026-10-02', 2180, 'ZELLE PAYMENT FROM JOHN SMITH'), { pendingTxns: [], recentTxns: [] }).reason, 'name-conflict',
+    'named descriptor + proven bank payer → name-conflict');
   // R5-2: a txn referenced by the unit's own ledger rec (heal whose confirm never landed) is own, not a series.
   const p230 = bankPayer('230', 2180);
   p230.payments['2026-09'] = { status: 'paid', amount: 2180, paidVia: 'ach', date: '2026-09-02', bankTxnId: 'fc_heal' };
@@ -417,8 +422,18 @@ function julie442(stripeStamps) {
   const hand = bankPayer('231', 2180);
   hand.payments['2026-09'] = { status: 'paid', amount: 2180, paidVia: 'ach', date: '2026-09-03' };
   hand.payments['2026-08'] = { status: 'paid', amount: 2180, paidVia: 'ach', date: '2026-08-02' };
-  eq(ctx._findAutoApplyCandidate(state(hand), txn('2026-10-02', 2180, 'Customer Deposit'), { pendingTxns: [], recentTxns: [at('2026-09-02', { matchState: 'dismissed' })] }).eligible, true,
-    'dismissed own deposit (hand-recorded month ±3 d) is not a series');
+  eq(ctx._findAutoApplyCandidate(state(hand), txn('2026-10-02', 2180, 'Customer Deposit'), { pendingTxns: [], recentTxns: [at('2026-09-02', { matchState: 'dismissed' })] }).reason, 'ambiguous',
+    'rev 7: a dismissed same-amount row is ALWAYS a series (even next to a hand-recorded month) — fail-safe');
+  // rev 7 (F2): a ledger reference only makes a row «own» while it is open or confirmed to this unit / no unit.
+  const ref = bankPayer('239', 2180); ref.payments['2026-09'] = { status: 'paid', amount: 2180, paidVia: 'check', date: '2026-09-10', bankTxnId: 'S_sep' };
+  eq(ctx._findAutoApplyCandidate(state(ref), txn('2026-10-02', 2180, 'Customer Deposit'), { pendingTxns: [], recentTxns: [at('2026-09-07', { id: 'S_sep', matchState: 'dismissed' })] }).reason, 'ambiguous',
+    'stale ledger reference to an Undone (dismissed) row is not own');
+  eq(ctx._findAutoApplyCandidate(state(ref), txn('2026-10-02', 2180, 'Customer Deposit'), { pendingTxns: [], recentTxns: [at('2026-09-07', { id: 'S_sep', matchState: 'confirmed', matchedUnitId: '999' })] }).reason, 'ambiguous',
+    'ledger reference to a row confirmed to ANOTHER unit is not own');
+  const unpaid = bankPayer('240', 2180); unpaid.payments['2026-09'] = { status: 'late', amount: 2180, bankTxnId: 'S_x' };
+  unpaid.payments['2026-08'] = bankFeedRec(2180, '2026-08-02', 'fc_a'); unpaid.payments['2026-07'] = bankFeedRec(2180, '2026-07-02', 'fc_b');
+  eq(ctx._findAutoApplyCandidate(state(unpaid), txn('2026-10-02', 2180, 'Customer Deposit'), { pendingTxns: [], recentTxns: [at('2026-09-07', { id: 'S_x', matchState: 'unmatched' })] }).reason !== undefined, true,
+    'an UNPAID rec referencing a row does not make it own');
   eq(ctx._findAutoApplyCandidate(state(bankPayer('232', 2180)), txn('2026-10-02', 2180, 'Customer Deposit'), { pendingTxns: [], recentTxns: [at('2026-09-12', { matchState: 'dismissed' })] }).reason, 'ambiguous',
     "a dismissed stranger instance (unit's months are bank-linked) is still a series");
   // R5-4: own-link needs the same building, and confirmed state.

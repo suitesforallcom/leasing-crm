@@ -9500,9 +9500,8 @@ function _findAutoApplyCandidate(state, txn, ctx) {
   // DIFFERENT unit, or the description names somebody else — the
   // amount-only candidate is not trustworthy.
   const nameUnit = txn.matchedUnitId && !String(txn.matchSource || '').startsWith('auto-apply') ? String(txn.matchedUnitId) : '';
-  if ((nameUnit && (nameUnit !== String(cand.u.id)
-      || (txn.matchedBuildingId && txn.matchedBuildingId !== cand.b.id)))
-      || _descNamesOther(txn.description, cand.u)) {
+  if (nameUnit && (nameUnit !== String(cand.u.id)
+      || (txn.matchedBuildingId && txn.matchedBuildingId !== cand.b.id))) {
     return { eligible: false, reason: 'name-conflict' };
   }
 
@@ -9531,6 +9530,11 @@ function _findAutoApplyCandidate(state, txn, ctx) {
   if (!_unitRecentBankAmountsCents(cand.u).some(c => Math.abs(c - targetCents) <= 1)) {
     return { eligible: false, reason: 'amount-changed' };
   }
+  // The description NAMES somebody other than this tenant (checked after the
+  // method gate so a Stripe/no-history tenant keeps the 🔀 warning, rev 7).
+  if (_descNamesOther(txn.description, cand.u)) {
+    return { eligible: false, reason: 'name-conflict' };
+  }
 
   // Entry 89 rev 4/5 — checked AFTER the method gate so a Stripe/«unknown»
   // tenant's suggestion always carries the 🔀 warning.
@@ -9548,20 +9552,20 @@ function _findAutoApplyCandidate(state, txn, ctx) {
   const tUnix = +txn.transactedAt || Math.floor(nowMs / 1000);
   const isLive = (o) => o && o.id !== txn.id && +o.amount > 0 && !o.dedupeSuspect
     && String(o.status || 'posted').toLowerCase() !== 'void' && !(o.statusTransitions && o.statusTransitions.void_at);
-  // Own = confirmed to this unit, OR referenced by this unit's own ledger rec
-  // (a heal whose confirm never landed), OR a dismissed row matching a paid
-  // bank rec of this unit recorded by hand (no bankTxnId) within ±3 days.
-  const ownPays = Object.entries(cand.u.payments || {}).filter(([k, p]) => /^\d{4}-\d{2}$/.test(k) && p && p.status === 'paid');
-  const ownTxnIds = new Set(ownPays.map(([, p]) => p.bankTxnId).filter(Boolean));
-  const recMs = (p) => { const v = p.bankPaidAt || p.date || p.paidAt; return typeof v === 'number' ? (v < 1e12 ? v * 1000 : v) : Date.parse(String(v || '').slice(0, 10) + 'T00:00:00Z'); };
-  const ownLinked = (o) => ownTxnIds.has(o.id)
+  // Own = confirmed to this unit, OR still open (unmatched/suggested) or
+  // confirmed with no unit and referenced by this unit's own PAID ledger rec
+  // (a heal whose confirm never landed). A dismissed («Not rent» / Undo) row
+  // is never own — a stale ledger reference must not launder a stranger's
+  // series (rev 7).
+  const ownTxnIds = new Set(Object.entries(cand.u.payments || {})
+    .filter(([k, p]) => /^\d{4}-\d{2}$/.test(k) && p && p.status === 'paid' && p.bankTxnId)
+    .map(([, p]) => p.bankTxnId));
+  const ownLinked = (o) => (ownTxnIds.has(o.id)
+      && ['unmatched', 'suggested', 'confirmed'].includes(o.matchState)
+      && (!o.matchedUnitId || String(o.matchedUnitId) === String(cand.u.id)))
     || (o.matchState === 'confirmed'
       && (String(o.matchedUnitId || '') === String(cand.u.id) || String(o.autoApplyTargetUnitId || '') === String(cand.u.id))
-      && (!o.matchedBuildingId || o.matchedBuildingId === cand.b.id))
-    || (o.matchState === 'dismissed' && ownPays.some(([, p]) => !p.bankTxnId
-      && Math.abs(Math.round((+p.amount || 0) * 100) - (+o.amount)) <= 1
-      && _methodFamily(_recPaymentMethod(p)) === 'bank'
-      && Math.abs(recMs(p) - (+o.transactedAt) * 1000) <= 3 * 86400000));
+      && (!o.matchedBuildingId || o.matchedBuildingId === cand.b.id));
   const recent = (ctx && Array.isArray(ctx.recentTxns)) ? ctx.recentTxns : ((ctx && Array.isArray(ctx.pendingTxns)) ? ctx.pendingTxns : []);
   const series = recent.some(o => isLive(o) && !ownLinked(o) && Math.abs(+o.amount - targetCents) <= 1
     && +o.transactedAt < tUnix && +o.transactedAt >= tUnix - 100 * 86400);
