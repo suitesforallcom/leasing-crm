@@ -58,6 +58,7 @@ function makeCtx(nowIso) {
     liftFn('_descNameTokens'),
     liftFn('_descNamesOther'),
     liftFn('_isAutoApplyContender'),
+    liftFn('_amountPaidRecentlyByOther'),
     liftFn('_monthInvoicedViaStripe'),
     liftFn('_unitRecentBankAmountsCents'),
     liftFn('_isMonthToMonth'),
@@ -276,7 +277,7 @@ function julie442(stripeStamps) {
   // …and an unpaid move-in deposit of that amount does too.
   const newcomer = { id: '412', status: 'occupied', contractRent: 900, deposit: 13318.33, leaseStart: '2026-10-01', until: '2027-09-30', payments: {} };
   eq(ctx._findAutoApplyCandidate(state(nuhsWithSep(), newcomer), txn('2026-10-14', 13318.33, 'Customer Deposit')).reason, 'ambiguous', 'unpaid move-in deposit of that amount → ambiguous');
-  const paidDep = Object.assign({}, newcomer, { payments: { deposit: { status: 'paid', amount: 13318.33 } } });
+  const paidDep = Object.assign({}, newcomer, { payments: { deposit: { status: 'paid', amount: 13318.33, paidAt: '2026-09-28' } } });
   eq(ctx._findAutoApplyCandidate(state(nuhsWithSep(), paidDep), txn('2026-10-14', 13318.33, 'Customer Deposit')).eligible, true, 'paid deposit is not a contender');
   // MS-R2: exact-cents amount, but the descriptor names another company.
   eq(ctx._findAutoApplyCandidate(state(nuhsWithSep()), txn('2026-10-14', 13318.33, 'ACME DENTAL LLC ACH PMT', { matchedUnitId: '101', matchedBuildingId: 'b1' })).reason, 'name-conflict', 'descriptor names someone else → name-conflict even when the matcher agrees');
@@ -299,6 +300,42 @@ function julie442(stripeStamps) {
   eq(outcome(makeCtx('2026-10-08T07:07:00Z')._findAutoApplyCandidate(state(two), txn('2026-10-07', 13318.33, 'Customer Deposit'))), [false, 'past-month-needs-manual', '2026-07'], 'Jul + Sep open → July (oldest) offered');
   eq(ctx._recPaymentMethod({ status: 'paid', bankTxnId: 'fc', stripe: { invoiceId: 'i', paidAt: 1 } }), 'ach', 'linked bank txn wins over a paid invoice id');
   eq(ctx._recPaymentMethod({ status: 'paid', paidVia: 'ach', stripe: { invoiceId: 'i' } }), 'ach', 'unpaid (failed) invoice id does not override an explicit method');
+}
+
+
+// ── 18. Third-review cases (Entry 89 rev 4) ──────────────────────────────
+{
+  const ctx = makeCtx('2026-10-03T07:07:00Z');
+  const bankPayer = (id, amt) => ({ id, status: 'occupied', tenant: 'Tenant ' + id, contractRent: amt, leaseStart: '2026-06-01', until: '2027-12-31',
+    payments: Object.fromEntries(['2026-06', '2026-07', '2026-08', '2026-09'].map(m => [m, bankFeedRec(amt, m + '-02', 'fc_' + id + m)])) });
+  // F1 L1: 315's rent was raised to $1,545 but the tenant still pays $1,500 = 210's rent.
+  const t315 = Object.assign(bankPayer('315', 1500), { contractRent: 1545 });
+  eq(ctx._findAutoApplyCandidate(state(bankPayer('210', 1500), t315), txn('2026-10-02', 1500, 'Customer Deposit')).reason, 'ambiguous',
+    'the same amount is paid by another unit → ambiguous (rent escalation case)');
+  // F1 L1c: a former tenant (vacant unit, tenantHistory) pays arrears equal to another rent.
+  const vacant207 = { id: '207', status: 'vacant', contractRent: 0, payments: {}, tenantHistory: [{ tenant: 'Old', payments: { '2026-08': bankFeedRec(1250, '2026-08-03', 'fc_old') } }] };
+  eq(ctx._findAutoApplyCandidate(state(bankPayer('412', 1250), vacant207), txn('2026-10-02', 1250, 'Customer Deposit')).reason, 'ambiguous',
+    "a former tenant's recent bank amount → ambiguous");
+  // F1 L1b: owner / internal transfer never auto.
+  eq(ctx._findAutoApplyCandidate(state(bankPayer('118', 2000)), txn('2026-10-02', 2000, 'TRANSFER DEPOSIT FROM ...1305')).reason, 'internal-transfer', 'transfer-from → never auto');
+  // Recurring outside series: the same amount already arrived unlinked last month.
+  const series = [{ id: 'fc_prev', amount: 200000, transactedAt: unix('2026-09-07T00:00:00Z'), matchState: 'unmatched' }];
+  eq(ctx._findAutoApplyCandidate(state(bankPayer('118', 2000)), txn('2026-10-02', 2000, 'Customer Deposit'), { pendingTxns: series }).reason, 'ambiguous',
+    'same amount keeps arriving unlinked → ambiguous');
+  // Another open suggestion already points at this unit (early payer, operator lag).
+  const openSug = [{ id: 'fc_a', amount: 199900, transactedAt: unix('2026-09-28T00:00:00Z'), matchState: 'suggested', matchedUnitId: '118', matchedBuildingId: 'b1' }];
+  eq(ctx._findAutoApplyCandidate(state(bankPayer('118', 2000)), txn('2026-10-02', 2000, 'Customer Deposit'), { pendingTxns: openSug }).reason, 'ambiguous',
+    'another open suggestion for the unit → ambiguous');
+  // Control: the same unit with no such signals auto-applies.
+  eq(ctx._findAutoApplyCandidate(state(bankPayer('118', 2000)), txn('2026-10-02', 2000, 'Customer Deposit'), { pendingTxns: [] }).eligible, true, 'control: clean bank payer still auto-applies');
+  // R3-2: a previous tenant's leaked PAID deposit does not hide the newcomer's unpaid one.
+  const newcomer = { id: '318n', status: 'occupied', contractRent: 900, deposit: 1500, leaseStart: '2026-09-20', until: '2027-09-30',
+    payments: { deposit: { status: 'paid', amount: 1500, paidAt: '2026-02-01' } } };
+  eq(ctx._findAutoApplyCandidate(state(bankPayer('318', 1500), newcomer), txn('2026-10-02', 1500, 'Customer Deposit')).reason, 'ambiguous',
+    "leaked previous tenant's paid deposit → the newcomer's unpaid deposit still counts → ambiguous");
+  // R3-5: bank boilerplate is not a name.
+  eq(ctx._descNamesOther('REMOTE DEPOSIT CAPTURE', { tenant: 'X Corp' }), false, 'remote deposit capture is generic');
+  eq(ctx._descNamesOther('ONLINE TRANSFER FROM CHK 1234', { tenant: 'X Corp' }), false, 'online transfer from chk is generic');
 }
 
 console.log(`auto-apply-candidate.test: ${passed} passed, ${failed} failed`);

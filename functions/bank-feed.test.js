@@ -671,6 +671,23 @@ const cachedTxns = () => ({
     eq(w3.docs.get('fctxn_df').matchState, 'confirmed', 'decide-once: first-look eligible txn still auto-applies');
   }
 
+  // ── 8g. Entry 89 rev 4: a PENDING first look is not a judgement — it auto-applies once posted ──
+  {
+    const w = makeWorld({ conns: [], accounts: {}, txns: {} });
+    w.strip = true;
+    w.state.settings = { syncV2: true, syncBuildingsStrip: true };
+    w.state.buildings = [{ id: 'b1', floors: [{ id: 'f1', units: [{ id: '101', tenant: 'NUHS', rent: 2250, outreach: [] }] }] }];
+    w.docs.set('fctxn_p', { id: 'fctxn_p', accountId: FCA, amount: 225000, description: 'Customer Deposit', transactedAt: T_NEWEST, matchState: 'unmatched', status: 'pending' });
+    const fin = w.ctx._findAutoApplyCandidate;
+    w.ctx._findAutoApplyCandidate = (st, txn, ctx) => (txn.status === 'pending' ? { eligible: false, reason: 'not-posted' } : fin(st, txn, ctx));
+    await w.autoApply(FCA);
+    eq(w.docs.get('fctxn_p').autoApplyEvaluatedAt, undefined, 'pending first look is NOT stamped');
+    w.docs.get('fctxn_p').status = 'posted';
+    await w.autoApply(FCA);
+    eq(w.docs.get('fctxn_p').matchState, 'confirmed', 'after posting it auto-applies');
+    eq(w.paymentsCol.size, 1, 'exactly one ledger rec');
+  }
+
   // ── 9. Undo: ledger delete first, loud on failure ──────────────────
   {
     const mkU = () => {

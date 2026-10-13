@@ -395,8 +395,8 @@ if fn_has "^function _methodFamily\(" "'cash', 'bank'\]" 6 \
    && fn_has "^exports\.bankFeedScheduledPoll = " "await _autoApplyAfterPoll\(c\.stripeFcAccountId\)" 140 \
    && fn_has "^function _recPaymentMethod\(" "p\.bankTxnId \|\| p\.source === .bank-feed." 10 \
    && fn_has "^function _unitPrimaryPaymentMethod\(" "_ymInLease\(u, k\)" 8 \
-   && fn_has "^function _findAutoApplyCandidate\(" "if \(ym < currentYm\) \{" 120 \
-   && fn_has "^function _findAutoApplyCandidate\(" "if \(ym > currentYm\) \{" 130 \
+   && fn_has "^function _findAutoApplyCandidate\(" "if \(ym < currentYm\) \{" 180 \
+   && fn_has "^function _findAutoApplyCandidate\(" "if \(ym > currentYm\) \{" 180 \
    && fn_has "^function _findAutoApplyCandidate\(" "_txnYm\(txn\) !== ym" 150 \
    && fn_has "^function _findAutoApplyCandidate\(" "reason: 'name-conflict'" 120 \
    && fn_has "^function _findAutoApplyCandidate\(" "_methodFamily\(primary\) !== 'bank' \|\| incomingFamily !== 'bank'" 220 \
@@ -407,8 +407,13 @@ if fn_has "^function _methodFamily\(" "'cash', 'bank'\]" 6 \
    && fn_has "^function _findAutoApplyCandidate\(" "_monthInvoicedViaStripe\(cand\.u, ym\)" 230 \
    && fn_has "^function _unitPrimaryPaymentMethod\(" "return 'unknown';" 6 \
    && fn_has "^async function _autoApplyAfterPoll\(" "const decided = !!\(txn\.autoApplyEvaluatedAt \|\| txn\.autoApplyBlockedReason\)" 80 \
-   && fn_has "^async function _autoApplyAfterPoll\(" "if \(decided\) \{ skipped\+\+; continue; \}" 90; then
-  echo "  ✓ Entry 89: auto-apply — 'bank' family survives the gate, webhook/bank-feed recs carry a method, next month last, cron auto-apply, positive bank evidence, arrival-month + current-month + no-arrears + name/contender/amount/invoice gates, decide-once"
+   && fn_has "^async function _autoApplyAfterPoll\(" "if \(decided\) \{ skipped\+\+; continue; \}" 90 \
+   && fn_has "^async function _autoApplyAfterPoll\(" "_findAutoApplyCandidate\(state, txn, \{ pendingTxns \}\)" 90 \
+   && fn_has "^async function _autoApplyAfterPoll\(" "\['not-posted', 'not-credit'\]\.includes\(check\.reason\)" 100 \
+   && fn_has "^function _findAutoApplyCandidate\(" "reason: 'internal-transfer'" 100 \
+   && fn_has "^function _findAutoApplyCandidate\(" "otherOpen \|\| _amountPaidRecentlyByOther\(state, cand, targetCents, nowMs\)" 120 \
+   && fn_has "^function _isAutoApplyContender\(" "at\(dep\.paidAt \|\| dep\.date\) >= sinceMs" 25; then
+  echo "  ✓ Entry 89: auto-apply — 'bank' family survives the gate, webhook/bank-feed recs carry a method, next month last, cron auto-apply, positive bank evidence, arrival-month + current-month + no-arrears + name/contender/amount/invoice/series/transfer gates, decide-once (pending not stamped)"
 else
   echo "  ✗ Entry 89 guard missing (_methodFamily 'bank' / _recPaymentMethod / next-month-last in _findOldestUnpaidYm / cron auto-apply)"
   FAIL=1

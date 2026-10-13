@@ -294,9 +294,14 @@ A bank transaction may be auto-applied to `u.payments[ym]` if and only if:
    name matcher does not point the txn at a different unit and the bank
    description does not name somebody else; no `reserved` / not-yet-started
    tenancy or unpaid move-in deposit has the same amount; no Stripe rent
-   invoice was issued for ym or a later month (Entry 89)
+   invoice was issued for ym or a later month; nobody else (another unit,
+   a former tenant) paid this exact amount by bank in ~120 days; the amount
+   did not already arrive unlinked in ~100 days; no other open suggestion
+   points at the unit; the description is not a «TRANSFER … FROM …»
+   (Entry 89)
 8a. **Decide once** (Entry 89): a txn whose first evaluation was not
-   eligible (deferred or skipped) is stamped and never auto-applies later.
+   eligible (deferred or skipped) is stamped and never auto-applies later
+   (a pending/debit first look is not a judgement and is not stamped).
 9. The global `state.settings.autoApplyEnabled` is not explicitly `false`
 
 If ANY of these fail → fall back to operator manual review
