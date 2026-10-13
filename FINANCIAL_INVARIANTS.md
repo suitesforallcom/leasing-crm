@@ -268,18 +268,35 @@ A bank transaction may be auto-applied to `u.payments[ym]` if and only if:
    the bank amount (composite-fingerprint identity)
 5. That unit has at least one **unpaid month** within the active
    lease window
-6. **The matched ym EQUALS current server month** (current-month-only
+6. **The matched ym EQUALS current server month AND the month the money
+   arrived** (Entry 89 — a deposit from an earlier month never lands on the
+   current month automatically), **and no older month of the current lease
+   (up to 6 back) is open** (else the oldest open month is offered for
+   manual approval) (current-month-only
    gate — past + future both require operator approval; mirrors Yardi
    «Pending Cash Application» queue, AppFolio prepayment-review,
    Buildium «Apply to past period?» modal, MRI T+0 only auto-apply,
    Stripe ≤ 30d auto-match, QuickBooks period locks)
-7. **Payment-method consistency:** if the unit has ≥60% of recent
-   payments via one method family (Stripe vs bank), the incoming
-   bank-txn must match that family. A bank deposit cannot auto-apply
+7. **Payment-method consistency:** the unit must be a PROVEN bank payer —
+   ≥2 of its own records inside the current lease window, ≥60% bank family
+   (Entry 89: «unknown» history is manual, never auto) — and the credit
+   must not be a Stripe payout. A bank deposit cannot auto-apply
    to a Stripe-history tenant (and vice versa). Caught the
    Lex-Wagner-style case where a generic «Customer Deposit» could
    match by amount alone but belonged to a different tenant.
-8. The unit does NOT have `autoApplyDisabled === true`
+   A record's method (`_recPaymentMethod`, Entry 89): `backfill` stays
+   backfill → a linked bank txn (`bankTxnId` / `source:'bank-feed'`) ⇒ bank
+   → a webhook-PAID invoice (`stripe.invoiceId` + `stripe.paidAt`) ⇒ stripe →
+   explicit `paidMethod`/`paidVia` → a bare `stripe.invoiceId` ⇒ stripe.
+   The deposit must also equal, to the cent, one of the unit's 3 newest
+   in-lease bank payments.
+8. The unit does NOT have `autoApplyDisabled === true`; the ingest-time
+   name matcher does not point the txn at a different unit and the bank
+   description does not name somebody else; no `reserved` / not-yet-started
+   tenancy or unpaid move-in deposit has the same amount; no Stripe rent
+   invoice was issued for ym or a later month (Entry 89)
+8a. **Decide once** (Entry 89): a txn whose first evaluation was not
+   eligible (deferred or skipped) is stamped and never auto-applies later.
 9. The global `state.settings.autoApplyEnabled` is not explicitly `false`
 
 If ANY of these fail → fall back to operator manual review
@@ -295,7 +312,7 @@ Suggestions card:
 | Reason | matchSource | Pill | Color |
 |---|---|---|---|
 | ym < current month | `auto-apply-past-month-deferred` | 🔒 Past month — approve manually | Orange |
-| ym > current month | `auto-apply-future-month-deferred` | 📅 Future month — approve manually | Purple/Indigo |
+| ym > current month, or the money arrived in an earlier month (Entry 89) | `auto-apply-future-month-deferred` | 📅 Future month — approve manually | Purple/Indigo |
 | Method family mismatch | `auto-apply-method-mismatch-deferred` | 🔀 Method mismatch — usually X | Pink/Fuchsia |
 
 All deferred docs carry:

@@ -60,6 +60,37 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 89. Bank-feed auto-apply never fired for bank-paying tenants; month picked one ahead; cron never auto-applied (bank feed / auto-apply, 2026-10-13)
+
+**Symptom:** Suite 101 (National University of Health Sciences) pays $13,318.33 every month by bank deposit («Customer Deposit»), yet every deposit had to be linked by hand. The 2026-09-08 deposit sat as a suggestion for **October** with 🔀 «method mismatch», so the unit showed «2 unpaid months $26,636» while September was in the bank. Counter-case: on 2026-10-01 a nameless $2,200 «Customer Deposit» from another payer was matched by amount to Suite 442 (Julie Sanatine), who pays through Stripe (Tony 2026-10-13: October was never paid by her).
+
+**Root cause (four defects in `functions/index.js`):**
+1. `_unitPrimaryPaymentMethod` returns a FAMILY (`'bank'`), and the gate in `_findAutoApplyCandidate` mapped it through `_methodFamily` again — `'bank'` was not in its list and fell to `'other'`. Every ach/check/wire tenant was a permanent `method-mismatch`.
+2. `_findOldestUnpaidYm` `unshift`-ed the NEXT month to the front of its search list, so a payment that arrived on the 8th for the current month was offered for the following month.
+3. `_unitPrimaryPaymentMethod` read only `paidMethod`/`paidVia`. The invoice.paid webhook nests the method (`stripe.invoiceId`, no `paidVia`); `confirmBankMatch` writes `bankTxnId` + `source:'bank-feed'`. Stripe payers looked «unknown», and «unknown» let a nameless deposit through on amount alone.
+4. `bankFeedScheduledPoll` (hourly cron; a connection without `pollIntervalHours` is pulled every 24 h) only PULLED transactions — `_autoApplyAfterPoll` ran solely inside `pollBankTransactions`, i.e. when someone clicked Refresh.
+
+**Fix:**
+- `_methodFamily` accepts `'bank'`; new `_recPaymentMethod(p)` (backfill → linked bank txn ⇒ ach → webhook-PAID invoice ⇒ stripe → explicit method → bare invoice id ⇒ stripe); `_unitPrimaryPaymentMethod` counts only recs inside the CURRENT lease window (`_ymInLease` — a previous tenant's leaked recs, Entry 83, carry no signal).
+- `_findOldestUnpaidYm`: txn month → 1–6 months back → next month LAST.
+- `_findAutoApplyCandidate` auto-applies only when ALL hold: (a) exactly one occupied unit within ±$1 AND no contender at that amount — a `reserved` or not-yet-started tenancy at that rent, or an unpaid move-in deposit (lease started ≤ 60 days ago) of that amount (`_isAutoApplyContender`) → else `ambiguous`; (b) the ingest-time name matcher does not point at another unit/building and the description does not NAME someone other than the candidate (`_descNamesOther`; generic «Customer Deposit»/«TRANSFER DEPOSIT FROM…» names nobody; bank-truncated own names pass) → else `name-conflict`; (c) the unit is a PROVEN bank payer (`_methodFamily(primary) === 'bank'`: ≥2 own in-lease recs, ≥60% bank, ISO lease start required) and the credit is not a Stripe payout — checked BEFORE the month gates so every deferred suggestion for a Stripe/«unknown» tenant carries the 🔀 warning → else `method-mismatch` (`primaryMethod:'unknown'` for no-history tenants); (d) the amount equals, to the cent, one of the unit's 3 newest in-lease bank payments → else `amount-changed`; (e) ym = current server month (§XI #6) and = the month the money ARRIVED (`_txnYm`) → else past/future suggestion; (f) no older month of the lease (6 back) is open → else a past suggestion for the OLDEST open month; (g) no Stripe rent invoice issued for ym or a later month (`_monthInvoicedViaStripe`: `lastInvoiceYm`/`autoSentYm` ≥ ym, or `moveInRent.ym` = ym) → else `stripe-invoiced`.
+- `_autoApplyAfterPoll` decides ONCE: the first non-eligible outcome of a txn is stamped (`autoApplyEvaluatedAt`, `autoApplyFirstOutcome`; deferred suggestions get `autoApplyEvaluatedAt` too) and a stamped/deferred txn never auto-applies on a later run — the state it was judged against changes (rent edits, a twin vacated, a month recorded by hand, invoice stamps moving). A first-look eligible txn whose ledger write failed is not stamped and retries (Entry 81).
+- `bankFeedScheduledPoll` runs `_autoApplyAfterPoll` after each successful pull (same never-throwing secondary step as the callable).
+
+**Review:** a 3-lens adversarial review (6 agents) of the first version returned DO-NOT-SHIP: with the cron on and «unknown» passing, the stranger's $2,200 would have auto-applied to 442 October once the November invoice moved the `lastInvoiceYm`/`autoSentYm` stamps (~10-22) or after a void — `_monthHasStripeInvoice` was the only barrier. Also confirmed: leaked previous-tenant recs opened the gate, a previous-month deposit could land on the current month via the next-month slot, the current month could be paid while an older month stayed open, an amount-only match could override the name matcher, company-name ACH («REGUS MANAGEMENT») read as non-bank. All closed by the rules above and pinned by tests.
+
+**Second review (4 agents) of rev 2:** DO-NOT-SHIP again — daily re-judging let deferred/ambiguous txns flip to auto later (S4: one deposit, two paid months); a reserved twin / prospect deposit never made the amount ambiguous; the name guard could not fire for exact-cents matches; an October invoice became invisible behind November stamps; a stale `matchSource` bypassed the name guard; deferrals carried no method warning. Closed by (a)–(g) + decide-once above.
+
+**Pre-deploy dry run (live data, final rules):** see the deploy report — nothing is auto-applied on deploy.
+
+**Data (same day, operator-approved):** 442 October bank-feed record removed and txn `fctxn_1UH9042nq2bZh3q6s3uQTwdd` returned to unmatched (undo in `audit/datafix-442-oct-unpay-20261013`); 101 September confirmed to `fctxn_1UDlDd2nq2bZh3q6Jrp4ZOpV`.
+
+- **Invariant:** `_methodFamily` accepts its own outputs; auto-apply needs POSITIVE bank evidence (never «unknown») plus the tenant's own recent amount, ym = current month = arrival month, no older open month, no contender, no name conflict, no Stripe invoice for ym or later; method history is lease-scoped; a txn is judged ONCE; both `pollBankTransactions` and `bankFeedScheduledPoll` run `_autoApplyAfterPoll`; the `autoApplied === false` (operator undo) exclusion is unchanged.
+- **Status:** active
+- **Regression test:** `node functions/auto-apply-candidate.test.js` (51 assertions, 17 scenarios, real functions lifted from index.js, pinned clock, TZ=UTC); `node functions/bank-feed.test.js` cases 3b (cron calls auto-apply after the pull is durable) and 8f (decide-once with the real `_autoApplyAfterPoll`); `scripts/check-invariants.sh` Entry 89 gate
+- **Related PR / issue:** none
+- **Still open (not in this fix):** a deposit that posts on the last day of a month and is first polled the next day stays manual (§XI #6); a new bank tenant is manual until 2 of their own months are recorded; a rent change is manual for the first month at the new amount; the arrival-month mismatch reuses the 📅 «future month» bucket (its client tooltip says the period has not started); method-mismatch pill reads «usually unknown» for no-history tenants (client label); a proven bank payer billed through Stripe is never auto-applied (`stripe-invoiced`, by design); `confirmBankMatch` month recs still carry no `date`/`paidVia` («Paid —» / «Method not recorded»); pre-existing races — the auto-apply confirm and the deferred-suggestion write are blind `set(merge)` with no matchState precondition.
+
 ### 88. Suite group swallowed same-numbered suites from OTHER buildings — Life Matters October invoice never went out (groups/billing, 2026-10-02)
 
 **Symptom:** Life Matters Counseling Center (Tech Data, Suite 104, lease $2,981.25/mo from 2026-09-01) got no October invoice — neither from the cron (send day 2026-09-21) nor from the New Invoice modal (tenant field empty; every Life Matters row refused with «no rent set» / «no email»).
@@ -2150,7 +2181,7 @@ After first-pass fix deployed, Suite 401 still rendered wrong: green «Sent» (b
     month» check (bypasses matcher's 60-point threshold which is too
     strict for `Customer Deposit`-style descriptions).
   - Server: `_autoApplyAfterPoll(fcAccountId)` — called from
-    `pollBankTransactions` after each account's pull. Scans
+    `pollBankTransactions` (and, since Entry 89, `bankFeedScheduledPoll`) after each account's pull. Scans
     `matchState in ['unmatched','suggested']`, applies eligible.
     Returns `{applied, skipped, candidates}`.
   - Server: `undoAutoAppliedPayment` callable — operator reverses an

@@ -420,6 +420,28 @@ const cachedTxns = () => ({
     eq(since, tPrev - 14 * DAY, 'healthy: next window anchored at freshThroughUnix − 14d');
   }
 
+  // ── 3b. Entry 89: the cron runs auto-apply after a successful pull ────
+  {
+    const tPrev = T_NOW - 1 * DAY;
+    const acct = { id: FCA, status: 'active', _customer: 'cus_op', institution_name: 'Capital One', last4: '5709',
+      transaction_refresh: { id: 'r', last_attempted_at: tPrev, next_refresh_available_at: tPrev + 3600, status: 'succeeded' } };
+    const conn = incidentConn({ lastPolledAt: new Date((T_NOW - 25 * 3600) * 1000).toISOString() });
+    const w = makeWorld({ conns: [conn], accounts: { [FCA]: acct }, txns: { [FCA]: [{ id: 'fctxn_nuhs', transacted_at: T_NOW - DAY, amount: 1331833 }] } });
+    const calls = [];
+    w.ctx._autoApplyAfterPoll = async (fcId) => {
+      // Runs AFTER the pull is durable: the new txn is stored and the poll is marked.
+      calls.push([fcId, w.docs.has('fctxn_nuhs'), w.conn(FCA).lastPolledAt !== conn.lastPolledAt]);
+      return { applied: 1, skipped: 0, candidates: 1 };
+    };
+    await w.fns.bankFeedScheduledPoll();
+    eq(calls, [[FCA, true, true]], 'cron: auto-apply runs once, after the txn is stored and the poll is marked');
+    // A failing auto-apply never undoes the poll.
+    const w2 = makeWorld({ conns: [incidentConn({ lastPolledAt: new Date((T_NOW - 25 * 3600) * 1000).toISOString() })], accounts: { [FCA]: acct }, txns: { [FCA]: [] } });
+    w2.ctx._autoApplyAfterPoll = async () => { throw new Error('boom'); };
+    await w2.fns.bankFeedScheduledPoll();
+    ok(w2.conn(FCA).lastPolledAt !== conn.lastPolledAt, 'cron: poll stays marked when auto-apply throws');
+  }
+
   // ── 4. Active account, refresh failed (transient) → anchor pinned ────
   {
     const acct = { id: FCA, status: 'active', _customer: 'cus_op', institution_name: 'Capital One', last4: '5709',
@@ -609,6 +631,44 @@ const cachedTxns = () => ({
     const rec8 = w8.paymentsCol.get(key).rec;
     eq([rec8.status, rec8.wasDiscounted, rec8.discountAmount, rec8.originalAmount], ['paid', true, 50, 2300], 'prior rec: discount fields carried over');
     eq(rec8.history && rec8.history[0] && rec8.history[0].status, 'pending', 'prior rec: previous state in history');
+  }
+
+  // ── 8f. Entry 89: decide ONCE — a txn judged non-eligible never flips to auto later ──
+  {
+    const mk = () => {
+      const w = makeWorld({ conns: [], accounts: {}, txns: {} });
+      w.strip = true;
+      w.state.settings = { syncV2: true, syncBuildingsStrip: true };
+      w.state.buildings = [{ id: 'b1', floors: [{ id: 'f1', units: [{ id: '101', tenant: 'NUHS', rent: 2250, outreach: [] }] }] }];
+      w.docs.set('fctxn_df', { id: 'fctxn_df', accountId: FCA, amount: 225000, description: 'Customer Deposit', transactedAt: T_NEWEST, matchState: 'unmatched' });
+      return w;
+    };
+    const real = (w) => w.ctx._findAutoApplyCandidate;
+    // Skipped outcome (e.g. ambiguous) is stamped, and a later eligible judgement is ignored.
+    const w = mk();
+    const eligibleFinder = real(w);
+    w.ctx._findAutoApplyCandidate = () => ({ eligible: false, reason: 'ambiguous' });
+    await w.autoApply(FCA);
+    const t1 = w.docs.get('fctxn_df');
+    ok(!!t1.autoApplyEvaluatedAt, 'decide-once: first non-eligible look is stamped');
+    eq(t1.autoApplyFirstOutcome, 'ambiguous', 'decide-once: first outcome recorded');
+    w.ctx._findAutoApplyCandidate = eligibleFinder;
+    const r = await w.autoApply(FCA);
+    eq([w.paymentsCol.size, r.applied, w.docs.get('fctxn_df').matchState], [0, 0, 'unmatched'], 'decide-once: later eligible judgement does NOT auto-apply');
+    // Deferred outcome (past month) is stamped too and stays manual.
+    const w2 = mk();
+    const fin2 = real(w2);
+    w2.ctx._findAutoApplyCandidate = (st, txn) => { const c = fin2(st, txn); return { eligible: false, reason: 'past-month-needs-manual', candidate: c.candidate }; };
+    await w2.autoApply(FCA);
+    ok(!!w2.docs.get('fctxn_df').autoApplyEvaluatedAt, 'decide-once: deferred suggestion is stamped');
+    eq(w2.docs.get('fctxn_df').matchState, 'suggested', 'decide-once: deferred → suggested');
+    w2.ctx._findAutoApplyCandidate = fin2;
+    await w2.autoApply(FCA);
+    eq(w2.paymentsCol.size, 0, 'decide-once: deferred txn never auto-applies later');
+    // A fresh txn judged eligible on its FIRST look is applied (no regression).
+    const w3 = mk();
+    await w3.autoApply(FCA);
+    eq(w3.docs.get('fctxn_df').matchState, 'confirmed', 'decide-once: first-look eligible txn still auto-applies');
   }
 
   // ── 9. Undo: ledger delete first, loud on failure ──────────────────

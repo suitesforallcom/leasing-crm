@@ -9015,7 +9015,16 @@ exports.bankFeedScheduledPoll = onSchedule(
           source: 'bankFeedScheduledPoll',
         });
         totalWritten += r.written;
-        logger.info(`[bank-feed] cron ${c.stripeFcAccountId}: scanned=${r.scanned} written=${r.written} stripe=${r.accountStatus || '?'} refresh=${r.refreshStatus || '?'}${r.transactionRefreshTriggered ? ' (refresh-triggered)' : ''}`);
+        // Entry 89: the cron ran the pull but never the auto-apply — matching
+        // happened only when someone clicked Refresh. Same secondary,
+        // never-throwing step as pollBankTransactions.
+        let autoApply = { applied: 0, skipped: 0, candidates: 0 };
+        try {
+          autoApply = await _autoApplyAfterPoll(c.stripeFcAccountId);
+        } catch (autoErr) {
+          logger.error(`[auto-apply] cron ${c.stripeFcAccountId} failed:`, autoErr);
+        }
+        logger.info(`[bank-feed] cron ${c.stripeFcAccountId}: scanned=${r.scanned} written=${r.written} stripe=${r.accountStatus || '?'} refresh=${r.refreshStatus || '?'}${r.transactionRefreshTriggered ? ' (refresh-triggered)' : ''} | auto-apply: applied=${autoApply.applied || 0} skipped=${autoApply.skipped || 0}/${autoApply.candidates || 0}`);
       } catch (err) {
         logger.error(`[bank-feed] cron ${c.stripeFcAccountId} failed:`, err);
       }
@@ -9321,9 +9330,68 @@ function _matchTransaction(state, txn) {
 //   4. Exactly ONE unit in the workspace has rent within ±$1 of bank amount
 //   5. That unit has at least one UNPAID month (status != 'paid')
 //   6. Per-unit autoApplyDisabled === false
+//   + Entry 89 (2026-10-13): no reserved/future-tenancy/unpaid-deposit
+//     contender at that amount; no name conflict; the unit is a PROVEN bank
+//     payer and the amount equals one of its own recent bank payments; ym =
+//     current month = month the money arrived; no older open month; no Stripe
+//     invoice issued for ym or later. See FINANCIAL_INVARIANTS §XI.
 //
 // Returns: { eligible: bool, candidate: { unit, b, f, ym } | null, reason }
 const _AUTO_APPLY_TOLERANCE_CENTS = 100; // $1.00
+
+// Entry 89: bank descriptors that name nobody («Customer Deposit»,
+// «TRANSFER DEPOSIT FROM …1305», «ACH CREDIT PPD»).
+const _AUTO_APPLY_GENERIC_WORDS = new Set(['customer', 'deposit', 'deposits', 'mobile', 'atm', 'branch', 'check', 'checks', 'cheque', 'remote', 'online', 'transfer', 'transfers', 'from', 'ach', 'credit', 'payment', 'payments', 'pmt', 'pymt', 'pymnt', 'pymnts', 'ppd', 'ccd', 'web', 'tel', 'edi', 'settlement', 'wire', 'incoming', 'inbound', 'zelle', 'venmo', 'stripe', 'the', 'and', 'for', 'inc', 'llc', 'corp', 'corporation', 'company', 'ltd', 'pllc', 'llp', 'rent']);
+function _descNameTokens(s) {
+  return _normalizeForMatch(s).split(' ')
+    .filter(t => t.length >= 3 && !/^\d+$/.test(t) && !_AUTO_APPLY_GENERIC_WORDS.has(t));
+}
+// Entry 89: true when the description NAMES someone and that someone is not
+// this unit's tenant/company (bank truncates names to 16 chars → prefix match).
+function _descNamesOther(desc, u) {
+  const dt = _descNameTokens(desc);
+  if (!dt.length) return false;
+  const nt = _descNameTokens([u.tenant, u.company].filter(Boolean).join(' '));
+  return !dt.some(a => nt.some(b => a === b || (a.length >= 4 && b.startsWith(a)) || (b.length >= 4 && a.startsWith(b))));
+}
+// Entry 89: a unit that may legitimately send this exact amount although it
+// is not an occupied rent candidate (or that makes its own payment ambiguous):
+// reserved / not-yet-started tenancy at that rent, or an unpaid move-in
+// deposit of that amount (lease started ≤ 60 days ago or later).
+function _isAutoApplyContender(u, targetCents, nowMs) {
+  if (!u || u.deletedAt) return false;
+  const near = (dollars) => {
+    const c = Math.round((+dollars || 0) * 100);
+    return c > 0 && Math.abs(targetCents - c) <= _AUTO_APPLY_TOLERANCE_CENTS;
+  };
+  const ls = Date.parse(String(u.leaseStart || '').slice(0, 10) + 'T00:00:00Z');
+  const futureLease = Number.isFinite(ls) && ls > nowMs;
+  const recentMoveIn = Number.isFinite(ls) && ls > nowMs - 60 * 86400000;
+  if ((u.status === 'reserved' || futureLease) && near((+u.contractRent) || (+u.rent) || 0)) return true;
+  const depPaid = (u.payments && u.payments.deposit && u.payments.deposit.status === 'paid')
+    || (u.stripe && u.stripe.depositInvoice && u.stripe.depositInvoice.status === 'paid');
+  if (!depPaid && recentMoveIn && near(u.deposit)) return true;
+  return false;
+}
+// Entry 89: any Stripe rent invoice issued for ym or a LATER month — the cron
+// moves lastInvoiceYm/autoSentYm forward each month, so «=== ym» stops seeing
+// the still-open invoice of ym once the next one is sent.
+function _monthInvoicedViaStripe(u, ym) {
+  const st = (u && u.stripe) || {};
+  if (st.lastInvoiceYm && st.lastInvoiceYm >= ym) return true;
+  if (st.autoSentYm && st.autoSentYm >= ym) return true;
+  if (st.moveInRent && st.moveInRent.ym === ym && st.moveInRent.status !== 'void') return true;
+  return false;
+}
+// Entry 89: amounts (cents) of this tenant's 3 newest in-lease bank payments.
+function _unitRecentBankAmountsCents(u) {
+  return Object.entries((u && u.payments) || {})
+    .filter(([k, p]) => /^\d{4}-\d{2}$/.test(k) && p && p.status === 'paid' && _ymInLease(u, k)
+      && _methodFamily(_recPaymentMethod(p)) === 'bank')
+    .sort((a, b) => b[0].localeCompare(a[0]))
+    .slice(0, 3)
+    .map(([, p]) => Math.round((+p.amount || 0) * 100));
+}
 
 function _findAutoApplyCandidate(state, txn) {
   if ((txn.status || '').toLowerCase() !== 'posted') {
@@ -9337,12 +9405,15 @@ function _findAutoApplyCandidate(state, txn) {
     return { eligible: false, reason: 'manually-linked' };
   }
   const targetCents = +txn.amount;
+  const nowMs = Date.now();
   // Сборка кандидатов: для каждого юнита считаем effective rent (head
   // лиза в multi-suite group). Допуск ±$1 cents.
   const candidates = [];
+  let contenders = 0;   // Entry 89: reserved / future tenancy / unpaid move-in deposit at this amount
   for (const b of (state.buildings || [])) {
     for (const f of (b.floors || [])) {
       for (const u of (f.units || [])) {
+        if (_isAutoApplyContender(u, targetCents, nowMs)) contenders++;
         if (u.status !== 'occupied') continue;
         if (u.deletedAt) continue; // archived
         if (u.groupId && u.groupRole !== 'primary') continue; // только head в группе
@@ -9371,76 +9442,99 @@ function _findAutoApplyCandidate(state, txn) {
   if (candidates.length === 0) {
     return { eligible: false, reason: 'no-amount-match' };
   }
-  if (candidates.length > 1) {
-    // Ambiguous — несколько unit'ов на ту же сумму. Tony's choice:
-    // skip → manual review queue.
-    return { eligible: false, reason: 'ambiguous', candidates: candidates.length };
+  if (candidates.length > 1 || contenders > 0) {
+    // Ambiguous — несколько unit'ов на ту же сумму (или reserved / будущий
+    // арендатор / неоплаченный депозит на ту же сумму, Entry 89). Tony's
+    // choice: skip → manual review queue.
+    return { eligible: false, reason: 'ambiguous', candidates: candidates.length + contenders };
   }
   const cand = candidates[0];
-  // Найти oldest unpaid month у этого юнита.
+  // Найти unpaid month у этого юнита (месяц txn → назад → следующий последним).
   const ym = _findOldestUnpaidYm(cand.u, txn);
   if (!ym) {
     return { eligible: false, reason: 'no-unpaid-month' };
   }
-  // CURRENT-MONTH-ONLY GATE (Tony 2026-05-22 — строжe чем future-allowed):
-  //   - ym < currentYm  → past, требует manual approval
-  //   - ym > currentYm  → future, тоже требует manual approval (Tony's
-  //                       rule: «не применяй автоматом наперед если
-  //                       месяц еще не начался»)
-  //   - ym === currentYm → eligible (subject to остальные gates)
-  //
-  // Mirror industry standard:
-  //   Yardi: «Pending Cash Application» queue для past
-  //   AppFolio: «back-period matches» off + «advance payment review»
-  //   Buildium: explicit modal для past AND prepayment
-  //   MRI: T+0 only auto-apply (strict)
-  //
-  // Prepayment-period (future) auto-apply закрывает рент за месяц,
-  // которого ещё не было — оператор может не знать что tenant решил
-  // прокатить полгода вперёд, или это ошибка ввода. Operator-confirm.
-  const currentYm = _serverCurrentYm();
-  if (ym < currentYm) {
-    return {
-      eligible: false,
-      reason: 'past-month-needs-manual',
-      candidate: { u: cand.u, b: cand.b, f: cand.f, ym, rentCents: cand.rentCents, delta: cand.delta },
-    };
-  }
-  if (ym > currentYm) {
-    return {
-      eligible: false,
-      reason: 'future-month-needs-manual',
-      candidate: { u: cand.u, b: cand.b, f: cand.f, ym, rentCents: cand.rentCents, delta: cand.delta },
-    };
+  const candidate = (extra) => Object.assign(
+    { u: cand.u, b: cand.b, f: cand.f, ym, rentCents: cand.rentCents, delta: cand.delta }, extra || {});
+
+  // Entry 89: the ingest-time name matcher pointed this deposit at a
+  // DIFFERENT unit, or the description names somebody else — the
+  // amount-only candidate is not trustworthy.
+  const nameUnit = txn.matchedUnitId && !String(txn.matchSource || '').startsWith('auto-apply') ? String(txn.matchedUnitId) : '';
+  if ((nameUnit && (nameUnit !== String(cand.u.id)
+      || (txn.matchedBuildingId && txn.matchedBuildingId !== cand.b.id)))
+      || _descNamesOther(txn.description, cand.u)) {
+    return { eligible: false, reason: 'name-conflict' };
   }
 
   // PAYMENT METHOD CONSISTENCY (Tony 2026-05-22 — «обращай внимание на
-  // тот как были оплачены предыдущие платежи каким способом»). Tenant
-  // history определяет primary payment method. Bank-feed deposit
-  // = ACH; если unit обычно платит через Stripe/credit card, это
-  // mismatch — НЕ применяй автоматом, оператору решать.
+  // тот как были оплачены предыдущие платежи каким способом»). Lex Wagner
+  // Suite 433: всегда платит через Stripe, но cron нашёл $1500 ACH deposit
+  // и применил его — депозит принадлежал другому tenant'у.
   //
-  // Lex Wagner Suite 433 case: всегда платит через Stripe, но cron
-  // нашёл $1500 ACH deposit и применил его. Это была ошибка — этот
-  // депозит принадлежит другому tenant'у. Method consistency предотвратит.
+  // Entry 89: POSITIVE evidence required — the unit must be a bank payer
+  // (≥2 of its own in-lease recs, ≥60% bank family). 'unknown' (new tenant,
+  // thin or mixed history, no ISO leaseStart) is manual: a nameless deposit
+  // matched by amount alone must not land on a tenant we cannot tie to bank
+  // payments (Suite 442). Every txn here is a bank-feed credit, so its family
+  // is bank unless the description says Stripe. Checked BEFORE the month
+  // gates so every deferred suggestion for such a unit carries the 🔀 warning
+  // (the 2026-10-01 442 booking was an operator confirm of an unwarned one).
   const primary = _unitPrimaryPaymentMethod(cand.u);
   const incomingMethod = _guessMethodFromDescServer(txn.description);
-  if (primary && primary !== 'unknown' && _methodFamily(primary) !== _methodFamily(incomingMethod)) {
-    return {
-      eligible: false,
-      reason: 'method-mismatch',
-      candidate: {
-        u: cand.u, b: cand.b, f: cand.f, ym, rentCents: cand.rentCents, delta: cand.delta,
-        primaryMethod: primary,
-        incomingMethod,
-      },
-    };
+  const incomingFamily = /stripe/i.test(String(txn.description || '')) ? 'stripe' : 'bank';
+  if (_methodFamily(primary) !== 'bank' || incomingFamily !== 'bank') {
+    return { eligible: false, reason: 'method-mismatch', candidate: candidate({ primaryMethod: primary, incomingMethod }) };
+  }
+  // Entry 89: same amount (to the cent) as one of this tenant's own recent
+  // bank payments — a rent change, a partial or somebody else's round
+  // amount goes to a human.
+  if (!_unitRecentBankAmountsCents(cand.u).some(c => Math.abs(c - targetCents) <= 1)) {
+    return { eligible: false, reason: 'amount-changed' };
   }
 
-  return {
-    eligible: true,
-    candidate: { u: cand.u, b: cand.b, f: cand.f, ym, rentCents: cand.rentCents, delta: cand.delta },
-  };
+  // CURRENT-MONTH-ONLY GATE (Tony 2026-05-22): ym < current → past, ym >
+  // current → future — both need operator approval (Yardi «Pending Cash
+  // Application», AppFolio advance-payment review, Buildium «Apply to past
+  // period?», MRI T+0 only).
+  const currentYm = _serverCurrentYm();
+  if (ym < currentYm) {
+    return { eligible: false, reason: 'past-month-needs-manual', candidate: candidate() };
+  }
+  if (ym > currentYm) {
+    return { eligible: false, reason: 'future-month-needs-manual', candidate: candidate() };
+  }
+  // Entry 89: the money must have ARRIVED in the month it pays. A deposit
+  // from an earlier month that reaches the current month through the
+  // next-month slot is an advance payment (or a stray deposit): manual.
+  if (_txnYm(txn) !== ym) {
+    return { eligible: false, reason: 'future-month-needs-manual', candidate: candidate() };
+  }
+  // Entry 89: an older month of this lease is still open → the operator
+  // decides where the money goes (oldest open month offered).
+  {
+    const pays = cand.u.payments || {};
+    let oldestOpen = null;
+    for (let back = 6; back >= 1; back--) {
+      const d = new Date(Date.UTC(+ym.slice(0, 4), +ym.slice(5, 7) - 1 - back, 1));
+      const pym = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+      if (!_ymInLease(cand.u, pym)) continue;
+      const p = pays[pym];
+      if (p && (p.status === 'paid' || p.status === 'free')) continue;
+      oldestOpen = pym;
+      break;
+    }
+    if (oldestOpen) {
+      return { eligible: false, reason: 'past-month-needs-manual', candidate: candidate({ ym: oldestOpen }) };
+    }
+  }
+  // Entry 89 / Entry 81: a Stripe rent invoice was issued for this month (or a
+  // later one) — it can still collect; a human voids it or marks it paid.
+  if (_monthInvoicedViaStripe(cand.u, ym)) {
+    return { eligible: false, reason: 'stripe-invoiced' };
+  }
+
+  return { eligible: true, candidate: candidate() };
 }
 
 // Текущий месяц в формате YYYY-MM (server UTC). Используется как нижняя
@@ -9455,25 +9549,69 @@ function _serverCurrentYm() {
 // covers stripe/stripe-link/stripe-advance (all credit-card flows).
 // Bank-family — ach/wire/check/cash (все деньги ушли через банк/наличку).
 // Other → other.
+// Entry 89: accepts a family name too — _unitPrimaryPaymentMethod returns
+// 'bank', and the gate maps it through here again; 'bank' fell to 'other',
+// so every bank-paying tenant was a permanent «method-mismatch».
 function _methodFamily(m) {
   const s = String(m || '').toLowerCase();
   if (s.startsWith('stripe')) return 'stripe';
-  if (['ach', 'wire', 'check', 'cash'].includes(s)) return 'bank';
+  if (['ach', 'wire', 'check', 'cash', 'bank'].includes(s)) return 'bank';
   return 'other';
+}
+
+// Entry 89: the payment method a ledger rec carries. Writers that never set
+// paidVia/paidMethod still identify themselves: the invoice.paid webhook
+// nests stripe.invoiceId, confirmBankMatch sets bankTxnId + source 'bank-feed'.
+// Without this a Stripe-webhook tenant read as 'unknown' and a nameless bank
+// deposit could auto-apply to them by amount alone (Suite 442, 2026-10-01).
+// Precedence: a linked bank txn is direct evidence of where the money came
+// from (it wins over a nested invoice id left by a failed charge); a
+// webhook-PAID Stripe invoice wins over a paidVia carried forward from the
+// previous rec; then the explicit method; then a bare invoice id.
+function _recPaymentMethod(p) {
+  if (!p) return '';
+  const m = String(p.paidMethod || p.paidVia || '').toLowerCase();
+  if (m === 'backfill') return m;
+  if (p.bankTxnId || p.source === 'bank-feed') return 'ach';
+  if (p.stripe && p.stripe.invoiceId && p.stripe.paidAt) return 'stripe';
+  if (m) return m;
+  if (p.stripe && p.stripe.invoiceId) return 'stripe';
+  return '';
+}
+
+// Entry 89: YYYY-MM of the bank txn (UTC — prod runs in UTC; the month
+// search in _findOldestUnpaidYm uses the same clock there).
+function _txnYm(txn) {
+  const d = txn && txn.transactedAt ? new Date((+txn.transactedAt) * 1000) : new Date();
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+// Entry 89: is ym inside the unit's CURRENT lease window? Records outside it
+// belong to a previous tenant (Entry 83 leak) or to a pre-lease month.
+function _ymInLease(u, ym) {
+  const ls = String(u.leaseStart || u.signed || '').slice(0, 7);
+  if (/^\d{4}-\d{2}$/.test(ls) && ym < ls) return false;
+  const le = (u.until && !_isMonthToMonth(u)) ? String(u.until).slice(0, 7) : '';
+  if (/^\d{4}-\d{2}$/.test(le) && ym > le) return false;
+  return true;
 }
 
 // Определяет primary payment method для unit по history. Берём последние
 // 12 ym-keyed payment records со статусом 'paid', исключаем backfill +
 // migration entries (они не дают сигнала про реальный operator habit).
 // Возвращает most-common method family ('stripe' | 'bank') или 'unknown'.
-// Если есть < 2 записей с явным методом — 'unknown' (без сигнала, не
-// блокируем auto-apply).
+// Если есть < 2 записей с явным методом — 'unknown' (без сигнала). Entry 89:
+// 'unknown' БЛОКИРУЕТ auto-apply (нужно положительное подтверждение 'bank').
 function _unitPrimaryPaymentMethod(u) {
   if (!u || !u.payments) return 'unknown';
+  // Entry 89: history is lease-scoped; without an ISO lease start there is no
+  // scope (a previous tenant's leaked recs would count) → no signal.
+  if (!/^\d{4}-\d{2}-\d{2}/.test(String(u.leaseStart || u.signed || ''))) return 'unknown';
   const payments = Object.entries(u.payments)
     .filter(([k, p]) => /^\d{4}-\d{2}$/.test(k) && p && p.status === 'paid')
+    .filter(([k]) => _ymInLease(u, k))   // Entry 89: this tenant's lease only
     .filter(([, p]) => {
-      const m = String(p.paidMethod || p.paidVia || '').toLowerCase();
+      const m = _recPaymentMethod(p);
       // Skip migration backfills (no real-payment signal) и auto-applies
       // (избегаем feedback loop где cron сам себе подтверждает 'bank').
       if (m === 'backfill') return false;
@@ -9486,7 +9624,7 @@ function _unitPrimaryPaymentMethod(u) {
   // Count families.
   const counts = { stripe: 0, bank: 0, other: 0 };
   for (const [, p] of payments) {
-    const fam = _methodFamily(p.paidMethod || p.paidVia);
+    const fam = _methodFamily(_recPaymentMethod(p));
     counts[fam] = (counts[fam] || 0) + 1;
   }
   // Most frequent family WINS если он составляет ≥60% от выборки.
@@ -9502,7 +9640,7 @@ function _findOldestUnpaidYm(u, txn) {
   const txnDate = txn.transactedAt
     ? new Date((+txn.transactedAt) * 1000)
     : new Date();
-  // Зона поиска: 2 месяца до txnDate ... +1 месяц вперёд.
+  // Зона поиска: месяц txn, 6 месяцев назад, затем +1 месяц вперёд.
   // Чаще всего рент платится в текущем или предыдущем месяце.
   const leaseStartIso = u.leaseStart || u.signed || null;
   const leaseStart = leaseStartIso ? new Date(leaseStartIso + 'T00:00:00') : null;
@@ -9515,9 +9653,11 @@ function _findOldestUnpaidYm(u, txn) {
     const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
     candidates.push(ym);
   }
-  // Также look one month forward (для прешплат).
+  // Также look one month forward (для прешплат) — ПОСЛЕДНИМ (Entry 89):
+  // unshift ставил следующий месяц первым, и платёж, пришедший 8-го за
+  // текущий месяц, предлагался на следующий (Suite 101 NUHS, 09-08 → «Oct»).
   const dF = new Date(txnDate.getFullYear(), txnDate.getMonth() + 1, 1);
-  candidates.unshift(`${dF.getFullYear()}-${String(dF.getMonth() + 1).padStart(2, '0')}`);
+  candidates.push(`${dF.getFullYear()}-${String(dF.getMonth() + 1).padStart(2, '0')}`);
   // Применяем фильтры lease window.
   const payments = u.payments || {};
   for (const ym of candidates) {
@@ -9601,6 +9741,7 @@ async function _autoApplyAfterPoll(fcAccountId) {
     }
   }
   const heals = [];
+  const firstLook = [];   // Entry 89: first non-eligible outcome → stamped, stays manual
   // Entry 82: on an adopted shared connection, a txn that looks like a
   // movement already stored under the previous FC object (same amount, UTC
   // day ±2) is never auto-applied — ingestion dedupe is not the only net.
@@ -9618,21 +9759,33 @@ async function _autoApplyAfterPoll(fcAccountId) {
         && _prevIdxNear(prevIdx, txn.amount, _utcDay(txn.transactedAt), 2)) { skipped++; continue; }
     const held = recByTxn.get(txn.id);
     if (held) { heals.push({ docRef: d.ref, txn, held }); continue; }
+    // Entry 89: decide ONCE. A txn an earlier run already judged (deferred or
+    // skipped) never flips to an auto-apply later — the state it was judged
+    // against changes (rent edits, a twin vacated, a month recorded by hand,
+    // invoice stamps moving) and the operator already saw a manual outcome.
+    const decided = !!(txn.autoApplyEvaluatedAt || txn.autoApplyBlockedReason);
     const check = _findAutoApplyCandidate(state, txn);
     if (!check.eligible && deferred[check.reason] && check.candidate) {
       deferred[check.reason].push({ docRef: d.ref, txn, candidate: check.candidate });
       continue;
     }
-    if (!check.eligible) { skipped++; continue; }
+    if (!check.eligible) {
+      skipped++;
+      if (!decided) firstLook.push({ docRef: d.ref, outcome: check.reason || 'not-eligible' });
+      continue;
+    }
+    if (decided) { skipped++; continue; }
     const c = check.candidate;
     // Idempotency: skip if already paid.
     const existing = c.u.payments?.[c.ym];
     if (existing && (existing.status === 'paid' || existing.bankTxnId === txn.id)) {
-      skipped++; continue;
+      skipped++; firstLook.push({ docRef: d.ref, outcome: 'month-already-paid' }); continue;
     }
     // Entry 81: a month tied to a Stripe invoice (late/open) needs a human —
     // the invoice must be voided or it can still collect a second time.
-    if (_monthHasStripeInvoice(c.u, c.ym, existing)) { skipped++; continue; }
+    if (_monthHasStripeInvoice(c.u, c.ym, existing)) {
+      skipped++; firstLook.push({ docRef: d.ref, outcome: 'stripe-invoice' }); continue;
+    }
     applies.push({ docRef: d.ref, txn, candidate: c });
   }
 
@@ -9651,8 +9804,11 @@ async function _autoApplyAfterPoll(fcAccountId) {
     for (let i = 0; i < list.length; i += SUGGEST_BATCH) {
       const batch = db.batch();
       const slice = list.slice(i, i + SUGGEST_BATCH);
-      for (const { docRef, candidate } of slice) {
+      for (const { docRef, txn, candidate } of slice) {
         const writeFields = {
+          ...(txn && (txn.autoApplyEvaluatedAt || txn.autoApplyBlockedReason) ? {} : {
+            autoApplyEvaluatedAt: admin.firestore.FieldValue.serverTimestamp(),   // Entry 89: decided once
+          }),
           matchState: 'suggested',
           matchedTenantId: candidate.u.id,
           matchedUnitId: candidate.u.id,
@@ -9673,6 +9829,19 @@ async function _autoApplyAfterPoll(fcAccountId) {
       await batch.commit();
     }
     logger.info(`[auto-apply] fcAccountId=${fcAccountId}: ${list.length} ${reason} suggestions written for manual review`);
+  }
+
+  // Entry 89: stamp the FIRST non-eligible outcome of every newly judged txn
+  // (merge, idempotent) so a later run never turns it into an auto-apply.
+  for (let i = 0; i < firstLook.length; i += 400) {
+    const batch = db.batch();
+    for (const { docRef, outcome } of firstLook.slice(i, i + 400)) {
+      batch.set(docRef, {
+        autoApplyEvaluatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        autoApplyFirstOutcome: outcome,
+      }, { merge: true });
+    }
+    await batch.commit();
   }
 
   const emptyResult = () => ({
