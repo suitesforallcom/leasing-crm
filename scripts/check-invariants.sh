@@ -418,6 +418,14 @@ else
   echo "  ✗ Entry 89 guard missing (_methodFamily 'bank' / _recPaymentMethod / next-month-last in _findOldestUnpaidYm / cron auto-apply)"
   FAIL=1
 fi
+# Entry 90: Stripe-billed tenants never get a bank-deposit suggestion (matcher) or deferral (auto-apply).
+if fn_has "^function _matcherCandidates\(" "if \(_unitBilledViaStripe\(u\)\) continue;" 12 \
+   && fn_has "^function _findAutoApplyCandidate\(" "reason: 'stripe-billed'" 120; then
+  echo "  ✓ Entry 90: Stripe-billed tenants are excluded from bank-deposit suggestions"
+else
+  echo "  ✗ Entry 90 guard missing (_matcherCandidates / _findAutoApplyCandidate stripe-billed)"
+  FAIL=1
+fi
 # Entry 89 rev 6: name check BEFORE the method gate; look-back failure applies nothing.
 _aa_n=$(grep -nE "^function _findAutoApplyCandidate\(" "$FN_JS" | head -1 | cut -d: -f1)
 _aa_name=$(awk -v s="${_aa_n:-0}" 'NR>s && /reason: .name-conflict./ {print NR; exit}' "$FN_JS")

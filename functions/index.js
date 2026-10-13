@@ -9135,6 +9135,7 @@ function _matcherCandidates(state) {
         if (u.status !== 'occupied') continue;
         if (u.groupId && u.groupRole !== 'primary') continue;
         if (!u.tenant && !u.company) continue;
+        if (_unitBilledViaStripe(u)) continue;   // Entry 90: never suggest a bank deposit to a Stripe-billed tenant
         const monthlyCents = Math.round(((+u.contractRent) || (+u.rent) || 0) * 100);
         out.push({
           unitId: u.id,
@@ -9420,6 +9421,26 @@ function _monthInvoicedViaStripe(u, ym) {
   if (st.moveInRent && st.moveInRent.ym === ym && st.moveInRent.status !== 'void') return true;
   return false;
 }
+// Entry 90 (Tony 2026-10-13): the tenant's rent is BILLED THROUGH STRIPE —
+// Stripe invoices carry Stripe's own bank-transfer details, so such a tenant
+// pays by card or through Stripe, never by a direct deposit to the operating
+// account. A bank-feed credit is never suggested for (or applied to) them.
+// Billed = a Stripe rent-invoice stamp within the last 3 months, or a
+// Stripe-family payment history.
+function _unitBilledViaStripe(u, nowMs) {
+  const st = (u && u.stripe) || {};
+  const d = new Date((nowMs || Date.now()) - 92 * 86400000);
+  const sinceYm = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+  const ymOk = (v) => typeof v === 'string' && /^\d{4}-\d{2}$/.test(v) && v >= sinceYm;
+  if (ymOk(st.lastInvoiceYm) || ymOk(st.autoSentYm) || (st.moveInRent && ymOk(st.moveInRent.ym))) return true;
+  const primary = _unitPrimaryPaymentMethod(u);
+  if (primary === 'stripe') return true;
+  // Thin history (e.g. one month at a new suite): a recent in-lease Stripe
+  // payment decides. A proven bank payer who once paid by card stays a bank payer.
+  return primary === 'unknown' && Object.entries((u && u.payments) || {}).some(([k, p]) =>
+    /^\d{4}-\d{2}$/.test(k) && k >= sinceYm && p && p.status === 'paid' && _ymInLease(u, k)
+    && _methodFamily(_recPaymentMethod(p)) === 'stripe');
+}
 // Entry 89: amounts (cents) of this tenant's 3 newest in-lease bank payments.
 function _unitRecentBankAmountsCents(u) {
   return Object.entries((u && u.payments) || {})
@@ -9503,6 +9524,11 @@ function _findAutoApplyCandidate(state, txn, ctx) {
   if (nameUnit && (nameUnit !== String(cand.u.id)
       || (txn.matchedBuildingId && txn.matchedBuildingId !== cand.b.id))) {
     return { eligible: false, reason: 'name-conflict' };
+  }
+  // Entry 90: a Stripe-billed tenant never pays by direct deposit — no
+  // auto-apply and NO suggestion (no candidate → no 🔀 deferral).
+  if (_unitBilledViaStripe(cand.u, nowMs)) {
+    return { eligible: false, reason: 'stripe-billed' };
   }
 
   // PAYMENT METHOD CONSISTENCY (Tony 2026-05-22 — «обращай внимание на

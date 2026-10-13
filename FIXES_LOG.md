@@ -60,6 +60,17 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 90. A bank deposit was suggested to tenants whose rent is billed through Stripe (bank feed / matcher, 2026-10-13)
+
+**Symptom:** after Entry 89 the nameless $2,200 «Customer Deposit» of 2026-10-07 showed as a 🔀 suggestion for Suite 442 (Julie Sanatine). Tony: «Мы этот счёт не выставляли для оплаты через банковские реквизиты — если банковские реквизиты, то через Stripe; он даже не должен предлагать». All 24 pending bank-feed suggestions in prod pointed at Stripe-billed tenants (442, 433 Lex Wagner, 345, 364, 407, 409, 411, 332, 354).
+
+**Rule (operator):** a tenant whose rent is billed through Stripe pays by card or through Stripe's own bank-transfer details — a direct deposit to the operating account is never their rent. **Fix:** `_unitBilledViaStripe(u)` = a Stripe rent-invoice stamp (`lastInvoiceYm` / `autoSentYm` / `moveInRent.ym`) within ~3 months, or a Stripe-family payment history, or (thin history) a recent in-lease Stripe payment — a proven bank payer who once paid by card stays a bank payer. `_matcherCandidates` skips such units (no ★ ingest/matcher suggestion); `_findAutoApplyCandidate` returns `stripe-billed` with NO candidate (no 🔀 deferral, no auto-apply). The 24 existing suggestions were cleared to unmatched (previous pointer kept in `previousSuggestion`).
+
+- **Status:** active
+- **Regression test:** `node functions/auto-apply-candidate.test.js` §21 (+ updated 442/433 cases); `scripts/check-invariants.sh` Entry 90 gate
+- **Related PR / issue:** none
+- **Still open:** the unit Manual-Payment «💸 Payment suggestions» card (client, `listBankTransactionsForUnit`) still lists amount-near bank txns for a Stripe-billed unit — fixed client-side together with the payment-grid tooltip work.
+
 ### 89. Bank-feed auto-apply never fired for bank-paying tenants; month picked one ahead; cron never auto-applied (bank feed / auto-apply, 2026-10-13)
 
 **Symptom:** Suite 101 (National University of Health Sciences) pays $13,318.33 every month by bank deposit («Customer Deposit»), yet every deposit had to be linked by hand. The 2026-09-08 deposit sat as a suggestion for **October** with 🔀 «method mismatch», so the unit showed «2 unpaid months $26,636» while September was in the bank. Counter-case: on 2026-10-01 a nameless $2,200 «Customer Deposit» from another payer was matched by amount to Suite 442 (Julie Sanatine), who pays through Stripe (Tony 2026-10-13: October was never paid by her).

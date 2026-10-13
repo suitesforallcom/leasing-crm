@@ -60,6 +60,7 @@ function makeCtx(nowIso) {
     liftFn('_isAutoApplyContender'),
     liftFn('_amountPaidRecentlyByOther'),
     liftFn('_monthInvoicedViaStripe'),
+    liftFn('_unitBilledViaStripe'),
     liftFn('_unitRecentBankAmountsCents'),
     liftFn('_isMonthToMonth'),
     liftFn('_serverCurrentYm'),
@@ -139,8 +140,8 @@ function julie442(stripeStamps) {
     ['stamps cleared (after a void)', {}],
   ]) {
     const r = ctx._findAutoApplyCandidate(state(julie442(stamps)), txn('2026-10-07', 2200, 'Customer Deposit'));
-    eq([r.eligible, r.reason, r.candidate && r.candidate.primaryMethod], [false, 'method-mismatch', 'unknown'],
-      `442: nameless $2,200 never auto-applies — ${label}`);
+    eq([r.eligible, r.reason, !!r.candidate], [false, 'stripe-billed', false],
+      `442: nameless $2,200 is neither applied NOR suggested (Stripe-billed, Entry 90) — ${label}`);
   }
 }
 
@@ -153,7 +154,7 @@ function julie442(stripeStamps) {
   u.payments['2026-08'] = webhookRec(2200, '2026-08-01', 'in_b');
   eq(ctx._unitPrimaryPaymentMethod(u), 'stripe', 'webhook payer primary family is stripe');
   const r = ctx._findAutoApplyCandidate(state(u), txn('2026-10-07', 2200, 'Customer Deposit'));
-  eq([r.eligible, r.reason, r.candidate && r.candidate.primaryMethod], [false, 'method-mismatch', 'stripe'], 'Stripe payer → method-mismatch');
+  eq([r.eligible, r.reason, !!r.candidate], [false, 'stripe-billed', false], 'Stripe payer → stripe-billed, no suggestion');
 }
 
 // ── 6. Stray previous-month deposit reaching the current month (the
@@ -216,7 +217,7 @@ function julie442(stripeStamps) {
   u.payments['2026-09'] = webhookRec(898, '2026-09-01', 'in_2');
   eq(ctx._unitPrimaryPaymentMethod(u), 'stripe', 'only in-lease recs count → stripe (leak ignored)');
   const r = ctx._findAutoApplyCandidate(state(u), txn('2026-10-07', 898, 'Customer Deposit'));
-  eq(r.reason, 'method-mismatch', 'leaked bank history does not open the gate');
+  eq(r.reason, 'stripe-billed', 'leaked bank history does not open the gate (current tenant pays via Stripe)');
 }
 
 // ── 13. New tenant, no history (e.g. deposit = one month's rent) → manual ─
@@ -287,9 +288,9 @@ function julie442(stripeStamps) {
   eq(ctx._findAutoApplyCandidate(state(nuhsWithSep()), txn('2026-10-14', 13318.33, 'Customer Deposit', { matchedUnitId: '101', matchedBuildingId: 'b9' })).reason, 'name-conflict', 'same suite id, other building → name-conflict');
   // MS-R3: Stripe invoice for October exists although stamps moved to November.
   const invoiced = Object.assign(nuhsWithSep(), { stripe: { lastInvoiceYm: '2026-11', autoSentYm: '2026-11' } });
-  eq(ctx._findAutoApplyCandidate(state(invoiced), txn('2026-10-14', 13318.33, 'Customer Deposit')).reason, 'stripe-invoiced', 'October invoice still open behind November stamps → no auto');
+  eq(['stripe-billed', 'stripe-invoiced'].includes(ctx._findAutoApplyCandidate(state(invoiced), txn('2026-10-14', 13318.33, 'Customer Deposit')).reason), true, 'October invoice still open behind November stamps → no auto');
   const mir = Object.assign(nuhsWithSep(), { stripe: { moveInRent: { ym: '2026-10', status: 'paid' } } });
-  eq(ctx._findAutoApplyCandidate(state(mir), txn('2026-10-14', 13318.33, 'Customer Deposit')).reason, 'stripe-invoiced', 'move-in rent invoice for the month → no auto');
+  eq(['stripe-billed', 'stripe-invoiced'].includes(ctx._findAutoApplyCandidate(state(mir), txn('2026-10-14', 13318.33, 'Customer Deposit')).reason), true, 'move-in rent invoice for the month → no auto');
   // Amount fingerprint: rent changed → manual.
   eq(ctx._findAutoApplyCandidate(state(Object.assign(nuhsWithSep(), { contractRent: 13700, rent: 13700 })), txn('2026-10-14', 13700, 'Customer Deposit')).reason, 'amount-changed', 'new amount ≠ own recent bank payments → manual');
   // MS-R5: no ISO lease start → no history signal → manual.
@@ -348,7 +349,7 @@ function julie442(stripeStamps) {
   j.payments['2026-10'] = webhookRec(2200, '2026-10-13', 'in_oct');
   const octInst = { id: 'fc_oct7', amount: 220000, transactedAt: unix('2026-10-07T12:00:00Z'), matchState: 'suggested', matchedUnitId: '442', matchedBuildingId: 'b1', status: 'posted' };
   const r = ctx._findAutoApplyCandidate(state(j), txn('2026-11-07', 2200, 'Customer Deposit'), { pendingTxns: [octInst], recentTxns: [octInst] });
-  eq([r.reason, r.candidate && r.candidate.primaryMethod], ['method-mismatch', 'stripe'], '442 series instance keeps the 🔀 warning');
+  eq([r.reason, !!r.candidate], ['stripe-billed', false], '442 series instance: no suggestion at all (Entry 90)');
 }
 {
   const ctx = makeCtx('2026-10-03T07:07:00Z');
@@ -410,7 +411,7 @@ function julie442(stripeStamps) {
     'matcher routed the deposit to another unit → name-conflict BEFORE the method gate (no 🔀 suggestion for B)');
   // rev 7 (F3): a descriptor that only NAMES someone else still gives a Stripe/no-history unit the 🔀 warning.
   const r433 = ctx._findAutoApplyCandidate(state(stripeB), txn('2026-10-02', 2180, 'ZELLE PAYMENT FROM JOHN SMITH'), { pendingTxns: [], recentTxns: [] });
-  eq([r433.reason, r433.candidate && r433.candidate.primaryMethod], ['method-mismatch', 'unknown'], 'named descriptor + Stripe/no-history unit → 🔀 warning kept');
+  eq([r433.reason, !!r433.candidate], ['stripe-billed', false], 'named descriptor + recently Stripe-paid unit → no suggestion');
   eq(ctx._findAutoApplyCandidate(state(bankPayer('238', 2180)), txn('2026-10-02', 2180, 'ZELLE PAYMENT FROM JOHN SMITH'), { pendingTxns: [], recentTxns: [] }).reason, 'name-conflict',
     'named descriptor + proven bank payer → name-conflict');
   // R5-2: a txn referenced by the unit's own ledger rec (heal whose confirm never landed) is own, not a series.
@@ -451,6 +452,22 @@ function julie442(stripeStamps) {
   for (const desc of ['ONLINE TRANSFER FROM CHK', 'WIRE TRANSFER FROM', 'TRANSFER FROM']) {
     eq(ctx._findAutoApplyCandidate(state(bankPayer('237', 2180)), txn('2026-10-02', 2180, desc), { pendingTxns: [], recentTxns: [] }).reason, 'internal-transfer', `«${desc}» → internal-transfer`);
   }
+}
+
+
+// ── 21. Entry 90: Stripe-billed tenants never get bank-deposit suggestions ──
+{
+  const ctx = makeCtx('2026-11-08T07:07:00Z');
+  const base = { id: 'x', status: 'occupied', tenant: 'T', contractRent: 1000, leaseStart: '2026-01-01', until: '2027-12-31', payments: {} };
+  eq(ctx._unitBilledViaStripe(Object.assign({}, base, { stripe: { lastInvoiceYm: '2026-11' } })), true, 'recent rent-invoice stamp → Stripe-billed');
+  eq(ctx._unitBilledViaStripe(Object.assign({}, base, { stripe: { lastInvoiceYm: '2026-05' } })), false, 'stale (> 3 months) stamp alone → not Stripe-billed');
+  eq(ctx._unitBilledViaStripe(Object.assign({}, base, { stripe: { moveInRent: { ym: '2026-10' } } })), true, 'recent move-in rent invoice → Stripe-billed');
+  eq(ctx._unitBilledViaStripe(nuhsWithSep()), false, 'NUHS (bank payer, no Stripe) → not Stripe-billed');
+  const bankOnceCard = nuhsWithSep(); bankOnceCard.payments['2026-10'] = webhookRec(13318.33, '2026-10-05', 'i_once');
+  eq(ctx._unitBilledViaStripe(bankOnceCard), false, 'a proven bank payer who once paid by card stays a bank payer');
+  // NUHS still auto-applies its November deposit.
+  const n = nuhsWithSep(); n.payments['2026-10'] = bankFeedRec(13318.33, '2026-10-14', 'fc_oct');
+  eq(ctx._findAutoApplyCandidate(state(n), txn('2026-11-09', 13318.33, 'Customer Deposit'), { pendingTxns: [], recentTxns: [] }).eligible, true, 'NUHS November still auto-applies');
 }
 
 console.log(`auto-apply-candidate.test: ${passed} passed, ${failed} failed`);
