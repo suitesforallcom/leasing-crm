@@ -7324,6 +7324,50 @@
     vertical-align: middle;
   }
   .pay-history-last { margin-top: 10px; font-size: 12.5px; color: var(--rd-text3); }
+  /* Клетка сетки фокусируема с клавиатуры (FIXES_LOG Entry 91) — видимое кольцо
+     только для клавиатурного фокуса. */
+  .ph-cell:focus { outline: none; }
+  .ph-cell:focus-visible { outline: 2px solid var(--rd-accent); outline-offset: 1px; }
+  /* Карточка месяца Payment history — порт kiwi ChipTooltip (FIXES_LOG Entry 91).
+     Белая в обеих темах (как kiwi и .upv2-payment-health), цвета заданы явно.
+     Цвета слова статуса — токены --rd-* (значения совпадают с kiwi
+     MONTH_STATE_META); остальные значения — литералы kiwi. */
+  .ph-card{position:fixed;z-index:10500;box-sizing:border-box;width:232px;padding:11px 13px;
+    background:#FFFFFF;border:1px solid #E4E7EB;border-radius:10px;box-shadow:0 8px 28px rgba(20,22,26,0.18);
+    font-family:'Geist',-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12.5px;line-height:1.5;
+    font-weight:400;color:#33373C;text-align:left;white-space:normal;letter-spacing:normal;
+    font-feature-settings:"cv11","ss01";-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
+    pointer-events:none;display:none;}
+  .ph-card.is-open{display:block;}
+  .ph-card.is-interactive{pointer-events:auto;}
+  .ph-card-head{font-weight:700;margin-bottom:6px;}
+  .ph-card-st.paid,.ph-card-st.waived{color:var(--rd-green-bar);}
+  .ph-card-st.paid-late{color:var(--rd-lime);}
+  .ph-card-st.late{color:var(--rd-red);}
+  .ph-card-st.invoiced{color:var(--rd-blue);}
+  .ph-card-st.awaiting{color:#f59e0b;}
+  .ph-card-st.not-due{color:#9AA1AB;}   /* kiwi #F0F1F3 почти не виден на белом — решение Tony №2 */
+  .ph-card-st.outside{color:#9AA1AB;}
+  .ph-card-own{margin-bottom:4px;font-size:11.5px;color:#6B7280;}
+  .ph-card-row{display:flex;justify-content:space-between;gap:10px;margin-top:2px;}
+  .ph-card-k{flex:none;color:#8A9099;}
+  .ph-card-v{min-width:0;overflow-wrap:anywhere;font-family:var(--rd-mono);font-weight:500;}
+  .ph-card-deliv{margin-top:7px;font-size:11.5px;line-height:1.45;font-weight:400;color:#6B7280;}
+  .ph-card-deliv.is-unsent{font-weight:600;color:#B54708;}
+  .ph-card-grace{margin-top:5px;font-size:12px;color:#C0392B;}
+  .ph-card-grace.is-ok{color:#1F8A5B;}
+  .ph-card-lnote{margin-top:5px;font-size:11.5px;color:#8A6D1F;}   /* kiwi lNote: счёт выставлен после Due */
+  .ph-card-note{margin-top:5px;font-size:11.5px;color:#6B7280;}
+  .ph-card-cov{margin-top:5px;font-size:11.5px;line-height:1.45;font-weight:400;color:#1C7E53;}
+  .ph-card-cov.is-partial{font-weight:600;color:#8A6D1F;}
+  .ph-card-void{margin-top:6px;font-size:11.5px;color:#8A6D1F;}
+  .ph-card-src{margin-top:5px;font-size:11.5px;color:#8A9099;}
+  .ph-card-foot{margin-top:8px;padding-top:7px;border-top:1px solid #F0F1F3;font-size:11.5px;color:#9AA1AB;}
+  .ph-card-open{appearance:none;-webkit-appearance:none;display:block;margin-top:7px;width:100%;padding:6px 10px;
+    border:1px solid #17181A;border-radius:8px;background:#17181A;color:#FFFFFF;font:inherit;font-size:11.5px;
+    font-weight:700;letter-spacing:0.02em;line-height:1.35;cursor:pointer;}
+  .ph-card-stripe,.ph-card-stripe:hover,.ph-card-stripe:visited{display:block;margin-top:7px;font-size:11.5px;
+    font-weight:600;color:#2563EB;text-align:center;text-decoration:none;}
 
   /* Шаг 5: карточка «Payment history» — .card макета (белая, border-strong,
      радиус 14, паддинг 15/16); заголовок 14.5/700 без uppercase + бейдж
@@ -83833,6 +83877,277 @@ if (typeof window !== 'undefined' && !window.__ttPortalWired) {
   }, true);
 }
 
+// ============================================================
+// Карточка месяца Payment history — порт kiwi ChipTooltip (FIXES_LOG Entry 91).
+// Модель месяца (только строки) строит _phCardModel при рендере сетки и кладёт
+// в window._phCardModels[b.id|f.id|u.id][ym]; клетка несёт data-ph-key/-ym.
+// Здесь — один body-level портал .ph-card: DOM только через createElement +
+// textContent (memo / reference / номер счёта — пользовательский и банковский
+// текст, innerHTML запрещён). Карточка НИЧЕГО не пишет в state.
+// Поведение kiwi: открывается без задержки по hover/focus, закрывается через
+// 180 мс после ухода с клетки (если указатель не дошёл до карточки), 9px над
+// клеткой по центру, переворот вниз если не влезает, любой scroll закрывает.
+// Указатель достаёт карточку ТОЛЬКО когда в ней есть кнопка/ссылка.
+// Отличия от kiwi: клэмп по горизонтали внутри панели (решение Tony №4);
+// фокус внутри карточки держит её открытой (kiwi quirk 1); касание (touch)
+// карточку не открывает — тап сразу открывает Manual Payment, как раньше.
+// ============================================================
+const PH_CARD_GRACE_MS = 180, PH_CARD_GAP = 9;
+const PH_STRIPE_ACCT = 'acct_1S6zlI2nq2bZh3q6';   // решение Tony №6: dashboard-ссылка закреплена за аккаунтом
+let _phCardEl = null, _phCardAnchor = null, _phCardTimer = null, _phSkipFocusOpen = null;
+let _phLastPtr = { type: '', at: 0 };
+window._phCardModels = window._phCardModels || new Map();   // key → Map(ym → model)
+function _phCardCancelClose() { if (_phCardTimer) { clearTimeout(_phCardTimer); _phCardTimer = null; } }
+function _phCardScheduleClose() { _phCardCancelClose(); _phCardTimer = setTimeout(_phCardClose, PH_CARD_GRACE_MS); }
+function _phCardClose() {
+  _phCardCancelClose();
+  if (_phCardEl) { _phCardEl.classList.remove('is-open', 'is-interactive'); _phCardEl.replaceChildren(); }
+  _phCardAnchor = null;
+}
+function _phCardIsOpen() { return !!(_phCardEl && _phCardAnchor && _phCardEl.classList.contains('is-open')); }
+function _phCardEnsure() {
+  if (_phCardEl && document.body.contains(_phCardEl)) return _phCardEl;
+  const el = document.createElement('div');
+  el.className = 'ph-card';
+  el.setAttribute('role', 'group');
+  el.addEventListener('mouseenter', _phCardCancelClose);
+  el.addEventListener('mouseleave', _phCardScheduleClose);
+  el.addEventListener('focusin', _phCardCancelClose);
+  // kiwi quirk 1: пока фокус внутри карточки — она открыта.
+  el.addEventListener('focusout', (e) => {
+    if (e.relatedTarget && (el.contains(e.relatedTarget) || e.relatedTarget === _phCardAnchor)) return;
+    _phCardScheduleClose();
+  });
+  document.body.appendChild(el);
+  return (_phCardEl = el);
+}
+function _phCardModelFor(cell) {
+  const m = window._phCardModels && window._phCardModels.get(cell.dataset.phKey);
+  return m ? (m.get(cell.dataset.phYm) || null) : null;
+}
+function _phCardControls() { return _phCardEl ? Array.from(_phCardEl.querySelectorAll('button, a[href]')) : []; }
+function _phCardRender(el, m, canOpen) {
+  el.replaceChildren();
+  el.setAttribute('aria-label', m.ariaLabel || '');
+  const div = (cls, text) => { const d = document.createElement('div'); d.className = cls; d.textContent = text; return d; };
+  const head = document.createElement('div');
+  head.className = 'ph-card-head';
+  head.appendChild(document.createTextNode(`${m.head.month} · `));
+  const st = document.createElement('span');
+  st.className = 'ph-card-st ' + m.head.tone;
+  st.textContent = m.head.word;
+  head.appendChild(st);
+  el.appendChild(head);
+  for (const line of (m.own || [])) el.appendChild(div('ph-card-own', line));
+  for (const [k, v] of (m.rows || [])) {
+    const row = document.createElement('div');
+    row.className = 'ph-card-row';
+    const ks = document.createElement('span'); ks.className = 'ph-card-k'; ks.textContent = k + ':';
+    const vs = document.createElement('span'); vs.className = 'ph-card-v'; vs.textContent = v;
+    row.append(ks, vs);
+    el.appendChild(row);
+  }
+  if (m.delivery) el.appendChild(div('ph-card-deliv' + (m.delivery.sent ? '' : ' is-unsent'), m.delivery.text));
+  if (m.grace) el.appendChild(div('ph-card-grace' + (m.grace.ok ? ' is-ok' : ''), m.grace.text));
+  else if (m.graceNote) el.appendChild(div('ph-card-note', m.graceNote));   // SFA: дата есть, срок не проверялся
+  if (m.lateBilled) el.appendChild(div('ph-card-lnote', m.lateBilled));   // слот kiwi lNote
+  if (m.totals) el.appendChild(div('ph-card-note', m.totals));
+  if (m.coverage) el.appendChild(div('ph-card-cov' + (m.coverage.partial ? ' is-partial' : ''), m.coverage.text));
+  if (m.voided) el.appendChild(div('ph-card-void', m.voided));
+  if (m.placed) el.appendChild(div('ph-card-src', m.placed));
+  if (m.foreign) el.appendChild(div('ph-card-note', m.foreign));   // SFA: счёт сетки не этой лизы
+  for (const line of (m.extras || [])) el.appendChild(div('ph-card-note', line));
+  el.appendChild(div('ph-card-foot', m.footer || ''));
+  if (canOpen) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ph-card-open';
+    btn.textContent = 'Open invoice';
+    btn.setAttribute('aria-label', m.openLabel || 'Open invoice');
+    const invId = m.invoiceId;
+    btn.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      // kiwi §7: закрытие поповера счёта возвращает фокус на клетку месяца.
+      const anc = _phCardAnchor;
+      const key = anc ? anc.dataset.phKey : '', ym = anc ? anc.dataset.phYm : '';
+      _phCardClose();
+      if (typeof _stripeInvDetailOpen === 'function') {
+        _stripeInvDetailOpen(invId, { readOnly: true, onClose: () => _phRefocusCell(anc, key, ym) });
+      }
+    });
+    el.appendChild(btn);
+  }
+  if (m.stripeInvoiceId && /^in_[A-Za-z0-9]+$/.test(m.stripeInvoiceId)) {
+    const a = document.createElement('a');
+    a.className = 'ph-card-stripe';
+    a.href = `https://dashboard.stripe.com/${PH_STRIPE_ACCT}/invoices/${encodeURIComponent(m.stripeInvoiceId)}`;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.textContent = 'Open in Stripe ↗';
+    a.setAttribute('aria-label', m.number ? `Open ${m.number} in Stripe` : 'Open this invoice in Stripe');
+    a.title = 'Open this invoice in the Stripe dashboard — its status, whether the tenant viewed it, and whether it was paid. Opens in a new tab; nothing is sent, charged or changed.';
+    // Закрываем после того, как браузер обработал переход (новая вкладка).
+    a.addEventListener('click', () => { setTimeout(_phCardClose, 0); });
+    el.appendChild(a);
+  }
+}
+function _phCardPlace(el, cell) {
+  const r = cell.getBoundingClientRect(), w = el.offsetWidth, h = el.offsetHeight;
+  // Контейнмент как у _showTtPortal: панель юнита, иначе вьюпорт.
+  let cL = 8, cR = window.innerWidth - 8;
+  const panel = cell.closest('#sbUnit, .upv2-pane, .stripe-modal-card, .uir-body, .sidebar-content');
+  if (panel) { const pr = panel.getBoundingClientRect(); cL = Math.max(cL, pr.left + 4); cR = Math.min(cR, pr.right - 4); }
+  let left = r.left + r.width / 2 - w / 2;
+  if (left + w > cR) left = cR - w;
+  if (left < cL) left = cL;
+  const flipBelow = r.top - PH_CARD_GAP - h < 8;   // правило kiwi, но по реальной высоте вместо EST_H
+  el.style.left = Math.round(left) + 'px';
+  el.style.top = Math.round(flipBelow ? r.bottom + PH_CARD_GAP : r.top - PH_CARD_GAP - h) + 'px';
+}
+// Клетка под открытым модалом/поповером, который её НЕ содержит (Manual Payment,
+// поповер счёта…): карточку не открывает, Enter/Space не переключает модал на
+// другой месяц, Escape уходит модалу (ревью Entry 91).
+function _phCellBehindModal(cell) {
+  if (!cell) return false;
+  try {
+    for (const m of document.querySelectorAll('.stripe-modal.active, .modal-overlay.active, #txnDetailPopover.is-open')) {
+      if (!m.contains(cell)) return true;
+    }
+  } catch {}
+  return false;
+}
+// После клика по клетке: Manual Payment открылся и накрыл её — снимаем с неё
+// фокус; не открылся (роль viewer — только тост) — фокус остаётся на месте.
+function _phBlurIfCovered(cell) {
+  if (cell && document.activeElement === cell && _phCellBehindModal(cell)) cell.blur();
+}
+// Enter/Space на клетке = клик (role=button), но не из-под открытого модала.
+function _phCellKey(e, cell) {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  e.preventDefault();
+  if (_phCellBehindModal(cell)) return;
+  cell.click();
+}
+// Вернуть фокус на клетку месяца, не открывая карточку (kiwi §7: закрытие
+// поповера счёта возвращает фокус на чип). Клетку могли перерисовать
+// (rev-шторм) — тогда ищем её заново по data-ph-key / data-ph-ym.
+function _phRefocusCell(cell, key, ym) {
+  let c = (cell && cell.isConnected) ? cell : null;
+  if (!c && key && ym) {
+    try { c = document.querySelector(`.ph-cell[data-ph-key="${CSS.escape(key)}"][data-ph-ym="${CSS.escape(ym)}"]`); } catch { c = null; }
+  }
+  if (!c || _phCellBehindModal(c)) return;
+  _phSkipFocusOpen = c;
+  try { c.focus(); } catch {}
+  _phSkipFocusOpen = null;
+}
+function _phCardOpen(cell) {
+  const model = _phCardModelFor(cell);
+  if (!model) { if (_phCardAnchor && _phCardAnchor !== cell) _phCardClose(); return; }
+  _phCardCancelClose();
+  const el = _phCardEnsure();
+  const canOpen = !!(model.invoiceId && typeof _lookupInvoiceRow === 'function' && _lookupInvoiceRow(model.invoiceId));
+  _phCardRender(el, model, canOpen);
+  _phCardAnchor = cell;
+  el.classList.add('is-open');
+  el.classList.toggle('is-interactive', canOpen || !!model.stripeInvoiceId);   // правило kiwi
+  _phCardPlace(el, cell);
+}
+// Клавиатура (document, capture — Escape не должен уйти глобальным
+// обработчикам, которые снимают выделение юнита).
+function _phCardKeydown(e) {
+  if (!_phCardIsOpen()) return;
+  // Модал поверх клетки — клавиши его, карточку просто убираем.
+  if (_phCellBehindModal(_phCardAnchor)) { _phCardClose(); return; }
+  const anchor = _phCardAnchor;
+  const t = e.target;
+  const inCard = _phCardEl.contains(t);
+  if (e.key === 'Escape') {
+    if (!inCard && t !== anchor) { _phCardClose(); return; }   // открыта hover'ом — закрыть, Escape идёт дальше
+    e.preventDefault(); e.stopPropagation();
+    _phCardClose();
+    if (inCard && anchor.isConnected) { _phSkipFocusOpen = anchor; anchor.focus(); _phSkipFocusOpen = null; }
+    return;
+  }
+  if (e.key !== 'Tab') return;
+  const ctr = _phCardControls();
+  if (!ctr.length) return;
+  if (t === anchor && !e.shiftKey) { e.preventDefault(); _phCardCancelClose(); ctr[0].focus(); return; }
+  if (!inCard) return;
+  if (e.shiftKey && t === ctr[0]) {
+    e.preventDefault();
+    _phCardClose();
+    if (anchor.isConnected) anchor.focus();
+    return;
+  }
+  if (!e.shiftKey && t === ctr[ctr.length - 1]) {
+    e.preventDefault();
+    const grid = anchor.closest('.pay-history-years');
+    const cells = grid ? Array.from(grid.querySelectorAll('.ph-cell[tabindex="0"]')) : [];
+    const idx = cells.indexOf(anchor);
+    const next = idx >= 0 ? (cells[idx + 1] || null) : null;
+    _phCardClose();
+    if (next) next.focus();
+    else if (anchor.isConnected) { _phSkipFocusOpen = anchor; anchor.focus(); _phSkipFocusOpen = null; }
+  }
+}
+if (typeof window !== 'undefined' && !window.__phCardWired) {
+  window.__phCardWired = true;
+  const _phCellOf = (t) => (t && t.closest) ? t.closest('.ph-cell[data-ph-key]') : null;
+  document.addEventListener('pointerdown', (e) => { _phLastPtr = { type: e.pointerType || '', at: Date.now() }; }, true);
+  document.addEventListener('pointerover', (e) => {
+    if (e.pointerType === 'touch') return;
+    const c = _phCellOf(e.target);
+    if (!c) {
+      // Клетку перерисовали под открытой карточкой (rev-шторм) — старый якорь
+      // отцеплен и pointerout от него не придёт.
+      if (_phCardAnchor && !_phCardAnchor.isConnected && !(_phCardEl && _phCardEl.contains(e.target))) _phCardScheduleClose();
+      return;
+    }
+    if (_phCellBehindModal(c)) { if (_phCardAnchor) _phCardClose(); return; }
+    if (c === _phCardAnchor && _phCardIsOpen()) { _phCardCancelClose(); return; }
+    _phCardOpen(c);
+  });
+  document.addEventListener('pointerout', (e) => {
+    if (e.pointerType === 'touch') return;
+    const c = _phCellOf(e.target);
+    if (!c || c !== _phCardAnchor) return;
+    const rt = e.relatedTarget;
+    if (rt && (c.contains(rt) || (_phCardEl && _phCardEl.contains(rt)))) return;
+    _phCardScheduleClose();
+  });
+  document.addEventListener('focusin', (e) => {
+    const c = _phCellOf(e.target);
+    if (!c) return;
+    if (_phSkipFocusOpen === c) return;
+    if (_phLastPtr.type === 'touch' && Date.now() - _phLastPtr.at < 800) return;
+    if (_phCellBehindModal(c)) { if (_phCardAnchor) _phCardClose(); return; }
+    if (c === _phCardAnchor && _phCardIsOpen()) { _phCardCancelClose(); return; }
+    _phCardOpen(c);
+  });
+  document.addEventListener('focusout', (e) => {
+    const c = _phCellOf(e.target);
+    if (!c || c !== _phCardAnchor) return;
+    if (_phCardEl && e.relatedTarget && _phCardEl.contains(e.relatedTarget)) return;
+    _phCardScheduleClose();
+  });
+  // Любой scroll закрывает карточку (kiwi). Исключение — клавиатурный фокус на
+  // клетке/в карточке: браузер сам прокручивает панель к сфокусированной клетке,
+  // и карточка закрывалась бы сразу после открытия — перепозиционируем.
+  document.addEventListener('scroll', () => {
+    if (!_phCardAnchor) return;
+    const ae = document.activeElement;
+    let kbdOnCell = false;
+    try { kbdOnCell = ae === _phCardAnchor && _phCardAnchor.matches(':focus-visible'); } catch { kbdOnCell = ae === _phCardAnchor; }
+    if (_phCardIsOpen() && _phCardAnchor.isConnected && (kbdOnCell || (_phCardEl && _phCardEl.contains(ae)))) {
+      _phCardPlace(_phCardEl, _phCardAnchor);
+      return;
+    }
+    _phCardClose();
+  }, true);
+  document.addEventListener('keydown', _phCardKeydown, true);
+}
+
 function _renderUnitInvoiceHistory(u) {
   if (!u || !_isRentableType(u.type) || u.rentable === false) return '';
   // Lease-head redirect — for any non-head member of a multi-suite group,
@@ -87883,6 +88198,404 @@ function _renderUnitTenantHistoryBlock(u) {
 }
 
 // ============================================================
+// Payment history — модель карточки месяца (FIXES_LOG Entry 91, порт kiwi
+// ChipTooltip). Чистые функции: читают u / кэш инвойсов / state.ui (read-only)
+// и НИЧЕГО не пишут — ни saveState, ни stamp-heal'ов, ни ленивой инициализации
+// state.ui (поэтому override месяца читаем напрямую, не через
+// _invMonthGetOverrides, который создаёт пустой объект). Тексты — дословно
+// kiwi, кроме помеченных SFA. «Оплачен ли месяц» для фразы покрытия — только
+// _isMonthSettled (CLAUDE.md §0.2 правило 2); заголовок повторяет цвет клетки,
+// а при расхождении фраза молчит, а не спорит с клеткой.
+// ============================================================
+const _PH_USD = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function _phMoney(d) {   // = kiwi exactMoney: «$32,433.90», «-$5.00»
+  const n = Number(d);
+  return Number.isFinite(n) ? _PH_USD.format(Math.round(n * 100) / 100) : '—';
+}
+function _phToDate(v) {
+  if (v == null || v === '') return null;
+  if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
+  if (typeof v === 'object' && Number.isFinite(+v.seconds)) return new Date(+v.seconds * 1000);   // Firestore Timestamp
+  if (typeof v === 'number') { const d = new Date(v < 1e12 ? v * 1000 : v); return isNaN(d.getTime()) ? null : d; }
+  if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) return new Date(v + 'T00:00:00');
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? null : d;
+}
+// Банковская дата — UTC-день, как везде в SFA (bankPaidAt = toISOString().slice(0,10),
+// _txnYm). confirmBankMatch пишет только paidAt = ISO transactedAt (полночь UTC):
+// локальный разбор в США дал бы день раньше. → локальная полночь этого UTC-дня.
+function _phUtcDay(v) {
+  if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) return _phToDate(v);
+  const d = _phToDate(v);
+  return d ? new Date(d.toISOString().slice(0, 10) + 'T00:00:00') : null;
+}
+function _phFmtDate(d) {   // = kiwi fmtDate: «Oct 03, 2026»
+  const x = _phToDate(d);
+  return x ? `${MONTH_NAMES_SHORT[x.getMonth()]} ${String(x.getDate()).padStart(2, '0')}, ${x.getFullYear()}` : '—';
+}
+function _phDayDiff(a, b) {   // календарные дни от a до b (DST-безопасно)
+  return Math.round((Date.UTC(b.getFullYear(), b.getMonth(), b.getDate()) - Date.UTC(a.getFullYear(), a.getMonth(), a.getDate())) / 86400000);
+}
+const _PH_METHOD = { check: 'Check', ach: 'ACH', wire: 'Wire', cash: 'Cash', bank: 'ACH', zelle: 'Zelle', venmo: 'Venmo', other: 'Other',
+  backfill: 'Backfill', stripe: 'Stripe', 'stripe-link': 'Stripe', 'stripe-advance': 'Stripe' };
+const _PH_STRIPE_PM = { card: 'Card', link: 'Card', us_bank_account: 'ACH', ach_debit: 'ACH', ach_credit_transfer: 'ACH', customer_balance: 'Bank transfer' };
+const _PH_PURPOSE = { rent: 'Rent', late_fee: 'Late fee', deposit: 'Deposit', damages: 'Damages', keys: 'Keys', cleaning: 'Cleaning', custom: 'Charge' };
+// Тот же порядок, что серверный _recPaymentMethod (functions/index.js, Entry 89),
+// уточнённый для показа: webhook-PAID счёт → Card/ACH/Bank transfer из
+// p.stripe.paymentMethod (корень «Method not recorded»: webhook не пишет paidVia).
+function _phMethodLabel(p) {
+  if (!p) return 'Method not recorded';
+  const raw = String(p.paidMethod || p.paidVia || '').toLowerCase().trim();
+  if (raw === 'backfill') return 'Backfill';
+  if (p.bankTxnId || p.source === 'bank-feed') return ['check', 'ach', 'wire', 'cash'].includes(raw) ? _PH_METHOD[raw] : 'ACH';
+  if (p.stripe && p.stripe.invoiceId && p.stripe.paidAt) return _PH_STRIPE_PM[String(p.stripe.paymentMethod || '').toLowerCase()] || 'Stripe';
+  if (raw) return _PH_METHOD[raw] || (raw.charAt(0).toUpperCase() + raw.slice(1));
+  if ((p.stripe && p.stripe.invoiceId) || p.stripeInvoiceId) return 'Stripe';
+  return 'Method not recorded';
+}
+function _phInvBucket(r) { return String((r && (r.bucket || r.status)) || '').toLowerCase(); }
+function _phInvPurpose(r) { return String((r && ((r.metadata && r.metadata.purpose) || r.purpose)) || ''); }
+function _phMonthOverride(id) {   // read-only: state.ui.invoiceMonthOverrides[id]
+  try {
+    const m = (typeof state !== 'undefined' && state && state.ui) ? state.ui.invoiceMonthOverrides : null;
+    const v = (m && typeof m === 'object' && id) ? m[id] : '';
+    return (typeof v === 'string' && /^\d{4}-\d{2}$/.test(v)) ? v : '';
+  } catch { return ''; }
+}
+function _phInvYm(r) {   // месяц счёта: ручная привязка → metadata.ym; без фолбэка на дату создания
+  if (!r) return '';
+  const ovr = _phMonthOverride(r.id);
+  if (ovr) return ovr;
+  const ym = String((r.metadata && r.metadata.ym) || r.ym || '');
+  return /^\d{4}-\d{2}$/.test(ym) ? ym : '';
+}
+// Чей это счёт: '' — этой лизы, иначе причина ('deposit' | 'building' |
+// 'tenant' | 'tenure'). ОДИН предикат для итогов месяца (_phGroupMonthInvoices)
+// и для счёта, который сетка передаёт в карточку (ctx.row): сеточные
+// _gridGetAliveInvoiceForYm / stripePaidRows / штампы скоупа не имеют.
+// Депозит (Entry 7; без purpose — детектор Entry 34 _stampPointsToDeposit),
+// чужое здание (Entry 88: номера сьютов повторяются), чужой клиент/email,
+// создан до начала аренды (−7 дн., _tenantTenureStartMs). Счёт, созданный
+// раньше, но выставленный за месяц ВНУТРИ лизы (ym ≥ месяц старта), — наш:
+// крон шлёт счёт ~21-го предыдущего месяца, первый месяц лизы иначе терялся.
+// opts.linked — счёт из собственной ссылки записи u.payments[ym] (webhook,
+// «Use this invoice»): запись сама подтверждает арендатора и срок —
+// проверяем только депозит и здание.
+function _phRowScope(u, b, r, opts) {
+  if (!r || !r.id) return 'tenant';
+  const purpose = _phInvPurpose(r);
+  if (purpose === 'deposit') return 'deposit';
+  if (!purpose && typeof _stampPointsToDeposit === 'function' && _stampPointsToDeposit(u, r.id)) return 'deposit';
+  const m = r.metadata || {};
+  if (m.buildingId && b && String(m.buildingId) !== String(b.id)) return 'building';
+  if (opts && opts.linked) return '';
+  const cust = (u.stripe && u.stripe.customerId) || null;
+  const emails = new Set([u.email, u.emailCc].map(e => String(e || '').toLowerCase().trim()).filter(e => e.includes('@')));
+  const em = String(r.customerEmail || '').toLowerCase().trim();
+  if (!((cust && r.customerId === cust) || !em || emails.size === 0 || emails.has(em))) return 'tenant';
+  const tenure = (typeof _tenantTenureStartMs === 'function') ? _tenantTenureStartMs(u) : null;
+  if (tenure && r.created) {
+    const cMs = new Date(r.created).getTime();
+    if (Number.isFinite(cMs) && cMs < tenure) {
+      const rYm = _phInvYm(r), sYm = String(u.leaseStart || u.signed || '').slice(0, 7);
+      if (!(rYm && /^\d{4}-\d{2}$/.test(sYm) && rYm >= sYm)) return 'tenure';
+    }
+  }
+  return '';
+}
+// Счета, отнесённые к каждому месяцу, для ТЕКУЩЕГО арендатора ЭТОГО здания.
+// Строится один раз на рендер сетки. Включая void/uncollectible (для итогов
+// месяца и фразы о void); скоуп — _phRowScope.
+function _phGroupMonthInvoices(u, b) {
+  const out = new Map();
+  const rows = (typeof _invRowsForUnit === 'function') ? (_invRowsForUnit(u.id) || []) : [];
+  for (const r of rows) {
+    if (!r || !r.id || String(r.id).startsWith('manual-')) continue;
+    if (_phRowScope(u, b, r)) continue;
+    const ym = _phInvYm(r);
+    if (!ym) continue;
+    if (!out.has(ym)) out.set(ym, []);
+    out.get(ym).push(r);
+  }
+  return out;
+}
+const _PH_HEAD = {
+  paid:      { word: 'PAID',             label: 'Paid',             tone: 'paid' },
+  paid_late: { word: 'PAID LATE',        label: 'Paid late',        tone: 'paid-late' },
+  late:      { word: 'LATE',             label: 'Late',             tone: 'late' },
+  invoiced:  { word: 'INVOICED',         label: 'Invoiced',         tone: 'invoiced' },
+  awaiting:  { word: 'AWAITING INVOICE', label: 'Awaiting invoice', tone: 'awaiting' },
+  not_due:   { word: 'NOT DUE YET',      label: 'Not due yet',      tone: 'not-due' },
+  outside:   { word: 'OUTSIDE THE TERM', label: 'Outside the term', tone: 'outside' },
+  waived:    { word: 'WAIVED',           label: 'Waived',           tone: 'waived' },   // SFA
+};
+// a = { u, b, ym, p, ctx, graceDays, today, curYm, rent, monthRows, cacheLoaded,
+//       feePaid, advancePaid, editable }; ctx — факты ветки сетки (см. _phCtx).
+function _phCardModel(a) {
+  const u = a.u, ym = a.ym, p = a.p || null, ctx = a.ctx || { kind: 'outside' };
+  const kind = _PH_HEAD[ctx.kind] ? ctx.kind : 'outside';
+  const g = Number.isFinite(+a.graceDays) ? +a.graceDays : 5;
+  const [yy, mm] = String(ym).split('-').map(Number);
+  const mon = `${MONTH_NAMES_SHORT[mm - 1]} ${yy}`;
+  const monFull = `${MONTH_NAMES_FULL[mm - 1]} ${yy}`;
+  const hm = _PH_HEAD[kind];
+  const word = kind === 'late' ? `LATE (>${g}D)` : hm.word;
+  const label = kind === 'late' ? `Late (>${g}d)` : hm.label;
+  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  const bk = _phInvBucket;
+
+  const numOf = (r) => (r && r.number && String(r.number) !== String(r.id)) ? String(r.number) : null;
+
+  // ── Счёт, который передала сетка (ctx.row / ctx.invoiceId) — тот же скоуп,
+  //    что у итогов месяца (_phRowScope). Чужой — не показываем его номер,
+  //    сумму, Open/Stripe и не берём в итоги; одна нейтральная SFA-строка. ──
+  let row = (ctx.row && ctx.row.id && !String(ctx.row.id).startsWith('manual-')) ? ctx.row : null;
+  let ctxInvId = (ctx.invoiceId && !String(ctx.invoiceId).startsWith('manual-')) ? String(ctx.invoiceId) : null;
+  let foreign = null;
+  const foreignText = (why, num) => {
+    const what = `The invoice marking this month (${num})`;
+    return why === 'deposit' ? `${what} is a deposit invoice — not this month's rent.`
+      : why === 'building' ? `${what} belongs to another building — not this lease.`
+      : why === 'tenure' ? `${what} was issued before this lease began — not this lease.`
+      : `${what} is addressed to another tenant — not this lease.`;
+  };
+  if (row) {
+    const why = _phRowScope(u, a.b, row, { linked: !!ctx.rowLinked });
+    if (why) {
+      foreign = foreignText(why, numOf(row) || String(row.id));
+      if (ctxInvId === String(row.id)) ctxInvId = null;
+      row = null;
+    }
+  } else if (ctxInvId && typeof _stampPointsToDeposit === 'function' && _stampPointsToDeposit(u, ctxInvId)) {
+    foreign = foreignText('deposit', ctx.invoiceNumber ? String(ctx.invoiceNumber) : ctxInvId);   // штамп → депозит (Entry 34)
+    ctxInvId = null;
+  }
+  // Stripe-paid месяц, чьи сумма/дата/метод взяты сеткой из этого же чужого
+  // счёта (кэш-скан), — их тоже не печатаем: это факты чужого счёта.
+  const fromForeign = !!(foreign && ctx.fromRow);
+  const ctxAmount = fromForeign ? null : ctx.amount;
+  const ctxMethod = fromForeign ? null : ctx.method;
+  const ctxPaidOn = fromForeign ? null : ctx.paidOn;
+
+  // ── Счета месяца ──
+  const all = (a.monthRows || []).slice();
+  let placed = null;
+  let rowInMonth = !!(row && all.some(r => r.id === row.id));
+  // Entry 30: месяц, покрытый multi-month платежом, не тянет в свои итоги счёт anchor'а.
+  if (row && !rowInMonth && !ctx.coveredBy) {
+    const rYm = _phInvYm(row);
+    if (!rYm || rYm === ym) {   // строку, отнесённую к ДРУГОМУ месяцу, в итоги этого не берём
+      all.push(row);
+      rowInMonth = true;
+      if (!rYm) placed = 'Placed here by its issue date — this invoice carries no service period, so nothing on file says which month it bills.';
+    }
+  }
+  const isOpen = (r) => { const s = bk(r); return s === 'open' || s === 'past_due'; };
+  const live = all.filter(r => { const s = bk(r); return s !== 'void' && s !== 'uncollectible'; });
+  const voided = all.filter(r => bk(r) === 'void').sort((x, y) => (+y.created || 0) - (+x.created || 0));
+  const writtenOff = all.filter(r => bk(r) === 'uncollectible');
+  const openRows = live.filter(isOpen);
+  const paidRows = live.filter(r => bk(r) === 'paid');
+  const drafts = live.filter(r => bk(r) === 'draft');
+  const many = live.length > 1;
+  const sumTotal = (rs) => rs.reduce((s, r) => s + (+r.total || 0), 0);
+  const sumRem = (rs) => rs.reduce((s, r) => s + Math.max(0, +r.amountRemaining || 0), 0);
+  const cashOf = (r) => (+r.amountPaid > 0 ? +r.amountPaid : (+r.total || 0));
+  const number = numOf(row) || ((!foreign && ctx.invoiceNumber) ? String(ctx.invoiceNumber) : null);
+
+  // ── Строки (порядок kiwi) ──
+  const rows = [];
+  if (many) {
+    rows.push(['Invoices', String(live.length)]);
+    rows.push(['Month total', _phMoney(sumTotal(live))]);
+    const unpaid = sumRem(openRows);
+    if (unpaid > 0) rows.push(['Unpaid', _phMoney(unpaid)]);
+    if (number) rows.push(['Shown', number]);
+  } else if (number) {
+    rows.push(['Invoice', number]);
+  }
+  if (!many) {
+    if (ctx.amountFixed != null) rows.push(['Amount', _phMoney(ctx.amountFixed)]);
+    else if (row && rowInMonth && Number.isFinite(+row.total) && row.total !== '' && row.total != null) rows.push(['Amount', _phMoney(+row.total)]);
+    else if (ctxAmount != null) rows.push(['Amount', _phMoney(ctxAmount)]);
+    else if (ctx.monthRent != null) rows.push(['Rent', _phMoney(ctx.monthRent)]);   // SFA: ни счёта, ни платежа
+  }
+  // SFA финализирует и отправляет счёт одним шагом (§0.2 правило 6) — всегда «Sent».
+  if (row && bk(row) !== 'draft' && row.created) rows.push(['Sent', _phFmtDate(row.created)]);
+  // Due = якорь грейса (1-е или старт лизы). НЕ row.dueDate: по Entry 60 Stripe
+  // due_date = якорь + грейс, грейс посчитался бы дважды.
+  if (ctx.dueDate) rows.push(['Due', _phFmtDate(ctx.dueDate)]);
+  if (ctxMethod) rows.push(['Method', ctxMethod]);
+  if (ctxPaidOn) rows.push(['Paid on', _phFmtDate(ctxPaidOn)]);
+  if (ctx.reference) rows.push(['Reference', String(ctx.reference)]);   // SFA
+  if (!many && row && isOpen(row) && +row.amountRemaining > 0) rows.push(['Balance', _phMoney(+row.amountRemaining)]);
+
+  // ── Отправлен ли счёт ──
+  let delivery = null;
+  if (kind === 'invoiced') {
+    if (!row && ctxInvId) delivery = { text: 'Whether this invoice was ever sent is not recorded on this screen — open it in Stripe to see.', sent: false };
+    else if (row && bk(row) === 'draft') delivery = { text: 'NOT SENT — this invoice is still a draft in Stripe. Nothing has gone to the tenant.', sent: false };
+    else if (row && isOpen(row)) delivery = { text: 'Sent — a message about this invoice left the building.', sent: true };
+  }
+
+  // ── Грейс (дни считаются от даты Due, как kiwi — решение Tony №1) ──
+  let grace = null;
+  if (kind === 'paid' && ctx.graceKnown && !fromForeign) {
+    grace = { text: `On time (within ${g}-day grace)`, ok: true };
+  } else if (kind === 'paid_late' && ctx.graceKnown && !fromForeign) {
+    const n = Math.max(1, +ctx.daysLate || 0);
+    grace = { text: `Paid ${n} day${n === 1 ? '' : 's'} late`, ok: false };
+  } else if (kind === 'late') {
+    const n = Math.max(1, +ctx.daysOverdue || 0);
+    grace = { text: `${n} day${n === 1 ? '' : 's'} overdue`, ok: false };
+  } else if (kind === 'invoiced' && +ctx.daysOverdue > 0) {   // решение Tony №5: заголовок INVOICED + красная строка
+    const n = +ctx.daysOverdue;
+    grace = { text: `${n} day${n === 1 ? '' : 's'} overdue`, ok: false };
+  }
+  // SFA: дата оплаты показана, но сетка срок по ней не проверяла (запись без
+  // date/bankPaidAt — confirmBankMatch), — иначе зелёный PAID рядом с датой
+  // после 5-го выглядит противоречием.
+  const graceNote = (!grace && ctx.graceNote) ? String(ctx.graceNote) : null;
+
+  // ── lNote kiwi: счёт выставлен ПОСЛЕ даты Due. SFA-формулировка — без
+  //    kiwi-хвоста «грейс идёт от даты выставления»: в SFA грейс от Due
+  //    (решение Tony №1); переносить ли якорь — вопрос к Tony. ──
+  let lateBilled = null;
+  if (row && rowInMonth && bk(row) !== 'draft' && row.created && ctx.dueDate) {
+    const cD = _phToDate(row.created), dD = _phToDate(ctx.dueDate);
+    if (cD && dD && _phDayDiff(dD, cD) > 0) lateBilled = `Billed ${_phFmtDate(cD)}, after the ${_phFmtDate(dD)} due date.`;
+  }
+
+  // ── Итоги месяца (monthTotalsNote) ──
+  let totals = null;
+  if (all.length) {
+    if (!live.length) {
+      totals = voided.length && writtenOff.length ? 'No live invoice — every one written for this month was voided or written off.'
+        : voided.length ? 'No live invoice — every one written for this month was voided.'
+        : writtenOff.length ? 'No live invoice — every one written for this month was written off.'
+        : null;
+    } else {
+      const parts = [`${plural(live.length, 'live invoice')} · ${_phMoney(sumTotal(live))}`];
+      if (openRows.length) parts.push(`${openRows.length} unpaid (${_phMoney(sumRem(openRows))} outstanding)`);
+      else if (paidRows.length) parts.push('all settled');
+      if (drafts.length) parts.push(`${plural(drafts.length, 'draft')} not finalized (the tenant has not been billed for ${drafts.length === 1 ? 'it' : 'them'})`);
+      if (voided.length) parts.push(`${voided.length} voided`);
+      if (writtenOff.length) parts.push(`${writtenOff.length} written off`);   // SFA
+      totals = parts.join(' · ') + '.';
+    }
+  }
+
+  // ── Покрытие (только через _isMonthSettled) ──
+  let coverage = null;
+  const settledOf = (y) => (typeof _isMonthSettled === 'function') ? _isMonthSettled(u, y) : null;
+  const settled = settledOf(ym);
+  const relief = (p && p.wasDiscounted && +p.discountAmount > 0) ? +p.discountAmount : 0;
+  const reliefNote = relief > 0 ? ` ${_phMoney(relief)} of this month was closed by a credit or write-off, not paid.` : '';
+  const isRent = (r) => _phInvPurpose(r) === 'rent';
+  const openRent = openRows.filter(isRent), openOther = openRows.filter(r => !isRent(r));
+  const paidOther = paidRows.filter(r => !isRent(r));
+  const paidFor = paidOther.map(r => `${_PH_PURPOSE[_phInvPurpose(r)] || 'Charge'} ${_phMoney(cashOf(r))}`).join(' and ');
+  const otherCash = paidOther.reduce((s, r) => s + cashOf(r), 0);
+  if (kind === 'waived') {
+    coverage = { text: 'Waived — no rent is owed for this month.', partial: false };   // SFA
+  } else if (ctx.coveredBy) {   // SFA: месяц внутри multi-month платежа (Entry 30)
+    const info = ctx.coveredBy;
+    if (settledOf(info.sourceYm) === 'paid' && Array.isArray(info.coveredYms) && info.coveredYms.length > 1) {
+      const n = info.coveredYms.length;
+      const [fy, fm] = info.coveredYms[0].split('-').map(Number);
+      const [ly, lm] = info.coveredYms[n - 1].split('-').map(Number);
+      coverage = { text: `Fully covered — paid as part of one ${n}-month payment of ${_phMoney(+(info.p && info.p.amount) || 0)} (${MONTH_NAMES_SHORT[fm - 1]} ${fy} → ${MONTH_NAMES_SHORT[lm - 1]} ${ly}).`, partial: false };
+    }
+  } else if (!fromForeign && (settled === 'paid' || settled === 'stripe-paid') && (kind === 'paid' || kind === 'paid_late')) {
+    // (fromForeign: «оплачено» держится только на чужом счёте — сумму покрытия
+    //  из него не печатаем; _rentPaidRowFromCache не знает buildingId — см. Still open)
+    if (openRent.length) {   // SFA: предупреждение о двойном выставлении
+      coverage = { text: `Rent for ${mon} is recorded as paid, but a rent invoice for it is still open in Stripe (${_phMoney(sumRem(openRent))} outstanding).` + reliefNote, partial: true };
+    } else if (openOther.length) {
+      coverage = { text: `Rent for ${mon} is settled; ${_phMoney(sumRem(openOther))} of other charges is still outstanding.` + reliefNote, partial: true };
+    } else {
+      const rentCash = settled === 'paid'
+        ? (+(p && p.amount) || 0)
+        : (+((typeof _stripePaidAmountForYm === 'function') ? _stripePaidAmountForYm(u, ym) : 0) || 0);
+      const received = rentCash + otherCash;
+      coverage = {
+        text: (received > 0 || relief > 0)
+          ? `Fully covered — the rent and every other charge billed for this month are settled (${_phMoney(received)}${relief > 0 ? ' in cash' : ''}).` + reliefNote
+          : 'Fully covered — the rent and every other charge billed for this month are settled.',
+        partial: false,
+      };
+    }
+  } else if (!settled && kind !== 'paid' && kind !== 'paid_late') {
+    const liveRent = live.filter(isRent);
+    const rentPaidPart = openRent.reduce((s, r) => s + (+r.amountPaid > 0 ? +r.amountPaid : 0), 0);
+    if (openRent.length && (rentPaidPart > 0 || paidOther.length)) {
+      coverage = { text: `Rent for ${mon} is billed and not settled in full — ${_phMoney(sumRem(openRent))} of rent still open` + (paidFor ? `, while ${paidFor} did settle.` : '.') + reliefNote, partial: true };
+    } else if (!liveRent.length && paidOther.length) {
+      const lead = ym > a.curYm ? `${mon} has not started and no rent is billed for it yet.` : `No rent was billed for ${mon}.`;
+      coverage = { text: `${lead} The ${_phMoney(otherCash)} received is ${paidFor} — not rent.` + reliefNote, partial: true };
+    }
+  }
+  // (клетка зелёная, а _isMonthSettled вернул null — фраза не пишется)
+
+  // ── Void ──
+  let voidedNote = null;
+  if (voided.length) {
+    const v = voided[0], vn = numOf(v);
+    const which = vn ? `Invoice ${vn}` : 'An invoice';
+    const amt = +v.total > 0 ? ` for ${_phMoney(+v.total)}` : '';
+    const more = voided.length > 1 ? ` (${voided.length} invoices for this month have been voided)` : '';
+    voidedNote = live.length
+      ? `${which}${amt} was voided${more} — reversed, so it is not in this month's totals.`
+      : (kind === 'paid' || kind === 'paid_late' || kind === 'waived' || kind === 'outside')   // вне срока лизы рента не должна — не «unbilled again»
+        ? `${which}${amt} was issued for this month and voided${more}.`
+        : `${which}${amt} was issued for this month and voided${more} — the month is unbilled again.`;
+  }
+
+  // ── SFA-строки (всё, что показывал прежний tooltip) ──
+  const extras = [];
+  if (ctx.covers && Array.isArray(ctx.covers.coveredYms) && ctx.covers.coveredYms.length > 1) {
+    const cy = ctx.covers.coveredYms, n = cy.length;
+    const [fy, fm] = cy[0].split('-').map(Number);
+    const [ly, lm] = cy[n - 1].split('-').map(Number);
+    extras.push(`One payment of ${_phMoney(+(p && p.amount) || 0)} covers ${MONTH_NAMES_SHORT[fm - 1]} ${fy} → ${MONTH_NAMES_SHORT[lm - 1]} ${ly} (${n} months).`);
+  }
+  if (ctx.local && p) {
+    if (p.autoApplied) {
+      const dc = p.autoMatchDeltaCents;
+      extras.push(`Auto-applied from the bank feed${dc !== undefined && dc !== null ? ` (Δ ${dc}¢)` : ''}.`);
+    } else if (p.recordedBy) {
+      extras.push(`Recorded by ${p.recordedBy}.`);
+    }
+  }
+  if ((ctx.local || kind === 'waived') && p && p.memo) extras.push(`“${p.memo}”`);
+  if (a.feePaid) extras.push('Late fee invoice paid this cycle.');
+  if (a.advancePaid) extras.push('Prepaid as part of a multi-month advance invoice.');
+  if (ctx.prorated && ctx.prorated.daysInMonth) extras.push(`Prorated rent — ${ctx.prorated.daysRemaining}/${ctx.prorated.daysInMonth} days.`);
+  if (ctx.proxyDate && !fromForeign) extras.push('Paid in Stripe — this month has no ledger record, so the payment date is not shown.');
+  if (kind === 'invoiced' && row && bk(row) === 'paid') extras.push('This invoice is paid in Stripe, but the payment is not recorded for this month.');
+
+  // ── Подвал ──
+  let footer;
+  if (!a.editable) footer = 'View only — your role cannot record payments.';   // SFA: клик покажет тост роли
+  else if (all.length || row || ctxInvId || kind === 'paid' || kind === 'paid_late' || kind === 'waived' || kind === 'invoiced') footer = 'Click to view details.';
+  else if (kind === 'awaiting' || kind === 'late') footer = a.cacheLoaded ? 'Nothing has been billed for this month — click to bill it.' : 'Stripe invoices have not loaded yet — click to open this month.';
+  else if (kind === 'not_due') footer = 'The month has not started yet — nothing is due.';
+  else footer = "Outside this lease's term — no rent is owed.";
+
+  const invoiceId = (row && row.id) ? String(row.id) : ctxInvId;
+  return {
+    ariaLabel: `${monFull} — ${label}${number ? `, invoice ${number}` : ''}`,
+    tabbable: kind !== 'not_due' && kind !== 'outside',
+    head: { month: mon, word, tone: hm.tone },
+    own: Array.isArray(ctx.own) ? ctx.own.slice() : [],
+    rows, delivery, grace, graceNote, lateBilled, totals, coverage, voided: voidedNote, placed, foreign, extras, footer,
+    invoiceId, number,
+    openLabel: number ? `Open invoice ${number}` : 'Open invoice',
+    stripeInvoiceId: (invoiceId && /^in_[A-Za-z0-9]+$/.test(invoiceId)) ? invoiceId : null,
+  };
+}
+
+// ============================================================
 // Payment health block for the right-side unit detail panel.
 // Shows:
 //   - A red alert when months are unpaid (so delays are unmissable)
@@ -87990,6 +88703,17 @@ function _renderUnitPaymentHealth(u) {
   // trigger always agree. Default 5 days if no config.
   const lfCfg = (typeof getLateFeeConfig === 'function') ? getLateFeeConfig(u) : null;
   const graceDays = (lfCfg && Number.isFinite(+lfCfg.graceDays)) ? +lfCfg.graceDays : 5;
+  // Карточка месяца (FIXES_LOG Entry 91): счета по месяцам + модели карточек.
+  // Только чтение — карточка ничего не пишет в state.
+  const _phMonthRows = _phGroupMonthInvoices(u, b);
+  const _phCacheLoaded = (typeof _invoicesCache !== 'undefined' && Array.isArray(_invoicesCache));
+  const _phEditable = (typeof canEdit === 'function') ? !!canEdit() : true;
+  const _phKey = `${b.id}|${f.id}|${u.id}`;
+  const _phModels = new Map();
+  const _phAll = window._phCardModels || (window._phCardModels = new Map());
+  _phAll.delete(_phKey);              // свежий рендер — в конец (LRU)
+  _phAll.set(_phKey, _phModels);
+  while (_phAll.size > 24) _phAll.delete(_phAll.keys().next().value);   // не копим модели всех юнитов сессии
 
   // Pre-compute: which months had a late-fee invoice that was PAID?
   // Used to overlay a small gold "$" dot on those cells so the operator
@@ -88013,12 +88737,20 @@ function _renderUnitPaymentHealth(u) {
   const stripePaidYms = new Set();
   const stripePaidDates = new Map();   // ym → createdMs (for late-paid detection)
   const stripePaidAmounts = new Map(); // ym → amount (for tooltip)
+  // Карточка месяца (Entry 91): строка счёта stripe-paid месяца и признак
+  // «дата оплаты = r.created (прокси)» — тогда «Paid on» не показываем.
+  const stripePaidRows = new Map();      // ym → cache row | null
+  const stripePaidDateProxy = new Set(); // ym, чья дата — created счёта
+  const stripePaidFromCache = new Set(); // ym, чьи сумма/дата взяты из строки кэш-скана
   if (u.stripe?.moveInRent?.ym && u.stripe.moveInRent.status === 'paid') {
     stripePaidYms.add(u.stripe.moveInRent.ym);
     if (u.stripe.moveInRent.paidAt) {
       stripePaidDates.set(u.stripe.moveInRent.ym, new Date(u.stripe.moveInRent.paidAt).getTime());
     }
     stripePaidAmounts.set(u.stripe.moveInRent.ym, +u.stripe.moveInRent.amount || rent);
+    if (u.stripe.moveInRent.invoiceId) {
+      stripePaidRows.set(u.stripe.moveInRent.ym, (typeof _lookupInvoiceRow === 'function' && _lookupInvoiceRow(u.stripe.moveInRent.invoiceId)) || null);
+    }
   }
   if (Array.isArray(_invoicesCache)) {
     // Tenant identity check — same logic the rent-invoice cache lookup
@@ -88059,6 +88791,9 @@ function _renderUnitPaymentHealth(u) {
       // "paid after grace" on an already-past invoice.
       if (r.created) stripePaidDates.set(ym, r.created);
       stripePaidAmounts.set(ym, +r.total || rent);
+      stripePaidRows.set(ym, r);
+      if (r.created) stripePaidDateProxy.add(ym);
+      stripePaidFromCache.add(ym);
     }
   }
 
@@ -88203,6 +88938,7 @@ function _renderUnitPaymentHealth(u) {
     // and the "past-due" branch (days overdue) read the same anchor.
     const due = new Date(d.getFullYear(), d.getMonth(), 1);
     let cls, label, tooltip;
+    let _phCtx = null;   // факты ветки для карточки месяца (Entry 91)
     const monthFull = d.toLocaleString('en-US', {month: 'long'});
     const fullYear = d.getFullYear();
     // Pre-tenancy branch — gray, not counted as debt. Two cases:
@@ -88313,6 +89049,33 @@ function _renderUnitPaymentHealth(u) {
         multiMonthLine = `\nCovers: ${MONTH_NAMES_SHORT[_fm-1]} ${_fy} → ${MONTH_NAMES_SHORT[_lm-1]} ${_ly} (${_mmInfo.coveredYms.length} mo)`;
       }
       tooltip = `${monthFull} ${fullYear} · ${wasLate ? 'PAID (late)' : 'PAID'}${amountLine}\nMethod: ${methodFull}${refLine}${dateLine}${lateLine}${multiMonthLine}${recordedBy}${memoLine}${autoLine}\n\nClick to view / edit.`;
+      // Фолбэк-строка кэша (_stripePaidRowForYm, Entry 34 deposit-guard) — только
+      // если она этой лизы (_phRowScope: здание Entry 88, арендатор, срок);
+      // чужую молча не берём — месяц отмечен локальной записью, а не ею.
+      const _phOwnInv = p.stripe?.invoiceId || p.stripeInvoiceId || p.discountInvoiceId || null;
+      const _phFb = (!_phOwnInv && typeof _stripePaidRowForYm === 'function') ? _stripePaidRowForYm(u, ym) : null;
+      const _phFbOk = !!(_phFb && !_phRowScope(u, b, _phFb));
+      // Запись без date/bankPaidAt (confirmBankMatch: только paidAt = ISO
+      // transactedAt) — банковская дата = UTC-день, как bankPaidAt.
+      const _phBankRec = !!(p.bankTxnId || p.source === 'bank-feed');
+      const _phRecDate = _phBankRec ? _phUtcDay(p.paidAtIso || p.paidAt) : _phToDate(p.paidAtIso || p.paidAt);
+      const _phPaidOn = paidAt || _phRecDate || _phToDate(p.stripe?.paidAt);
+      _phCtx = {
+        kind: wasLate ? 'paid_late' : 'paid', local: true,
+        invoiceId: _phOwnInv || (_phFbOk ? (_phFb.id || null) : null),
+        rowLinked: !!_phOwnInv,   // ссылка самой записи — скоуп только депозит + здание
+        invoiceNumber: p.stripeInvoiceNumber || null,
+        amount: +p.amount || rent || 0, dueDate: due, method: _phMethodLabel(p),
+        paidOn: _phPaidOn,
+        graceKnown: !!(paidAt && !isBackfill), daysLate: paidAt ? _phDayDiff(due, paidAt) : 0,
+        graceNote: (!paidAt && _phPaidOn && !isBackfill)
+          ? (_phBankRec ? 'Date from the bank feed — on-time was not checked for this record.'
+            : 'Date from the payment record — on-time was not checked for this record.')
+          : null,
+        reference: p.paidReference || null,
+        covers: (_mmInfo && _mmInfo.sourceYm === ym && _mmInfo.coveredYms.length > 1) ? _mmInfo : null,
+      };
+      _phCtx.row = (_phCtx.invoiceId && typeof _lookupInvoiceRow === 'function') ? _lookupInvoiceRow(_phCtx.invoiceId) : null;
     } else if (stripePaid) {
       // Stripe paid this month — same grace math as the manual-paid
       // branch above so the two code paths agree on what "late" means.
@@ -88335,9 +89098,19 @@ function _renderUnitPaymentHealth(u) {
             ? '\nOn time ✓'
             : `\nOn time (within ${graceDays}-day grace)`);
       tooltip = `${monthFull} ${fullYear} · ${wasLate ? 'PAID (late)' : 'PAID'}${amountLine}\nMethod: Stripe${dateLine}${lateLine}\n\nClick to view / edit.`;
+      const _px = stripePaidDateProxy.has(ym);
+      const _spRow = stripePaidRows.get(ym) || null;
+      _phCtx = {
+        kind: wasLate ? 'paid_late' : 'paid', row: _spRow, invoiceId: _spRow ? _spRow.id : (u.stripe?.moveInRent?.ym === ym ? (u.stripe.moveInRent.invoiceId || null) : null),
+        amount: +stripePaidAmt || rent || 0, dueDate: due, method: 'Stripe',
+        paidOn: _px ? null : paidAtDate, graceKnown: !_px && !!paidAtDate,
+        daysLate: (!_px && paidAtDate) ? _phDayDiff(due, paidAtDate) : 0, proxyDate: _px,
+        fromRow: stripePaidFromCache.has(ym),   // сумма/дата — из _spRow: чужой счёт → не показывать их
+      };
     } else if (p?.status === 'free') {
       cls = 'free'; label = '—';
       tooltip = `${monthFull} ${fullYear} · Waived${p.memo ? '\n\n"' + p.memo + '"' : ''}\n\nClick to change.`;
+      _phCtx = { kind: 'waived', dueDate: due, method: 'Waived' };
     } else if (multiMonthCoverage.has(ym)) {
       // Multi-month покрытие: текущий ym входит в диапазон, оплаченный
       // соседним платежом (anchor = info.sourceYm, сам anchor уже окрашен
@@ -88370,6 +89143,11 @@ function _renderUnitPaymentHealth(u) {
         ? `\nPaid on: ${paidAt.toLocaleDateString('en-US', {year:'numeric', month:'short', day:'numeric'})}`
         : '';
       tooltip = `${monthFull} ${fullYear} · PAID (part of multi-month payment)\nMethod: ${method}${dateLine}\nMulti-month covers: ${rangeLabel} (${info.coveredYms.length} mo)\nAmount/mo: $${rent.toLocaleString()}\nTotal payment: $${totalAmt.toLocaleString()}\n\nClick to view source payment (${MONTH_NAMES_SHORT[+info.sourceYm.split('-')[1]-1]} ${info.sourceYm.split('-')[0]}).`;
+      _phCtx = {
+        kind: 'paid', coveredBy: info, amountFixed: rent, dueDate: due, method: _phMethodLabel(sp),
+        paidOn: paidAt, graceKnown: false, invoiceId: sp.stripeInvoiceId || null, rowLinked: true,
+        row: (sp.stripeInvoiceId && typeof _lookupInvoiceRow === 'function') ? _lookupInvoiceRow(sp.stripeInvoiceId) : null,
+      };
     } else if (isPreLeaseMonth) {
       // Whole month before the lease started → light "outside the lease"
       // grey, no debt. Only fires if no payment exists for this month
@@ -88380,6 +89158,7 @@ function _renderUnitPaymentHealth(u) {
         ? startDate.toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'})
         : startStr;
       tooltip = `${monthFull} ${fullYear}\nBefore lease started\nLease begins: ${startLabel}`;
+      _phCtx = { kind: 'outside', own: [`Lease begins ${_phFmtDate(startDate)}`] };
     } else if (isStartMonthBeforeStartDate) {
       // First month of the lease, but the start day hasn't arrived yet
       // AND no advance payment was recorded. По умолчанию рендерится как
@@ -88397,12 +89176,14 @@ function _renderUnitPaymentHealth(u) {
         const _monthRent = _mb.monthRent;
         cls = 'current'; label = monthLabel[0];
         tooltip = `${monthFull} ${fullYear}\nInvoice sent (advance) · awaiting payment${_fmtInvoiceSentLine(_aliveInvLeaseStart)}\nAmount: $${_monthRent.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+        _phCtx = { kind: 'invoiced', row: _aliveInvLeaseStart, dueDate: startDate, monthRent: _monthRent };
       } else {
         cls = 'future'; label = monthLabel[0];
         const startLabel = startDate
           ? startDate.toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'})
           : startStr;
         tooltip = `${monthFull} ${fullYear}\nLease begins: ${startLabel}\nRent prorates from the start day`;
+        _phCtx = { kind: 'not_due', own: [`Lease begins ${_phFmtDate(startDate)} — rent prorates from the start day`] };
       }
     } else if (ym > curYm) {
       // Future month within the lease. По умолчанию серый (rent not yet
@@ -88418,9 +89199,11 @@ function _renderUnitPaymentHealth(u) {
         const _monthRent = _mb.monthRent;
         cls = 'current'; label = monthLabel[0];
         tooltip = `${monthFull} ${fullYear}\nInvoice sent (advance) · awaiting payment${_fmtInvoiceSentLine(_aliveInv)}\nAmount: $${_monthRent.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+        _phCtx = { kind: 'invoiced', row: _aliveInv, dueDate: due, monthRent: _monthRent };
       } else {
         cls = 'future'; label = monthLabel[0];
         tooltip = `${monthFull} ${fullYear}\nUpcoming — rent not yet due\nRent: $${rent.toLocaleString()}`;
+        _phCtx = { kind: 'not_due', dueDate: due, monthRent: rent };
       }
     } else if (ym === curYm) {
       // Current month — within grace period it's still "current" (blue).
@@ -88449,16 +89232,22 @@ function _renderUnitPaymentHealth(u) {
       const _rentLine = _mb.isProratedMonth
         ? `Prorated rent: $${_monthRent.toLocaleString(undefined, { maximumFractionDigits: 2 })} (${_mb.proration.daysRemaining}/${_mb.proration.daysInMonth} days)`
         : `Rent: $${rent.toLocaleString()}`;
+      // Якорь грейса для карточки: due-дата _monthBilling минус грейс
+      // (1-е число, либо дата старта лизы в месяце въезда).
+      const _phAnchor = new Date(overdueDate.getFullYear(), overdueDate.getMonth(), overdueDate.getDate() - graceDays);
+      const _phProrated = _mb.isProratedMonth ? _mb.proration : null;
       if (_leaseEnded && !_invoiceSentThisYm) {
         cls = 'future';
         label = monthLabel[0];
         const _endLabel = endDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
         tooltip = `${monthFull} ${fullYear}\nLease ended ${_endLabel} — no rent due for this month`;
+        _phCtx = { kind: 'outside', own: [`Lease ended ${_phFmtDate(endDate)}`] };
       } else if (today > overdueDate && !_invoiceSentThisYm) {
         const daysPast = Math.max(1, Math.floor((today - overdueDate) / 86400000));
         cls = 'overdue';
         label = monthLabel[0];
         tooltip = `${monthFull} ${fullYear}\n${daysPast}d past ${graceDays}-day grace · $${_monthRent.toLocaleString(undefined, { maximumFractionDigits: 2 })} unpaid\n\nClick to record payment.`;
+        _phCtx = { kind: 'late', dueDate: _phAnchor, monthRent: _monthRent, daysOverdue: _phDayDiff(_phAnchor, today), prorated: _phProrated };
         unpaidCount++;
         unpaidSum += _monthRent;
         unpaidMonths.push({ ym, label: `${monthLabel} ${String(fullYear).slice(-2)}` });
@@ -88466,10 +89255,23 @@ function _renderUnitPaymentHealth(u) {
         cls = 'current';
         label = monthLabel[0];
         tooltip = `${monthFull} ${fullYear}\nInvoice sent · awaiting payment · ${_left}d left in ${graceDays}-day grace\n${_rentLine}`;
+        // Entry 86: void/uncollectible штамп никогда не «показанный» счёт.
+        let _phR = _hasAliveInv ? _gridGetAliveInvoiceForYm(ym)
+          : ((typeof _lookupInvoiceRow === 'function' && _lookupInvoiceRow(u.stripe?.lastInvoiceId)) || null);
+        const _phRb = _phR ? _phInvBucket(_phR) : '';
+        const _phStampDead = !_hasAliveInv && (_phRb === 'void' || _phRb === 'uncollectible');
+        if (_phStampDead) _phR = null;
+        _phCtx = {
+          kind: 'invoiced', row: _phR,
+          invoiceId: _phR ? _phR.id : (_phStampDead ? null : (u.stripe?.lastInvoiceId || null)),
+          dueDate: _phAnchor, monthRent: _monthRent, prorated: _phProrated,
+          daysOverdue: today > overdueDate ? _phDayDiff(_phAnchor, today) : 0,
+        };
       } else {
         cls = 'awaiting';
         label = monthLabel[0];
         tooltip = `${monthFull} ${fullYear}\nRent due — invoice not sent yet · ${_left}d left in ${graceDays}-day grace (from ${_graceAnchor})\n${_rentLine}\n\nClick to record payment or send an invoice.`;
+        _phCtx = { kind: 'awaiting', dueDate: _phAnchor, monthRent: _monthRent, prorated: _phProrated };
       }
     } else {
       // Past month, no payment on file — red regardless of how far
@@ -88480,15 +89282,22 @@ function _renderUnitPaymentHealth(u) {
       const _mb = _monthBilling(rent, ym, startStr, graceDays, today, u);
       const _monthRent = _mb.monthRent;
       const _aliveInvPast = _gridGetAliveInvoiceForYm(ym);
+      const _phAnchor = new Date(_mb.dueDate.getFullYear(), _mb.dueDate.getMonth(), _mb.dueDate.getDate() - graceDays);
+      const _phProrated = _mb.isProratedMonth ? _mb.proration : null;
       if (_aliveInvPast) {
         cls = 'current';
         label = monthLabel[0];
         tooltip = `${monthFull} ${fullYear}\nInvoice sent · awaiting payment${_fmtInvoiceSentLine(_aliveInvPast)}\nAmount: $${_monthRent.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+        _phCtx = {
+          kind: 'invoiced', row: _aliveInvPast, dueDate: _phAnchor, monthRent: _monthRent, prorated: _phProrated,
+          daysOverdue: today > _mb.dueDate ? _phDayDiff(_phAnchor, today) : 0,
+        };
       } else {
         const days = Math.floor((today - due) / 86400000);
         cls = 'overdue';
         label = monthLabel[0];
         tooltip = `${monthFull} ${fullYear}\n${days}d overdue · $${_monthRent.toLocaleString(undefined, { maximumFractionDigits: 2 })} unpaid\n\nClick to record payment.`;
+        _phCtx = { kind: 'late', dueDate: _phAnchor, monthRent: _monthRent, daysOverdue: _phDayDiff(_phAnchor, today), prorated: _phProrated };
         unpaidCount++;
         unpaidSum += _monthRent;
         unpaidMonths.push({ ym, label: `${monthLabel} ${String(fullYear).slice(-2)}` });
@@ -88524,7 +89333,14 @@ function _renderUnitPaymentHealth(u) {
         paymentSource = 'manual';
       }
     }
-    cells.push({ ym, cls, label, tooltip, monthLabel, feePaid, advancePaid, autoApplied, paymentSource });
+    // Модель карточки месяца (Entry 91) — только строки, без записей в state.
+    const card = _phCtx ? _phCardModel({
+      u, b, ym, p, ctx: _phCtx, graceDays, today, curYm, rent,
+      monthRows: _phMonthRows.get(ym) || [], cacheLoaded: _phCacheLoaded,
+      feePaid, advancePaid, editable: _phEditable,
+    }) : null;
+    if (card) _phModels.set(ym, card);
+    cells.push({ ym, cls, label, tooltip, monthLabel, feePaid, advancePaid, autoApplied, paymentSource, card });
   }
 
   // Red alert banner when there's unpaid past months. Lists the
@@ -88619,21 +89435,19 @@ function _renderUnitPaymentHealth(u) {
                     // solid muted grey so the year row reads as a continuous
                     // timeline rather than an interrupted one.
                     const ymHere = `${yr}-${String(idx+1).padStart(2,'0')}`;
-                    let tip;
-                    if (startYm && ymHere < startYm) {
-                      const startLabel = startDate
-                        ? startDate.toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'})
-                        : startStr;
-                      tip = `${MONTH_NAMES_FULL[idx]} ${yr}\nBefore lease started\nLease begins: ${startLabel}`;
-                    } else if (endStr) {
-                      tip = `${MONTH_NAMES_FULL[idx]} ${yr}\nAfter lease ended (${endStr})`;
-                    } else {
-                      tip = `${MONTH_NAMES_FULL[idx]} ${yr}\nOutside lease term`;
-                    }
+                    // Карточка месяца (Entry 91): «вне срока лизы».
+                    const _phOwn = (startYm && ymHere < startYm) ? `Lease begins ${_phFmtDate(startDate)}`
+                      : endStr ? `Lease ended ${_phFmtDate(endStr)}`
+                      : 'Outside the lease term';
+                    _phModels.set(ymHere, _phCardModel({
+                      u, b, ym: ymHere, p: u.payments?.[ymHere], ctx: { kind: 'outside', own: [_phOwn] },
+                      graceDays, today, curYm, rent, monthRows: _phMonthRows.get(ymHere) || [],
+                      cacheLoaded: _phCacheLoaded, feePaid: false, advancePaid: false, editable: _phEditable,
+                    }));
                     return `<div class="ph-cell ph-empty"
-                                 onclick="openManualPaymentModal('${esc(b.id)}','${esc(f.id)}','${esc(u.id)}','${ymHere}')"
+                                 onclick="_phCardClose(); openManualPaymentModal('${esc(b.id)}','${esc(f.id)}','${esc(u.id)}','${ymHere}'); _phBlurIfCovered(this)"
                                  style="cursor: pointer;"
-                                 data-tt-portal="${esc(tip + '\n\nClick to record a payment for this month.')}">
+                                 data-ph-key="${esc(_phKey)}" data-ph-ym="${ymHere}" tabindex="-1">
                               <div class="ph-cell-label">${monthLetters[idx]}</div>
                             </div>`;
                   }
@@ -88644,11 +89458,11 @@ function _renderUnitPaymentHealth(u) {
                   // pre-payment, etc.). The modal shows the month it's
                   // about to write to, so the operator can confirm or
                   // cancel before saving.
-                  const hint =
-                    c.cls === 'pre-tenancy' ? '\n\nClick to record a payment for this month.' :
-                    c.cls === 'future'      ? '\n\nClick to record an advance payment.' :
-                                              '';
-                  const _phTipText = `${c.tooltip}${c.feePaid ? '\n\n💰 Late fee invoice paid this cycle' : ''}${c.advancePaid ? '\n\n📅 Prepaid as part of multi-month advance invoice' : ''}${hint}`;
+                  // Hover/focus-карточка месяца — .ph-card (Entry 91), вместо
+                  // plain-text data-tt-portal. Клик по-прежнему открывает MPM;
+                  // _phBlurIfCovered — фокус не остаётся на клетке под модалом
+                  // (иначе Tab открывал карточку поверх MPM, Enter переключал
+                  // MPM на другой месяц). Enter/Space — _phCellKey (тот же гейт).
                   // Payment-source icon (Tony 2026-05-21): Шаг 5 редизайна —
                   // спрайт-иконка вместо emoji (zap/download/dollar/user в
                   // белом кружке). Только один icon на cell — auto
@@ -88667,9 +89481,11 @@ function _renderUnitPaymentHealth(u) {
                     : `<div class="ph-cell-label">${esc(c.label)}</div>`;
                   return `
                     <div class="ph-cell ${c.cls}${c.feePaid ? ' fee-paid' : ''}${c.advancePaid ? ' advance-paid' : ''}${c.autoApplied ? ' auto-applied' : ''}${c.paymentSource ? ' src-' + c.paymentSource : ''}"
-                         onclick="openManualPaymentModal('${esc(b.id)}','${esc(f.id)}','${esc(u.id)}','${c.ym}')"
+                         onclick="_phCardClose(); openManualPaymentModal('${esc(b.id)}','${esc(f.id)}','${esc(u.id)}','${c.ym}'); _phBlurIfCovered(this)"
                          style="cursor: pointer;"
-                         data-tt-portal="${esc(_phTipText)}">
+                         data-ph-key="${esc(_phKey)}" data-ph-ym="${c.ym}" role="button"
+                         tabindex="${c.card && c.card.tabbable ? 0 : -1}"${c.card ? ` aria-label="${esc(c.card.ariaLabel)}"` : ''}
+                         onkeydown="_phCellKey(event, this)">
                       ${_cellInner}
                       ${c.feePaid ? '<div class="ph-cell-fee-dot" title="Late fee paid">$</div>' : ''}
                       ${c.advancePaid ? '<div class="ph-cell-advance-dot" title="Prepaid as part of multi-month advance">A</div>' : ''}
@@ -154238,15 +155054,25 @@ function _fmtRelTimeMs(ms) {
   return new Date(Date.now() - ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+// Колбэк закрытия поповера (Entry 91: карточка месяца возвращает фокус на
+// клетку). Ставит только _stripeInvDetailOpen(id, {onClose}); любой новый
+// _txnDetailShow его сбрасывает; вызывается один раз и только если поповер
+// был открыт (старые Esc-слушатели _txnDetailShow зовут close повторно).
+var _txnDetailOnClose = null;
 function _txnDetailClose() {
   const m = document.getElementById('txnDetailPopover');
+  const wasOpen = !!(m && m.classList.contains('is-open'));
   if (m) { m.classList.remove('is-open'); m.style.display = 'none'; }
+  const cb = _txnDetailOnClose;
+  _txnDetailOnClose = null;
+  if (wasOpen && typeof cb === 'function') { try { cb(); } catch {} }
 }
 window._txnDetailClose = _txnDetailClose;
 
 function _txnDetailShow(htmlBody, headInfo, actions) {
   const m = document.getElementById('txnDetailPopover');
   if (!m) return;
+  _txnDetailOnClose = null;
   const titleHtml = headInfo?.title ? esc(headInfo.title) : 'Transaction details';
   const subHtml   = headInfo?.sub ? `<div class="txn-detail-sub">${esc(headInfo.sub)}</div>` : '';
   m.innerHTML = `
@@ -154378,7 +155204,7 @@ function _bankTxnDetailOpen(txnId) {
 }
 window._bankTxnDetailOpen = _bankTxnDetailOpen;
 
-function _stripeInvDetailOpen(invId) {
+function _stripeInvDetailOpen(invId, opts) {
   const inv = (Array.isArray(_invoicesCache) ? _invoicesCache : []).find(r => r && r.id === invId);
   if (!inv) {
     try { toast?.('Invoice not in cache — reopen Billing to refresh', 'error'); } catch {}
@@ -154454,7 +155280,11 @@ function _stripeInvDetailOpen(invId) {
       <pre>${esc(JSON.stringify(inv, null, 2))}</pre>
     </details>`;
 
-  const actionsHtml = `
+  // opts.readOnly (карточка месяца Payment history, Entry 91) — только Close:
+  // действие «Use this invoice» принадлежит Manual Payment модалу.
+  const actionsHtml = (opts && opts.readOnly)
+    ? `<button type="button" class="rr-btn" onclick="_txnDetailClose()">Close</button>`
+    : `
     <button type="button" class="rr-btn" onclick="_txnDetailClose()">Close</button>
     <button type="button" class="rr-btn primary" onclick="_txnDetailClose(); _mpmUseStripeInv('${esc(invId)}')" style="background:#4f46e5; color:#fff;">✓ Use this invoice</button>`;
 
@@ -154462,6 +155292,8 @@ function _stripeInvDetailOpen(invId) {
     title: `💳 ${fmt(remaining > 0 ? remaining : total)} · ${inv.number || inv.id.slice(-8)}`,
     sub: esc(inv.customerName || ''),
   }, actionsHtml);
+  // opts.onClose (Entry 91) — после закрытия поповера (Close / × / фон / Esc).
+  if (opts && typeof opts.onClose === 'function') _txnDetailOnClose = opts.onClose;
 }
 window._stripeInvDetailOpen = _stripeInvDetailOpen;
 
@@ -154972,6 +155804,86 @@ async function _mpmRefreshBankSuggestionsNow(ev) {
 }
 window._mpmRefreshBankSuggestionsNow = _mpmRefreshBankSuggestionsNow;
 
+// ── FIXES_LOG Entry 90 (клиентская часть, Entry 91) ─────────────────────
+// ЗЕРКАЛО серверных _methodFamily / _recPaymentMethod / _ymInLease /
+// _unitPrimaryPaymentMethod / _unitBilledViaStripe из functions/index.js —
+// правь ОБЕ копии синхронно. Правило оператора (Tony 2026-10-13): арендатор,
+// чья рента выставляется через Stripe, платит картой или через банковские
+// реквизиты самого Stripe — прямой депозит на операционный счёт никогда не
+// его рента, поэтому банковские транзакции ему не предлагаются. Только чтение.
+function _methodFamily(m) {
+  const s = String(m || '').toLowerCase();
+  if (s.startsWith('stripe')) return 'stripe';
+  if (['ach', 'wire', 'check', 'cash', 'bank'].includes(s)) return 'bank';
+  return 'other';
+}
+function _recPaymentMethod(p) {
+  if (!p) return '';
+  const m = String(p.paidMethod || p.paidVia || '').toLowerCase();
+  if (m === 'backfill') return m;
+  if (p.bankTxnId || p.source === 'bank-feed') return 'ach';
+  if (p.stripe && p.stripe.invoiceId && p.stripe.paidAt) return 'stripe';
+  if (m) return m;
+  if (p.stripe && p.stripe.invoiceId) return 'stripe';
+  return '';
+}
+// Копия СЕРВЕРНОГО _isMonthToMonth (functions/index.js) для этого зеркала:
+// клиентский _isMonthToMonth нормализует не-ISO даты (toIsoDate), серверный —
+// нет, и на «03/01/2026» правило расходилось с сервером (ревью Entry 91).
+function _isMonthToMonthCF(u) {
+  if (!u) return false;
+  const t = String(u.leaseTerm || '').trim().toLowerCase();
+  if (t === 'mtm' || t === 'm2m' || t === '1') return true;
+  const s = String(u.leaseStart || u.signed || '').slice(0, 10);
+  const e = String(u.until || u.leaseEnd || '').slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s) && /^\d{4}-\d{2}-\d{2}$/.test(e) && e < s) return true;
+  return false;
+}
+function _ymInLease(u, ym) {
+  const ls = String(u.leaseStart || u.signed || '').slice(0, 7);
+  if (/^\d{4}-\d{2}$/.test(ls) && ym < ls) return false;
+  const le = (u.until && !_isMonthToMonthCF(u)) ? String(u.until).slice(0, 7) : '';
+  if (/^\d{4}-\d{2}$/.test(le) && ym > le) return false;
+  return true;
+}
+function _unitPrimaryPaymentMethod(u) {
+  if (!u || !u.payments) return 'unknown';
+  if (!/^\d{4}-\d{2}-\d{2}/.test(String(u.leaseStart || u.signed || ''))) return 'unknown';
+  const payments = Object.entries(u.payments)
+    .filter(([k, p]) => /^\d{4}-\d{2}$/.test(k) && p && p.status === 'paid')
+    .filter(([k]) => _ymInLease(u, k))
+    .filter(([, p]) => {
+      const m = _recPaymentMethod(p);
+      if (m === 'backfill') return false;
+      if (p.autoApplied === true) return false;
+      return !!m;
+    })
+    .sort((a, b) => b[0].localeCompare(a[0]))
+    .slice(0, 12);
+  if (payments.length < 2) return 'unknown';
+  const counts = { stripe: 0, bank: 0, other: 0 };
+  for (const [, p] of payments) {
+    const fam = _methodFamily(_recPaymentMethod(p));
+    counts[fam] = (counts[fam] || 0) + 1;
+  }
+  const total = payments.length;
+  const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  if (sorted[0][1] / total >= 0.6) return sorted[0][0];
+  return 'unknown';
+}
+function _unitBilledViaStripe(u, nowMs) {
+  const st = (u && u.stripe) || {};
+  const d = new Date((nowMs || Date.now()) - 92 * 86400000);
+  const sinceYm = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+  const ymOk = (v) => typeof v === 'string' && /^\d{4}-\d{2}$/.test(v) && v >= sinceYm;
+  if (ymOk(st.lastInvoiceYm) || ymOk(st.autoSentYm) || (st.moveInRent && ymOk(st.moveInRent.ym))) return true;
+  const primary = _unitPrimaryPaymentMethod(u);
+  if (primary === 'stripe') return true;
+  return primary === 'unknown' && Object.entries((u && u.payments) || {}).some(([k, p]) =>
+    /^\d{4}-\d{2}$/.test(k) && k >= sinceYm && p && p.status === 'paid' && _ymInLease(u, k)
+    && _methodFamily(_recPaymentMethod(p)) === 'stripe');
+}
+
 async function _mpmRenderBankSuggestions(u, ym) {
   const card = document.getElementById('mpmBankFeedCard');
   if (!card) return;
@@ -154983,6 +155895,15 @@ async function _mpmRenderBankSuggestions(u, ym) {
   // still real — keep suggesting them.
   const conns = (state.bankConnections || []).filter(c => c && c.status !== 'disconnected');
   const hasBank = conns.length > 0 && typeof stripeCallable === 'function';
+  // Entry 90 (клиент): рента выставляется через Stripe → банковские депозиты
+  // НЕ запрашиваем (listBankTransactionsForUnit) и не показываем; Stripe-счета
+  // в карточке остаются. Решаем по лиз-хеду (штампы/платежи живут на нём).
+  const _sbHead = (typeof _unitLeaseHead === 'function') ? (_unitLeaseHead(u) || u) : u;
+  const stripeBilled = _unitBilledViaStripe(_sbHead);
+  const bankSuggest = hasBank && !stripeBilled;
+  const stripeBilledNote = stripeBilled
+    ? `<div class="mpm-bf-stripe-billed" style="padding:6px 12px; color:var(--muted); font-size:12px;">Billed through Stripe — bank deposits are not suggested.</div>`
+    : '';
 
   // ---- Stripe-источник: локальный кэш, ±1 месяц от выбранного ym ----
   const allStripe = _mpmCollectStripeInvoicesForUnit(u);
@@ -155016,7 +155937,7 @@ async function _mpmRenderBankSuggestions(u, ym) {
   const customerLabel = u.stripe?.customerId
     ? `Stripe ····${esc(String(u.stripe.customerId).slice(-4))}`
     : '';
-  const accountLabel = !hasBank
+  const accountLabel = !bankSuggest
     ? ''
     : (conns.length === 1
         ? `${esc(conns[0].institutionName || 'Bank')} ····${esc(conns[0].accountLast4 || '')}`
@@ -155040,7 +155961,7 @@ async function _mpmRenderBankSuggestions(u, ym) {
   };
   let syncMeta = '';
   let refreshIcon = '';
-  if (hasBank && conns.length > 0) {
+  if (bankSuggest && conns.length > 0) {
     // Самый недавний lastPolledAt по всем активным аккаунтам.
     const newestPolled = conns.reduce((max, c) => {
       if (!c.lastPolledAt) return max;
@@ -155116,7 +156037,7 @@ async function _mpmRenderBankSuggestions(u, ym) {
   const targetCents = Math.round(_txnTargetAmt * 100);
   const accountIds = [];
   let bankItems = [];
-  if (hasBank) {
+  if (bankSuggest) {
     const cacheKey = _mpmBankCacheKey(u.id, ym, accountIds);
     const cached = _mpmBankCache.get(cacheKey);
     const fresh = cached && (Date.now() - cached.at < 30000);
@@ -155168,6 +156089,10 @@ async function _mpmRenderBankSuggestions(u, ym) {
       }
     }
     if (seq !== _mpmBankFetchSeq) return;
+  } else {
+    // Без запроса банка — всё равно «перебиваем» незавершённый fetch другого
+    // юнита/месяца, иначе его поздний ответ перерисует эту карточку.
+    ++_mpmBankFetchSeq;
   }
 
   // ---- Финальный рендер ----
@@ -155264,14 +156189,17 @@ async function _mpmRenderBankSuggestions(u, ym) {
           <span class="mpm-bf-acct">${sourcesLabel}${refreshIcon}</span>
         </div>
         <div class="mpm-bf-empty-sub" style="padding:6px 12px;">
-          ${hasBank ? `Searched bank feed for credits near <b>$${(targetCents / 100).toLocaleString()}</b>.` : 'No bank connection.'} No open Stripe invoices for this window.
+          ${stripeBilled ? '' : (bankSuggest ? `Searched bank feed for credits near <b>$${(targetCents / 100).toLocaleString()}</b>.` : 'No bank connection.')} No open Stripe invoices for this window.
         </div>
+        ${stripeBilledNote}
         ${browseFoot}
       </div>`;
     return;
   }
 
-  const hasSel = !!(_mpmCtx?.linkedBankTxn) || !!(_mpmCtx?.linkedStripeInvoice);
+  // Stripe-billed: банковских строк нет — привязанная bank-txn (если есть) видна
+  // в пилюле #mpmLinkedBankPill и не сворачивает Stripe-строки.
+  const hasSel = !!(_mpmCtx?.linkedBankTxn && !stripeBilled) || !!(_mpmCtx?.linkedStripeInvoice);
   const otherCount = Math.max(0, totalRows - (hasSel ? 1 : 0));
   card.innerHTML = `
     <div class="mpm-bf-card ${hasSel ? 'mpm-bf-card-collapsed' : ''}" id="mpmBankFeedInner">
@@ -155280,13 +156208,14 @@ async function _mpmRenderBankSuggestions(u, ym) {
         <span class="mpm-bf-acct">${sourcesLabel}${refreshIcon}</span>
       </div>
       <div class="mpm-bf-rows">${stripeRowsHtml}${bankRowsHtml}</div>
+      ${stripeBilledNote}
       <button type="button" class="mpm-bf-toggle" id="mpmBankFeedToggle" onclick="_mpmToggleBankFeedExpand()">
         <span class="mpm-bf-toggle-text">Show ${otherCount} other match${otherCount === 1 ? '' : 'es'} ▾</span>
       </button>
       ${browseFoot}
     </div>`;
 
-  if (hasBank) _mpmBankCache.set(_mpmBankCacheKey(u.id, ym, accountIds), { at: Date.now(), items: bankItems });
+  if (bankSuggest) _mpmBankCache.set(_mpmBankCacheKey(u.id, ym, accountIds), { at: Date.now(), items: bankItems });
 }
 
 // Update the check-copy drop-zone label to reflect the picked file.
