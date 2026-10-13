@@ -88912,6 +88912,8 @@ function _renderUnitPaymentHealth(u) {
       const metaUnit = r.unitId || r.metadata?.unitId;
       const metaYm   = r.ym     || r.metadata?.ym;
       if (String(metaUnit || '') !== String(u.id || '')) continue;
+      // Entry 88 class: same suite number in another building is not this unit's invoice.
+      if (r.metadata?.buildingId && b && String(r.metadata.buildingId) !== String(b.id)) continue;
       if (metaYm) {
         if (metaYm === ym) return r;
         continue;
