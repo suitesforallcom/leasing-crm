@@ -9494,6 +9494,18 @@ function _findAutoApplyCandidate(state, txn, ctx) {
   const candidate = (extra) => Object.assign(
     { u: cand.u, b: cand.b, f: cand.f, ym, rentCents: cand.rentCents, delta: cand.delta }, extra || {});
 
+  // Entry 89 (rev 6: BEFORE the method gate — a deposit the matcher routed by
+  // name to another tenant must not become a 🔀 suggestion for this one):
+  // the ingest-time name matcher pointed this deposit at a
+  // DIFFERENT unit, or the description names somebody else — the
+  // amount-only candidate is not trustworthy.
+  const nameUnit = txn.matchedUnitId && !String(txn.matchSource || '').startsWith('auto-apply') ? String(txn.matchedUnitId) : '';
+  if ((nameUnit && (nameUnit !== String(cand.u.id)
+      || (txn.matchedBuildingId && txn.matchedBuildingId !== cand.b.id)))
+      || _descNamesOther(txn.description, cand.u)) {
+    return { eligible: false, reason: 'name-conflict' };
+  }
+
   // PAYMENT METHOD CONSISTENCY (Tony 2026-05-22 — «обращай внимание на
   // тот как были оплачены предыдущие платежи каким способом»). Lex Wagner
   // Suite 433: всегда платит через Stripe, но cron нашёл $1500 ACH deposit
@@ -9520,21 +9532,12 @@ function _findAutoApplyCandidate(state, txn, ctx) {
     return { eligible: false, reason: 'amount-changed' };
   }
 
-  // Entry 89: the ingest-time name matcher pointed this deposit at a
-  // DIFFERENT unit, or the description names somebody else — the
-  // amount-only candidate is not trustworthy.
-  const nameUnit = txn.matchedUnitId && !String(txn.matchSource || '').startsWith('auto-apply') ? String(txn.matchedUnitId) : '';
-  if ((nameUnit && (nameUnit !== String(cand.u.id)
-      || (txn.matchedBuildingId && txn.matchedBuildingId !== cand.b.id)))
-      || _descNamesOther(txn.description, cand.u)) {
-    return { eligible: false, reason: 'name-conflict' };
-  }
-
   // Entry 89 rev 4/5 — checked AFTER the method gate so a Stripe/«unknown»
   // tenant's suggestion always carries the 🔀 warning.
   // Internal/owner transfer («TRANSFER DEPOSIT FROM …1305»): never auto.
   if (/\b(transfer deposit from|internal transfer|book transfer)\b/i.test(String(txn.description || ''))
-      || /\btransfer\b.*\bfrom\b\s*(?:(?:chk|checking|sav|savings|acct|account|dda|x+|\.+|\*+|#)\s*)*\d{3,}\s*$/i.test(String(txn.description || ''))) {
+      || /\btransfer\b.*\bfrom\b\s*(?:(?:chk|checking|sav|savings|acct|account|dda|x+|\.+|\*+|#)\s*)*\d{3,}\s*$/i.test(String(txn.description || ''))
+      || (/\btransfer\b.*\bfrom\b/i.test(String(txn.description || '')) && !_descNameTokens(txn.description).length)) {
     return { eligible: false, reason: 'internal-transfer' };
   }
   // The same amount keeps arriving from somebody else (a recurring outside
@@ -9545,9 +9548,20 @@ function _findAutoApplyCandidate(state, txn, ctx) {
   const tUnix = +txn.transactedAt || Math.floor(nowMs / 1000);
   const isLive = (o) => o && o.id !== txn.id && +o.amount > 0 && !o.dedupeSuspect
     && String(o.status || 'posted').toLowerCase() !== 'void' && !(o.statusTransitions && o.statusTransitions.void_at);
-  const ownLinked = (o) => o.matchState === 'confirmed'
-    && (String(o.matchedUnitId || '') === String(cand.u.id) || String(o.autoApplyTargetUnitId || '') === String(cand.u.id))
-    && (!o.matchedBuildingId || o.matchedBuildingId === cand.b.id);
+  // Own = confirmed to this unit, OR referenced by this unit's own ledger rec
+  // (a heal whose confirm never landed), OR a dismissed row matching a paid
+  // bank rec of this unit recorded by hand (no bankTxnId) within ±3 days.
+  const ownPays = Object.entries(cand.u.payments || {}).filter(([k, p]) => /^\d{4}-\d{2}$/.test(k) && p && p.status === 'paid');
+  const ownTxnIds = new Set(ownPays.map(([, p]) => p.bankTxnId).filter(Boolean));
+  const recMs = (p) => { const v = p.bankPaidAt || p.date || p.paidAt; return typeof v === 'number' ? (v < 1e12 ? v * 1000 : v) : Date.parse(String(v || '').slice(0, 10) + 'T00:00:00Z'); };
+  const ownLinked = (o) => ownTxnIds.has(o.id)
+    || (o.matchState === 'confirmed'
+      && (String(o.matchedUnitId || '') === String(cand.u.id) || String(o.autoApplyTargetUnitId || '') === String(cand.u.id))
+      && (!o.matchedBuildingId || o.matchedBuildingId === cand.b.id))
+    || (o.matchState === 'dismissed' && ownPays.some(([, p]) => !p.bankTxnId
+      && Math.abs(Math.round((+p.amount || 0) * 100) - (+o.amount)) <= 1
+      && _methodFamily(_recPaymentMethod(p)) === 'bank'
+      && Math.abs(recMs(p) - (+o.transactedAt) * 1000) <= 3 * 86400000));
   const recent = (ctx && Array.isArray(ctx.recentTxns)) ? ctx.recentTxns : ((ctx && Array.isArray(ctx.pendingTxns)) ? ctx.pendingTxns : []);
   const series = recent.some(o => isLive(o) && !ownLinked(o) && Math.abs(+o.amount - targetCents) <= 1
     && +o.transactedAt < tUnix && +o.transactedAt >= tUnix - 100 * 86400);

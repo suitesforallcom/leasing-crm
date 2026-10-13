@@ -704,6 +704,25 @@ const cachedTxns = () => ({
     ok(seen && Array.isArray(seen.recentTxns) && seen.recentTxns.some(t => t.id === 'fctxn_dis'), 'context: look-back includes dismissed txns of other accounts');
   }
 
+  // ── 8i. Entry 89 rev 6: look-back read failure → nothing auto-applied, nothing stamped ──
+  {
+    const w = makeWorld({ conns: [], accounts: {}, txns: {} });
+    w.strip = true;
+    w.state.settings = { syncV2: true, syncBuildingsStrip: true };
+    w.state.buildings = [{ id: 'b1', floors: [{ id: 'f1', units: [{ id: '101', tenant: 'NUHS', rent: 2250, outreach: [] }] }] }];
+    w.docs.set('fctxn_lb', { id: 'fctxn_lb', accountId: FCA, amount: 225000, description: 'Customer Deposit', transactedAt: T_NEWEST, matchState: 'unmatched' });
+    const realCol = w.ctx.db.collection;
+    w.ctx.db.collection = (p) => {
+      const c = realCol(p);
+      const realWhere = c.where;
+      return Object.assign({}, c, { where: (field, op, val) => (field === 'transactedAt' ? { get: async () => { throw new Error('index missing'); } } : realWhere(field, op, val)) });
+    };
+    const r = await w.autoApply(FCA);
+    w.ctx.db.collection = realCol;
+    eq([r.applied, w.paymentsCol.size, w.docs.get('fctxn_lb').matchState, w.docs.get('fctxn_lb').autoApplyEvaluatedAt], [0, 0, 'unmatched', undefined],
+      'look-back failure: no apply, no stamp');
+  }
+
   // ── 9. Undo: ledger delete first, loud on failure ──────────────────
   {
     const mkU = () => {

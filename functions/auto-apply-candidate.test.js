@@ -397,5 +397,46 @@ function julie442(stripeStamps) {
   eq(ctx._isAutoApplyContender(nc2, 300000, Date.now()), false, 'Timestamp-like paidAt → paid');
 }
 
+
+// ── 20. Rev-5 check cases (Entry 89 rev 6) ───────────────────────────────
+{
+  const ctx = makeCtx('2026-10-03T07:07:00Z');
+  const bankPayer = (id, amt) => ({ id, status: 'occupied', tenant: 'Tenant ' + id, email: id + '@x.com', contractRent: amt, leaseStart: '2026-06-01', until: '2027-12-31',
+    payments: Object.fromEntries(['2026-06', '2026-07', '2026-08', '2026-09'].map(m => [m, bankFeedRec(amt, m + '-02', 'fc_' + id + m)])) });
+  const at = (iso, extra) => Object.assign({ id: 'o_' + iso, amount: 218000, transactedAt: unix(iso + 'T12:00:00Z'), status: 'posted' }, extra);
+  // R5-1: a deposit that NAMES another tenant never becomes a 🔀 suggestion for a Stripe / no-history unit.
+  const stripeB = julie442(); stripeB.id = '433'; stripeB.tenant = 'Lex Wagner'; stripeB.contractRent = 2180; stripeB.rent = 2180;
+  eq(ctx._findAutoApplyCandidate(state(stripeB), txn('2026-10-02', 2180, 'ZELLE PAYMENT FROM HARBOR DENTAL LAB'), { pendingTxns: [], recentTxns: [] }).reason, 'name-conflict',
+    'named descriptor → name-conflict before the method gate (no 🔀 suggestion for B)');
+  // R5-2: a txn referenced by the unit's own ledger rec (heal whose confirm never landed) is own, not a series.
+  const p230 = bankPayer('230', 2180);
+  p230.payments['2026-09'] = { status: 'paid', amount: 2180, paidVia: 'ach', date: '2026-09-02', bankTxnId: 'fc_heal' };
+  eq(ctx._findAutoApplyCandidate(state(p230), txn('2026-10-02', 2180, 'Customer Deposit'), { pendingTxns: [], recentTxns: [at('2026-09-02', { id: 'fc_heal', matchState: 'suggested' })] }).eligible, true,
+    "own ledger-referenced txn is not a series");
+  // R5-3: own deposit hidden with «Not rent» after recording the month by hand (no bankTxnId) is own.
+  const hand = bankPayer('231', 2180);
+  hand.payments['2026-09'] = { status: 'paid', amount: 2180, paidVia: 'ach', date: '2026-09-03' };
+  hand.payments['2026-08'] = { status: 'paid', amount: 2180, paidVia: 'ach', date: '2026-08-02' };
+  eq(ctx._findAutoApplyCandidate(state(hand), txn('2026-10-02', 2180, 'Customer Deposit'), { pendingTxns: [], recentTxns: [at('2026-09-02', { matchState: 'dismissed' })] }).eligible, true,
+    'dismissed own deposit (hand-recorded month ±3 d) is not a series');
+  eq(ctx._findAutoApplyCandidate(state(bankPayer('232', 2180)), txn('2026-10-02', 2180, 'Customer Deposit'), { pendingTxns: [], recentTxns: [at('2026-09-12', { matchState: 'dismissed' })] }).reason, 'ambiguous',
+    "a dismissed stranger instance (unit's months are bank-linked) is still a series");
+  // R5-4: own-link needs the same building, and confirmed state.
+  eq(ctx._findAutoApplyCandidate(state(bankPayer('233', 2180)), txn('2026-10-02', 2180, 'Customer Deposit'), { pendingTxns: [], recentTxns: [at('2026-09-02', { matchState: 'confirmed', matchedUnitId: '233', matchedBuildingId: 'b9' })] }).reason, 'ambiguous',
+    'confirmed to the same suite id in ANOTHER building → series');
+  eq(ctx._findAutoApplyCandidate(state(bankPayer('234', 2180)), txn('2026-10-02', 2180, 'Customer Deposit'), { pendingTxns: [], recentTxns: [at('2026-09-02', { matchState: 'suggested', matchedUnitId: '234' })] }).reason, 'ambiguous',
+    'an earlier unconfirmed suggestion of the same amount → series');
+  eq(ctx._findAutoApplyCandidate(state(bankPayer('235', 2180)), txn('2026-10-02', 2180, 'Customer Deposit'), { pendingTxns: [at('2026-09-30', { amount: 50000, matchState: 'suggested', matchedUnitId: '235', status: 'pending' })], recentTxns: [] }).eligible, true,
+    'a PENDING open suggestion for the unit does not block');
+  // 120-day bound on the former-tenant contender.
+  const oldVac = { id: '207', status: 'vacant', contractRent: 0, payments: {}, tenantHistory: [{ tenant: 'Long Gone', contractRent: 2180, movedOut: '2026-03-31' }] };
+  eq(ctx._findAutoApplyCandidate(state(bankPayer('236', 2180), oldVac), txn('2026-10-02', 2180, 'Customer Deposit'), { pendingTxns: [], recentTxns: [] }).eligible, true,
+    'former tenant moved out > 120 days ago is not a contender');
+  // R5-5: transfer-from with no identifiable sender is internal.
+  for (const desc of ['ONLINE TRANSFER FROM CHK', 'WIRE TRANSFER FROM', 'TRANSFER FROM']) {
+    eq(ctx._findAutoApplyCandidate(state(bankPayer('237', 2180)), txn('2026-10-02', 2180, desc), { pendingTxns: [], recentTxns: [] }).reason, 'internal-transfer', `«${desc}» → internal-transfer`);
+  }
+}
+
 console.log(`auto-apply-candidate.test: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

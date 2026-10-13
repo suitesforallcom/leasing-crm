@@ -418,6 +418,18 @@ else
   echo "  ✗ Entry 89 guard missing (_methodFamily 'bank' / _recPaymentMethod / next-month-last in _findOldestUnpaidYm / cron auto-apply)"
   FAIL=1
 fi
+# Entry 89 rev 6: name check BEFORE the method gate; look-back failure applies nothing.
+_aa_n=$(grep -nE "^function _findAutoApplyCandidate\(" "$FN_JS" | head -1 | cut -d: -f1)
+_aa_name=$(awk -v s="${_aa_n:-0}" 'NR>s && /reason: .name-conflict./ {print NR; exit}' "$FN_JS")
+_aa_meth=$(awk -v s="${_aa_n:-0}" 'NR>s && /reason: .method-mismatch./ {print NR; exit}' "$FN_JS")
+if [ -n "$_aa_name" ] && [ -n "$_aa_meth" ] && [ "$_aa_name" -lt "$_aa_meth" ] \
+   && fn_has "^async function _autoApplyAfterPoll\(" "recentTxns = null;" 60 \
+   && fn_has "^async function _autoApplyAfterPoll\(" "reason: 'lookback-unavailable'" 140; then
+  echo "  ✓ Entry 89 rev 6: name gate precedes the method gate; look-back failure fails closed"
+else
+  echo "  ✗ Entry 89 rev 6 guard missing (name-before-method order / look-back fail-closed)"
+  FAIL=1
+fi
 if fn_has "^async function _mirrorBuildingV2CF\(" "_savedRev: curRev \+ 2" 30; then
   echo "  ✓ Entry 87: server building mirror writes curRev + 2"
 else
