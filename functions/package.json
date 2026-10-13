@@ -3,7 +3,7 @@
   "description": "Cloud Functions for SuitesForAll: Stripe invoicing + webhook handlers",
   "private": true,
   "engines": {
-    "node": "20"
+    "node": "22"
   },
   "main": "index.js",
   "scripts": {
