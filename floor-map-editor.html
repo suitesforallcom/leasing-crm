@@ -88331,6 +88331,57 @@ function _phGroupMonthInvoices(u, b) {
   }
   return out;
 }
+// ── Эффективная дата Due месяца (Tony 2026-10-13, «да, сделать так же» —
+// как kiwi graceAnchorIso / effectiveDueDate): часы просрочки месяца идут от
+// ПОЗДНЕЙ из двух дат — обычной Due (1-е; в неоплаченном месяце — якорь
+// _monthBilling; в месяце старта лизы со счётом — дата старта и в оплаченных
+// ветках) и дня выставления (created) ЖИВОГО rent-счёта этого
+// месяца этой лизы. Void / uncollectible / draft, депозит, late fee и прочие
+// purpose ≠ 'rent' — никогда. Скоуп — _phRowScope; счета месяца —
+// _phGroupMonthInvoices (metadata.ym / ручная привязка, без фолбэка на дату
+// создания); у webhook-оплаченного месяца решает ТОЛЬКО счёт из
+// u.payments[ym].stripe.invoiceId (если он есть в кэше). Месяц без такого
+// счёта (банк / ручная / backfill / кэш не загружен) — обычная Due.
+// Только сетка и карточка Payment history; денежный движок (_isMonthSettled,
+// _computeUnitMoney, lateFeePreviewFor, aging, DSO, кроны, functions/) этот
+// якорь не видит. Ничего не пишет.
+// notAfter (Date, день оплаты; только оплаченные ветки) — счёт месяца,
+// выставленный ПОСЛЕ дня оплаты, часы не двигает: счёт, ушедший после денег,
+// оплату задержать не мог (дубль / перевыставление). Счёт из собственной
+// ссылки записи (linkedId) этот фильтр не проходит — его и оплатили.
+function _phRentIssueDay(u, b, monthRows, linkedId, notAfter) {
+  const dayOf = (r) => { const d = _phToDate(r && r.created); return d ? new Date(d.getFullYear(), d.getMonth(), d.getDate()) : null; };
+  const ok = (r, linked) => {
+    if (!r || !r.id || String(r.id).startsWith('manual-')) return false;
+    if (_phInvPurpose(r) !== 'rent') return false;
+    const s = _phInvBucket(r);
+    if (s === 'void' || s === 'uncollectible' || s === 'draft') return false;
+    if (_phRowScope(u, b, r, linked ? { linked: true } : undefined)) return false;
+    return !!dayOf(r);
+  };
+  if (linkedId) {
+    const lr = (typeof _lookupInvoiceRow === 'function') ? _lookupInvoiceRow(linkedId) : null;
+    if (lr) return ok(lr, true) ? dayOf(lr) : null;
+  }
+  const cap = (notAfter instanceof Date && !isNaN(notAfter.getTime()))
+    ? new Date(notAfter.getFullYear(), notAfter.getMonth(), notAfter.getDate()) : null;
+  let best = null;   // несколько живых rent-счетов — часы от ПЕРВОГО выставленного
+  for (const r of (monthRows || [])) {
+    if (!ok(r, false)) continue;
+    const d = dayOf(r);
+    if (cap && d > cap) continue;
+    if (!best || d < best) best = d;
+  }
+  return best;
+}
+// base — обычная Due (Date); issueDay — из _phRentIssueDay. fromIssue — Due
+// сдвинута на день выставления (тогда карточка печатает kiwi-lNote).
+function _phEffectiveDue(base, issueDay) {
+  const b0 = new Date(base.getFullYear(), base.getMonth(), base.getDate());
+  return (issueDay && issueDay > b0)
+    ? { due: issueDay, base: b0, issued: issueDay, fromIssue: true }
+    : { due: b0, base: b0, issued: null, fromIssue: false };
+}
 const _PH_HEAD = {
   paid:      { word: 'PAID',             label: 'Paid',             tone: 'paid' },
   paid_late: { word: 'PAID LATE',        label: 'Paid late',        tone: 'paid-late' },
@@ -88434,7 +88485,9 @@ function _phCardModel(a) {
   }
   // SFA финализирует и отправляет счёт одним шагом (§0.2 правило 6) — всегда «Sent».
   if (row && bk(row) !== 'draft' && row.created) rows.push(['Sent', _phFmtDate(row.created)]);
-  // Due = якорь грейса (1-е или старт лизы). НЕ row.dueDate: по Entry 60 Stripe
+  // Due = дата, от которой клетка мерила просрочку: эффективная Due
+  // (_phEffectiveDue — позднее из 1-го/старта лизы и дня выставления живого
+  // rent-счёта, как kiwi effectiveDueDate). НЕ row.dueDate: по Entry 60 Stripe
   // due_date = якорь + грейс, грейс посчитался бы дважды.
   if (ctx.dueDate) rows.push(['Due', _phFmtDate(ctx.dueDate)]);
   if (ctxMethod) rows.push(['Method', ctxMethod]);
@@ -88469,13 +88522,13 @@ function _phCardModel(a) {
   // после 5-го выглядит противоречием.
   const graceNote = (!grace && ctx.graceNote) ? String(ctx.graceNote) : null;
 
-  // ── lNote kiwi: счёт выставлен ПОСЛЕ даты Due. SFA-формулировка — без
-  //    kiwi-хвоста «грейс идёт от даты выставления»: в SFA грейс от Due
-  //    (решение Tony №1); переносить ли якорь — вопрос к Tony. ──
+  // ── lNote kiwi (lateIssueNote): Due сдвинута на день выставления — грейс
+  //    идёт от него (Tony 2026-10-13, «да, сделать так же»). Текст kiwi; число
+  //    дней — грейс этой лизы (getLateFeeConfig), у kiwi зашито 5. ──
   let lateBilled = null;
-  if (row && rowInMonth && bk(row) !== 'draft' && row.created && ctx.dueDate) {
-    const cD = _phToDate(row.created), dD = _phToDate(ctx.dueDate);
-    if (cD && dD && _phDayDiff(dD, cD) > 0) lateBilled = `Billed ${_phFmtDate(cD)}, after the ${_phFmtDate(dD)} due date.`;
+  if (ctx.billedLate && ctx.billedLate.issued && ctx.billedLate.base) {
+    const was = _phFmtDate(ctx.billedLate.base);
+    lateBilled = `Billed ${_phFmtDate(ctx.billedLate.issued)}, after the ${was} due date — the ${g}-day grace runs from the day the invoice went out, not from ${was}.`;
   }
 
   // ── Итоги месяца (monthTotalsNote) ──
@@ -88954,6 +89007,9 @@ function _renderUnitPaymentHealth(u) {
     // April 15 for April rent rendered as on-time green instead of
     // paid-late). Hoisted here so the "paid" branch (days-late calc)
     // and the "past-due" branch (days overdue) read the same anchor.
+    // Tony 2026-10-13 («да, сделать так же», kiwi effectiveDueDate): если
+    // живой rent-счёт месяца выставлен ПОЗЖЕ этой даты, часы просрочки идут
+    // от дня выставления — _phEffectiveDue / _phRentIssueDay в ветках ниже.
     const due = new Date(d.getFullYear(), d.getMonth(), 1);
     let cls, label, tooltip;
     let _phCtx = null;   // факты ветки для карточки месяца (Entry 91)
@@ -89022,10 +89078,22 @@ function _renderUnitPaymentHealth(u) {
       // the due date. Apr 5 (4d after Apr 1) → on time; Apr 6 (5d
       // after) → late. Backfills lack a meaningful paid date, treated
       // as on-time so the migration artifacts don't poison the rate.
+      // Отсчёт — от эффективной Due: webhook-месяц — его счёт
+      // (p.stripe.invoiceId), иначе живой rent-счёт месяца, выставленный не
+      // позже дня оплаты; нет счёта — 1-е. Месяц старта лизы со счётом —
+      // база = дата старта (якорь _monthBilling, как в неоплаченных ветках).
+      // Запись без date/bankPaidAt (confirmBankMatch: только paidAt = ISO
+      // transactedAt) — банковская дата = UTC-день, как bankPaidAt.
+      const _phBankRec = !!(p.bankTxnId || p.source === 'bank-feed');
+      const _phRecDate = _phBankRec ? _phUtcDay(p.paidAtIso || p.paidAt) : _phToDate(p.paidAtIso || p.paidAt);
+      const _phPaidOn = paidAt || _phRecDate || _phToDate(p.stripe?.paidAt);
+      const _phIssue = _phRentIssueDay(u, b, _phMonthRows.get(ym), p.stripe?.invoiceId || null, _phPaidOn);
+      const _phEd = _phEffectiveDue((_phIssue && ym === startYm && startDate > due) ? startDate : due, _phIssue);
+      // Календарные дни, не миллисекунды: Due теперь любой день месяца, и
+      // смена часового пояса (DST) внутри грейса сдвигала отсечку на день.
       let daysLate = 0;
-      const _graceCutoffMs = due.getTime() + Math.max(0, graceDays - 1) * 86400000;
       if (paidAt && !isBackfill) {
-        daysLate = Math.max(0, Math.floor((paidAt.getTime() - _graceCutoffMs) / 86400000));
+        daysLate = Math.max(0, _phDayDiff(_phEd.due, paidAt) - Math.max(0, graceDays - 1));
       }
       const wasLate = daysLate > 0;
       cls = wasLate ? 'paid-late' : 'paid';
@@ -89073,19 +89141,15 @@ function _renderUnitPaymentHealth(u) {
       const _phOwnInv = p.stripe?.invoiceId || p.stripeInvoiceId || p.discountInvoiceId || null;
       const _phFb = (!_phOwnInv && typeof _stripePaidRowForYm === 'function') ? _stripePaidRowForYm(u, ym) : null;
       const _phFbOk = !!(_phFb && !_phRowScope(u, b, _phFb));
-      // Запись без date/bankPaidAt (confirmBankMatch: только paidAt = ISO
-      // transactedAt) — банковская дата = UTC-день, как bankPaidAt.
-      const _phBankRec = !!(p.bankTxnId || p.source === 'bank-feed');
-      const _phRecDate = _phBankRec ? _phUtcDay(p.paidAtIso || p.paidAt) : _phToDate(p.paidAtIso || p.paidAt);
-      const _phPaidOn = paidAt || _phRecDate || _phToDate(p.stripe?.paidAt);
       _phCtx = {
         kind: wasLate ? 'paid_late' : 'paid', local: true,
         invoiceId: _phOwnInv || (_phFbOk ? (_phFb.id || null) : null),
         rowLinked: !!_phOwnInv,   // ссылка самой записи — скоуп только депозит + здание
         invoiceNumber: p.stripeInvoiceNumber || null,
-        amount: +p.amount || rent || 0, dueDate: due, method: _phMethodLabel(p),
+        amount: +p.amount || rent || 0, dueDate: _phEd.due, method: _phMethodLabel(p),
+        billedLate: _phEd.fromIssue ? _phEd : null,
         paidOn: _phPaidOn,
-        graceKnown: !!(paidAt && !isBackfill), daysLate: paidAt ? _phDayDiff(due, paidAt) : 0,
+        graceKnown: !!(paidAt && !isBackfill), daysLate: paidAt ? _phDayDiff(_phEd.due, paidAt) : 0,
         graceNote: (!paidAt && _phPaidOn && !isBackfill)
           ? (_phBankRec ? 'Date from the bank feed — on-time was not checked for this record.'
             : 'Date from the payment record — on-time was not checked for this record.')
@@ -89096,16 +89160,20 @@ function _renderUnitPaymentHealth(u) {
       _phCtx.row = (_phCtx.invoiceId && typeof _lookupInvoiceRow === 'function') ? _lookupInvoiceRow(_phCtx.invoiceId) : null;
     } else if (stripePaid) {
       // Stripe paid this month — same grace math as the manual-paid
-      // branch above so the two code paths agree on what "late" means.
+      // branch above so the two code paths agree on what "late" means
+      // (эффективная Due: живой rent-счёт месяца из _phGroupMonthInvoices,
+      // выставленный не позже дня оплаты; месяц старта лизы со счётом — база
+      // = дата старта; дни — календарные, как в ветке выше).
+      const paidAtDate = stripePaidAtMs ? new Date(stripePaidAtMs) : null;
+      const _phIssue = _phRentIssueDay(u, b, _phMonthRows.get(ym), null, paidAtDate);
+      const _phEd = _phEffectiveDue((_phIssue && ym === startYm && startDate > due) ? startDate : due, _phIssue);
       let daysLate = 0;
-      const _graceCutoffMs = due.getTime() + Math.max(0, graceDays - 1) * 86400000;
-      if (stripePaidAtMs) {
-        daysLate = Math.max(0, Math.floor((stripePaidAtMs - _graceCutoffMs) / 86400000));
+      if (paidAtDate) {
+        daysLate = Math.max(0, _phDayDiff(_phEd.due, paidAtDate) - Math.max(0, graceDays - 1));
       }
       const wasLate = daysLate > 0;
       cls = wasLate ? 'paid-late' : 'paid';
       label = '✓';
-      const paidAtDate = stripePaidAtMs ? new Date(stripePaidAtMs) : null;
       const amountLine = `\nAmount: $${(+stripePaidAmt || rent || 0).toLocaleString()}`;
       const dateLine = paidAtDate
         ? `\nPaid on: ${paidAtDate.toLocaleDateString('en-US', {year:'numeric', month:'short', day:'numeric'})}`
@@ -89120,9 +89188,10 @@ function _renderUnitPaymentHealth(u) {
       const _spRow = stripePaidRows.get(ym) || null;
       _phCtx = {
         kind: wasLate ? 'paid_late' : 'paid', row: _spRow, invoiceId: _spRow ? _spRow.id : (u.stripe?.moveInRent?.ym === ym ? (u.stripe.moveInRent.invoiceId || null) : null),
-        amount: +stripePaidAmt || rent || 0, dueDate: due, method: 'Stripe',
+        amount: +stripePaidAmt || rent || 0, dueDate: _phEd.due, method: 'Stripe',
+        billedLate: _phEd.fromIssue ? _phEd : null,
         paidOn: _px ? null : paidAtDate, graceKnown: !_px && !!paidAtDate,
-        daysLate: (!_px && paidAtDate) ? _phDayDiff(due, paidAtDate) : 0, proxyDate: _px,
+        daysLate: (!_px && paidAtDate) ? _phDayDiff(_phEd.due, paidAtDate) : 0, proxyDate: _px,
         fromRow: stripePaidFromCache.has(ym),   // сумма/дата — из _spRow: чужой счёт → не показывать их
       };
     } else if (p?.status === 'free') {
@@ -89230,7 +89299,7 @@ function _renderUnitPaymentHealth(u) {
       // Дополнительно: если за этот месяц уже выставлен живой Stripe-
       // инвойс, не маркируем как unpaid (счёт отправлен, ждём оплату).
       const _mb = _monthBilling(rent, ym, startStr, graceDays, today, u);
-      const overdueDate = _mb.dueDate;
+      let overdueDate = _mb.dueDate;
       const _monthRent = _mb.monthRent;
       const _hasAliveInv = _gridHasAliveInvoiceForYm(ym);
       // «Счёт за этот месяц реально выставлен» — реактивный сигнал: живой
@@ -89240,6 +89309,13 @@ function _renderUnitPaymentHealth(u) {
       // оранжевый «awaiting invoice» (сигнал оператору выставить).
       const _invoiceSentThisYm = _hasAliveInv
         || !!(u.stripe && u.stripe.lastInvoiceYm === ym && u.stripe.lastInvoiceId);
+      // Эффективная Due (Tony 2026-10-13, kiwi effectiveDueDate): счёт за месяц
+      // выставлен позже якоря _monthBilling → грейс от дня выставления живого
+      // rent-счёта. Без счёта (красный / awaiting) — якорь _monthBilling как был.
+      const _phEd = _phEffectiveDue(
+        new Date(_mb.dueDate.getFullYear(), _mb.dueDate.getMonth(), _mb.dueDate.getDate() - graceDays),
+        _invoiceSentThisYm ? _phRentIssueDay(u, b, _phMonthRows.get(ym), null) : null);
+      if (_phEd.fromIssue) overdueDate = new Date(_phEd.due.getFullYear(), _phEd.due.getMonth(), _phEd.due.getDate() + graceDays);
       // Лиза закончилась ДО начала этого месяца → аренда за него НЕ due, счёт
       // не нужен → нейтрально-серый «Lease ended», не оранжевый/красный.
       // (endDate/curDate посчитаны выше.) Tony 2026-07-01: 325/423 until=
@@ -89250,8 +89326,8 @@ function _renderUnitPaymentHealth(u) {
       const _rentLine = _mb.isProratedMonth
         ? `Prorated rent: $${_monthRent.toLocaleString(undefined, { maximumFractionDigits: 2 })} (${_mb.proration.daysRemaining}/${_mb.proration.daysInMonth} days)`
         : `Rent: $${rent.toLocaleString()}`;
-      // Якорь грейса для карточки: due-дата _monthBilling минус грейс
-      // (1-е число, либо дата старта лизы в месяце въезда).
+      // Якорь грейса для карточки: due-дата минус грейс (1-е число, дата
+      // старта лизы в месяце въезда, либо день выставления — _phEd выше).
       const _phAnchor = new Date(overdueDate.getFullYear(), overdueDate.getMonth(), overdueDate.getDate() - graceDays);
       const _phProrated = _mb.isProratedMonth ? _mb.proration : null;
       if (_leaseEnded && !_invoiceSentThisYm) {
@@ -89284,6 +89360,7 @@ function _renderUnitPaymentHealth(u) {
           invoiceId: _phR ? _phR.id : (_phStampDead ? null : (u.stripe?.lastInvoiceId || null)),
           dueDate: _phAnchor, monthRent: _monthRent, prorated: _phProrated,
           daysOverdue: today > overdueDate ? _phDayDiff(_phAnchor, today) : 0,
+          billedLate: _phEd.fromIssue ? _phEd : null,
         };
       } else {
         cls = 'awaiting';
@@ -89300,7 +89377,12 @@ function _renderUnitPaymentHealth(u) {
       const _mb = _monthBilling(rent, ym, startStr, graceDays, today, u);
       const _monthRent = _mb.monthRent;
       const _aliveInvPast = _gridGetAliveInvoiceForYm(ym);
-      const _phAnchor = new Date(_mb.dueDate.getFullYear(), _mb.dueDate.getMonth(), _mb.dueDate.getDate() - graceDays);
+      // Эффективная Due (Tony 2026-10-13): только когда за месяц есть счёт.
+      const _phEd = _phEffectiveDue(
+        new Date(_mb.dueDate.getFullYear(), _mb.dueDate.getMonth(), _mb.dueDate.getDate() - graceDays),
+        _aliveInvPast ? _phRentIssueDay(u, b, _phMonthRows.get(ym), null) : null);
+      const _phAnchor = _phEd.due;
+      const _phOverdueAt = _phEd.fromIssue ? new Date(_phAnchor.getFullYear(), _phAnchor.getMonth(), _phAnchor.getDate() + graceDays) : _mb.dueDate;
       const _phProrated = _mb.isProratedMonth ? _mb.proration : null;
       if (_aliveInvPast) {
         cls = 'current';
@@ -89308,7 +89390,8 @@ function _renderUnitPaymentHealth(u) {
         tooltip = `${monthFull} ${fullYear}\nInvoice sent · awaiting payment${_fmtInvoiceSentLine(_aliveInvPast)}\nAmount: $${_monthRent.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
         _phCtx = {
           kind: 'invoiced', row: _aliveInvPast, dueDate: _phAnchor, monthRent: _monthRent, prorated: _phProrated,
-          daysOverdue: today > _mb.dueDate ? _phDayDiff(_phAnchor, today) : 0,
+          daysOverdue: today > _phOverdueAt ? _phDayDiff(_phAnchor, today) : 0,
+          billedLate: _phEd.fromIssue ? _phEd : null,
         };
       } else {
         const days = Math.floor((today - due) / 86400000);
