@@ -88781,6 +88781,10 @@ function _renderUnitPaymentHealth(u) {
       : null;
     for (const r of _invoicesCache) {
       if ((r.metadata?.unitId || '').toString() !== u.id.toString()) continue;
+      // Entry 88 class (2026-10-13): suite numbers repeat across buildings —
+      // Tech Data/101's paid October invoice painted NUHS (Pinellas/101,
+      // no email, no Stripe customer) October green.
+      if (r.metadata?.buildingId && b && String(r.metadata.buildingId) !== String(b.id)) continue;
       const rPurpose = r.metadata?.purpose;
       if (rPurpose !== 'rent') continue;
       if (r.bucket !== 'paid') continue;
