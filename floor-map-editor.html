@@ -84000,9 +84000,21 @@ function _phCardPlace(el, cell) {
   let left = r.left + r.width / 2 - w / 2;
   if (left + w > cR) left = cR - w;
   if (left < cL) left = cL;
-  const flipBelow = r.top - PH_CARD_GAP - h < 8;   // правило kiwi, но по реальной высоте вместо EST_H
   el.style.left = Math.round(left) + 'px';
-  el.style.top = Math.round(flipBelow ? r.bottom + PH_CARD_GAP : r.top - PH_CARD_GAP - h) + 'px';
+  // Вертикаль: над клеткой (правило kiwi), иначе под ней. Высокая карточка
+  // (много строк) у клетки в середине экрана не влезает ни туда, ни туда —
+  // тогда прижимаем к краю вьюпорта, чтобы кнопки внизу были видны; выше
+  // вьюпорта — скролл внутри карточки (прод 2026-10-13: 499px, низ обрезан).
+  const vh = window.innerHeight;
+  el.style.maxHeight = (vh - 16) + 'px';
+  el.style.overflowY = h > vh - 16 ? 'auto' : '';
+  const hh = Math.min(h, vh - 16);
+  const above = r.top - PH_CARD_GAP - hh, below = r.bottom + PH_CARD_GAP;
+  let top;
+  if (above >= 8) top = above;                         // правило kiwi
+  else if (below + hh <= vh - 8) top = below;
+  else top = Math.max(8, Math.min(vh - 8 - hh, (r.top > vh - r.bottom) ? above : below));
+  el.style.top = Math.round(top) + 'px';
 }
 // Клетка под открытым модалом/поповером, который её НЕ содержит (Manual Payment,
 // поповер счёта…): карточку не открывает, Enter/Space не переключает модал на
