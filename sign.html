@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>Review and sign</title>
+<!--
+  Публичная страница подписи договора по ссылке, которую оператор скопировал
+  с карточки договора (Copy signing link) и отправил арендатору сам — своим
+  письмом, в мессенджере и т.п.
+
+  Ссылка вида /sign.html?t=<token>. Токен — случайные 32 байта; на сервере
+  хранится только его SHA-256 (workspaces/default/docusign_sign_links). Страница
+  ничего не знает о DocuSign: она спрашивает CF dsSigningLinkSession
+  (action 'peek' — показать, что за документ, без обращения к DocuSign;
+  'open' — живой статус + одноразовая ссылка DocuSign на 5 минут) и уводит
+  туда браузер. После подписи DocuSign возвращает сюда же с
+  &event=signing_complete|cancel|decline|… . event ничего не доказывает (его
+  может подставить кто угодно) — по нему только выбираем текст на экране.
+  Скрипт — inline: sw.js отдаёт same-origin не-HTML ресурсы cache-first.
+
+  Автоперехода нет намеренно: почтовые сканеры (Safe Links и т.п.) открывают
+  ссылки сами — сессию подписи открывает только нажатие человека.
+-->
+<style>
+  :root {
+    --fg: #0f172a; --muted: #475569; --border: #e2e8f0;
+    --bg: #f6f7f9; --card: #ffffff;
+    --accent: #4f46e5; --accent-strong: #4338ca;
+    --ok: #15803d; --ok-bg: #f0fdf4; --warn: #b45309; --warn-bg: #fffbeb;
+    --bad: #b91c1c; --bad-bg: #fef2f2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --fg: #e2e8f0; --muted: #94a3b8; --border: #1e293b;
+      --bg: #0b1220; --card: #111827;
+      --ok-bg: #052e16; --warn-bg: #2a1d06; --bad-bg: #2a0a0a;
+      --ok: #4ade80; --warn: #fbbf24; --bad: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 16px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+  .wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px 16px; }
+  .card { width: 100%; max-width: 460px; background: var(--card); border: 1px solid var(--border);
+    border-radius: 16px; padding: 28px 24px; box-shadow: 0 8px 30px rgba(15, 23, 42, .06); }
+  .ico { width: 44px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center;
+    background: #eef2ff; color: var(--accent); margin-bottom: 14px; }
+  h1 { font-size: 21px; line-height: 1.3; margin: 0 0 8px; letter-spacing: -0.01em; }
+  p { margin: 8px 0; color: var(--muted); }
+  .doc { margin: 16px 0 4px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; font-size: 14.5px; }
+  .doc b { color: var(--fg); }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: 100%;
+    margin-top: 18px; padding: 13px 18px; border: 0; border-radius: 10px; cursor: pointer;
+    background: var(--accent); color: #fff; font: inherit; font-weight: 650; font-size: 16px; }
+  .btn:hover { background: var(--accent-strong); }
+  .btn[disabled] { opacity: .6; cursor: progress; }
+  .note { margin-top: 14px; font-size: 13px; }
+  .state-ok .ico { background: var(--ok-bg); color: var(--ok); }
+  .state-warn .ico { background: var(--warn-bg); color: var(--warn); }
+  .state-bad .ico { background: var(--bad-bg); color: var(--bad); }
+  .spin { width: 18px; height: 18px; border: 2px solid currentColor; border-right-color: transparent;
+    border-radius: 50%; animation: s .8s linear infinite; }
+  @keyframes s { to { transform: rotate(360deg); } }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <main class="card" id="card" aria-live="polite">
+    <div class="ico" id="ico">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 15l2 2 4-4"/></svg>
+    </div>
+    <h1 id="title">Loading your document…</h1>
+    <p id="msg"></p>
+    <div class="doc" id="doc" hidden></div>
+    <button type="button" class="btn" id="go" hidden>Review and sign</button>
+    <p class="note" id="note" hidden>The document opens on DocuSign, a secure e-signature service. This link is personal — please don't forward it.</p>
+  </main>
+</div>
+<script>
+(function () {
+  'use strict';
+  // Callable-протокол Firebase без SDK: POST {data} → {result} | {error}.
+  var CF_URL = 'https://us-central1-suitesforall.cloudfunctions.net/dsSigningLinkSession';
+  var qs = new URLSearchParams(location.search);
+  var token = (qs.get('t') || '').trim();
+  var event = (qs.get('event') || '').trim();
+  var $ = function (id) { return document.getElementById(id); };
+
+  function show(state, title, msg) {
+    $('card').className = 'card' + (state ? ' state-' + state : '');
+    $('title').textContent = title;
+    $('msg').textContent = msg || '';
+  }
+  function hideAction() { $('go').hidden = true; $('note').hidden = true; }
+
+  function call(action) {
+    var ctl = ('AbortController' in window) ? new AbortController() : null;
+    var timer = setTimeout(function () { if (ctl) ctl.abort(); }, 45000);
+    return fetch(CF_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: { t: token, action: action } }),
+      signal: ctl ? ctl.signal : undefined,
+      credentials: 'omit',
+      referrerPolicy: 'no-referrer',
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; });
+    }).then(function (j) {
+      clearTimeout(timer);
+      if (j && j.result) return j.result;
+      var e = new Error((j && j.error && j.error.message) || 'Something went wrong. Please try again.');
+      e.code = j && j.error && j.error.status;
+      throw e;
+    }, function (err) {
+      clearTimeout(timer);
+      var e = new Error('We could not reach the signing service. Check your connection and try again.');
+      e.code = 'NETWORK';
+      e.cause = err;
+      throw e;
+    });
+  }
+
+  // Ответ сервера о состоянии конверта → экран. Сервер отдаёт только
+  // status/recipientName/subject, ничего лишнего.
+  function renderInfo(info) {
+    var st = info && info.status;
+    if (st === 'completed' || st === 'signed') {
+      hideAction();
+      show('ok', 'This document is already signed', 'Thank you — nothing else is needed from you.');
+      return false;
+    }
+    if (st === 'voided' || st === 'declined' || st === 'expired' || st === 'deleted' || st === 'replaced') {
+      hideAction();
+      show('warn', 'This signing link is no longer active',
+        st === 'declined' ? 'The document was declined. Please contact your property manager.'
+        : st === 'replaced' ? 'The signer on this document was changed. Please ask your property manager for a new link.'
+                            : 'The document was withdrawn or has expired. Please contact your property manager for a new one.');
+      return false;
+    }
+    var who = info && info.recipientName ? ('Hi ' + info.recipientName + ',') : 'Hello,';
+    show('', 'Your document is ready to sign', who + ' please review the document and sign it electronically.');
+    if (info && info.subject) {
+      var d = $('doc');
+      d.textContent = '';
+      var b = document.createElement('b');
+      b.textContent = info.subject;
+      d.appendChild(b);
+      d.hidden = false;
+    }
+    $('go').hidden = false;
+    $('note').hidden = false;
+    return true;
+  }
+
+  function fail(err) {
+    hideAction();
+    if (err && (err.code === 'NOT_FOUND' || err.code === 'INVALID_ARGUMENT')) {
+      show('bad', 'This link is not valid', 'Please check that you opened the full link from the message, or ask your property manager to send it again.');
+    } else if (err && err.code === 'FAILED_PRECONDITION') {
+      show('warn', 'This signing link is no longer active', err.message);
+    } else if (err && err.code === 'RESOURCE_EXHAUSTED') {
+      show('warn', 'Too many attempts', 'Please wait a few minutes and try again.');
+    } else {
+      show('bad', 'Something went wrong', (err && err.message) || 'Please try again in a moment.');
+      $('go').hidden = false;
+      $('go').disabled = false;
+      $('go').textContent = 'Try again';
+    }
+  }
+
+  $('go').addEventListener('click', function () {
+    var btn = $('go');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spin" aria-hidden="true"></span> Opening DocuSign…';
+    call('open').then(function (res) {
+      if (res && res.url && /^https:\/\/[a-z0-9.-]+\.docusign\.(net|com)\//i.test(res.url)) {
+        location.replace(res.url);
+        return;
+      }
+      // Конверт успели подписать/аннулировать между peek и open — покажем это.
+      if (res && res.status && res.status !== 'ready') {
+        btn.disabled = false;
+        btn.textContent = 'Review and sign';
+        renderInfo(res);
+        return;
+      }
+      throw new Error('The signing service returned an unexpected answer. Please try again.');
+    }).catch(function (err) {
+      btn.disabled = false;
+      btn.textContent = 'Review and sign';
+      fail(err);
+    });
+  });
+
+  if (!token || !/^[A-Za-z0-9_-]{32,128}$/.test(token)) {
+    fail({ code: 'INVALID_ARGUMENT' });
+    return;
+  }
+  // Возврат с DocuSign: event приходит в query. Подпись/отказ показываем сразу,
+  // «отложил»/истекла сессия — даём кнопку вернуться к подписи по той же ссылке.
+  if (event === 'signing_complete') {
+    hideAction();
+    show('ok', 'Thank you — you’re all set', 'Your signature was received. If you need a copy of the signed document, ask your property manager. You can close this page.');
+    // event оставляем в адресе: перезагрузка (iOS восстанавливает вкладки)
+    // снова покажет «спасибо», а не «готово к подписи» — peek про подпись
+    // не знает, он не ходит в DocuSign.
+    return;
+  }
+  if (event === 'decline') {
+    hideAction();
+    show('warn', 'You declined to sign', 'Your property manager will be notified. If this was a mistake, please contact them.');
+    return;
+  }
+  if (event === 'viewing_complete') {
+    hideAction();
+    show('ok', 'Done', 'You can close this page.');
+    return;
+  }
+  call('peek').then(function (info) {
+    if (renderInfo(info) && (event === 'cancel' || event === 'session_timeout' || event === 'ttl_expired')) {
+      show('', 'Your document is waiting for you',
+        event === 'cancel' ? 'You left before finishing. You can continue whenever you are ready.'
+                           : 'Your signing session timed out. Click below to continue where you left off.');
+      $('go').textContent = 'Continue signing';
+    }
+  }).catch(fail);
+})();
+</script>
+</body>
+</html>

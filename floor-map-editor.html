@@ -99276,6 +99276,21 @@ function _renderLeaseDocCard(doc, u, b, f, editOn) {
     const verb = activeVersion ? 'Upload new version' : 'Upload first version';
     actions.push(`<button type="button" class="rd-btn2" onclick="event.stopPropagation(); _openUploadVersionModal('${esc(doc.id)}')" title="Add another version to this document — previous versions stay in history">${_rdIc('upload', 13)}${verb}</button>`);
   }
+  // Гейт новых кнопок — как у сервера (_dsAssertCanSendLeases: admin/manager),
+  // а не canEdit(): mapeditor видел бы кнопки, которые CF ему всё равно отклонит.
+  const _canDs = (typeof canSendLeases === 'function') ? canSendLeases() : _hasEdit;
+  // Copy signing link — оператор шлёт договор на подпись сам (письмо DocuSign
+  // не дошло). Только пока конверт ждёт подписи.
+  if (doc.source === 'docusign' && doc.envelopeId && _canDs && liveStatus === 'pending') {
+    actions.push(`<button type="button" class="rd-btn2" onclick="event.stopPropagation(); _leaseDocShareSigningLink('${esc(doc.id)}')" title="Get a link to this DocuSign signing page — send it to the tenant from your own email or messenger">${_rdIc('copy', 13)}Copy signing link</button>`);
+  }
+  // Download PDF — файл из конверта DocuSign (неподписанный экземпляр, пока
+  // ждём подписи; подписанный — после). CF dsDownloadCombinedPdf пускает
+  // лишь admin/manager — отсюда тот же _canDs.
+  if (doc.source === 'docusign' && doc.envelopeId && _canDs
+      && (liveStatus === 'pending' || liveStatus === 'signed')) {
+    actions.push(`<button type="button" class="rd-btn2" onclick="event.stopPropagation(); _leaseDocDownloadPdf('${esc(doc.id)}')" title="Download this document as a PDF file — e.g. to attach it to your own email">${_rdIc('download', 13)}Download PDF</button>`);
+  }
   if (doc.source === 'docusign' && liveStatus === 'pending' && _hasEdit) {
     actions.push(`<button type="button" class="rd-btn2" onclick="event.stopPropagation(); _leaseDocResend('${esc(doc.id)}')" title="Send a reminder to the tenant">${_rdIc('mail', 13)}Resend</button>`);
     actions.push(`<button type="button" class="rd-btn2 rd-btn-danger" onclick="event.stopPropagation(); _leaseDocVoidEnvelope('${esc(doc.id)}')" title="Void this envelope on DocuSign — cancels it so the recipient can no longer sign">Voided</button>`);
@@ -99372,6 +99387,298 @@ function _leaseDocResend(docId) {
   }
   if (typeof toast === 'function') toast('Resend not available — open Lease tab', 'info');
 }
+// Download PDF — тот же документ, что лежит в конверте DocuSign (для
+// неподписанного — чистый экземпляр, для подписанного — с подписями).
+// Нужен, когда оператор отправляет договор арендатору сам, своим письмом.
+// Только чтение: CF dsDownloadCombinedPdf ничего в конверте не меняет.
+function _leaseDocB64ToBlob(b64, mime) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime || 'application/pdf' });
+}
+function _leaseDocPdfFileName(doc, u) {
+  const tenant = (typeof _leaseDocTenantName === 'function' ? _leaseDocTenantName(doc, u) : '') || '';
+  const parts = [doc.title || 'Lease', u && u.id ? `Suite ${u.id}` : '', tenant].filter(Boolean);
+  // Файловые системы не любят / \ : * ? " < > | — меняем на пробел.
+  return parts.join(' - ').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 150) + '.pdf';
+}
+const _leaseDocPdfInflight = new Set();
+// Кэш PDF на сессию: DocuSign пускает не больше 3 скачиваний незавершённого
+// конверта в час (5 за 6 ч) — повторный клик отдаёт файл из памяти. Ключ —
+// конверт + живой статус: подписали → новый файл (уже с подписями).
+const _leaseDocPdfCache = new Map();
+function _leaseDocSaveBlob(blob, fileName) {
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = href;
+  a.download = fileName;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { try { URL.revokeObjectURL(href); a.remove(); } catch {} }, 60000);
+}
+async function _leaseDocDownloadPdf(docId) {
+  const u = currentUnits().find(x => x.id === selectedIds[0]);
+  const doc = u?.leaseDocuments?.find(d => d.id === docId);
+  if (!doc || !doc.envelopeId) return;
+  if (_leaseDocPdfInflight.has(doc.envelopeId)) return;   // двойной клик
+  // Та же гонка с пробой JWT-режима, что и у отправки (2026-08-15).
+  if (window._dsJwtModeCache === undefined && typeof _dsLoadJwtMode === 'function') {
+    try { await Promise.race([_dsLoadJwtMode(), new Promise(r => setTimeout(r, 8000))]); } catch {}
+  }
+  if (!_dsIsJwtMode()) {
+    toast('PDF download needs the DocuSign server connection — reload the page and try again', 'error');
+    return;
+  }
+  const fileName = _leaseDocPdfFileName(doc, u);
+  const liveSt = (typeof _leaseDocLiveStatus === 'function') ? _leaseDocLiveStatus(doc, u) : '';
+  const cacheKey = `${doc.envelopeId}|${liveSt}`;
+  const hit = _leaseDocPdfCache.get(cacheKey);
+  let stale = false;
+  _leaseDocPdfInflight.add(doc.envelopeId);
+  try {
+    if (hit && Date.now() - hit.at < 6 * 3600 * 1000) {
+      // Локальный статус отстаёт от DocuSign до 30 мин (поллинг): тенант мог
+      // уже подписать по ссылке, а в кэше — неподписанный экземпляр. Перед
+      // выдачей «pending»-копии сверяемся дешёвым GET конверта (лимит 3/час
+      // касается только скачивания документа). Сбой проверки → отдаём кэш.
+      if (liveSt === 'pending') {
+        try {
+          const e = await _dsCallCF('dsGetEnvelope', { envelopeId: doc.envelopeId }, { timeoutMs: 15000 });
+          const st = String(e?.status || '').toLowerCase();
+          stale = !!st && st !== 'sent' && st !== 'delivered';
+        } catch (e) { /* не смогли проверить — кэш лучше, чем ничего */ }
+      }
+      if (!stale) {
+        _leaseDocSaveBlob(hit.blob, fileName);
+        toast(`PDF downloaded — ${fileName}`, 'success');
+        return;
+      }
+      _leaseDocPdfCache.delete(cacheKey);
+    }
+    toast('Preparing the PDF…', 'info');
+    const res = await _dsCallCF('dsDownloadCombinedPdf', { envelopeId: doc.envelopeId }, { timeoutMs: 60000 });
+    if (!res || !res.pdfBase64) throw new Error('DocuSign returned no PDF');
+    const blob = _leaseDocB64ToBlob(res.pdfBase64, res.mimeType || 'application/pdf');
+    // Конверт уже закрыт в DocuSign, а локально ещё «pending» — под этим
+    // ключом не кэшируем (это уже другой, подписанный файл).
+    if (!stale) _leaseDocPdfCache.set(cacheKey, { blob, at: Date.now() });
+    _leaseDocSaveBlob(blob, fileName);
+    toast(`PDF downloaded — ${fileName}`, 'success');
+  } catch (err) {
+    console.error('[lease-doc] PDF download failed', err);
+    toast('PDF download failed: ' + (err?.message || err), 'error');
+  } finally {
+    _leaseDocPdfInflight.delete(doc.envelopeId);
+  }
+}
+// =========================================================================
+// «Copy signing link» — оператор отправляет договор на подпись САМ (своим
+// письмом / мессенджером), когда письмо DocuSign до арендатора не дошло.
+// CF dsCreateSigningLink выпускает постоянную ссылку /sign.html?t=… (см.
+// functions/index.js «Signing link»). Состояние приложения НЕ трогаем:
+// копирование ссылки — не отправка; след остаётся в docusign_log на сервере.
+// =========================================================================
+async function _leaseDocCopyText(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (e) { /* фолбэк ниже: Safari теряет user-activation после await */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return !!ok;
+  } catch (e) { return false; }
+}
+function _leaseDocSignLinkClose() {
+  _leaseDocSignLinkPending = null;
+  document.getElementById('leaseSignLinkModal')?.remove();
+  document.removeEventListener('keydown', _leaseDocSignLinkEsc, true);
+}
+function _leaseDocSignLinkEsc(e) {
+  if (e.key === 'Escape') { e.stopPropagation(); _leaseDocSignLinkClose(); }
+}
+function _leaseDocSignLinkMessage(ctx) {
+  const first = String(ctx.recipientName || '').trim().split(/\s+/)[0] || 'there';
+  const what = ctx.docTitle ? ctx.docTitle.toLowerCase() : 'lease';
+  const suite = ctx.unitId ? ` for Suite ${ctx.unitId}` : '';
+  const subject = `Please sign: ${ctx.docTitle || 'Lease'}${suite}`;
+  const body = `Hi ${first},\n\n`
+    + `Here is your ${what}${suite} to review and sign electronically:\n${ctx.url}\n\n`
+    + `The link opens the document on DocuSign. Signing takes just a couple of minutes.\n\n`
+    + `Thank you!`;
+  return { subject, body };
+}
+let _leaseDocSignLinkInflight = false;
+let _leaseDocSignLinkPending = null;   // контекст окна между «Create» и ответом CF
+async function _leaseDocShareSigningLink(docId) {
+  const u = currentUnits().find(x => x.id === selectedIds[0]);
+  const doc = u?.leaseDocuments?.find(d => d.id === docId);
+  if (!u || !doc || !doc.envelopeId) return;
+  if (_leaseDocSignLinkInflight) return;
+  if (window._dsJwtModeCache === undefined && typeof _dsLoadJwtMode === 'function') {
+    try { await Promise.race([_dsLoadJwtMode(), new Promise(r => setTimeout(r, 8000))]); } catch {}
+  }
+  if (!_dsIsJwtMode()) {
+    toast('Signing links need the DocuSign server connection — reload the page and try again', 'error');
+    return;
+  }
+  const b = (typeof currentBuilding === 'function') ? currentBuilding() : null;
+  const f = (typeof currentFloor === 'function') ? currentFloor() : null;
+  const env = (u.leaseEnvelopes || []).find(e => e && (e.envelopeId || e.id) === doc.envelopeId) || {};
+  const ctx = {
+    docId, envelopeId: doc.envelopeId, unitId: u.id, buildingId: b?.id || null, floorId: f?.id || null,
+    docTitle: doc.title || 'Lease',
+    recipientName: env.recipientName || _leaseDocTenantName(doc, u) || '',
+    recipientEmail: env.recipientEmail || '',
+    sentAt: env.sentAt || doc.uploadedAt || '',
+    url: '',
+  };
+  const sentStr = (() => {
+    const d = ctx.sentAt ? new Date(ctx.sentAt) : null;
+    return d && !isNaN(d.getTime()) ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+  })();
+  const who = `${esc(ctx.recipientName || 'the tenant')}${ctx.recipientEmail ? ` &lt;${esc(ctx.recipientEmail)}&gt;` : ''}`;
+
+  _leaseDocSignLinkClose();               // старое окно (и его контекст) — прочь
+  _leaseDocSignLinkPending = ctx;          // ПОСЛЕ close: тот обнуляет контекст
+  const ov = document.createElement('div');
+  ov.className = 'modal-overlay active';
+  ov.id = 'leaseSignLinkModal';
+  ov.addEventListener('click', (e) => { if (e.target === ov) _leaseDocSignLinkClose(); });
+  // Шаг 1 — объяснение до любого обращения к DocuSign: создание ссылки меняет
+  // подписанта в конверте (см. functions «Signing link»), оператор должен
+  // видеть цену заранее.
+  ov.innerHTML = `
+    <div class="modal" style="max-width: 520px;" role="dialog" aria-modal="true" aria-labelledby="lslTitle">
+      <button type="button" class="modal-x" onclick="_leaseDocSignLinkClose()" aria-label="Close"
+              style="position:absolute; top:12px; right:12px; width:30px; height:30px; background:transparent; border:none;
+                     border-radius:6px; font-size:20px; line-height:1; color:var(--muted); cursor:pointer;
+                     display:flex; align-items:center; justify-content:center;">×</button>
+      <h2 id="lslTitle" style="margin-top:0; display:flex; align-items:center; gap:8px;">${_rdIc('sign', 18)}<span>Send it for signature yourself</span></h2>
+      <div class="modal-sub" id="lslSub">DocuSign emailed ${who}${sentStr ? ` on ${esc(sentStr)}` : ''}. If it didn't arrive, create a signing link and send it from your own email or messenger.</div>
+      <div id="lslBody" style="margin-top:14px;">
+        <ul style="margin:0; padding-left:18px; font-size:12.5px; line-height:1.55; color:var(--text);">
+          <li>Anyone with the link can sign as ${esc(ctx.recipientName || 'the tenant')} — send it only to them.</li>
+          <li>The link in DocuSign's original email keeps working, and <b>Resend</b> still emails the tenant.</li>
+          <li>DocuSign stops its <b>automatic reminders</b> for this lease — use Resend if you need one.</li>
+          <li>DocuSign may not email the tenant a copy once it is signed — send it to them with <b>Download PDF</b>.</li>
+        </ul>
+        <div class="modal-actions" style="margin-top:18px;">
+          <button type="button" class="rr-btn" onclick="_leaseDocSignLinkClose()">Cancel</button>
+          <button type="button" class="rr-btn primary" id="lslCreateBtn" onclick="_leaseDocSignLinkCreate()">Create signing link</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(ov);
+  document.addEventListener('keydown', _leaseDocSignLinkEsc, true);
+  try { document.getElementById('lslCreateBtn')?.focus(); } catch {}
+}
+async function _leaseDocSignLinkCreate() {
+  const ctx = _leaseDocSignLinkPending;
+  if (!ctx || _leaseDocSignLinkInflight) return;
+  const btn = document.getElementById('lslCreateBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Talking to DocuSign…'; }
+  _leaseDocSignLinkInflight = true;
+  let res;
+  try {
+    res = await _dsCallCF('dsCreateSigningLink', {
+      envelopeId: ctx.envelopeId, unitId: ctx.unitId, buildingId: ctx.buildingId, floorId: ctx.floorId,
+    }, { timeoutMs: 60000 });
+  } catch (err) {
+    console.error('[lease-doc] signing link failed', err);
+    if (_leaseDocSignLinkPending !== ctx) return;   // окно закрыли/открыли другое
+    const body = document.getElementById('lslBody');
+    const sub = document.getElementById('lslSub');
+    if (sub) sub.textContent = 'Could not create the link.';
+    if (body) {
+      body.innerHTML = `<div style="padding:10px 12px; background:#fef2f2; border:1px solid #fecaca; border-radius:8px; color:#991b1b; font-size:12.5px;">
+        ${esc(err?.message || String(err))}</div>
+        <div style="margin-top:10px; font-size:12px; color:var(--muted);">You can still send the lease as a PDF:</div>
+        <div class="modal-actions" style="margin-top:12px;">
+          <button type="button" class="rd-btn2" onclick="_leaseDocDownloadPdf('${esc(ctx.docId)}')">${_rdIc('download', 13)}Download PDF</button>
+          <button type="button" class="rr-btn" onclick="_leaseDocSignLinkClose()">Close</button>
+        </div>`;
+    }
+    return;
+  } finally {
+    _leaseDocSignLinkInflight = false;
+  }
+  // Окно могли закрыть, пока ждали DocuSign.
+  if (_leaseDocSignLinkPending !== ctx || !document.getElementById('leaseSignLinkModal')) return;
+  if (!res || !res.url) {
+    const sub = document.getElementById('lslSub');
+    if (sub) sub.textContent = 'DocuSign returned no link — try again.';
+    if (btn) { btn.disabled = false; btn.textContent = 'Create signing link'; }
+    return;
+  }
+  ctx.url = res.url;
+  if (res.recipientName) ctx.recipientName = res.recipientName;
+  if (res.recipientEmail) ctx.recipientEmail = res.recipientEmail;
+  const msg = _leaseDocSignLinkMessage(ctx);
+  const bounceBox = res.bounced ? `
+    <div style="display:flex; gap:8px; padding:9px 11px; margin-bottom:12px; background:#fef2f2; border:1px solid #fecaca; border-radius:8px; font-size:12.5px; color:#991b1b;">
+      ${_rdIc('alert', 15)}<span>DocuSign could not deliver its email to <b>${esc(ctx.recipientEmail || 'this address')}</b> — the address bounced${res.bounceReason ? ` (${esc(res.bounceReason)})` : ''}. Double-check the email with the tenant.</span>
+    </div>` : '';
+  const mailHref = `mailto:${encodeURIComponent(ctx.recipientEmail || '')}?subject=${encodeURIComponent(msg.subject)}&body=${encodeURIComponent(msg.body)}`;
+  const sub = document.getElementById('lslSub');
+  if (sub) sub.textContent = 'Link ready. Paste it into your email or messenger to the tenant.';
+  document.getElementById('lslBody').innerHTML = `
+    ${bounceBox}
+    <label style="display:block; font-size:11.5px; font-weight:600; color:var(--text); margin-bottom:5px;">Signing link for ${esc(ctx.recipientName || 'the tenant')}</label>
+    <div style="display:flex; gap:8px;">
+      <input type="text" id="lslUrl" readonly value="${esc(ctx.url)}" onclick="this.select()"
+             style="flex:1; min-width:0; font-size:12.5px; padding:8px 10px; border:1px solid var(--border); border-radius:8px; background:var(--bg-soft, #f8fafc); color:var(--text);">
+      <button type="button" class="rd-btn" id="lslCopyBtn" onclick="_leaseDocSignLinkCopy('link')">${_rdIc('copy', 13)}Copy link</button>
+    </div>
+    <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:12px;">
+      <button type="button" class="rd-btn2" onclick="_leaseDocSignLinkCopy('message')" title="Copy a ready-to-send message with the link">${_rdIc('clipboard', 13)}Copy message</button>
+      <a class="rd-btn2" href="${esc(mailHref)}" style="text-decoration:none;" title="Open a new email with the link in your email app">${_rdIc('mail', 13)}Open in email app</a>
+      <button type="button" class="rd-btn2" onclick="_leaseDocDownloadPdf('${esc(ctx.docId)}')" title="Download the lease as a PDF to attach to your email">${_rdIc('download', 13)}Download PDF</button>
+    </div>
+    <div style="margin-top:14px; font-size:11.5px; line-height:1.5; color:var(--muted);">
+      Send it only to ${esc(ctx.recipientName || 'the tenant')} — anyone with this link can sign. It stops working once the lease is signed or voided.
+    </div>
+    <div class="modal-actions" style="margin-top:16px;"><button type="button" class="rr-btn" onclick="_leaseDocSignLinkClose()">Done</button></div>`;
+  window._leaseDocSignLinkCtx = { url: ctx.url, message: msg.body };
+  // Пробуем скопировать сразу; если браузер не дал (user-activation истёк
+  // за время ожидания DocuSign) — кнопка «Copy link» рядом.
+  if (await _leaseDocCopyText(ctx.url)) {
+    toast('Signing link copied — paste it into your email', 'success');
+    const cb = document.getElementById('lslCopyBtn');
+    if (cb) cb.innerHTML = `${_rdIc('check', 13)}Copied`;
+  }
+}
+async function _leaseDocSignLinkCopy(kind) {
+  const c = window._leaseDocSignLinkCtx;
+  if (!c) return;
+  const ok = await _leaseDocCopyText(kind === 'message' ? c.message : c.url);
+  if (ok) {
+    toast(kind === 'message' ? 'Message with the link copied' : 'Signing link copied', 'success');
+    if (kind !== 'message') {
+      const btn = document.getElementById('lslCopyBtn');
+      if (btn) btn.innerHTML = `${_rdIc('check', 13)}Copied`;
+    }
+  } else {
+    toast('Copy failed — select the link and press ⌘C', 'error');
+    document.getElementById('lslUrl')?.select();
+  }
+}
+window._leaseDocShareSigningLink = _leaseDocShareSigningLink;
+window._leaseDocSignLinkCreate = _leaseDocSignLinkCreate;
+window._leaseDocSignLinkCopy = _leaseDocSignLinkCopy;
+window._leaseDocSignLinkClose = _leaseDocSignLinkClose;
+window._leaseDocDownloadPdf = _leaseDocDownloadPdf;
 function _leaseDocVoidEnvelope(docId) {
   const u = currentUnits().find(x => x.id === selectedIds[0]);
   const doc = u?.leaseDocuments?.find(d => d.id === docId);

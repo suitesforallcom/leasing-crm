@@ -470,6 +470,26 @@ check_gate 83 moveOutCurrentTenant "_wipeUnitLedgerDurable\(u\)" 160
 check_gate 83 moveOutCurrentTenant "_ledgerArchiveExtras\(" 120
 check_gate 83 _deleteLedgerRecDurable "repo\.deletePayment" 8
 echo
+echo "Entry 92 — signing link / PDF on the lease card: server-issued link, admin/manager gate, no unit-state writes:"
+check_gate 92 _leaseDocSignLinkCreate "_dsCallCF\('dsCreateSigningLink'" 40
+check_gate 92 _leaseDocDownloadPdf "_dsCallCF\('dsDownloadCombinedPdf'" 80
+# grep -c (не -q): длинное окно + pipefail → SIGPIPE у первого grep при раннем выходе -q.
+if [ "$(grep -A 260 -E "^function _renderLeaseDocCard\(" "$HTML" | grep -cE "const _canDs = \(typeof canSendLeases === 'function'\)" || true)" -ge 1 ]; then
+  echo "  ✓ _renderLeaseDocCard: signing-link / PDF buttons gated by canSendLeases()"
+else
+  echo "  ✗ Entry 92: _renderLeaseDocCard lost the canSendLeases() gate for signing-link / PDF buttons"
+  FAIL=1
+fi
+# Копирование ссылки — не отправка (§0.2 правило 3): ни saveState, ни записи в юнит.
+if [ "$(grep -A 220 -E "^async function _leaseDocShareSigningLink\(" "$HTML" \
+   | sed '/^async function _leaseDocSignLinkCopy(/,$d' \
+   | grep -cE "saveState\(|recordOutreach\(|leaseEnvelopes\.push|fbPushNow\(" || true)" -ge 1 ]; then
+  echo "  ✗ Entry 92: _leaseDocShareSigningLink writes unit state — copying a link is not a send"
+  FAIL=1
+else
+  echo "  ✓ Entry 92: _leaseDocShareSigningLink leaves unit state untouched"
+fi
+echo
 echo "Mobile cache-busting — versioned module loading:"
 # Статический import без версии Safari на iOS не обновляет никогда (no-store
 # не выселяет уже закэшированный ответ). Оператор дважды сообщал об уже

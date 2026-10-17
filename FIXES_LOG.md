@@ -60,6 +60,35 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 92. Lease card: «Copy signing link» + «Download PDF» — operator sends the lease for signature from their own email (DocuSign / lease docs, 2026-10-16)
+
+- **Status:** active (lands with the commit that carries this entry; the two new Cloud Functions need Tony's approval to deploy — CLAUDE.md §2)
+- **Branch / commit:** main @ (pending commit; parent 5dec723)
+- **Area:** DocuSign / unit Lease tab document cards · public signing page
+- **Files:** floor-map-editor.html · functions/index.js · sign.html (new, public) · scripts/check-invariants.sh · tests/sign-link-cf.test.cjs (new)
+- **Functions:** client `_renderLeaseDocCard` (two buttons + `_canDs` gate), `_leaseDocDownloadPdf`, `_leaseDocB64ToBlob`, `_leaseDocPdfFileName`, `_leaseDocSaveBlob`, `_leaseDocPdfCache`, `_leaseDocShareSigningLink`, `_leaseDocSignLinkCreate`, `_leaseDocSignLinkCopy`, `_leaseDocSignLinkMessage`, `_leaseDocSignLinkClose`, `_leaseDocCopyText`; server `dsCreateSigningLink` (admin/manager), `dsSigningLinkSession` (PUBLIC, no auth), helpers `_dsPendingSigner`, `_dsRecipientViewUrl`, `_dsSignLinkHash`
+- **Bug it fixed:** A tenant (Bjoern Henning, Oct 14 lease) said DocuSign's email never arrived. The card offered only Resend (same DocuSign email again) — no way to hand the tenant the document through the operator's own email: no signing link, no PDF.
+- **What changed:**
+  - **Download PDF** (pending + signed DocuSign cards): existing read-only CF `dsDownloadCombinedPdf` → file `Lease - Suite N - Tenant.pdf`. Cached per envelope+status for the session: DocuSign allows only 3 combined downloads of an in-progress envelope per hour (5 per 6 h). A cached «pending» copy is served only after a cheap `dsGetEnvelope` confirms the envelope is still sent/delivered (the local poll lags up to 30 min — the tenant may already have signed through the link).
+  - **Copy signing link** (pending cards): a two-step modal. Step 1 explains the cost before anything touches DocuSign; «Create signing link» → `dsCreateSigningLink`: (1) if the signer has no `clientUserId`, PUT `/recipients` with ONLY `{recipientId, clientUserId:'sfa-<envelopeId>-<recipientId>', embeddedRecipientStartURL:'SIGN_AT_DOCUSIGN'}` (deterministic, so two operators clicking Create at once write the same value) — never `email` (DocuSign treats any supplied email as a new address: correction email + the old email link dies); per-recipient `errorDetails` checked (HTTP 200 on failure); re-read verifies the id stuck. (2) A test `createRecipientView` — the link is handed out only if DocuSign really opens a signing session (account/plan may forbid embedded signing); if it fails after the conversion, the error tells the operator reminders are already off (audit `sign-link-view-failed`; the conversion is not rolled back — that would need `email` → correction email). (3) A 32-byte base64url token; Firestore stores only `sha256(token)` at `workspaces/default/docusign_sign_links/{hash}` (no rule → closed to clients). Returns `https://suitesforall.web.app/sign.html?t=<token>` + recipient email/status + bounce reason (`autoresponded` / `autoRespondedReason`).
+  - Modal: link + Copy link (auto-copy attempt; Safari may drop it after the await — button stays), Copy message (ready English text), Open in email app (`mailto:` to the tenant), Download PDF. No unit-state write anywhere (copying a link is not a send, §0.2 rule 3); the trail is `docusign_log` (`sign-link-convert`, `sign-link-create`, `sign-link-open`).
+  - **sign.html** (public): `peek` (Firestore only, no DocuSign call) → «Review and sign» button (no auto-redirect: mail scanners open links) → `open` = live envelope status + a fresh one-time DocuSign URL (5 min, single use), redirect only to `https://*.docusign.(net|com)/`. Completed / declined / voided envelopes answer with a status and mark the link `deadStatus`. The link is bound to the PERSON it was issued for: `open` also requires the live signer's email (trim, case-insensitive) to equal the email stored at creation — otherwise `deadStatus:'replaced'` (a Correct to another address keeps the deterministic clientUserId, so without this the old link would sign as the new recipient; review 2026-10-16). Per-link limit 40 calls/hour (counter on the link doc, not a shared bucket — a stranger cannot burn others' limit). Public errors never carry DocuSign text or email. DocuSign returns to the same page with `&event=…` (display only — anyone can forge it); the page keeps `event` in the URL so a reload after signing still says «Thank you».
+- **Cost of the conversion (shown to the operator in step 1, documented by DocuSign):** an embedded signer gets no automatic reminders / expiration warnings (Resend still emails), and DocuSign emails the completed copy to embedded signers only if the account setting «Send completion emails to embedded signers» is on — the operator sends the signed PDF instead.
+- **Invariant — DO NOT BREAK:**
+  - The recipient PUT never carries `email` or `name`.
+  - `clientUserId` written by dsCreateSigningLink is deterministic per envelope+recipient (`sfa-<envelopeId>-<recipientId>`), never random — a random id lets a concurrent second Create overwrite the first and kill every link already sent.
+  - `dsSigningLinkSession` 'open' checks the live signer's clientUserId AND email against the link before creating a view.
+  - A link is returned only after the test recipient view succeeded; only the token HASH is persisted; `docusign_sign_links` stays without a Firestore rule.
+  - `dsSigningLinkSession` never returns DocuSign error text, emails, or a non-DocuSign URL; `peek` never calls DocuSign.
+  - New card buttons are gated by `canSendLeases()` (admin/manager = the CF's `_dsAssertCanSendLeases`), not `canEdit()`.
+  - `_leaseDocShareSigningLink` / `_leaseDocSignLinkCreate` write no unit state.
+- **Verification:** card for a pending DocuSign lease shows Copy signing link + Download PDF for admin/manager only; Create → link copies, /sign.html?t=… shows «Review and sign» → DocuSign signing; after signing the card turns Signed via the normal poll; the same link then says «already signed».
+- **Regression test:** `node tests/sign-link-cf.test.cjs` (23 cases: loads functions/index.js with stubbed firebase-*, in-memory Firestore and a fake DocuSign — no network); `scripts/check-invariants.sh` Entry 92 gates; browser-verified on localhost:5599 with a mocked `_dsCallCF`.
+- **Related PR / issue:** none (Tony's request 2026-10-16).
+- **Porting note:** none.
+
+---
+
 ### 91. Payment-history month card ported from kiwi; Stripe-billed units get no bank suggestions in Manual Payment (finance UI, 2026-10-13)
 
 - **Status:** active (uncommitted at the time of writing — lands with the commit that carries this entry)
