@@ -11587,6 +11587,317 @@ exports.dsDownloadCombinedPdf = onCall(
   }
 );
 
+// ============================================================================
+// Signing link — «Copy signing link» на карточке договора (2026-10-16, FIXES_LOG Entry 92)
+// ============================================================================
+// Зачем: арендатор говорит «письмо от DocuSign не пришло» (спам, опечатка,
+// корпоративный фильтр). Оператору нужна ссылка, которую он отправит САМ —
+// своим письмом, в WhatsApp и т.п.
+//
+// Как: у DocuSign нет постоянной ссылки на подпись для email-подписанта.
+// Есть только «встроенная подпись» (createRecipientView) — одноразовый URL
+// на 5 минут, и только для подписанта с clientUserId. Поэтому:
+//   1. dsCreateSigningLink (admin/manager): по запросу оператора переводит
+//      подписанта конверта во «встроенного» — ставит clientUserId +
+//      embeddedRecipientStartURL='SIGN_AT_DOCUSIGN'. С этим флагом ссылка из
+//      уже отправленного письма DocuSign продолжает работать, Resend шлёт
+//      письмо как раньше. ЦЕНА (документировано DocuSign): автонапоминания и
+//      предупреждения об истечении этому подписанту больше не идут, а копию
+//      подписанного договора DocuSign шлёт встроенным подписантам только при
+//      включённой настройке аккаунта — оператор видит это в окне до создания.
+//      В PUT НЕ передаём email/name: любой переданный email DocuSign считает
+//      НОВЫМ адресом — шлёт «исправленное» письмо и гасит старую ссылку.
+//      Затем — пробный createRecipientView: ссылку отдаём, только если DocuSign
+//      реально готов открыть подпись (иначе оператор разослал бы мёртвую).
+//      И выпускаем НАШУ постоянную ссылку /sign.html?t=<token>. Токен — 32
+//      случайных байта; в Firestore только его SHA-256 (docusign_sign_links/
+//      {sha256}; правил для коллекции нет → клиентам она закрыта).
+//   2. dsSigningLinkSession (ПУБЛИЧНАЯ, без входа): sign.html присылает токен.
+//      'peek' — только Firestore (DocuSign не дёргаем: публичный вызов не
+//      должен тратить лимиты API аккаунта); 'open' — живой статус конверта +
+//      свежий одноразовый URL подписи. Подписанный / аннулированный / истёкший
+//      конверт гасит ссылку сам; узнав об этом, помечаем ссылку (deadStatus).
+//
+// Ссылка = право подписать за арендатора, поэтому: выдаём только тем, кто
+// может отправлять договоры; публичная функция не отдаёт наружу ни текстов
+// ошибок DocuSign, ни email; на каждую ссылку — лимит вызовов в час.
+const DS_SIGN_LINK_BASE = 'https://suitesforall.web.app/sign.html';
+const DS_SIGN_LINK_TTL_DAYS = 90;          // верхняя граница; конверт истекает раньше
+const DS_SIGN_LINK_MAX_CALLS_PER_HOUR = 40; // peek + open на визит; с запасом
+const DS_ENVELOPE_ID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+const DS_SIGN_TOKEN_RE = /^[A-Za-z0-9_-]{32,128}$/;
+// 'replaced' — подписанта в конверте исправили на другой адрес (см. 'open').
+const DS_SIGN_TERMINAL = new Set(['completed', 'declined', 'voided', 'deleted', 'expired', 'replaced']);
+
+function _dsSignLinkHash(token) {
+  return require('crypto').createHash('sha256').update(String(token)).digest('hex');
+}
+
+// Подписант, которому сейчас «ход»: наименьший routingOrder среди тех, кто
+// ещё не подписал/не отказался. У наших договоров подписант один (id '1').
+// 'autoresponded' (письмо отскочило) — НЕ исключаем: ровно этот случай
+// («письмо не пришло») ссылка и закрывает.
+function _dsPendingSigner(env) {
+  const signers = (env && env.recipients && Array.isArray(env.recipients.signers)) ? env.recipients.signers : [];
+  const open = signers.filter((s) => s && !['completed', 'signed', 'declined'].includes(String(s.status || '').toLowerCase()));
+  open.sort((a, b) => (+a.routingOrder || 0) - (+b.routingOrder || 0));
+  return open[0] || null;
+}
+
+// Одноразовый URL встроенной подписи (живёт 5 минут, один вход). email /
+// userName / clientUserId обязаны совпасть с получателем ДОСЛОВНО — берём их
+// из только что прочитанного конверта, не из своей копии.
+async function _dsRecipientViewUrl(envelopeId, signer, returnUrl) {
+  const res = await _dsApi(`/envelopes/${encodeURIComponent(envelopeId)}/views/recipient`, {
+    method: 'POST',
+    body: JSON.stringify({
+      returnUrl,
+      authenticationMethod: 'email',
+      email: signer.email,
+      userName: signer.name,
+      clientUserId: signer.clientUserId,
+      recipientId: String(signer.recipientId),
+    }),
+  });
+  const view = await res.json().catch(() => ({}));
+  if (!view || typeof view.url !== 'string' || !/^https:\/\//.test(view.url)) {
+    throw new Error('DocuSign returned no signing URL');
+  }
+  return view.url;
+}
+
+exports.dsCreateSigningLink = onCall(
+  { secrets: [DOCUSIGN_PRIVATE_KEY], timeoutSeconds: 60 },
+  async (request) => {
+    const caller = await _dsAssertCanSendLeases(request.auth);
+    const { envelopeId, unitId, buildingId, floorId } = request.data || {};
+    if (!envelopeId || !DS_ENVELOPE_ID_RE.test(String(envelopeId))) {
+      throw new HttpsError('invalid-argument', 'envelopeId required');
+    }
+    const envPath = `/envelopes/${encodeURIComponent(envelopeId)}`;
+    const env = await (await _dsApi(`${envPath}?include=recipients`)).json();
+    const envStatus = String(env.status || '').toLowerCase();
+    if (envStatus !== 'sent' && envStatus !== 'delivered') {
+      throw new HttpsError('failed-precondition',
+        `This envelope is "${envStatus || 'unknown'}" — a signing link only works while it is waiting for a signature.`);
+    }
+    let signer = _dsPendingSigner(env);
+    if (!signer) {
+      throw new HttpsError('failed-precondition', 'Nobody on this envelope is waiting to sign.');
+    }
+    // Почтовый адрес подписанта «отскочил» — DocuSign помечает его autoresponded.
+    // Ссылка всё равно рабочая; оператору покажем причину.
+    const bounced = String(signer.status || '').toLowerCase() === 'autoresponded';
+
+    // Шаг 1 — перевод во «встроенного» подписанта (один раз на конверт).
+    let converted = false;
+    if (!signer.clientUserId) {
+      // Детерминированный id (≤100 симв.): два оператора, одновременно нажавшие
+      // Create, ставят ОДНО значение — иначе второй PUT перезаписал бы первый,
+      // и уже разосланная первая ссылка умерла бы (clientUserId mismatch).
+      // Секретом id не является: view создаёт только наш сервер с JWT.
+      const clientUserId = `sfa-${String(envelopeId).toLowerCase()}-${String(signer.recipientId)}`.slice(0, 100);
+      const putRes = await _dsApi(`${envPath}/recipients`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          signers: [{
+            recipientId: String(signer.recipientId),
+            clientUserId,
+            embeddedRecipientStartURL: 'SIGN_AT_DOCUSIGN',
+          }],
+        }),
+      });
+      // DocuSign отвечает 200 даже при отказе по конкретному получателю —
+      // ошибка лежит в recipientUpdateResults[].errorDetails.
+      const putJson = await putRes.json().catch(() => ({}));
+      const failed = (putJson.recipientUpdateResults || []).find((r) => r && r.errorDetails
+        && r.errorDetails.errorCode && r.errorDetails.errorCode !== 'SUCCESS');
+      if (failed) {
+        logger.error('[docusign:sign-link] recipient update rejected', { envelopeId, error: failed.errorDetails });
+        throw new HttpsError('failed-precondition',
+          `DocuSign refused to enable link signing for this envelope (${failed.errorDetails.errorCode}).`);
+      }
+      // Перечитываем — убеждаемся, что clientUserId реально встал.
+      const env2 = await (await _dsApi(`${envPath}?include=recipients`)).json();
+      const s2 = ((env2.recipients && env2.recipients.signers) || [])
+        .find((s) => String(s.recipientId) === String(signer.recipientId));
+      if (!s2 || s2.clientUserId !== clientUserId) {
+        logger.error('[docusign:sign-link] clientUserId did not stick', { envelopeId, got: s2 && s2.clientUserId });
+        throw new HttpsError('failed-precondition',
+          'DocuSign did not allow link signing for this envelope (the signer could not be switched to link signing).');
+      }
+      signer = s2;
+      converted = true;
+      await _dsAudit('sign-link-convert', caller, { envelopeId: String(envelopeId), recipientId: String(signer.recipientId) });
+    }
+
+    // Шаг 2 — пробный вход: убеждаемся, что DocuSign откроет подпись по ссылке
+    // (настройки аккаунта / тариф могут запрещать встроенную подпись). URL не
+    // используем — он одноразовый и сам истечёт через 5 минут.
+    const token = require('crypto').randomBytes(32).toString('base64url');
+    try {
+      await _dsRecipientViewUrl(envelopeId, signer, `${DS_SIGN_LINK_BASE}?t=${token}`);
+    } catch (e) {
+      logger.error('[docusign:sign-link] test recipient view failed', { envelopeId, error: e.message });
+      await _dsAudit('sign-link-view-failed', caller, {
+        envelopeId: String(envelopeId), converted, error: String(e.message || e).slice(0, 300),
+      });
+      // Подписант уже переведён (конверсию не откатываем: откат требует
+      // передать email → DocuSign шлёт «исправленное» письмо). Говорим прямо.
+      const note = (converted || signer.clientUserId)
+        ? ' Note: the signer is already switched to link signing, so DocuSign\'s automatic reminders are off for this lease — use Resend if you need one, and send the tenant the signed PDF yourself.'
+        : '';
+      throw new HttpsError('failed-precondition',
+        `DocuSign would not open a signing session for this envelope: ${String(e.message || e).slice(0, 300)}.${note}`);
+    }
+
+    // Шаг 3 — наша постоянная ссылка. Храним только хэш токена.
+    const linkId = _dsSignLinkHash(token);
+    const expiresAtMs = Date.now() + DS_SIGN_LINK_TTL_DAYS * 24 * 3600 * 1000;
+    await db.doc(`workspaces/${WORKSPACE_ID}/docusign_sign_links/${linkId}`).set({
+      _schema: 'v1',
+      envelopeId: String(envelopeId),
+      recipientId: String(signer.recipientId),
+      clientUserId: signer.clientUserId,
+      recipientEmail: signer.email || null,
+      recipientName: signer.name || null,
+      subject: env.emailSubject || null,
+      unitId: unitId ? String(unitId).slice(0, 80) : null,
+      buildingId: buildingId ? String(buildingId).slice(0, 80) : null,
+      floorId: floorId ? String(floorId).slice(0, 80) : null,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdBy: caller.email || caller.uid,
+      createdByUid: caller.uid,
+      expiresAt: admin.firestore.Timestamp.fromMillis(expiresAtMs),
+      revoked: false,
+      deadStatus: null,
+      opens: 0,
+    });
+    await _dsAudit('sign-link-create', caller, {
+      envelopeId: String(envelopeId), linkId: linkId.slice(0, 12), converted,
+      recipientEmail: signer.email || null, unitId: unitId || null, buildingId: buildingId || null,
+    });
+    return {
+      url: `${DS_SIGN_LINK_BASE}?t=${token}`,
+      recipientEmail: signer.email || null,
+      recipientName: signer.name || null,
+      recipientStatus: signer.status || null,
+      envelopeStatus: envStatus,
+      subject: env.emailSubject || null,
+      bounced,
+      bounceReason: bounced ? (String(signer.autoRespondedReason || '').slice(0, 300) || null) : null,
+      converted,
+      expiresAt: new Date(expiresAtMs).toISOString(),
+    };
+  }
+);
+
+// ПУБЛИЧНАЯ функция (без входа) — её зовёт sign.html. Наружу — только status,
+// имя, тема письма и одноразовый URL; никаких деталей DocuSign и email.
+exports.dsSigningLinkSession = onCall(
+  { secrets: [DOCUSIGN_PRIVATE_KEY], timeoutSeconds: 30, maxInstances: 5 },
+  async (request) => {
+    const { t, action } = request.data || {};
+    if (typeof t !== 'string' || !DS_SIGN_TOKEN_RE.test(t)) {
+      throw new HttpsError('invalid-argument', 'This signing link is not valid.');
+    }
+    const act = action === 'open' ? 'open' : 'peek';
+    const linkId = _dsSignLinkHash(t);
+    const ref = db.doc(`workspaces/${WORKSPACE_ID}/docusign_sign_links/${linkId}`);
+
+    // Проверка ссылки + лимит вызовов — одной транзакцией (окно = час,
+    // счётчик на КОНКРЕТНОЙ ссылке: чужой токен не сожжёт лимит другим).
+    const now = Date.now();
+    const link = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new HttpsError('not-found', 'This signing link is not valid.');
+      const d = snap.data() || {};
+      if (d.revoked) {
+        throw new HttpsError('failed-precondition', 'This signing link was turned off. Please contact your property manager.');
+      }
+      if (d.expiresAt && typeof d.expiresAt.toMillis === 'function' && d.expiresAt.toMillis() < now) {
+        throw new HttpsError('failed-precondition', 'This signing link has expired. Please contact your property manager.');
+      }
+      const winStart = (d.rlWindowStart && typeof d.rlWindowStart.toMillis === 'function') ? d.rlWindowStart.toMillis() : 0;
+      const inWindow = now - winStart < 3600 * 1000;
+      const count = inWindow ? (+d.rlCount || 0) : 0;
+      if (count >= DS_SIGN_LINK_MAX_CALLS_PER_HOUR) {
+        throw new HttpsError('resource-exhausted', 'Too many attempts — please wait a few minutes and try again.');
+      }
+      tx.update(ref, {
+        rlWindowStart: inWindow ? d.rlWindowStart : admin.firestore.Timestamp.fromMillis(now),
+        rlCount: count + 1,
+      });
+      return d;
+    });
+
+    const firstName = (n) => String(n || '').trim().split(/\s+/)[0] || null;
+    // Конверт уже был закрыт при прошлом открытии — DocuSign не спрашиваем.
+    if (link.deadStatus && DS_SIGN_TERMINAL.has(link.deadStatus)) {
+      return { status: link.deadStatus };
+    }
+    if (act === 'peek') {
+      return { status: 'ready', recipientName: firstName(link.recipientName), subject: link.subject || null };
+    }
+
+    // 'open' — живой статус конверта (источник истины) + одноразовый URL.
+    const envPath = `/envelopes/${encodeURIComponent(link.envelopeId)}`;
+    let env;
+    try {
+      env = await (await _dsApi(`${envPath}?include=recipients`)).json();
+    } catch (e) {
+      logger.error('[docusign:sign-link] envelope read failed', { envelopeId: link.envelopeId, error: e.message });
+      throw new HttpsError('unavailable', 'The signing service is temporarily unavailable. Please try again in a few minutes.');
+    }
+    const envStatus = String(env.status || '').toLowerCase();
+    const signer = ((env.recipients && env.recipients.signers) || [])
+      .find((s) => String(s.recipientId) === String(link.recipientId));
+    const signerStatus = String((signer && signer.status) || '').toLowerCase();
+
+    let dead = null;
+    if (envStatus === 'completed' || signerStatus === 'completed' || signerStatus === 'signed') dead = 'completed';
+    else if (signerStatus === 'declined' || envStatus === 'declined') dead = 'declined';
+    else if (envStatus === 'voided' || envStatus === 'deleted' || envStatus === 'expired') dead = envStatus;
+    if (dead) {
+      try { await ref.update({ deadStatus: dead }); } catch (e) { logger.warn('[docusign:sign-link] deadStatus write failed', e.message); }
+      return { status: dead };
+    }
+    if (envStatus !== 'sent' && envStatus !== 'delivered') {
+      throw new HttpsError('failed-precondition', 'This document is not ready for signing right now. Please contact your property manager.');
+    }
+    // Подписанта поменяли (Correct в DocuSign на другой адрес/человека) —
+    // старая ссылка больше не его. clientUserId детерминирован и переживает
+    // Correct (а повторный Create ставит тот же id), поэтому сверяем ещё и
+    // email, на который ссылку выдали: иначе держатель старой ссылки подписал
+    // бы за нового получателя (ревью 2026-10-16). Исправление опечатки в
+    // адресе тоже гасит старую ссылку — оператор просто создаёт новую.
+    const normEmail = (e) => String(e || '').trim().toLowerCase();
+    if (!signer || !signer.clientUserId || signer.clientUserId !== link.clientUserId
+        || !link.recipientEmail || normEmail(signer.email) !== normEmail(link.recipientEmail)) {
+      try { await ref.update({ deadStatus: 'replaced' }); } catch (e) { logger.warn('[docusign:sign-link] deadStatus write failed', e.message); }
+      return { status: 'replaced' };
+    }
+
+    let url;
+    try {
+      url = await _dsRecipientViewUrl(link.envelopeId, signer, `${DS_SIGN_LINK_BASE}?t=${encodeURIComponent(t)}`);
+    } catch (e) {
+      logger.error('[docusign:sign-link] recipient view failed', { envelopeId: link.envelopeId, error: e.message });
+      throw new HttpsError('unavailable', 'The signing service is temporarily unavailable. Please try again in a few minutes.');
+    }
+    try {
+      await ref.update({
+        opens: admin.firestore.FieldValue.increment(1),
+        lastOpenedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    } catch (e) { logger.warn('[docusign:sign-link] open counter write failed', e.message); }
+    await _dsAudit('sign-link-open', { uid: 'public-sign-link', email: null, role: null }, {
+      envelopeId: link.envelopeId, linkId: linkId.slice(0, 12),
+    });
+    return { status: 'ready', url };
+  }
+);
+
 // One-time bootstrap — write the integration config to Firestore so the
 // API functions above can find it. Admin-only. Idempotent: caller can re-run
 // to update any field (e.g. rotated user_id, env change, region migration).
