@@ -6334,7 +6334,7 @@
   :root:not([data-theme="light"]) .canvas-area { background: #16161a; }
 
   /* SVG fills the ENTIRE canvas area. The docked top/bottom bars float on
-     top with a translucent backdrop (see .map-view-tabs / .map-legend-bar
+     top with a translucent backdrop (see .map-view-tabs / .map-zoom-fab
      below) so panning always exposes the map beneath them — the bar is no
      longer a hard visual barrier. CSS vars preserved for any script that
      references them, but they no longer inset the SVG. */
@@ -6613,28 +6613,32 @@
   .zoom-controls .icon-btn { width: 34px; height: 34px; color: var(--muted); }
   .zoom-controls .icon-btn:hover { color: white; background: var(--surface-3); }
 
-  /* Legend-bar docked zoom. Matches the legend bar's height/visuals. */
-  .map-legend-bar .mlb-zoom {
-    display: inline-flex; align-items: stretch; gap: 0;
-    margin-left: 10px;
-    background: var(--surface-2, rgba(255,255,255,0.6));
-    border: 1px solid var(--border, rgba(20,18,15,0.10));
+  /* Floating zoom cluster — +, Fit-to-screen, − stacked in the
+     bottom-right corner of the canvas (map-app style). Replaced the
+     docked bottom legend bar on 2026-10-24 so the plan gets its full
+     height (FIXES_LOG Entry 93). */
+  .map-zoom-fab {
+    position: absolute; right: 12px; bottom: 12px;
+    display: flex; flex-direction: column;
+    background: color-mix(in srgb, var(--surface) 92%, transparent);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid var(--border);
     border-radius: 8px;
     overflow: hidden;
+    box-shadow: 0 2px 8px rgba(20,18,15,0.08);
+    z-index: 25;
   }
-  .map-legend-bar .mlb-zoom button {
-    width: 28px; height: 26px;
+  .map-zoom-fab button {
+    width: 30px; height: 30px;
     display: inline-flex; align-items: center; justify-content: center;
     background: transparent; border: 0; color: var(--text, #14120f);
     cursor: pointer; padding: 0;
-    font: 600 14px "Inter Tight", "Inter", system-ui, sans-serif;
     line-height: 1;
   }
-  .map-legend-bar .mlb-zoom button + button {
-    border-left: 1px solid var(--border, rgba(20,18,15,0.10));
-  }
-  .map-legend-bar .mlb-zoom button:hover { background: rgba(20,18,15,0.05); }
-  .map-legend-bar .mlb-zoom button svg { width: 13px; height: 13px; stroke-width: 2.25; }
+  .map-zoom-fab button + button { border-top: 1px solid var(--border); }
+  .map-zoom-fab button:hover { background: rgba(20,18,15,0.05); }
+  .map-zoom-fab button svg { width: 13px; height: 13px; stroke-width: 2.25; }
 
   /* Legacy zoom-level readout hidden — Tony dropped the percent per feedback. */
   .zoom-level { display: none !important; }
@@ -6661,9 +6665,10 @@
   }
   .map-view-tabs {
     position: absolute; top: 0; left: 0; right: 0;
-    height: var(--map-top-bar-h);
+    min-height: var(--map-top-bar-h);
     display: flex; align-items: center; gap: 12px;
-    padding: 0 14px;
+    flex-wrap: wrap; row-gap: 4px;
+    padding: 4px 14px;
     /* Floating over the SVG with a translucent backdrop-blur panel so the
        map is still partially visible underneath the bar — the operator can
        pan the plan all the way to the top edge of the canvas without the
@@ -6709,53 +6714,15 @@
   }
   .map-view-tabs .mvt-icon { flex-shrink: 0; color: var(--muted); }
 
-  /* Bottom bar: legend chips on the left, highlight pills + zoom on the right.
-     Floats over the SVG with a translucent backdrop-blur panel so panning
-     the plan downward still exposes content underneath the bar. */
-  .map-legend-bar {
-    position: absolute; left: 0; right: 0; bottom: 0;
-    min-height: var(--map-bot-bar-h);
-    display: flex; align-items: center; gap: 14px;
-    padding: 6px 14px;
-    background: color-mix(in srgb, var(--surface) 78%, transparent);
-    backdrop-filter: blur(10px) saturate(1.1);
-    -webkit-backdrop-filter: blur(10px) saturate(1.1);
-    border: none;
-    border-top: 1px solid var(--border);
-    border-radius: 0;
-    box-shadow: none;
-    z-index: 25;
-    pointer-events: auto;
-    font-family: "Inter Tight", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    flex-wrap: wrap;
-    row-gap: 6px;
+  /* Highlight pills + Water layer toggle + Legend button — live in the
+     top bar to the right of the view-mode tabs. They used to sit in a
+     full-width docked bottom legend bar; that bar was removed on
+     2026-10-24 (operator: «нижнее меню бестолковое и занимает много
+     места») so the plan gets its full height (FIXES_LOG Entry 93). */
+  .map-view-tabs .mlb-pills {
+    display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap;
   }
-  .map-legend-bar .mlb-legend {
-    display: inline-flex; align-items: center; gap: 14px; flex-wrap: wrap;
-  }
-  .map-legend-bar .mlb-spacer { flex: 1 1 20px; }
-  .map-legend-bar .mlb-item {
-    display: inline-flex; align-items: center; gap: 7px;
-    font-size: 11px; color: var(--muted);
-  }
-  .map-legend-bar .mlb-swatch {
-    width: 14px; height: 10px; border-radius: 2px;
-    border: 1px solid transparent;
-    flex-shrink: 0;
-  }
-  .map-legend-bar .mlb-swatch-dashed {
-    background: #fff;
-    border: 1px dashed var(--surface-4);
-  }
-  .map-legend-bar .mlb-rent-bar {
-    width: 120px; height: 10px; border-radius: 5px;
-    border: 1px solid var(--border);
-    background: linear-gradient(90deg, #DCEEDE, #FBE6BF, #F5B8B8);
-  }
-  .map-legend-bar .mlb-pills {
-    display: inline-flex; align-items: center; gap: 6px;
-  }
-  .map-legend-bar .mlb-pill {
+  .map-view-tabs .mlb-pill {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 4px 9px;
     border: 1px solid var(--border);
@@ -6767,30 +6734,94 @@
     cursor: pointer;
     transition: background .15s, border-color .15s, color .15s;
   }
-  .map-legend-bar .mlb-pill:hover {
+  .map-view-tabs .mlb-pill:hover {
     border-color: var(--surface-4);
     color: var(--text);
   }
-  .map-legend-bar .mlb-pill.active {
+  .map-view-tabs .mlb-pill.active {
     border-color: currentColor;
     color: var(--text);
     background: var(--surface-2);
   }
-  .map-legend-bar .mlb-pill[data-mlp-key="overdue"].active     { color: #E11D48; background: #FDE7EC; border-color: #E11D48; }
-  .map-legend-bar .mlb-pill[data-mlp-key="pending-sig"].active { color: #075985; background: #E0F2FE; border-color: #0EA5E9; }
-  .map-legend-bar .mlb-pill[data-mlp-key="new-tenants"].active { color: #92400E; background: #FDF3E0; border-color: #F59E0B; }
-  /* Plumbing layer toggle — teal blue when active so it visually
-     matches the 🚰 marker drawn on the floor plan. */
-  .map-legend-bar .mlb-pill[data-layer="sink"].active           { color: #0e7490; background: #E0F7FA; border-color: #0e7490; }
-  .map-legend-bar .mlb-pill-dot {
+  .map-view-tabs .mlb-pill[data-mlp-key="overdue"].active     { color: #E11D48; background: #FDE7EC; border-color: #E11D48; }
+  .map-view-tabs .mlb-pill[data-mlp-key="pending-sig"].active { color: #075985; background: #E0F2FE; border-color: #0EA5E9; }
+  .map-view-tabs .mlb-pill[data-mlp-key="new-tenants"].active { color: #92400E; background: #FDF3E0; border-color: #F59E0B; }
+  /* Water layer toggle — teal when active so it visually matches the
+     sink disc drawn on the floor plan. */
+  .map-view-tabs .mlb-pill[data-layer="sink"].active          { color: #0F6E56; background: #E1F5EE; border-color: #1D9E75; }
+  .map-view-tabs .mlb-pill-dot {
     width: 6px; height: 6px; border-radius: 3px;
     background: currentColor;
   }
+  .map-view-tabs .mlb-pill-ic {
+    width: 12px; height: 12px; flex-shrink: 0;
+    fill: none; stroke: currentColor; stroke-width: 2;
+    stroke-linecap: round; stroke-linejoin: round;
+  }
+
+  /* Legend popover — opens under the "Legend" pill. Contextual: the
+     swatches are rendered by renderMapLegendBar() into #mlbLegend for
+     the current view mode (lease / type / rent / payment). */
+  .map-legend-pop {
+    position: absolute; top: calc(100% + 6px); right: 0;
+    min-width: 230px; max-width: 460px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(20,18,15,0.14);
+    padding: 10px 12px;
+    z-index: 40;
+    font-family: "Inter Tight", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  .map-legend-pop .mlp-title {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    font-size: 11.5px; font-weight: 600; color: var(--text);
+    margin-bottom: 8px;
+  }
+  .map-legend-pop .mlp-close {
+    border: 0; background: transparent; color: var(--muted); cursor: pointer;
+    font-size: 15px; line-height: 1; padding: 0 2px; font-family: inherit;
+  }
+  .map-legend-pop .mlp-close:hover { color: var(--text); }
+  .map-legend-pop .mlb-legend {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px;
+  }
+  .map-legend-pop .mlb-item {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 11px; color: var(--muted); white-space: nowrap;
+  }
+  .map-legend-pop .mlb-swatch {
+    width: 14px; height: 10px; border-radius: 2px;
+    border: 1px solid transparent;
+    flex-shrink: 0;
+  }
+  .map-legend-pop .mlb-swatch-dashed {
+    background: #fff;
+    border: 1px dashed var(--surface-4);
+  }
+  .map-legend-pop .mlb-rent-bar {
+    width: 120px; height: 10px; border-radius: 5px;
+    border: 1px solid var(--border);
+    background: linear-gradient(90deg, #DCEEDE, #FBE6BF, #F5B8B8);
+  }
+  .map-legend-pop .mlp-amen {
+    display: flex; gap: 14px; flex-wrap: wrap;
+    border-top: 1px solid var(--border);
+    margin-top: 8px; padding-top: 8px;
+  }
+  .map-legend-pop .mlp-amen span {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--muted);
+  }
+  .map-legend-pop .mlp-amen svg {
+    width: 12px; height: 12px; fill: none; stroke-width: 2;
+    stroke-linecap: round; stroke-linejoin: round;
+  }
   /* Hide new-design overlays when not on the plan view OR in edit mode. */
   .workspace.no-plan-ui .map-view-tabs,
-  .workspace.no-plan-ui .map-legend-bar,
+  .workspace.no-plan-ui .map-zoom-fab,
   body.edit-mode-on .map-view-tabs,
-  body.edit-mode-on .map-legend-bar { display: none; }
+  body.edit-mode-on .map-zoom-fab { display: none; }
 
   /* ============ Legacy floating filter bar (kept for back-compat but hidden).
      Its window/sink/filled filters still live in Rent Roll. The three
@@ -17975,6 +18006,7 @@
     <symbol id="i-interior" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/></symbol>
     <symbol id="i-dollar" viewBox="0 0 24 24"><line x1="12" y1="2" x2="12" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></symbol>
     <symbol id="i-drop" viewBox="0 0 24 24"><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z"/></symbol>
+    <symbol id="i-bottle" viewBox="0 0 24 24"><path d="M10 3h4v4.5c1.8.9 3 2.7 3 4.8V19a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-6.7c0-2.1 1.2-3.9 3-4.8V3Z"/><line x1="9" y1="14" x2="15" y2="14"/></symbol>
     <symbol id="i-sign" viewBox="0 0 24 24"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M5 17V5a2 2 0 0 1 2-2h7l5 5v3"/><path d="M3 21s2-1 4-1 3 1 5 1 3-1 5-1 4 1 4 1"/></symbol>
     <symbol id="i-invoice" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="2"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="12" y2="16"/></symbol>
     <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 3 2.7 5.6 6.1.8-4.5 4.3 1.1 6-5.4-2.9-5.4 2.9 1.1-6L3.2 9.4l6.1-.8L12 3Z"/></symbol>
@@ -20449,9 +20481,11 @@
       <!-- Redesigned map overlays — match /redesign/ mock.
            Docked top bar: segmented view-mode control on the left,
              contextual floor label on the right.
-           Docked bottom bar: contextual color-chip legend on the left +
-             three highlight pills on the right. Pills toggle the matching
-             filter in state.ui.mapFilters, which dims non-matching units. -->
+           Right side of the same bar (since 2026-10-24): highlight pills,
+             the Water layer toggle, and a Legend pill whose popover holds
+             the contextual color key. Pills toggle the matching filter in
+             state.ui.mapFilters, which dims non-matching units. Zoom is a
+             floating cluster in the bottom-right corner of the canvas. -->
       <div class="map-view-tabs" id="mapViewTabs" role="tablist" aria-label="Map coloring">
         <div class="mvt-seg">
           <button type="button" class="mvt-tab active" role="tab" data-mode="lease" onclick="setMapViewMode('lease')">Lease status</button>
@@ -20464,19 +20498,7 @@
              Populated by _renderPaymentMonthPicker on tab switch. -->
         <div class="mvt-payment-picker" id="mapPaymentMonthPicker" style="display:none; gap:4px; margin-left:10px; align-items:center;"></div>
         <div class="mvt-spacer"></div>
-        <div class="mvt-floor-label" id="mvtFloorLabel">
-          <svg class="mvt-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="2" width="10" height="12"/>
-            <path d="M6 5h1M9 5h1M6 8h1M9 8h1M6 11h4"/>
-          </svg>
-          <span id="mvtFloorText">Floorplan</span>
-        </div>
-      </div>
-
-      <div class="map-legend-bar" id="mapLegendBar">
-        <div class="mlb-legend" id="mlbLegend"></div>
-        <div class="mlb-spacer"></div>
-        <div class="mlb-pills">
+        <div class="mlb-pills" id="mapTopPills">
           <button type="button" class="mlb-pill" data-mlp-key="overdue" onclick="toggleMapFilter('overdue')" title="Highlight units with overdue rent">
             <span class="mlb-pill-dot" style="background:#E11D48"></span>
             <span>Overdue</span>
@@ -20492,11 +20514,11 @@
               <span class="mlb-pill-dot" style="background:#F59E0B"></span>
               <span>New (<span id="mlbNewDaysLabel">30d</span>) ▾</span>
             </button>
-            <!-- Day-window dropdown for the bottom legend bar.
+            <!-- Day-window dropdown for the top-bar pill.
                  Anchored under the pill; click an option to set the
                  window AND activate the filter, or click Off to
                  disable. Click-outside closes. -->
-            <div id="mlbNewPopover" class="mf-new-popover" style="display: none; position: absolute; bottom: calc(100% + 6px); left: 0; min-width: 240px; z-index: 100;">
+            <div id="mlbNewPopover" class="mf-new-popover" style="display: none; position: absolute; top: calc(100% + 6px); bottom: auto; left: 0; transform: none; min-width: 240px; z-index: 100;">
               <!-- ROLLING WINDOW SECTION — sliding ± N days from today.
                    Same options as before; "Off" clears the filter
                    entirely. Picking a window clears any month override
@@ -20546,38 +20568,65 @@
               </div>
             </div>
           </div>
-          <!-- Plumbing layer pill — NOT a filter. Toggles a 🚰 marker on
-               every unit that has a sink. Default off (grey); active
-               turns it teal blue. Sync handled via _syncMapLayerChips,
-               not the filter sweep, so its state isn't reset by other
-               filter changes. -->
+          <!-- Water layer pill — NOT a filter. Toggles sink / shampoo-
+               station markers on every unit that has them (teal droplet
+               = sink, violet bottle = shampoo station). Default off
+               (grey); active turns it teal. Sync handled via
+               _syncMapLayerChips, not the filter sweep, so its state
+               isn't reset by other filter changes. -->
           <button type="button" class="mlb-pill" id="mlbLayerSink" data-layer="sink"
-                  onclick="toggleShowSink()" title="Show 🚰 marker on units with a sink">
-            <span class="mlb-pill-dot" style="background:#0e7490"></span>
-            <span>🚰 Plumbing</span>
+                  onclick="toggleShowSink()" title="Show sink and shampoo-station markers on units">
+            <svg class="mlb-pill-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z"/></svg>
+            <span>Water</span>
           </button>
+          <!-- Legend — the contextual color key used to live in a
+               full-width bottom bar; now it's on demand in a popover
+               anchored under this pill. -->
+          <div style="position: relative; display: inline-block; margin-left: 6px;">
+            <button type="button" class="mlb-pill" id="mlbLegendBtn" onclick="toggleMapLegendPopover(event)" title="Color key for the current view">
+              <svg class="mlb-pill-ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></svg>
+              <span>Legend</span>
+            </button>
+            <div class="map-legend-pop" id="mapLegendPop" style="display: none;">
+              <div class="mlp-title"><span id="mapLegendPopTitle">Legend</span><button type="button" class="mlp-close" onclick="toggleMapLegendPopover(event)" aria-label="Close legend">×</button></div>
+              <div class="mlb-legend" id="mlbLegend"></div>
+              <div class="mlp-amen">
+                <span><svg viewBox="0 0 24 24" aria-hidden="true" style="stroke:#0F6E56"><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z"/></svg>Sink / plumbing</span>
+                <span><svg viewBox="0 0 24 24" aria-hidden="true" style="stroke:#534AB7"><path d="M10 3h4v4.5c1.8.9 3 2.7 3 4.8V19a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-6.7c0-2.1 1.2-3.9 3-4.8V3Z"/><line x1="9" y1="14" x2="15" y2="14"/></svg>Shampoo station</span>
+              </div>
+            </div>
+          </div>
         </div>
-        <!-- Docked zoom controls — −, Fit-to-screen, +.
-             The middle button re-centers the plan and stretches it to
-             fill the canvas (zoomReset → auto-fit to content bbox with
-             aspect match + equal-side padding). Sits inside the legend
-             bar so it can never overlap the bottom toolbar. -->
-        <div class="mlb-zoom" role="group" aria-label="Zoom">
-          <button type="button" onclick="zoomBy(0.8)" title="Zoom out">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          </button>
-          <button type="button" onclick="zoomReset()" title="Fit to screen">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M4 9V5a1 1 0 0 1 1-1h4"/>
-              <path d="M20 9V5a1 1 0 0 0-1-1h-4"/>
-              <path d="M4 15v4a1 1 0 0 0 1 1h4"/>
-              <path d="M20 15v4a1 1 0 0 1-1 1h-4"/>
-            </svg>
-          </button>
-          <button type="button" onclick="zoomBy(1.25)" title="Zoom in">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          </button>
+        <div class="mvt-floor-label" id="mvtFloorLabel">
+          <svg class="mvt-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="2" width="10" height="12"/>
+            <path d="M6 5h1M9 5h1M6 8h1M9 8h1M6 11h4"/>
+          </svg>
+          <span id="mvtFloorText">Floorplan</span>
         </div>
+      </div>
+
+      <!-- Floating zoom cluster — +, Fit-to-screen, − stacked in the
+           bottom-right corner of the canvas. The middle button re-centers
+           the plan and stretches it to fill the canvas (zoomReset →
+           auto-fit to content bbox with aspect match + equal-side
+           padding). Replaced the docked bottom legend bar (2026-10-24,
+           FIXES_LOG Entry 93) so the plan gets its full height. -->
+      <div class="map-zoom-fab" role="group" aria-label="Zoom">
+        <button type="button" onclick="zoomBy(1.25)" title="Zoom in">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <button type="button" onclick="zoomReset()" title="Fit to screen">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 9V5a1 1 0 0 1 1-1h4"/>
+            <path d="M20 9V5a1 1 0 0 0-1-1h-4"/>
+            <path d="M4 15v4a1 1 0 0 0 1 1h4"/>
+            <path d="M20 15v4a1 1 0 0 1-1 1h-4"/>
+          </svg>
+        </button>
+        <button type="button" onclick="zoomBy(0.8)" title="Zoom out">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
       </div>
 
       <!-- View/Edit toggle — now lives in the left rail (see #railEditMode
@@ -21169,12 +21218,12 @@
         <div class="toggle-row" style="padding-left: 14px;" title="Shows the tenant's name inside the unit on the map."><label>Show tenant name <span style="color:var(--muted); font-weight:400; font-size:10px;">(on map)</span></label><div class="toggle on" id="tglTenant" onclick="toggleShowTenant()"></div></div>
 
         <!-- Map markers — feature overlays that aren't text labels.
-             Plumbing layer drops a teal sink disc on units that have a sink.
+             Water layer drops sink / shampoo-station discs on units that have them.
              Default OFF (opt-in) so the map stays clean for anyone not
              currently scoping out wet-spec offices. -->
         <div class="panel-title">Map markers</div>
         <div class="toggle-row">
-          <label><svg class="rd-ic" style="width:14px;height:14px;vertical-align:-2px" aria-hidden="true"><use href="#i-drop"></use></svg> Plumbing (units with sink)</label>
+          <label><svg class="rd-ic" style="width:14px;height:14px;vertical-align:-2px" aria-hidden="true"><use href="#i-drop"></use></svg> Water (sink / shampoo station)</label>
           <div class="toggle" id="tglSink" onclick="toggleShowSink()"></div>
         </div>
 
@@ -31563,6 +31612,9 @@ function toggleBottomNewTenantPicker(ev) {
   const wasOpen = pop.style.display !== 'none';
   pop.style.display = wasOpen ? 'none' : 'block';
   if (!wasOpen) {
+    // Only one top-bar popover at a time — both pills stop propagation,
+    // so the other popover's click-outside never sees this click.
+    if (typeof _closeMapLegendPopover === 'function') _closeMapLegendPopover();
     const cur = getNewTenantDays();
     const monthYm = getNewTenantMonth();
     const isMonth = !!monthYm;
@@ -31610,6 +31662,42 @@ function toggleBottomNewTenantPicker(ev) {
       document.addEventListener('click', _bottomNewPickerClickOut, { once: true });
     }, 0);
   }
+}
+// Legend popover — opens under the "Legend" pill in the top bar
+// (FIXES_LOG Entry 93). The swatches themselves are rendered by
+// renderMapLegendBar() into #mlbLegend (contextual per view mode);
+// this only shows/hides the panel and keeps the pill's active state in
+// sync. Click-outside closes it, same pattern as the New-tenant picker.
+function toggleMapLegendPopover(ev) {
+  if (ev) { ev.stopPropagation(); ev.preventDefault(); }
+  const pop = document.getElementById('mapLegendPop');
+  if (!pop) return;
+  const wasOpen = pop.style.display !== 'none';
+  pop.style.display = wasOpen ? 'none' : 'block';
+  document.getElementById('mlbLegendBtn')?.classList.toggle('active', !wasOpen);
+  if (!wasOpen) {
+    if (typeof _closeBottomNewTenantPicker === 'function') _closeBottomNewTenantPicker();
+    if (typeof renderMapLegendBar === 'function') renderMapLegendBar();
+    setTimeout(() => {
+      document.addEventListener('click', _mapLegendPopClickOut, { once: true });
+    }, 0);
+  }
+}
+function _mapLegendPopClickOut(e) {
+  const pop = document.getElementById('mapLegendPop');
+  if (!pop || pop.style.display === 'none') return;
+  if (pop.contains(e.target)) {
+    // Click inside (e.g. the apartment-type color picker) — keep open, re-arm.
+    document.addEventListener('click', _mapLegendPopClickOut, { once: true });
+    return;
+  }
+  pop.style.display = 'none';
+  document.getElementById('mlbLegendBtn')?.classList.remove('active');
+}
+function _closeMapLegendPopover() {
+  const pop = document.getElementById('mapLegendPop');
+  if (pop) pop.style.display = 'none';
+  document.getElementById('mlbLegendBtn')?.classList.remove('active');
 }
 function _closeBottomNewTenantPicker() {
   const pop = document.getElementById('mlbNewPopover');
@@ -31857,6 +31945,9 @@ function renderMapLegendBar() {
   const mode = getMapViewMode();
   const wrap = document.getElementById('mlbLegend');
   if (!wrap) return;
+  // Popover title mirrors the active view-mode tab.
+  const _ttl = document.getElementById('mapLegendPopTitle');
+  if (_ttl) _ttl.textContent = ({ lease: 'Lease status', type: 'Unit type', rent: 'Rent heatmap', payment: 'Payment status' })[mode] || 'Legend';
   // Warm-neutral palette — matches /redesign/ mock STATUS_META.
   const items = (function () {
     if (mode === 'lease') {
@@ -32620,7 +32711,7 @@ function printRentRollTable() {
     // Plain-text rendering for print (strip links / badges)
     if      (c.key === 'status')         v = r.status || '';
     else if (c.key === 'window')         v = r.window ? '✓' : '';
-    else if (c.key === 'sink')           v = r.sink   ? '✓' : '';
+    else if (c.key === 'sink')           v = r.sink ? (r.shampoo ? '✓ + shampoo' : '✓') : (r.shampoo ? 'shampoo' : '');
     else if (c.key === 'rent')           v = r.rent ? '$' + r.rent.toLocaleString() : '';
     else if (c.key === 'contractRent')   v = r.contractRent ? '$' + r.contractRent.toLocaleString() : '';
     else if (c.key === 'rate')           v = r.rate ? '$' + (+r.rate).toFixed(2) : '';
@@ -68890,7 +68981,7 @@ function saveAddUnitModal(opts) {
   // the field-mapping in one place.
   const unitPayload = {
     id: suite,
-    status, type, window: false, sink: false, rentable: true,
+    status, type, window: false, sink: false, shampoo: false, rentable: true,
     sqft, cap: 0, rent, contractRent,
     rate: sqft ? +(rent * 12 / sqft).toFixed(2) : 0,
     tenant, company, tel: phone, email,
@@ -69509,34 +69600,63 @@ function renderUnits() {
         // Keeping only the ID matches the redesign mock.
         num.textContent = u.id;
         g.appendChild(num);
-        // Plumbing layer — solid teal disc + 🚰 in the bottom-LEFT
-        // corner ONLY on units that have a sink. Units without
-        // plumbing stay clean (no marker, no negative-space symbol)
-        // so the floor plan doesn't get noisy. Skip very small units
-        // (h < 38) — there's no room for the 28px disc without
-        // clipping the price/tenant text above.
-        if (u.sink && isRentable && showSink && u.h >= 38) {
-          const cx = 16;
-          const cy = u.h - 16;
-          const bg = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-          bg.setAttribute('cx', cx);
-          bg.setAttribute('cy', cy);
-          bg.setAttribute('r', 14);
-          bg.setAttribute('fill', '#7dd3fc');
-          bg.setAttribute('stroke', '#0e7490');
-          bg.setAttribute('stroke-width', '1.2');
-          bg.setAttribute('opacity', effectiveOpacity);
-          bg.setAttribute('style', 'pointer-events: none');
-          g.appendChild(bg);
-          const s = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-          s.setAttribute('x', cx);
-          s.setAttribute('y', cy + 6);
-          s.setAttribute('text-anchor', 'middle');
-          s.setAttribute('font-size', '17');
-          s.setAttribute('opacity', effectiveOpacity);
-          s.setAttribute('style', 'pointer-events: none');
-          s.textContent = '🚰';
-          g.appendChild(s);
+        // Water layer — small discs in the bottom-LEFT corner ONLY on
+        // units that have a sink and/or a shampoo station (FIXES_LOG
+        // Entry 93). Teal droplet = sink / plumbing, violet bottle =
+        // shampoo station; a unit with both gets two discs side by
+        // side. Units without water stay clean (no marker) so the plan
+        // isn't noisy. Skip very small units (h < 38) — no room for the
+        // discs without clipping the price/tenant text above. Icons are
+        // inline SVG paths (not emoji) so they render identically on
+        // every OS / browser.
+        if (isRentable && showSink && u.h >= 38 && (u.sink || u.shampoo)) {
+          const SVG_NS = 'http://www.w3.org/2000/svg';
+          const marks = [];
+          if (u.sink) marks.push({
+            title: 'Sink / plumbing', fill: '#9FE1CB', stroke: '#0F6E56',
+            shapes: [['path', { d: 'M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z' }]],
+          });
+          if (u.shampoo) marks.push({
+            title: 'Shampoo station', fill: '#CECBF6', stroke: '#534AB7',
+            shapes: [['path', { d: 'M10 3h4v4.5c1.8.9 3 2.7 3 4.8V19a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-6.7c0-2.1 1.2-3.9 3-4.8V3Z' }],
+                     ['line', { x1: 9, y1: 14, x2: 15, y2: 14 }]],
+          });
+          marks.forEach((mk, i) => {
+            const cx = 15 + i * 25;
+            const cy = u.h - 15;
+            const bg = document.createElementNS(SVG_NS, 'circle');
+            bg.setAttribute('cx', cx);
+            bg.setAttribute('cy', cy);
+            bg.setAttribute('r', 11);
+            bg.setAttribute('fill', mk.fill);
+            bg.setAttribute('stroke', mk.stroke);
+            bg.setAttribute('stroke-width', '1.2');
+            bg.setAttribute('opacity', effectiveOpacity);
+            bg.setAttribute('style', 'pointer-events: none');
+            g.appendChild(bg);
+            const ic = document.createElementNS(SVG_NS, 'svg');
+            ic.setAttribute('viewBox', '0 0 24 24');
+            ic.setAttribute('x', cx - 7);
+            ic.setAttribute('y', cy - 7);
+            ic.setAttribute('width', 14);
+            ic.setAttribute('height', 14);
+            ic.setAttribute('fill', 'none');
+            ic.setAttribute('stroke', mk.stroke);
+            ic.setAttribute('stroke-width', '2.2');
+            ic.setAttribute('stroke-linecap', 'round');
+            ic.setAttribute('stroke-linejoin', 'round');
+            ic.setAttribute('opacity', effectiveOpacity);
+            ic.setAttribute('style', 'pointer-events: none');
+            const tt = document.createElementNS(SVG_NS, 'title');
+            tt.textContent = mk.title;
+            ic.appendChild(tt);
+            for (const [tag, attrs] of mk.shapes) {
+              const el = document.createElementNS(SVG_NS, tag);
+              for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+              ic.appendChild(el);
+            }
+            g.appendChild(ic);
+          });
         }
         // Map label price: rented → contract rent (what the tenant
         // actually pays), vacant → proforma (asking). u.status is the
@@ -71836,6 +71956,7 @@ function _unitSplitAt(unitId, edge, projX, projY) {
       rentable: u.rentable !== false,
       window: !!u.window,
       sink: !!u.sink,
+      shampoo: !!u.shampoo,
       sqft: 0, cap: 0,
       rent: 0, contractRent: 0, deposit: 0,
       rate: 0,
@@ -71868,6 +71989,7 @@ function _unitSplitAt(unitId, edge, projX, projY) {
       rentable: u.rentable !== false,
       window: !!u.window,
       sink: !!u.sink,
+      shampoo: !!u.shampoo,
       sqft: 0, cap: 0,
       rent: 0, contractRent: 0, deposit: 0,
       rate: 0,
@@ -72311,6 +72433,7 @@ function _unitAddSubRoom(parentId, shape) {
         rentable: parent.rentable !== false,
         window: !!parent.window,
         sink: !!parent.sink,
+        shampoo: !!parent.shampoo,
         sqft: 0, cap: 0,
         rent: 0, contractRent: 0,
         rate: 0,
@@ -72383,6 +72506,7 @@ function _unitAddSubRoom(parentId, shape) {
     rentable: parent.rentable !== false,
     window: !!parent.window,
     sink: !!parent.sink,
+    shampoo: !!parent.shampoo,
     sqft: 0, cap: 0,
     rent: 0, contractRent: 0,
     rate: 0,
@@ -78109,6 +78233,7 @@ function renderDetail() {
         <div class="field" style="color:var(--muted); font-size:12px; padding:2px 0 6px;">${_rdIc('window', 12)} ${_rdIc('drop', 12)} Windows &amp; plumbing — standard for apartments</div>` : `
         <div class="toggle-row"><label>${_rdIc('window', 14)}Window</label><label class="rd-sw"><input type="checkbox" ${u.window ? 'checked' : ''} ${editOn ? `onchange="toggleField('window')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>
         <div class="toggle-row"><label>${_rdIc('drop', 14)}Sink / plumbing</label><label class="rd-sw"><input type="checkbox" ${u.sink ? 'checked' : ''} ${editOn ? `onchange="toggleField('sink')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>`}
+        <div class="toggle-row" title="Backwash / shampoo bowl for a hair-stylist suite. Shows a violet bottle marker on the map when the Water layer is on."><label>${_rdIc('bottle', 14)}Shampoo station</label><label class="rd-sw"><input type="checkbox" ${u.shampoo ? 'checked' : ''} ${editOn ? `onchange="toggleField('shampoo')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>
         ${(() => {
           // Floor lease-type селектор. Меняет f.leaseType (общее для всего этажа,
           // не только этого юнита). Показываем только для rentable office юнитов
@@ -78500,6 +78625,7 @@ function renderDetail() {
         <div class="toggle-row"><label>Rentable</label><div class="toggle ${u.rentable !== false ? 'on' : ''}" style="${cursorStyle}" ${editOn ? `onclick="toggleField('rentable')"` : ''}></div></div>
         <div class="toggle-row"><label>🌞 Window</label><div class="toggle ${u.window ? 'on' : ''}" style="${cursorStyle}" ${editOn ? `onclick="toggleField('window')"` : ''}></div></div>
         <div class="toggle-row"><label>🚰 Sink / plumbing</label><div class="toggle ${u.sink ? 'on' : ''}" style="${cursorStyle}" ${editOn ? `onclick="toggleField('sink')"` : ''}></div></div>
+        <div class="toggle-row"><label>🧴 Shampoo station</label><div class="toggle ${u.shampoo ? 'on' : ''}" style="${cursorStyle}" ${editOn ? `onclick="toggleField('shampoo')"` : ''}></div></div>
       </div>
     </details>
     ${editOn ? `
@@ -139893,6 +140019,7 @@ function buildRentRollRows() {
           type: u.type || 'office',
           window: !!u.window,
           sink: !!u.sink,
+          shampoo: !!u.shampoo,
           sqft: +u.sqft || 0,
           cap: +u.cap || 0,
           status: u.status || 'vacant',
@@ -141445,8 +141572,16 @@ function renderRRCell(r, c) {
     }
     case 'window':
       return _unitHasWindow(r) ? '<span title="Window unit">🌞</span>' : '<span style="color:var(--muted)">—</span>';
-    case 'sink':
-      return r.sink ? '<span title="Unit has a sink / plumbing">🚰</span>' : '<span style="color:var(--muted)">—</span>';
+    case 'sink': {
+      // Water column — teal droplet = sink / plumbing, violet bottle =
+      // shampoo station (FIXES_LOG Entry 93). A unit can have both.
+      const parts = [];
+      if (r.sink)    parts.push(`<span title="Sink / plumbing" style="color:#0F6E56">${_rdIc('drop', 13)}</span>`);
+      if (r.shampoo) parts.push(`<span title="Shampoo station" style="color:#534AB7">${_rdIc('bottle', 13)}</span>`);
+      return parts.length
+        ? `<span style="display:inline-flex; gap:4px; align-items:center; vertical-align:middle">${parts.join('')}</span>`
+        : '<span style="color:var(--muted)">—</span>';
+    }
     case 'rent': {
       if (!r.rent) return '<span style="color:var(--muted)">—</span>';
       if (r.isSubRoom) {
