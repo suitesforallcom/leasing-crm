@@ -6795,9 +6795,10 @@
   }
   .mlb-water-menu .mlb-water-opt:hover { background: var(--surface-2); }
   .mlb-water-menu .mlb-water-opt input { margin: 0; width: 14px; height: 14px; cursor: pointer; flex-shrink: 0; }
-  .mlb-water-menu .mlb-water-opt svg {
-    width: 14px; height: 14px; fill: none; stroke-width: 2;
-    stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0;
+  .mlb-water-menu .mlb-water-opt svg.mlp-mark { width: 16px; height: 16px; flex-shrink: 0; }
+  .mlb-water-menu .mlb-water-hint {
+    margin: 6px 4px 2px; padding-top: 6px; border-top: 1px solid var(--border);
+    font-size: 10.5px; color: var(--muted); white-space: nowrap;
   }
   .map-view-tabs .mlb-pill-dot {
     width: 6px; height: 6px; border-radius: 3px;
@@ -6863,10 +6864,7 @@
     display: inline-flex; align-items: center; gap: 6px;
     font-size: 11px; color: var(--muted);
   }
-  .map-legend-pop .mlp-amen svg {
-    width: 12px; height: 12px; fill: none; stroke-width: 2;
-    stroke-linecap: round; stroke-linejoin: round;
-  }
+  .map-legend-pop .mlp-amen svg.mlp-mark { width: 16px; height: 16px; flex-shrink: 0; }
   /* Hide new-design overlays when not on the plan view OR in edit mode. */
   .workspace.no-plan-ui .map-view-tabs,
   .workspace.no-plan-ui .map-zoom-fab,
@@ -20645,14 +20643,15 @@
               <div class="mfnp-title">Show on the plan</div>
               <label class="mlb-water-opt">
                 <input type="checkbox" id="mlbWaterShampoo" onchange="setWaterMarker('shampoo', this.checked)" style="accent-color:#534AB7">
-                <svg viewBox="0 0 24 24" aria-hidden="true" style="stroke:#534AB7"><path d="M10 3h4v4.5c1.8.9 3 2.7 3 4.8V19a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-6.7c0-2.1 1.2-3.9 3-4.8V3Z"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
+                <svg class="mlp-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="12" fill="#534AB7"/><g transform="translate(12 12) scale(.68) translate(-12 -12)"><path d="M10 3h4v4.5c1.8.9 3 2.7 3 4.8V19a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-6.7c0-2.1 1.2-3.9 3-4.8V3Z" fill="#fff"/><line x1="9" y1="14" x2="15" y2="14" stroke="#534AB7" stroke-width="2.4" stroke-linecap="round"/></g></svg>
                 <span>Shampoo station</span>
               </label>
               <label class="mlb-water-opt">
                 <input type="checkbox" id="mlbWaterSink" onchange="setWaterMarker('sink', this.checked)" style="accent-color:#0F6E56">
-                <svg viewBox="0 0 24 24" aria-hidden="true" style="stroke:#0F6E56"><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z"/></svg>
+                <svg class="mlp-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="12" fill="#0F6E56"/><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z" fill="#fff" transform="translate(12 12) scale(.68) translate(-12 -12)"/></svg>
                 <span>Sink / plumbing</span>
               </label>
+              <div class="mlb-water-hint">Per unit: its card › Unit specifications (Edit mode)</div>
             </div>
           </div>
           <!-- Legend — the contextual color key used to live in a
@@ -20667,8 +20666,8 @@
               <div class="mlp-title"><span id="mapLegendPopTitle">Legend</span><button type="button" class="mlp-close" onclick="toggleMapLegendPopover(event)" aria-label="Close legend">×</button></div>
               <div class="mlb-legend" id="mlbLegend"></div>
               <div class="mlp-amen">
-                <span><svg viewBox="0 0 24 24" aria-hidden="true" style="stroke:#0F6E56"><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z"/></svg>Sink / plumbing</span>
-                <span><svg viewBox="0 0 24 24" aria-hidden="true" style="stroke:#534AB7"><path d="M10 3h4v4.5c1.8.9 3 2.7 3 4.8V19a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-6.7c0-2.1 1.2-3.9 3-4.8V3Z"/><line x1="9" y1="14" x2="15" y2="14"/></svg>Shampoo station</span>
+                <span><svg class="mlp-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="12" fill="#0F6E56"/><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z" fill="#fff" transform="translate(12 12) scale(.68) translate(-12 -12)"/></svg>Sink / plumbing</span>
+                <span><svg class="mlp-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="12" fill="#534AB7"/><g transform="translate(12 12) scale(.68) translate(-12 -12)"><path d="M10 3h4v4.5c1.8.9 3 2.7 3 4.8V19a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-6.7c0-2.1 1.2-3.9 3-4.8V3Z" fill="#fff"/><line x1="9" y1="14" x2="15" y2="14" stroke="#534AB7" stroke-width="2.4" stroke-linecap="round"/></g></svg>Shampoo station</span>
               </div>
             </div>
           </div>
@@ -69733,38 +69732,45 @@ function renderUnits() {
           const SVG_NS = 'http://www.w3.org/2000/svg';
           const marks = [];
           if (u.sink && showSink) marks.push({
-            title: 'Sink / plumbing', fill: '#9FE1CB', stroke: '#0F6E56',
-            shapes: [['path', { d: 'M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z' }]],
+            title: 'Sink / plumbing', color: '#0F6E56',
+            shapes: [['path', { d: 'M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z', fill: '#fff' }]],
           });
           if (u.shampoo && showShampoo) marks.push({
-            title: 'Shampoo station', fill: '#CECBF6', stroke: '#534AB7',
-            shapes: [['path', { d: 'M10 3h4v4.5c1.8.9 3 2.7 3 4.8V19a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-6.7c0-2.1 1.2-3.9 3-4.8V3Z' }],
-                     ['line', { x1: 9, y1: 14, x2: 15, y2: 14 }]],
+            title: 'Shampoo station', color: '#534AB7',
+            shapes: [['path', { d: 'M10 3h4v4.5c1.8.9 3 2.7 3 4.8V19a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-6.7c0-2.1 1.2-3.9 3-4.8V3Z', fill: '#fff' }],
+                     ['line', { x1: 9, y1: 14, x2: 15, y2: 14, stroke: '#534AB7', 'stroke-width': 2.4, 'stroke-linecap': 'round' }]],
           });
+          // Crisp "map pin" look (operator 2026-10-24: «сделай более
+          // чёткое изображение» — the first cut was a pale disc with a
+          // thin stroked glyph, which washed out on the mint «Paid»
+          // fill): white halo ring → solid colored disc → solid white
+          // glyph. Filled shapes stay sharp at any zoom; the halo
+          // separates the disc from whatever the unit is painted.
           marks.forEach((mk, i) => {
-            const cx = 15 + i * 25;
+            const cx = 15 + i * 27;
             const cy = u.h - 15;
-            const bg = document.createElementNS(SVG_NS, 'circle');
-            bg.setAttribute('cx', cx);
-            bg.setAttribute('cy', cy);
-            bg.setAttribute('r', 11);
-            bg.setAttribute('fill', mk.fill);
-            bg.setAttribute('stroke', mk.stroke);
-            bg.setAttribute('stroke-width', '1.2');
-            bg.setAttribute('opacity', effectiveOpacity);
-            bg.setAttribute('style', 'pointer-events: none');
-            g.appendChild(bg);
+            const halo = document.createElementNS(SVG_NS, 'circle');
+            halo.setAttribute('cx', cx);
+            halo.setAttribute('cy', cy);
+            halo.setAttribute('r', 13);
+            halo.setAttribute('fill', '#fff');
+            halo.setAttribute('opacity', effectiveOpacity);
+            halo.setAttribute('style', 'pointer-events: none');
+            g.appendChild(halo);
+            const disc = document.createElementNS(SVG_NS, 'circle');
+            disc.setAttribute('cx', cx);
+            disc.setAttribute('cy', cy);
+            disc.setAttribute('r', 11.5);
+            disc.setAttribute('fill', mk.color);
+            disc.setAttribute('opacity', effectiveOpacity);
+            disc.setAttribute('style', 'pointer-events: none');
+            g.appendChild(disc);
             const ic = document.createElementNS(SVG_NS, 'svg');
             ic.setAttribute('viewBox', '0 0 24 24');
-            ic.setAttribute('x', cx - 7);
-            ic.setAttribute('y', cy - 7);
-            ic.setAttribute('width', 14);
-            ic.setAttribute('height', 14);
-            ic.setAttribute('fill', 'none');
-            ic.setAttribute('stroke', mk.stroke);
-            ic.setAttribute('stroke-width', '2.2');
-            ic.setAttribute('stroke-linecap', 'round');
-            ic.setAttribute('stroke-linejoin', 'round');
+            ic.setAttribute('x', cx - 8);
+            ic.setAttribute('y', cy - 8);
+            ic.setAttribute('width', 16);
+            ic.setAttribute('height', 16);
             ic.setAttribute('opacity', effectiveOpacity);
             ic.setAttribute('style', 'pointer-events: none');
             const tt = document.createElementNS(SVG_NS, 'title');
