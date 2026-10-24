@@ -60,6 +60,23 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 94. Floor plan: View-mode right-click menu on a unit — everyday actions + water specs without Edit Mode (floor map UI, 2026-10-24)
+
+- **Status:** active (lands with the commit that carries this entry)
+- **Branch / commit:** main @ (pending commit; parent 2d2f6e0)
+- **Area:** Floor plan map · unit context menu
+- **Files:** floor-map-editor.html
+- **Functions:** `_unitContextMenu` (now branches on Edit Mode instead of returning), new `_unitContextMenuView`, `_unitMenuItem`, `_unitMenuCheck`, `_unitCtxPlace`, `_ctxEditUnit`, `_ctxToggleUnitSpec`; reuses `_unitEnsureMenuEl` (click-outside / Escape), `openTenantDrawer`, `openCreateInvoiceModal` + `ciSelectSuggestion`, `openManualPaymentForCurrentMonth`, `openCollectionStatusModal`, `setWaterMarker`
+- **Bug it fixed:** Operator 2026-10-24: «добавь правый клик … добавить станции шампуня и воды через правый клик, чтобы не нужно было в режим редактирования переходить». Right-click on a unit did nothing in View Mode (`_unitContextMenu` returned unless Edit Mode was on — it is the geometry menu: lease template, fit to walls, polygon, sub-rooms); marking a sink / shampoo station took card › ··· › Edit unit › Unit specifications › Save.
+- **What changed:** In View Mode the same `contextmenu` listener opens an everyday menu in `#unitCtxMenu`: header (suite + tenant / vacant), Edit unit (`canEdit`), and for an occupied rentable unit Open ledger / payment history, Send invoice…, Record payment…, Set payment status… (the money ones `canEdit`-gated, same handlers as the card kebab), then a WATER section with two check rows — Shampoo station, Sink / plumbing — that flip the unit field on click through the same write path as the card switches (`pushHistory` → flip → `saveState` → `renderAll`), switch that marker kind on for this device if it was off, keep the menu open with fresh check marks, and toast «Suite N: sink added / removed». Viewer roles see the rows disabled + «View only». Right-click selects the unit first (existing `onUnitPointerDown` has no button filter), so the card follows. Edit Mode keeps the geometry menu unchanged. Items reuse `.upv2-menu-item` (card-kebab look) with explicit colors / font so the body-level menu does not depend on the `.upv2` token scope.
+- **Invariant — DO NOT BREAK:** (1) `_unitContextMenu` must `preventDefault` in BOTH modes and never fall through to the browser menu; the Edit-Mode geometry items stay Edit-Mode-only. (2) The water rows write only `u.shampoo` / `u.sink` and only through `_ctxToggleUnitSpec` (role + leader-tab gates, history snapshot, `saveState`) — never a direct mutation from markup. (3) Money items are the kebab's handlers behind the same `isOcc && canEdit()` gate; adding an item here means adding it with the kebab's gate, not a looser one. (4) `#unitCtxMenu` is a singleton on `<body>` (`_unitEnsureMenuEl`): never create a second one, never append it inside the SVG.
+- **Verification:** localhost:5599 demo @1440×900, View Mode: right-click 420 (vacant) → selected, menu = Edit unit · ✓ Shampoo station · ✓ Sink / plumbing; click Sink → `u.sink` false, map discs 4 → 3, menu still open with the check cleared, toast «Suite 420: sink removed»; click again → restored; Escape closes. Right-click 426 (William Peak, occupied) → Edit unit · Open ledger / payment history · Send invoice… · Record payment… · Set payment status… · Shampoo station · Sink / plumbing. Edit Mode right-click on 420 still gives the geometry menu (Set lease template… · Edit as polygon · Add sub-room). `npm run parse-check`: 4 blocks, 0 failures.
+- **Regression test:** none — manual UI only (`npm run parse-check`).
+- **Related PR / issue:** none (Tony's request 2026-10-24).
+- **Porting note:** none. m.html untouched.
+
+---
+
 ### 93. Floor plan: bottom legend bar removed — pills + Legend popover in the top bar, floating zoom, Water layer with sink / shampoo-station markers, new unit field `shampoo` (floor map UI, 2026-10-24)
 
 - **Status:** active (lands with the commit that carries this entry)

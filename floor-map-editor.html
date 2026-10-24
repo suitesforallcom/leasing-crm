@@ -6800,6 +6800,19 @@
     margin: 6px 4px 2px; padding-top: 6px; border-top: 1px solid var(--border);
     font-size: 10.5px; color: var(--muted); white-space: nowrap;
   }
+
+  /* View-mode right-click menu on a unit (FIXES_LOG Entry 94).
+     #unitCtxMenu lives on <body> and reuses the card kebab's item
+     styling; explicit values so it doesn't depend on the .upv2 token
+     scope. */
+  #unitCtxMenu .upv2-menu-item { color: #0f172a; font: 500 13px "Inter Tight", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  #unitCtxMenu .upv2-menu-item .rd-ic { color: #64748b; }
+  #unitCtxMenu .ctx-check {
+    display: inline-flex; width: 16px; height: 16px; flex: none;
+    align-items: center; justify-content: center;
+    border: 1.5px solid #cbd5e1; border-radius: 4px;
+    color: #fff; font-size: 11px; line-height: 1;
+  }
   .map-view-tabs .mlb-pill-dot {
     width: 6px; height: 6px; border-radius: 3px;
     background: currentColor;
@@ -72324,14 +72337,115 @@ function _unitMenuBtn(label, onclickJs, color) {
   " onmouseover="this.style.background='#f1f5f9'" onmouseout="this.style.background='transparent'">${esc(label)}</button>`;
 }
 
+// ---- View-mode right-click menu (operator 2026-10-24: «добавь правый
+// клик … добавить станции шампуня и воды через правый клик, чтобы не
+// нужно было в режим редактирования переходить»). The everyday actions
+// from the card's ··· kebab (Edit unit · ledger · Send invoice · Record
+// payment · Set payment status) plus the two water specs as live check
+// rows. Same gates as the kebab: canEdit() for anything that writes,
+// occupied tenant for the money actions. Right-click already selects
+// the unit (onUnitPointerDown has no button filter), so the card on the
+// right follows. FIXES_LOG Entry 94.
+function _unitMenuItem(icon, label, onclickJs, extraClass) {
+  return `<button type="button" class="upv2-menu-item${extraClass ? ' ' + extraClass : ''}" onclick="${onclickJs}">${_rdIc(icon, 16)} ${esc(label)}</button>`;
+}
+function _unitMenuCheck(label, checked, onclickJs, color, enabled) {
+  const box = `<span class="ctx-check" style="border-color:${checked ? color : '#cbd5e1'}; background:${checked ? color : 'transparent'};">${checked ? '✓' : ''}</span>`;
+  return enabled
+    ? `<button type="button" class="upv2-menu-item" onclick="${onclickJs}">${box} ${esc(label)}</button>`
+    : `<button type="button" class="upv2-menu-item" disabled style="opacity:.55; cursor:default;">${box} ${esc(label)}</button>`;
+}
+function _unitCtxPlace(menu, x, y) {
+  const margin = 6;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const rect = menu.getBoundingClientRect();
+  let mx = x, my = y;
+  if (mx + rect.width  + margin > vw) mx = vw - rect.width  - margin;
+  if (my + rect.height + margin > vh) my = vh - rect.height - margin;
+  menu.style.left = Math.max(margin, mx) + 'px';
+  menu.style.top  = Math.max(margin, my) + 'px';
+}
+function _unitContextMenuView(event, u) {
+  const bId = esc(currentBuilding()?.id || '');
+  const fId = esc(currentFloor()?.id || '');
+  const uId = esc(u.id);
+  const can = (typeof canEdit === 'function') ? canEdit() : false;
+  const isOcc = u.status === 'occupied' && !!(u.tenant || u.company);
+  const isRentableU = u.rentable !== false && (typeof _isRentableType !== 'function' || _isRentableType(u.type));
+  const close = `document.getElementById('unitCtxMenu').style.display='none';`;
+  const items = [];
+  items.push(`<div style="padding:8px 10px 6px; border-bottom:1px solid #f1f5f9; margin-bottom:3px;">
+    <div style="font-weight:700; font-size:13px; color:#0f172a;">Suite ${uId}</div>
+    <div style="font-size:11.5px; color:#64748b; margin-top:1px;">${u.tenant || u.company ? esc(u.tenant || u.company) : '<i>vacant</i>'}</div>
+  </div>`);
+  if (can) items.push(_unitMenuItem('pencil', 'Edit unit', `${close} _ctxEditUnit('${uId}');`));
+  if (isRentableU && isOcc) {
+    items.push(_unitMenuItem('bank', 'Open ledger / payment history', `${close} openTenantDrawer('${bId}','${fId}','${uId}');`));
+    if (can) {
+      items.push(_unitMenuItem('invoice', 'Send invoice…', `${close} openCreateInvoiceModal(); setTimeout(()=>ciSelectSuggestion('${bId}','${fId}','${uId}'), 50);`));
+      items.push(_unitMenuItem('dollar', 'Record payment…', `${close} openManualPaymentForCurrentMonth('${bId}','${fId}','${uId}');`));
+      items.push(_unitMenuItem('alert', 'Set payment status…', `${close} openCollectionStatusModal('${bId}','${fId}','${uId}');`));
+    }
+  }
+  items.push(`<div class="upv2-menu-sep"></div>`);
+  items.push(`<div style="padding:4px 10px 2px; font-size:10.5px; color:#94a3b8; text-transform:uppercase; letter-spacing:.5px; font-weight:700;">Water</div>`);
+  items.push(_unitMenuCheck('Shampoo station', !!u.shampoo, `_ctxToggleUnitSpec('${uId}','shampoo')`, '#534AB7', can));
+  items.push(_unitMenuCheck('Sink / plumbing', !!u.sink, `_ctxToggleUnitSpec('${uId}','sink')`, '#0F6E56', can));
+  if (!can) items.push(`<div style="padding:2px 10px 8px; font-size:10.5px; color:#94a3b8;">View only — your role cannot edit units.</div>`);
+  const menu = _unitEnsureMenuEl();
+  menu.innerHTML = items.join('');
+  menu.style.display = 'block';
+  _unitCtxPlace(menu, event.clientX, event.clientY);
+}
+function _ctxEditUnit(unitId) {
+  selectedIds = [unitId];
+  window._unitEditOn = true;
+  renderAll();
+  try { const g = document.getElementById('unitSpecsGroup'); if (g) g.open = true; } catch {}
+}
+// Flip a water spec straight from the menu — same write path as the
+// card's switches (toggleField): history snapshot → flip → saveState →
+// renderAll. If that marker kind is switched off on this device it is
+// switched on, so the operator sees what they just set. The menu stays
+// open with fresh check marks so the second box needs no new right-click.
+function _ctxToggleUnitSpec(unitId, field) {
+  if (field !== 'shampoo' && field !== 'sink') return;
+  if (typeof canEdit === 'function' && !canEdit()) {
+    if (typeof toast === 'function') toast('You do not have permission to edit units.', 'warning');
+    return;
+  }
+  if (typeof requireLeaderTab === 'function' && !requireLeaderTab('Changing unit attributes')) return;
+  const f = currentFloor();
+  const u = f && (f.units || []).find(x => x.id === unitId);
+  if (!u) return;
+  pushHistory();
+  u[field] = !u[field];
+  saveState();
+  if (u[field] && typeof _waterFlags === 'function' && !_waterFlags()[field] && typeof setWaterMarker === 'function') {
+    setWaterMarker(field, true);
+  }
+  renderAll();
+  const menu = document.getElementById('unitCtxMenu');
+  if (menu && menu.style.display !== 'none') {
+    const x = parseFloat(menu.style.left) || 0, y = parseFloat(menu.style.top) || 0;
+    _unitContextMenuView({ clientX: x, clientY: y }, u);
+  }
+  if (typeof toast === 'function') {
+    toast(`Suite ${u.id}: ${field === 'shampoo' ? 'shampoo station' : 'sink'} ${u[field] ? 'added' : 'removed'}`, 'success');
+  }
+}
+
 function _unitContextMenu(event, unitId) {
-  if (!state.settings.editMode) return;
   const f = currentFloor();
   if (!f) return;
   const u = (f.units || []).find(x => x.id === unitId);
   if (!u) return;
   event.preventDefault();
   event.stopPropagation();
+  // View Mode → the everyday menu (Edit unit · ledger · invoice · payment
+  // · payment status · water specs); Edit Mode keeps the geometry menu
+  // below. FIXES_LOG Entry 94.
+  if (!state.settings.editMode) { _unitContextMenuView(event, u); return; }
 
   const isChild = _unitIsChild(u);
   const children = _unitChildren(u);
