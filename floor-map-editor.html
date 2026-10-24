@@ -6777,9 +6777,28 @@
   .map-view-tabs .mlb-pill[data-mlp-key="overdue"].active     { color: #E11D48; background: #FDE7EC; border-color: #E11D48; }
   .map-view-tabs .mlb-pill[data-mlp-key="pending-sig"].active { color: #075985; background: #E0F2FE; border-color: #0EA5E9; }
   .map-view-tabs .mlb-pill[data-mlp-key="new-tenants"].active { color: #92400E; background: #FDF3E0; border-color: #F59E0B; }
-  /* Water layer toggle — teal when active so it visually matches the
-     sink disc drawn on the floor plan. */
-  .map-view-tabs .mlb-pill[data-layer="sink"].active          { color: #0F6E56; background: #E1F5EE; border-color: #1D9E75; }
+  /* Water ▾ pill — teal frame when any marker is on; shows the glyph(s)
+     of what is on (violet bottle = shampoo station, teal droplet = sink)
+     and a muted droplet when nothing is. .open = dropdown is showing. */
+  .map-view-tabs .mlb-pill[data-layer="water"].active         { color: #0F6E56; background: #E1F5EE; border-color: #1D9E75; }
+  .map-view-tabs .mlb-pill[data-layer="water"].open           { box-shadow: 0 0 0 2px rgba(15,110,86,0.18); }
+  .map-view-tabs .mlb-pill[data-layer="water"] .mlb-water-ic-shampoo,
+  .map-view-tabs .mlb-pill[data-layer="water"] .mlb-water-ic-sink { display: none; }
+  .map-view-tabs .mlb-pill[data-layer="water"].has-shampoo .mlb-water-ic-shampoo { display: block; color: #534AB7; }
+  .map-view-tabs .mlb-pill[data-layer="water"].has-sink .mlb-water-ic-sink       { display: block; color: #0F6E56; }
+  .map-view-tabs .mlb-pill[data-layer="water"].active .mlb-water-ic-off           { display: none; }
+  /* The dropdown rows (checkbox + glyph + label). */
+  .mlb-water-menu .mlb-water-opt {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 8px; border-radius: 6px; cursor: pointer;
+    font-size: 12px; color: var(--text); white-space: nowrap;
+  }
+  .mlb-water-menu .mlb-water-opt:hover { background: var(--surface-2); }
+  .mlb-water-menu .mlb-water-opt input { margin: 0; width: 14px; height: 14px; cursor: pointer; flex-shrink: 0; }
+  .mlb-water-menu .mlb-water-opt svg {
+    width: 14px; height: 14px; fill: none; stroke-width: 2;
+    stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0;
+  }
   .map-view-tabs .mlb-pill-dot {
     width: 6px; height: 6px; border-radius: 3px;
     background: currentColor;
@@ -20607,17 +20626,35 @@
               </div>
             </div>
           </div>
-          <!-- Water layer pill — NOT a filter. Toggles sink / shampoo-
-               station markers on every unit that has them (teal droplet
-               = sink, violet bottle = shampoo station). Default off
-               (grey); active turns it teal. Sync handled via
-               _syncMapLayerChips, not the filter sweep, so its state
-               isn't reset by other filter changes. -->
-          <button type="button" class="mlb-pill" id="mlbLayerSink" data-layer="sink"
-                  onclick="toggleShowSink()" title="Show sink and shampoo-station markers on units">
-            <svg class="mlb-pill-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z"/></svg>
-            <span>Water</span>
-          </button>
+          <!-- Water ▾ — NOT a filter. Dropdown with two checkboxes that
+               switch the water markers on units: violet bottle = shampoo
+               station (showShampoo), teal droplet = sink / plumbing
+               (showSink). Either, both or none. Default off (grey); the
+               pill turns teal when any marker is on and shows the glyph(s)
+               of what is on. Sync via _syncMapLayerChips, not the filter
+               sweep, so other filter changes don't reset it. -->
+          <div class="mlb-water-wrap" style="position: relative; display: inline-block;">
+            <button type="button" class="mlb-pill" id="mlbLayerWater" data-layer="water"
+                    onclick="toggleWaterLayerMenu(event)" title="Choose which water markers to show on units">
+              <svg class="mlb-pill-ic mlb-water-ic-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z"/></svg>
+              <svg class="mlb-pill-ic mlb-water-ic-shampoo" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 3h4v4.5c1.8.9 3 2.7 3 4.8V19a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-6.7c0-2.1 1.2-3.9 3-4.8V3Z"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
+              <svg class="mlb-pill-ic mlb-water-ic-sink" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z"/></svg>
+              <span>Water ▾</span>
+            </button>
+            <div id="mlbWaterMenu" class="mf-new-popover mlb-water-menu" style="display: none; position: absolute; top: calc(100% + 6px); bottom: auto; right: 0; left: auto; transform: none; min-width: 196px; z-index: 100;">
+              <div class="mfnp-title">Show on the plan</div>
+              <label class="mlb-water-opt">
+                <input type="checkbox" id="mlbWaterShampoo" onchange="setWaterMarker('shampoo', this.checked)" style="accent-color:#534AB7">
+                <svg viewBox="0 0 24 24" aria-hidden="true" style="stroke:#534AB7"><path d="M10 3h4v4.5c1.8.9 3 2.7 3 4.8V19a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-6.7c0-2.1 1.2-3.9 3-4.8V3Z"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
+                <span>Shampoo station</span>
+              </label>
+              <label class="mlb-water-opt">
+                <input type="checkbox" id="mlbWaterSink" onchange="setWaterMarker('sink', this.checked)" style="accent-color:#0F6E56">
+                <svg viewBox="0 0 24 24" aria-hidden="true" style="stroke:#0F6E56"><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z"/></svg>
+                <span>Sink / plumbing</span>
+              </label>
+            </div>
+          </div>
           <!-- Legend — the contextual color key used to live in a
                full-width bottom bar; now it's on demand in a popover
                anchored under this pill. -->
@@ -21250,12 +21287,17 @@
         <div class="toggle-row" style="padding-left: 14px;" title="Shows the tenant's name inside the unit on the map."><label>Show tenant name <span style="color:var(--muted); font-weight:400; font-size:10px;">(on map)</span></label><div class="toggle on" id="tglTenant" onclick="toggleShowTenant()"></div></div>
 
         <!-- Map markers — feature overlays that aren't text labels.
-             Water layer drops sink / shampoo-station discs on units that have them.
-             Default OFF (opt-in) so the map stays clean for anyone not
-             currently scoping out wet-spec offices. -->
+             Two per-device switches (the same state as the Water ▾
+             dropdown in the map top bar): shampoo-station and sink
+             discs. Default OFF (opt-in) so the map stays clean for
+             anyone not currently scoping out wet-spec offices. -->
         <div class="panel-title">Map markers</div>
         <div class="toggle-row">
-          <label><svg class="rd-ic" style="width:14px;height:14px;vertical-align:-2px" aria-hidden="true"><use href="#i-drop"></use></svg> Water (sink / shampoo station)</label>
+          <label><svg class="rd-ic" style="width:14px;height:14px;vertical-align:-2px" aria-hidden="true"><use href="#i-bottle"></use></svg> Shampoo station markers</label>
+          <div class="toggle" id="tglShampoo" onclick="toggleShowShampoo()"></div>
+        </div>
+        <div class="toggle-row">
+          <label><svg class="rd-ic" style="width:14px;height:14px;vertical-align:-2px" aria-hidden="true"><use href="#i-drop"></use></svg> Sink / plumbing markers</label>
           <div class="toggle" id="tglSink" onclick="toggleShowSink()"></div>
         </div>
 
@@ -28449,6 +28491,7 @@ function loadState() {
       state.settings = state.settings || {};
       state.settings.showSqft = false;
       state.settings.showSink = false;
+      state.settings.showShampoo = false;
       state.settings.useCompactStatus = true;
       localStorage.setItem(REDESIGN_MAP_MIGRATION_KEY, '1');
     }
@@ -31647,6 +31690,7 @@ function toggleBottomNewTenantPicker(ev) {
     // Only one top-bar popover at a time — both pills stop propagation,
     // so the other popover's click-outside never sees this click.
     if (typeof _closeMapLegendPopover === 'function') _closeMapLegendPopover();
+    if (typeof _closeWaterLayerMenu === 'function') _closeWaterLayerMenu();
     const cur = getNewTenantDays();
     const monthYm = getNewTenantMonth();
     const isMonth = !!monthYm;
@@ -31743,6 +31787,7 @@ function toggleMapLegendPopover(ev) {
   document.getElementById('mlbLegendBtn')?.classList.toggle('active', !wasOpen);
   if (!wasOpen) {
     if (typeof _closeBottomNewTenantPicker === 'function') _closeBottomNewTenantPicker();
+    if (typeof _closeWaterLayerMenu === 'function') _closeWaterLayerMenu();
     if (typeof renderMapLegendBar === 'function') renderMapLegendBar();
     setTimeout(() => {
       document.addEventListener('click', _mapLegendPopClickOut, { once: true });
@@ -34124,7 +34169,7 @@ try {
 // обобщено до whitelist в Entry 48.
 const PER_USER_SETTINGS_KEYS = new Set([
   'theme', 'editMode', 'snap', 'snapEdge',
-  'showLabels', 'showRent', 'showSqft', 'showTenant', 'showSink',
+  'showLabels', 'showRent', 'showSqft', 'showTenant', 'showSink', 'showShampoo',
   'useCompactStatus', 'showLeaseIcon', 'showRentIcon', 'showNewBadge',
   'showOverdueAlert', 'showPendingOnboarding',
   'showUnitPrice', 'showRatePerSqft', 'showProformaPrice', 'showProformaRate',
@@ -69569,7 +69614,10 @@ function renderUnits() {
         const showRent   = state.settings.showRent   !== false;
         const showSqft   = state.settings.showSqft   === true;   // opt-in
         const showTenant = state.settings.showTenant !== false;
-        const showSink   = state.settings.showSink   === true;   // opt-in
+        // Water markers — two per-device switches (Water ▾ dropdown).
+        const _water      = (typeof _waterFlags === 'function') ? _waterFlags() : { sink: false, shampoo: false };
+        const showSink    = _water.sink;      // opt-in
+        const showShampoo = _water.shampoo;   // opt-in
 
         // Label positioning. Operator request 2026-05-10: «у квадрата
         // номер внутри, у многоугольника снаружи — сделай как у квадрата».
@@ -69671,23 +69719,24 @@ function renderUnits() {
         // Keeping only the ID matches the redesign mock.
         num.textContent = u.id;
         g.appendChild(num);
-        // Water layer — small discs in the bottom-LEFT corner ONLY on
+        // Water markers — small discs in the bottom-LEFT corner ONLY on
         // units that have a sink and/or a shampoo station (FIXES_LOG
-        // Entry 93). Teal droplet = sink / plumbing, violet bottle =
-        // shampoo station; a unit with both gets two discs side by
-        // side. Units without water stay clean (no marker) so the plan
+        // Entry 93). Teal droplet = sink / plumbing (showSink), violet
+        // bottle = shampoo station (showShampoo) — each kind has its own
+        // checkbox in the Water ▾ dropdown; a unit with both switched-on
+        // kinds gets two discs side by side. Units without water stay clean (no marker) so the plan
         // isn't noisy. Skip very small units (h < 38) — no room for the
         // discs without clipping the price/tenant text above. Icons are
         // inline SVG paths (not emoji) so they render identically on
         // every OS / browser.
-        if (isRentable && showSink && u.h >= 38 && (u.sink || u.shampoo)) {
+        if (isRentable && u.h >= 38 && ((u.sink && showSink) || (u.shampoo && showShampoo))) {
           const SVG_NS = 'http://www.w3.org/2000/svg';
           const marks = [];
-          if (u.sink) marks.push({
+          if (u.sink && showSink) marks.push({
             title: 'Sink / plumbing', fill: '#9FE1CB', stroke: '#0F6E56',
             shapes: [['path', { d: 'M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z' }]],
           });
-          if (u.shampoo) marks.push({
+          if (u.shampoo && showShampoo) marks.push({
             title: 'Shampoo station', fill: '#CECBF6', stroke: '#534AB7',
             shapes: [['path', { d: 'M10 3h4v4.5c1.8.9 3 2.7 3 4.8V19a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-6.7c0-2.1 1.2-3.9 3-4.8V3Z' }],
                      ['line', { x1: 9, y1: 14, x2: 15, y2: 14 }]],
@@ -107818,29 +107867,83 @@ function toggleShowTenant() {
   document.getElementById('tglTenant')?.classList.toggle('on', state.settings.showTenant);
   saveState(); renderUnits();
 }
-// Plumbing layer — when ON, every unit with `u.sink === true` gets a
-// teal disc + 🚰 in its bottom-left corner. Default OFF (opt-in) so the
-// floor plan stays clean for everyone not currently scoping plumbing.
-// Uses === true semantics, matching the renderer in renderUnits.
-function toggleShowSink() {
-  state.settings.showSink = !(state.settings.showSink === true);
+// Water markers — two per-device switches (Water ▾ dropdown in the map
+// top bar, mirrored by two toggles in the Layers panel):
+//   state.settings.showSink    → teal droplet disc on units with u.sink
+//   state.settings.showShampoo → violet bottle disc on units with u.shampoo
+// Both default OFF (opt-in) so the plan stays clean. === true semantics,
+// matching the renderer. Operator 2026-10-24: «вместо этой кнопки сделай
+// выпадающий список … с чекбоксами чтобы можно было два выбрать».
+function _waterFlags() {
+  const st = state.settings || (state.settings = {});
+  // One-time carry-over: before the dropdown a single showSink switch
+  // drew BOTH marker kinds — keep that view for anyone who had it on.
+  if (st.showShampoo === undefined && st.showSink === true) st.showShampoo = true;
+  return { sink: st.showSink === true, shampoo: st.showShampoo === true };
+}
+function setWaterMarker(kind, on) {
+  const key = kind === 'shampoo' ? 'showShampoo' : 'showSink';
+  _waterFlags();                                   // carry-over before the write
+  state.settings[key] = !!on;
   _syncMapLayerChips();
+  if (typeof _mvtFitTopBar === 'function') _mvtFitTopBar();   // pill glyphs changed width
   saveState(); renderUnits();
 }
+function toggleShowSink()    { setWaterMarker('sink',    !_waterFlags().sink); }
+function toggleShowShampoo() { setWaterMarker('shampoo', !_waterFlags().shampoo); }
 
-// Sync any layer-toggle chips (filter-bar pills + Layers-panel toggle)
-// to state. Idempotent — safe to call after any state change. Lives
-// next to renderMapFilterChips so the two stay in lockstep.
+// Water ▾ dropdown — two checkboxes under the pill. Click-outside
+// closes; clicks inside (the checkboxes) keep it open. Same pattern as
+// the New ▾ picker and the Legend popover; the three close each other.
+function toggleWaterLayerMenu(ev) {
+  if (ev) { ev.stopPropagation(); ev.preventDefault(); }
+  const pop = document.getElementById('mlbWaterMenu');
+  if (!pop) return;
+  const wasOpen = pop.style.display !== 'none';
+  pop.style.display = wasOpen ? 'none' : 'block';
+  document.getElementById('mlbLayerWater')?.classList.toggle('open', !wasOpen);
+  if (!wasOpen) {
+    if (typeof _closeBottomNewTenantPicker === 'function') _closeBottomNewTenantPicker();
+    if (typeof _closeMapLegendPopover === 'function') _closeMapLegendPopover();
+    _syncMapLayerChips();
+    setTimeout(() => {
+      document.addEventListener('click', _waterMenuClickOut, { once: true });
+    }, 0);
+  }
+}
+function _waterMenuClickOut(e) {
+  const pop = document.getElementById('mlbWaterMenu');
+  if (!pop || pop.style.display === 'none') return;
+  if (pop.contains(e.target)) {
+    document.addEventListener('click', _waterMenuClickOut, { once: true });
+    return;
+  }
+  _closeWaterLayerMenu();
+}
+function _closeWaterLayerMenu() {
+  const pop = document.getElementById('mlbWaterMenu');
+  if (pop) pop.style.display = 'none';
+  document.getElementById('mlbLayerWater')?.classList.remove('open');
+}
+
+// Sync every water-marker control to state: the top-bar pill (teal when
+// anything is on + which glyphs it shows), the dropdown checkboxes and
+// the Layers-panel toggles. Idempotent — safe after any state change or
+// remote pull.
 function _syncMapLayerChips() {
-  const sinkOn = state.settings.showSink === true;
-  // Bottom legend-bar pill (the one the user clicks). Default grey,
-  // active turns teal blue per the data-layer="sink" CSS rule.
-  const legendPill = document.getElementById('mlbLayerSink');
-  if (legendPill) legendPill.classList.toggle('active', sinkOn);
-  // Layers panel toggle (right sidebar) — keep it in lockstep so a
-  // click in either place flips both.
-  const layersTgl = document.getElementById('tglSink');
-  if (layersTgl) layersTgl.classList.toggle('on', sinkOn);
+  const f = _waterFlags();
+  const pill = document.getElementById('mlbLayerWater');
+  if (pill) {
+    pill.classList.toggle('active', f.sink || f.shampoo);
+    pill.classList.toggle('has-sink', f.sink);
+    pill.classList.toggle('has-shampoo', f.shampoo);
+  }
+  const cbSh = document.getElementById('mlbWaterShampoo');
+  if (cbSh) cbSh.checked = f.shampoo;
+  const cbSk = document.getElementById('mlbWaterSink');
+  if (cbSk) cbSk.checked = f.sink;
+  document.getElementById('tglSink')?.classList.toggle('on', f.sink);
+  document.getElementById('tglShampoo')?.classList.toggle('on', f.shampoo);
 }
 
 // Right-panel rent-card layer toggles. Each flips one of the four
