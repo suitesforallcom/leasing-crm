@@ -15,14 +15,16 @@
 2. **Агент действует от имени конкретного сотрудника**, а не как общий робот: ключ или OAuth-токен привязан к `members/{uid}` → роль (admin / manager / mapeditor / teamviewer / viewer) и список зданий берутся из существующей матрицы. В аудите видно «кто (сотрудник) — через какой агент — что — когда».
 3. **Три класса действий**: A — чтение (без подтверждения); B — безопасные записи (заметки, спецификации юнита, prospects, напоминание по уже выставленному инвойсу); C — деньги и юридика (инвойс, платёж, договор) **только через «предложение → подтверждение»** (в чате человеком или кнопкой Approve в самой программе — решает Тони). Класс D — запрещено агентам вообще (роли, бэкапы, Stripe-настройки, массовые рассылки, удаления, авто-биллинг).
 4. **Инструмент `help_howto`** — агент объясняет секретарю, как сделать что-то в программе (из USER_FLOWS.md), если действие ему не разрешено или не автоматизировано.
-5. **Три фазы**: Phase 0 — только чтение (сводка, план на день, должники, карточки, rent roll, prospects); Phase 1 — безопасные записи + OAuth-сервер; Phase 2 — деньги и юридика с подтверждением. Phase 3 (опционально) — встроенный ассистент в самой программе поверх того же gateway, move-out, групповые аренды, плановые дайджесты.
+5. **Четыре этапа (порядок выбран Тони 24.10.2026 — «сразу напоминания и инвойсы»)**: Этап 1 — ядро gateway + ключи + список должников + напоминания + инвойсы через propose/confirm; Этап 2 — встроенный ассистент внутри SuitesForAll на том же gateway + OAuth 2.1 для ChatGPT Business и Claude.ai Team; Этап 3 — статистика и план на день; Этап 4 — договоры (только шаблоны DocuSign), ручные платежи, безопасные записи (спецификации, заметки, prospects). Позже — move-out, групповые аренды, плановые дайджесты.
 
 **Что изменилось по сравнению с первоначальной формулировкой задачи (важно).**
 - **Custom GPT Actions в ChatGPT закрываются**: custom GPT отключаются 11.12.2026, их actions не мигрируют (справка OpenAI, проверено 24.10.2026). Строить на Actions нельзя. Единственный рабочий путь в ChatGPT — **подключение MCP-сервера как plugin** (Plugins → + → Add custom MCP server).
-- Для этого ChatGPT требует **OAuth 2.1** (статический API-ключ не принимает), а **действия с записью доступны только на тарифах Business / Enterprise / Edu** (Pro — только чтение). Поэтому в план добавлен собственный OAuth-сервер (Phase 1), а тариф ChatGPT — вопрос Тони (§ 6, п. 2).
-- Grok (API и grok.com), Claude Code, Claude Messages API, Kimi Code CLI принимают **обычный bearer-ключ** — им хватит персональных ключей из Phase 0. Потребительское приложение Kimi (kimi.com) своих MCP-серверов не поддерживает — для Kimi нужен либо Kimi Code CLI, либо наш серверный «цикл агента» (Phase 3).
+- Для этого ChatGPT требует **OAuth 2.1** (статический API-ключ не принимает), а **действия с записью доступны только на тарифах Business / Enterprise / Edu** (Pro — только чтение). Поэтому в план добавлен собственный OAuth-сервер (Этап 2), а Business-workspace ChatGPT Тони заводит к Этапу 2 (§ 6.1, п. 2).
+- Grok (API и grok.com), Claude Code, Claude Messages API, Kimi Code CLI принимают **обычный bearer-ключ** — им хватит персональных ключей из Этапа 1. Потребительское приложение Kimi (kimi.com) своих MCP-серверов не поддерживает — для Kimi нужен либо Kimi Code CLI, либо наш встроенный ассистент с серверным «циклом агента» (Этап 2).
 
-**Объём.** Phase 0 ≈ 3–4 рабочих дня, Phase 1 ≈ 4–5, Phase 2 ≈ 6–8; итого ≈ 13–17 рабочих дней чистой работы плюс время Тони на одобрения, `firebase login --reauth` и настройку клиентов. Бюджет инфраструктуры — в пределах бесплатных квот Cloud Run / Firestore (опционально ~$10/мес за «тёплый» инстанс); Secret Manager — $0 (новых секретов не требуется). Платным может оказаться тариф ChatGPT Business для секретарей.
+**Объём.** Этап 1 ≈ 6–8 рабочих дней (напоминания и инвойсы работают у Тони в Claude Code и у секретарей в Grok по ключу), Этап 2 ≈ 6–8, Этап 3 ≈ 3–4, Этап 4 ≈ 6–8; итого ≈ 21–28 рабочих дней чистой работы плюс время Тони на одобрения, `firebase login --reauth` и настройку клиентов. Объём вырос против первой редакции, потому что Тони выбрал все четыре канала (встроенный ассистент + OAuth для ChatGPT и Claude.ai). Бюджет инфраструктуры — в пределах бесплатных квот Cloud Run / Firestore (опционально ~$10/мес за «тёплый» инстанс); Secret Manager — $0 (новых секретов не требуется). Платным будет тариф ChatGPT Business для секретарей (Этап 2).
+
+**Решения Тони (24.10.2026):** каналы — встроенный ассистент SFA, ChatGPT (Business), Claude.ai (Team), Grok (grok.com); подтверждение — «чат» до порога, выше порога и для договоров — Approve в программе; договоры — только шаблоны DocuSign; старт — сразу напоминания и инвойсы. Полный список и значения по умолчанию — § 6.
 
 ---
 
@@ -53,9 +55,9 @@
 
 ### 1.3 Таблица действий
 
-Колонки: действие → R/W → минимальная роль → что делает это сегодня (клиентская функция / callable CF / cron) → риск → класс → фаза. Все номера строк — `floor-map-editor.html`, если не указан другой файл.
+Колонки: действие → R/W → минимальная роль → что делает это сегодня (клиентская функция / callable CF / cron) → риск → класс → группа. **Группа** — это группировка по риску (0 — чтение, 1 — безопасные записи, 2 — деньги/юридика, 3 — расширения), а не порядок реализации: порядок после решений Тони задан в § 5 (Этап 1 берёт из группы 0 должников/карточки/инвойсы, из группы 1 — напоминания, из группы 2 — инвойсы). Все номера строк — `floor-map-editor.html`, если не указан другой файл.
 
-| # | Действие | R/W | Мин. роль | Сегодня | Риск | Класс | Фаза |
+| # | Действие | R/W | Мин. роль | Сегодня | Риск | Класс | Группа |
 |---|---|---|---|---|---|---|---|
 | 1 | **Сводка портфеля**: occupancy, MRR (occupied / potential), collected vs billed за месяц, overdue $, pending signatures, expiring ≤90 д | R | viewer (teamviewer — только occupancy/vacancy без $) | `renderHomeView :138786` (единственная канон-проходка: `_isRentableType :27286`, `_isFinanceShadow :77311`, `_isMonthSettled :96914`, `_computeUnitMoney :81372`, `_isUnitOverdue :90242`); пилюля `updateTopbarOutstandingPill :39429` | данные (PII, суммы) | A | 0 |
 | 2 | **Rent roll** с фильтрами (здание, этаж, статус, window/sink/shampoo, expiring) | R | viewer | `buildRentRollRows :140290`, `renderRentRoll :141410` (KPI `:141427-141448`) | данные | A | 0 |
@@ -123,16 +125,16 @@
 - Создаётся **самим сотрудником** в программе: Settings → новый раздел **«AI access»** → «Create key» (имя клиента, scopes из разрешённых роли, здания ⊆ `members.buildings`, срок ≤ 90 дней). Клиент вызывает callable `agentKeyCreate`; секрет показывается один раз.
 - Хранение: `workspaces/default/agentKeys/{keyId}` = `{_schema:'v1', uid, email, client, scopes[], buildings[]|null, createdAt, expiresAt, lastUsedAt, revoked:false, hash: sha256(secret), prefix}` — **без правил** в `firestore.rules` (закрыто для клиентов по умолчанию, как `docusign_sign_links`, Entry 92). Новых секретов в Secret Manager не нужно: 256-битный случайный секрет + sha256 (та же схема, что в Entry 92).
 - Ротация: срок ≤ 90 дней; «Rotate» создаёт новый ключ и ставит старому `expiresAt = now + 7 д` (перекрытие для перенастройки клиента); «Revoke» — мгновенно. Admin видит и отзывает все ключи workspace; manager — только свои.
-- Сервисные ключи (не привязанные к человеку, для плановых дайджестов — Phase 3): `uid = 'service:<name>'`, роль фиксируется в документе ключа (по умолчанию `viewer`), подтверждение класса C — **только Approve в программе**.
+- Сервисные ключи (не привязанные к человеку, для плановых дайджестов — после Этапа 4, § 5): `uid = 'service:<name>'`, роль фиксируется в документе ключа (по умолчанию `viewer`), подтверждение класса C — **только Approve в программе**.
 
-**(b) OAuth 2.1 (authorization code + PKCE)** — обязателен для ChatGPT (plugins) и Claude.ai/Desktop custom connectors (если нет беты заголовков).
-- Собственный минимальный Authorization Server внутри gateway (`functions/agent-oauth.js`), **без нового провайдера идентичности**: страница `oauth.html` на Hosting выполняет тот же Firebase Google sign-in, что и приложение (same-origin — урок `reference_suitesforall_auth`), затем callable `agentOauthApprove(idToken, authRequestId, grantedScopes)` выпускает одноразовый код, привязанный к `uid`, `code_challenge` (S256 only), `client_id`, `redirect_uri`, `resource`, scopes; TTL кода 10 мин.
+**(b) OAuth 2.1 (authorization code + PKCE)** — обязателен для ChatGPT (plugins) и Claude.ai/Desktop custom connectors (если нет беты заголовков); реализуется на Этапе 2.
+- Собственный минимальный Authorization Server внутри gateway (`functions/agent-oauth.js`), **без нового провайдера идентичности**: страница `oauth.html` на Hosting выполняет тот же Firebase Google sign-in, что и приложение (same-origin — урок 2026-08-16 про OAuth-редиректы на iPhone), затем callable `agentOauthApprove(idToken, authRequestId, grantedScopes)` выпускает одноразовый код, привязанный к `uid`, `code_challenge` (S256 only), `client_id`, `redirect_uri`, `resource`, scopes; TTL кода 10 мин.
 - Эндпоинты (все на URL функции `agentOauth`): `/.well-known/oauth-authorization-server` (RFC 8414: `code_challenge_methods_supported:["S256"]`, `client_id_metadata_document_supported:true`, `token_endpoint_auth_methods_supported:["none"]`, `authorization_response_iss_parameter_supported:true`), `/authorize`, `/token` (code → access 1 ч + refresh 30 д с ротацией; refresh grant), `/register` (DCR, deprecated в MCP 2026-07-28, но Claude.ai падает на него, если CIMD недоступен), `/revoke`. На MCP-ресурсе — `/.well-known/oauth-protected-resource` (RFC 9728) и ответ `401` с `WWW-Authenticate: Bearer resource_metadata="…"` — так ChatGPT и Claude начинают sign-in.
 - Регистрация клиентов: **CIMD** (`client_id` = URL JSON-документа клиента; ChatGPT: `https://chatgpt.com/oauth/client.json`, Claude Code: `https://claude.ai/oauth/claude-code-client-metadata`) — документ скачивается (10 с, кэш 24 ч), `redirect_uri` сверяется с ним точно; DCR — только для allow-list redirect-доменов (`chatgpt.com`, `claude.ai`, `localhost`/`127.0.0.1` для Claude Code). `resource` (RFC 8707) обязателен и копируется в `aud`; `iss` (RFC 9207) в ответе авторизации.
 - Токены **непрозрачные** (random 32 байта), хранятся как sha256 в `agentTokens/{hash}` = `{uid, clientId, client, scopes, resource, exp, refreshOf, revoked}`; JWT и ключи подписи не нужны → Secret Manager не затрагивается.
 - Альтернатива (если Тони предпочтёт вендора): WorkOS AuthKit или Stytch Connected Apps (поддерживают MCP/DCR), с маппингом email → `members`. Минус: второй провайдер идентичности и ещё один внешний API (§ 2 CLAUDE.md). Рекомендация — собственный AS: код небольшой (≈ 600–800 строк с тестами), идентичность остаётся в Firebase.
 
-**(c) Встроенный ассистент (Phase 3)** — браузер передаёт Firebase ID token сотрудника (`Authorization: Bearer <idToken>`) → тот же `ctx`; ключи провайдеров LLM переезжают с клиента (`localStorage`, `secrets/aiServices`) на сервер.
+**(c) Встроенный ассистент (Этап 2)** — браузер вызывает callable `agentChat` с Firebase ID token сотрудника → тот же `ctx`; ключи провайдеров LLM больше не живут в браузере — сервер читает их из `workspaces/default/secrets/aiServices` (как `lease-extract.js:55-67`, без новых секретов в Secret Manager). Подтверждение класса C — кнопками прямо в панели (человек в программе = режим `app` по построению).
 
 ### 2.3 Scopes
 
@@ -247,15 +249,15 @@ Kimi Code CLI / Kimi API ─┤  REST ─┘   auth → ctx → scopes → rate 
 | Клиент | Как подключить | Учётные данные | Запись / подтверждение |
 |---|---|---|---|
 | **Claude Code** (Тони, разработка) | `claude mcp add --transport http sfa https://us-central1-suitesforall.cloudfunctions.net/agentMcp --header "Authorization: Bearer sfa_ak_…"` или `.mcp.json` `{type:"http", url, headers:{Authorization:"Bearer ${SFA_AGENT_KEY}"}}` | PAK | Claude Code спрашивает разрешение на каждый инструмент; лимит вывода 25k токенов |
-| **Claude.ai / Claude Desktop** (секретари, если выбран Claude) | Customize → Connectors → Add custom connector → URL `…/agentMcp` | OAuth 2.1 (CIMD, запасной DCR) — Phase 1; либо «No sign-in» + Request headers `Authorization: Bearer …`, **только если** у организации включена эта бета | подтверждение инструментов, per-tool «Blocked» |
+| **Claude.ai / Claude Desktop** (секретари, если выбран Claude) | Customize → Connectors → Add custom connector → URL `…/agentMcp` | OAuth 2.1 (CIMD, запасной DCR) — Этап 2; либо «No sign-in» + Request headers `Authorization: Bearer …`, **только если** у организации включена эта бета | подтверждение инструментов, per-tool «Blocked» |
 | **Claude Messages API** (сценарии/скрипты) | `mcp_servers:[{type:"url", url:"…/agentMcp", authorization_token:"sfa_ak_…"}]`, `anthropic-beta: mcp-client-2025-11-20` | PAK | цикл наш |
-| **ChatGPT** (секретари) | chatgpt.com → Plugins → + → Add custom MCP server → URL `…/agentMcp` → OAuth sign-in (страница SuitesForAll) → Create as a plugin; admin/owner workspace публикует | **OAuth 2.1 only** (Phase 1); API-ключ не принимается | ChatGPT **всегда** спрашивает подтверждение перед write-инструментом; полный MCP с записью — **Business / Enterprise / Edu**, Pro — только чтение; Custom GPT Actions не использовать (ликвидация 11.12.2026) |
+| **ChatGPT** (секретари) | chatgpt.com → Plugins → + → Add custom MCP server → URL `…/agentMcp` → OAuth sign-in (страница SuitesForAll) → Create as a plugin; admin/owner workspace публикует | **OAuth 2.1 only** (Этап 2); API-ключ не принимается | ChatGPT **всегда** спрашивает подтверждение перед write-инструментом; полный MCP с записью — **Business / Enterprise / Edu**, Pro — только чтение; Custom GPT Actions не использовать (ликвидация 11.12.2026) |
 | **Grok — grok.com / приложение** | Connectors → New Connector → Custom → URL `…/agentMcp` → авторизация в Grok | PAK (по документации «OAuth или API keys»; точный вид поля подтвердить на месте) либо OAuth | у потребительского Grok нет серверного `require_approval` → классы B/C гейтим сами (§ 2.6) |
 | **Grok API** (xAI Responses API) | `tools:[{type:"mcp", server_url:"…/agentMcp", server_label:"sfa", authorization:"sfa_ak_…", allowed_tools:[…]}]`, модели `grok-4.7` и т.д. | PAK | `require_approval` **не поддерживается** → только серверное propose/confirm |
 | **Grok Build CLI** | `grok mcp add --transport http sfa …/agentMcp --header "Authorization: Bearer ${SFA_AGENT_KEY}"`; читает и `.mcp.json` | PAK | как Claude Code |
 | **Kimi Code CLI / VS Code** | `~/.kimi-code/mcp.json` → `{"mcpServers":{"sfa":{"url":"…/agentMcp","bearerTokenEnvVar":"SFA_AGENT_KEY"}}}` | PAK | по настройкам CLI |
-| **Kimi API** (`api.moonshot.ai/v1`, модели `kimi-k3.1-pro` и др.; K2 снимаются к концу 2026) | MCP-инструментов в API нет → нужен **наш серверный цикл агента** (`agentChat`, Phase 3), который вызывает REST `/v1/...`; потребительское kimi.com своих MCP не подключает | PAK внутри сервера | подтверждение — через наш встроенный ассистент |
-| **Встроенный ассистент SuitesForAll** (Phase 3) | та же панель AI в приложении; провайдер по выбору (Anthropic SDK; OpenAI SDK с `baseURL` для xAI/Moonshot — оба уже в `functions/package.json`) | Firebase ID token сотрудника | подтверждение — кнопки в самой программе |
+| **Kimi API** (`api.moonshot.ai/v1`, модели `kimi-k3.1-pro` и др.; K2 снимаются к концу 2026) | MCP-инструментов в API нет → только через **наш серверный цикл агента** (`agentChat`, Этап 2), который вызывает тот же реестр инструментов; потребительское kimi.com своих MCP не подключает | ключ Moonshot на сервере | подтверждение — через наш встроенный ассистент |
+| **Встроенный ассистент SuitesForAll** (Этап 2) | та же панель AI в приложении; провайдер по выбору (Anthropic SDK; OpenAI SDK с `baseURL` для xAI/Moonshot/OpenAI — оба уже в `functions/package.json`) | Firebase ID token сотрудника | подтверждение — кнопки в самой программе |
 
 Версия REST — в пути (`/v1`); ломающие изменения → `/v2` с параллельной поддержкой ≥ 90 дней. MCP-инструменты версионируются через `description` и `x-deprecated`.
 
@@ -269,7 +271,7 @@ Kimi Code CLI / Kimi API ─┤  REST ─┘   auth → ctx → scopes → rate 
 |---|---|---|
 | Редактирование `functions/index.js`, деплой functions | **да** | новые exports + выделение `_impl`; деплой выборочный `firebase deploy --only functions:agentApi,functions:agentMcp,…` — только по «да» Тони и после его `firebase login --reauth` |
 | Новые зависимости | **да** | `@modelcontextprotocol/server`, `@modelcontextprotocol/node` (+ `zod`, если не транзитивно) в `functions/`; `@redocly/cli` как devDependency в `tests/` |
-| `firestore.rules` | **нет** (Phase 0–2) | все новые коллекции (`agentKeys`, `agentTokens`, `agentAudit`, `agentProposals`, `agentIdempotency`, `agentDeadLetter`, `agentConfig`) — CF-only, без правил (default deny), доступ из UI — через callables |
+| `firestore.rules` | **нет** (все этапы) | все новые коллекции (`agentKeys`, `agentTokens`, `agentAudit`, `agentProposals`, `agentIdempotency`, `agentDeadLetter`, `agentConfig`) — CF-only, без правил (default deny), доступ из UI — через callables |
 | `firebase.json` | опционально | rewrite `/api/**` только если нужен адрес на `suitesforall.web.app`; MCP — нет |
 | Секреты | **нет новых** | ключи/токены хранятся как sha256; JWT не используется |
 | Auth / роли / `currentRole()` / rules-матрица | **нет изменений** существующих гейтов | добавляется агентская матрица § 1.1 поверх них; serverside `requireEditor` остаётся как второй гейт |
@@ -297,8 +299,8 @@ Kimi Code CLI / Kimi API ─┤  REST ─┘   auth → ctx → scopes → rate 
 ### 4.3 Логирование
 
 - `functions/logger` с `_maskEmail` (`functions/index.js:554`) для email; никаких аргументов инструментов в логах — только `argsHash`, `tool`, `keyId`, `requestId`, `ms`, `status`.
-- `agentAudit` (каждый вызов), `audit` (бизнес-действия), `agentDeadLetter` (ошибки после побочного эффекта), `docusign_log` (как сегодня для ds*). Ежедневная строка в Pulse/Home «агенты: N вызовов, M записей, K dead-letter» — Phase 1 (чтение `agentAudit` через callable).
-- Sentry в functions не подключён (есть только DSN в доке) — не вводим; `logger.error` + dead-letter достаточно, алерт по `agentDeadLetter` — в Phase 2 через существующий `bank.sync.orphaned`-подобный механизм критичного аудита.
+- `agentAudit` (каждый вызов), `audit` (бизнес-действия), `agentDeadLetter` (ошибки после побочного эффекта), `docusign_log` (как сегодня для ds*). Ежедневная строка в Pulse/Home «агенты: N вызовов, M записей, K dead-letter» — Этап 2 (чтение `agentAudit` через callable).
+- Sentry в functions не подключён (есть только DSN в доке) — не вводим; `logger.error` + dead-letter достаточно; алерт по `agentDeadLetter` — с Этапа 1 (вместе с деньгами) через существующий механизм критичного аудита (`severity:'critical'`, как `bank.sync.orphaned`).
 
 ### 4.4 Kill switch и откат без деплоя
 
@@ -307,7 +309,7 @@ Kimi Code CLI / Kimi API ─┤  REST ─┘   auth → ctx → scopes → rate 
 ### 4.5 Ограничения на исходящие письма и DocuSign
 
 - Писем «от агента» нет: единственные исходящие — Stripe-hosted invoice/reminder email (`invoices.sendInvoice`) и DocuSign-конверты; оба идут по email арендатора/подписанта, который уже на файле. Встроенный Gmail-send из браузера (`sendEmailViaGmail :59647`, termination notices) агентам не открывается.
-- Лимиты § 2.4; whitelist шаблонов; `lease_send` требует `templateId` из `dsListTemplates` (серверные шаблоны DocuSign) — inline-HTML путь десктопа (`_dsBuildInlineLeaseHtml :113479`) агентам недоступен в Phase 2 (вопрос § 6 п. 4).
+- Лимиты § 2.4; whitelist шаблонов; `lease_send` требует `templateId` из `dsListTemplates` (серверные шаблоны DocuSign) — inline-HTML путь десктопа (`_dsBuildInlineLeaseHtml :113479`) агентам недоступен (решение Тони 24.10.2026, § 6).
 - Signing link отключает DocuSign-напоминания подписанту (Entry 92) — об этом агент обязан предупредить в `summary` proposal.
 
 ### 4.6 Существующие слабости, которые план обнажает (не чинит, но учитывает)
@@ -321,82 +323,112 @@ Kimi Code CLI / Kimi API ─┤  REST ─┘   auth → ctx → scopes → rate 
 
 ---
 
-## 5. Поэтапный план
+## 5. Поэтапный план (порядок — по решениям Тони 24.10.2026)
 
-Общие правила для всех фаз: правки `functions/index.js` — минимальные (exports + `_impl`), основная логика в новых модулях-соседях (как `ppExport.js`, `pp-webhook.js`); каждая фаза = отдельные коммиты в main по одной теме; деплой functions — выборочный и только после «да» Тони; hosting-часть (панель «AI access», `oauth.html`, `docs/`) — по обычному авто-пайплайну; каждая CF-правка сопровождается тестом по образцу `tests/sign-link-cf.test.cjs` (перехват `Module._load`, in-memory Firestore, фейковые `fetch` для Stripe/DocuSign).
+Общие правила для всех этапов: правки `functions/index.js` — минимальные (exports + `_impl`), основная логика в новых модулях-соседях (как `ppExport.js`, `pp-webhook.js`); каждый этап = отдельные коммиты в main по одной теме; деплой functions — выборочный и только после «да» Тони; hosting-часть (панели Settings, `oauth.html`, `docs/`) — по обычному авто-пайплайну; каждая CF-правка сопровождается тестом по образцу `tests/sign-link-cf.test.cjs` (перехват `Module._load`, in-memory Firestore, фейковые `fetch` для Stripe/DocuSign). Тони выбрал «сразу напоминания и инвойсы», поэтому Этап 1 — деньги на минимальном ядре; статистика идёт третьей; встроенный ассистент и OAuth — вторым этапом, потому что выбраны все четыре канала.
 
-### Phase 0 — read-only (сводка, план на день, должники, карточки, rent roll, prospects, help)
-
-| | |
-|---|---|
-| **Эндпоинты / tools** | `get_portfolio_summary`, `get_daily_plan`, `get_overdue`, `get_aging`, `get_rent_roll`, `search_units`, `get_unit`, `get_unit_ledger`, `list_invoices`, `list_prospects`, `get_forecast` (admin), `help_howto`, `whoami`; `GET /v1/openapi.json`; MCP `agentMcp` |
-| **Файлы (новые)** | `functions/agent-gateway.js` (auth PAK, ctx, scopes, rate limits, роутер, OpenAPI, MCP handler, audit), `functions/lib/money.js` (копия), `functions/lib/agent-stats.js`, `functions/agent-tools-read.js`, `functions/agent-help.json`, `docs/agent-api/openapi.yaml`, `docs/agent-api/README.md` (как подключить каждый клиент), `scripts/agent-tools-from-openapi.mjs` |
-| **Файлы (правки)** | `functions/index.js`: `require('./agent-gateway')`, exports `agentApi`, `agentMcp`, `agentKeyCreate`, `agentKeyList`, `agentKeyRevoke`; `functions/package.json`: MCP SDK; `floor-map-editor.html`: Settings → «AI access» (создание/отзыв ключей через callables, показ секрета один раз); `tests/package.json`: `@redocly/cli`; `FIXES_LOG.md`: новый Entry с инвариантами; `ARCHITECTURE.md`/`SECURITY_AND_SECRETS.md`: раздел про агентов |
-| **Тесты** | `tests/agent-gateway.test.cjs` (ключ: неверный/просроченный/отозванный; scopes и фильтрация `tools/list`; матрица ролей, teamviewer без контактов; лимиты; `whoami`), `tests/agent-openapi.test.cjs` (реестр ↔ спека), `tests/agent-stats.test.cjs` (паритет на фикстуре: KPI, aging с lease-start gate, группы head/shadow, M2M, `isMonthSettled` через money.js), `tests/money-sync.test.cjs`, `tests/agent-invariants.test.cjs` (grep-гейты для `functions/agent-*.js`); `npm test` в корне дополняется этими файлами |
-| **Деплой** | hosting (панель + docs) — авто; **functions** `agentApi, agentMcp, agentKeyCreate, agentKeyList, agentKeyRevoke` — по «да» Тони |
-| **Объём** | ≈ 1 800–2 200 строк (с тестами); 3–4 рабочих дня |
-| **Готово, когда** | (1) Claude Code с PAK видит инструменты и `get_portfolio_summary` совпадает с Home-KPI в проде по тому же зданию/месяцу до цента; (2) ключ роли viewer не видит `get_forecast`, teamviewer не получает контакты/$; (3) все тесты зелёные, redocly lint чистый; (4) Grok API и Kimi Code CLI подключены по инструкции из `docs/agent-api/README.md`; (5) 48 ч в проде без ошибок 5xx и с p95 < 3 с (тёплый инстанс) |
-| **Откат** | `agentConfig._config.enabled=false` (≤ 60 с) → revoke ключей → `firebase functions:delete agentApi agentMcp agentKeyCreate agentKeyList agentKeyRevoke` → `git revert` коммитов; данные workspace не затрагиваются (фаза только читает) |
-
-### Phase 1 — безопасные записи + OAuth 2.1 (для ChatGPT и Claude.ai)
+### Этап 1 — ядро gateway, ключи, должники, напоминания, инвойсы
 
 | | |
 |---|---|
-| **Эндпоинты / tools** | `send_reminder`, `update_unit_specs`, `add_unit_note`, `upsert_prospect`, `set_collection_status`, `set_renewal_note`, `search_audit`; OAuth: `/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`, `/authorize`, `/token`, `/register`, `/revoke`; `oauth.html` |
-| **Файлы (новые)** | `functions/agent-oauth.js`, `functions/agent-tools-write.js`, `oauth.html` (Hosting, same-origin Firebase sign-in), `functions/lib/patch-unit.js` (`_patchBuildingUnitCF`) |
-| **Файлы (правки)** | `functions/index.js`: export `agentOauth`, callable `agentOauthApprove`, `_stripeResendInvoiceImpl`; `floor-map-editor.html`: Home-строка «агенты сегодня» (опционально); `firebase.json` — не требуется (OAuth-страница — статический файл Hosting) |
-| **Тесты** | `tests/agent-oauth.test.cjs` (PKCE S256, одноразовый код, TTL, CIMD-документ через фейковый `fetch`, точный `redirect_uri`, `resource`/`aud`, `iss`, ротация refresh, revoke, 401 + `WWW-Authenticate`), `tests/agent-writes.test.cjs` (транзакция на building-doc, `_savedRev +2`, `_mirroredBy:'agent:…'`, аудит, лимит 1 напоминание/юнит/день, `dryRun`, mapeditor может specs, не может reminder; teamviewer ничего) |
-| **Деплой** | hosting (`oauth.html`) — авто; functions `agentOauth, agentOauthApprove, agentApi, agentMcp` — по «да» Тони |
-| **Объём** | ≈ 1 500–1 900 строк; 4–5 рабочих дней (OAuth — большая часть) |
-| **Готово, когда** | (1) ChatGPT (Business-workspace) подключает plugin по OAuth, видит инструменты по роли, перед `update_unit_specs` спрашивает подтверждение; (2) Claude.ai custom connector через OAuth работает; (3) правка `sink` агентом видна на десктопе ≤ 2 с (listener `_v2BuildingsAttachListener :36169`) и на карте воды (Entry 93/94); (4) 72 ч soak: ноль `clobberAlerts`, `agentAudit` полон; (5) напоминание агента = письмо Stripe по открытому инвойсу, `u.outreach` и `collectionStatus` проставлены как из UI |
-| **Откат** | `agentConfig.classB=false` (≤ 60 с); revoke токенов (`agentTokens`); `functions:delete agentOauth`; данные: B-записи обратимы из UI (specs/notes/prospects/статусы) |
+| **Эндпоинты / tools** | чтение: `whoami`, `get_overdue`, `search_units`, `get_unit`, `get_unit_ledger`, `list_invoices`, `help_howto`; запись B: `send_reminder`; класс C: `propose_action` / `confirm_action` / `list_proposals` с действиями `invoice_create`, `invoice_void`, `invoice_mark_paid_oob`; `GET /v1/openapi.json`; MCP `agentMcp`; в программе: Settings → «AI access» (ключи), Settings → «Agent proposals» + виджет на Home (Approve/Reject), `agentConfigSet` (пороги, kill switch) |
+| **Файлы (новые)** | `functions/agent-gateway.js` (auth PAK, ctx, scopes, rate limits, идемпотентность, роутер, OpenAPI, MCP handler, audit, dead-letter), `functions/lib/money.js` (копия `m/lib/money.js`), `functions/lib/agent-stats.js` (пока только overdue/ledger/unit DTO), `functions/agent-tools-read.js`, `functions/agent-tools-money.js`, `functions/agent-proposals.js`, `functions/agent-help.json`, `docs/agent-api/openapi.yaml`, `docs/agent-api/README.md` (как подключить каждый клиент), `scripts/agent-tools-from-openapi.mjs` |
+| **Файлы (правки)** | `functions/index.js`: `require('./agent-gateway')`, exports `agentApi`, `agentMcp`, `agentKeyCreate`, `agentKeyList`, `agentKeyRevoke`, `agentProposalList`, `agentProposalDecide`, `agentConfigSet`; выделение `_stripeResendInvoiceImpl`, `_createStripeInvoiceImpl`, `_voidOrDeleteStripeInvoiceImpl`, `_markInvoicePaidOutOfBandImpl` (по одной на коммит, `onCall`-поведение неизменно); `functions/package.json`: MCP SDK; `floor-map-editor.html`: две панели Settings + виджет Home (callables, показ секрета один раз); `tests/package.json`: `@redocly/cli`; `FIXES_LOG.md`: новый Entry с инвариантами; `ARCHITECTURE.md` / `SECURITY_AND_SECRETS.md`: раздел про агентов |
+| **Тесты** | `tests/agent-gateway.test.cjs` (ключ неверный/просроченный/отозванный; scopes и фильтрация `tools/list`; матрица ролей, teamviewer без контактов; лимиты; `Idempotency-Key`; `whoami`), `tests/agent-openapi.test.cjs` (реестр ↔ спека), `tests/agent-money.test.cjs` (жизненный цикл proposal: TTL, одноразовость, `409 stale_proposal`; пороги → `app`; `chat`-барьер; `invoice_create` на фейковом Stripe: порядок create → items → finalize → send, `metadata.source`, idempotencyKey с `buildingId`, only-advance штампа; void paid → отказ; dead-letter + `502` при провале записи штампа), `tests/agent-stats.test.cjs` (overdue-список = `buildAgingRows` «only overdue» на фикстуре, lease-start gate, head/shadow), `tests/money-sync.test.cjs`, `tests/agent-invariants.test.cjs` (grep-гейты для `functions/agent-*.js`); `npm test` в корне дополняется этими файлами |
+| **Деплой** | hosting (панели + docs) — авто; **functions** `agentApi, agentMcp, agentKeyCreate, agentKeyList, agentKeyRevoke, agentProposalList, agentProposalDecide, agentConfigSet, stripeResendInvoice, createStripeInvoice, voidOrDeleteStripeInvoice, markInvoicePaidOutOfBand` — по «да» Тони, **в два шага**: сначала с `agentConfig.classC=false` (чтение + напоминания), затем `classC=true` после прогона инвойсов в Stripe test mode (`ENV=test` → `STRIPE_TEST_KEY`) |
+| **Объём** | ≈ 2 500–3 000 строк (с тестами); 6–8 рабочих дней |
+| **Готово, когда** | (1) Claude Code (Тони) и Grok-коннектор (секретарь) подключены по ключу, видят инструменты по роли; (2) `get_overdue` совпадает со списком Aging «only overdue» в проде по тому же зданию (те же юниты, те же суммы до цента); (3) `send_reminder` = письмо Stripe по открытому инвойсу + `u.outreach` + `collectionStatus='reminded'`, как из UI; (4) инвойс через propose/confirm в Stripe test mode даёт те же штампы `u.stripe.*` и ту же запись ledger через webhook, что UI-путь; (5) предложение выше порога появляется в «Agent proposals» и исполняется только после Approve; (6) инъекция сбоя после создания инвойса даёт dead-letter + `502`, а не «успех»; (7) тесты зелёные, redocly lint чистый; (8) 72 ч прода с `classC` только на ключе Тони без расхождений в `runReconcilePaymentsV2Now` |
+| **Откат** | `agentConfig._config.enabled=false` / `classC=false` (≤ 60 с) → revoke ключей → `firebase functions:delete agentApi agentMcp agentKey… agentProposal… agentConfigSet` → `git revert` коммитов (выделения `_impl` — по одному); созданные инвойсы — void через UI/Stripe (операторское действие); напоминания необратимы по природе (письмо ушло), поэтому лимит 1/юнит/день |
+| **Каналы после этапа** | Claude Code, Claude Messages API, Grok (grok.com-коннектор, API, Grok Build), Kimi Code CLI, скрипты — по персональному ключу |
 
-### Phase 2 — деньги и юридика с подтверждением
+### Этап 2 — встроенный ассистент SuitesForAll + OAuth 2.1 (ChatGPT Business, Claude.ai Team)
 
 | | |
 |---|---|
-| **Эндпоинты / tools** | `propose_action` / `confirm_action` / `list_proposals`; действия `invoice_create`, `invoice_void`, `invoice_mark_paid_oob`, `invoice_discount`, `payment_record`, `lease_send` (шаблоны DocuSign, опц. `tenancy`), `lease_signing_link`, `lease_resend`, `lease_void`; в программе — «Agent proposals» (список, Approve/Reject) через `agentProposalList` / `agentProposalDecide`; `agentConfigSet` (пороги) |
-| **Файлы (новые)** | `functions/agent-tools-money.js`, `functions/agent-proposals.js`, `functions/lib/record-payment.js` (`agentRecordPayment`) |
-| **Файлы (правки)** | `functions/index.js`: выделение `_createStripeInvoiceImpl`, `_voidOrDeleteStripeInvoiceImpl`, `_markInvoicePaidOutOfBandImpl`, `_stripeDiscountInvoiceImpl`, `_dsSendEnvelopeImpl`, `_dsCreateSigningLinkImpl`, `_dsResendImpl`, `_dsVoidImpl` (по одной на коммит, поведение `onCall` неизменно), exports `agentProposalList`, `agentProposalDecide`, `agentConfigSet`; `floor-map-editor.html`: панель «Agent proposals» в Settings + виджет на Home; `m/` — опционально Approve с телефона (Phase 3) |
-| **Тесты** | `tests/agent-money.test.cjs`: жизненный цикл proposal (TTL, одноразовость, `409 stale_proposal` при изменившемся юните/инвойсе), пороги → `app`, `chat`-барьер, `Idempotency-Key`; `payment_record`: 5× отказ, waiver-валидация, head группы, lease-start gate, **никогда не перезаписывает paid**, capture-inside-mutate (`rec` из замыкания), `_writePaymentV2` из того же `rec`, dead-letter при провале зеркала; `invoice_create`: порядок create → items → finalize → send на фейковом Stripe, `metadata.source`, Stripe idempotencyKey с `buildingId`, only-advance штампа; `lease_send`: только `templateId` из списка, получатель = email на файле, occupancy pre-check до DocuSign, один конверт на proposal, tenancy sanitize; emulator-прогон `functions/test-harness` для транзакций на реальном Firestore-эмуляторе |
-| **Деплой** | hosting (панель) — авто; functions — по «да» Тони, **пошагово**: сначала с `agentConfig.classC=false`, включение классов через конфиг после проверки в Stripe test mode (`ENV=test` → `STRIPE_TEST_KEY`) и DocuSign demo (`integrations/docusign.env`) |
-| **Объём** | ≈ 2 000–2 500 строк; 6–8 рабочих дней |
-| **Готово, когда** | (1) в Stripe test mode агентский `invoice_create` создаёт и отправляет инвойс, штамп `u.stripe.lastInvoiceYm` и webhook-ledger совпадают с UI-путём; (2) `payment_record` даёт ту же запись `payments/*` и ту же строку `audit`, что `submitManualPayment`; (3) `lease_send` на DocuSign demo отправляет конверт по шаблону, `u.leaseEnvelopes` и `docusign_envelopes/{id}` на месте, повтор confirm не создаёт второй конверт; (4) инъекция сбоя зеркала даёт dead-letter + `502`, а не «успех»; (5) Тони подписал пороги и режим подтверждения; (6) 7 дней прода с `classC` на одном ключе Тони без расхождений в reconcile (`runReconcilePaymentsV2Now`) |
-| **Откат** | `agentConfig.classC=false` мгновенно; открытые proposals истекают сами; созданные инвойсы — void через UI/Stripe (операторское действие), записи платежей — reversal-запись; `functions:delete` новых exports; `_impl`-выделения откатываются `git revert` по коммитам |
+| **Эндпоинты / tools** | callable `agentChat` (серверный цикл агента: сообщения ↔ провайдер ↔ тот же реестр инструментов; стриминг ответа через callable-SSE gcfv2); OAuth: `/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`, `/authorize`, `/token`, `/register`, `/revoke`; `oauth.html` |
+| **Файлы (новые)** | `functions/agent-chat.js` (провайдеры: Anthropic SDK; OpenAI SDK с `baseURL` для xAI / Moonshot / OpenAI — зависимости уже есть; ключи из `secrets/aiServices`), `functions/agent-oauth.js`, `oauth.html` (Hosting, same-origin Firebase sign-in) |
+| **Файлы (правки)** | `functions/index.js`: exports `agentChat`, `agentOauth`, `agentOauthApprove`; `floor-map-editor.html`: панель AI (`aiSend :108622`, `aiSummarizeState :108551`) переводится на `agentChat` за флагом `state.settings.aiViaGateway` (старый путь остаётся на один релиз для отката), inline-кнопки «Подтвердить / Отклонить» для proposals; `m/` — не трогается |
+| **Тесты** | `tests/agent-oauth.test.cjs` (PKCE S256, одноразовый код, TTL, CIMD-документ через фейковый `fetch`, точный `redirect_uri`, `resource`/`aud`, `iss`, ротация refresh, revoke, `401` + `WWW-Authenticate`), `tests/agent-chat.test.cjs` (цикл инструментов с фейковым провайдером; ID token → `ctx`; класс C не исполняется без подтверждения; prompt-injection фикстура: «инструкция» в `u.note` не вызывает инструмент) |
+| **Деплой** | hosting (`oauth.html`, панель) — авто; functions `agentChat, agentOauth, agentOauthApprove` — по «да» Тони; ChatGPT Business workspace и Claude Team — заводит Тони |
+| **Объём** | ≈ 2 000–2 400 строк; 6–8 рабочих дней |
+| **Готово, когда** | (1) секретарь в панели AI спрашивает «кому напомнить» → список должников → «напомни 204» → подтверждение кнопкой → письмо Stripe ушло, запись в `audit`; (2) ChatGPT Business подключает plugin по OAuth, видит инструменты по роли, перед записью спрашивает подтверждение; (3) Claude.ai Team custom connector работает по OAuth; (4) ключи провайдеров не читаются из `localStorage` ни одним путём панели; (5) 72 ч soak без ошибок 5xx |
+| **Откат** | `agentConfig.enabled=false`; revoke токенов (`agentTokens`); `state.settings.aiViaGateway=false` возвращает старую панель; `functions:delete agentChat agentOauth agentOauthApprove` |
+| **Каналы после этапа** | + встроенный ассистент (любой провайдер, в т.ч. Kimi), ChatGPT Business, Claude.ai Team |
 
-### Phase 3 — после обкатки (отдельные одобрения)
+### Этап 3 — статистика и план на день
 
-Встроенный ассистент SuitesForAll на gateway (`agentChat`: Anthropic / OpenAI / xAI / Moonshot серверно, ключи — в Secret Manager, UI — существующая панель AI; закрывает Kimi и убирает ключи из браузера); сервисные ключи + плановые дайджесты (план на день утром в Pulse/email); `tenant_create`, `rent_change`, `move_out`, группы; Approve с телефона `/m`; Tasks-расширение MCP, когда его поддержат клиенты; custom domain `api.suitesforall.com`; ремонт `requireEditor` для mapeditor (отдельное auth-решение Тони).
+| | |
+|---|---|
+| **Эндпоинты / tools** | `get_portfolio_summary`, `get_daily_plan`, `get_aging` (полные ведра + DSO), `get_rent_roll`, `get_forecast` (admin), `list_prospects`, `search_audit` |
+| **Файлы** | `functions/lib/agent-stats.js` (порты `renderHomeView :138786`, `buildAgingRows :147871`, `buildRentRollRows :140290`, `_vacancyCollect :144979`, `_calendarCollect :145151`, `_hvRenderUpcoming :139335`, `_buildNeedsAttention :105881`, `_computeRevenueForecast :40225`), `functions/agent-tools-read.js`, `docs/agent-api/openapi.yaml` |
+| **Тесты** | `tests/agent-stats.test.cjs` расширяется паритетом на PII-stripped фикстуре прод-данных: KPI до цента, aging-ведра, группы head/shadow, M2M, lease-start gate, `isMonthSettled` через money.js |
+| **Деплой** | functions `agentApi, agentMcp, agentChat` (редеплой) — по «да» Тони |
+| **Объём** | ≈ 1 000–1 400 строк; 3–4 рабочих дня |
+| **Готово, когда** | `get_portfolio_summary` = Home-KPI в проде по тому же зданию/месяцу до цента; `get_daily_plan` = Home «Upcoming» + «Needs attention» + Calendar ±14 дней; viewer не видит `get_forecast`, teamviewer — $ и контакты |
+| **Откат** | инструменты отключаются через `agentConfig.toolsDisabled[]` без деплоя; данные не затрагиваются (только чтение) |
+
+### Этап 4 — договоры (шаблоны DocuSign), ручные платежи, безопасные записи
+
+| | |
+|---|---|
+| **Эндпоинты / tools** | класс C: `lease_send` (только `templateId` из `dsListTemplates`, получатель = email на файле, опц. `tenancy` при vacant — юнит становится occupied при отправке, как с телефона), `lease_signing_link`, `lease_resend`, `lease_void`, `payment_record`, `invoice_discount`; класс B: `update_unit_specs`, `add_unit_note`, `upsert_prospect`, `set_collection_status`, `set_renewal_note` |
+| **Файлы (новые)** | `functions/agent-tools-write.js`, `functions/lib/patch-unit.js` (`_patchBuildingUnitCF`), `functions/lib/record-payment.js` (`agentRecordPayment`) |
+| **Файлы (правки)** | `functions/index.js`: `_dsSendEnvelopeImpl`, `_dsCreateSigningLinkImpl`, `_dsResendImpl`, `_dsVoidImpl`, `_stripeDiscountInvoiceImpl`, `agentRecordPayment`; `floor-map-editor.html` — без изменений (Approve уже есть с Этапа 1) |
+| **Тесты** | `tests/agent-writes.test.cjs` (транзакция на building-doc, `_savedRev +2`, `_mirroredBy:'agent:…'`, аудит, `dryRun`, mapeditor может specs, не может reminder), `tests/agent-money.test.cjs` дополняется: `payment_record` — 5× отказ, waiver-валидация, head группы, lease-start gate, **никогда не перезаписывает paid**, capture-inside-mutate, `_writePaymentV2` из того же `rec`, dead-letter при провале зеркала; `lease_send` — только шаблон из списка, получатель с файла, occupancy pre-check до DocuSign, один конверт на proposal, `_dsSanitizeTenancy`; emulator-прогон `functions/test-harness` для транзакций |
+| **Деплой** | functions `agentApi, agentMcp, agentChat, agentRecordPayment, dsSendEnvelope, dsCreateSigningLink, dsResend, dsVoid, stripeDiscountInvoice` — по «да» Тони; договоры включаются через `agentConfig.lease.enabled` после прогона на DocuSign demo (`integrations/docusign.env`) |
+| **Объём** | ≈ 2 000–2 400 строк; 6–8 рабочих дней |
+| **Готово, когда** | (1) `lease_send` на DocuSign demo отправляет конверт по шаблону, `u.leaseEnvelopes` и `docusign_envelopes/{id}` на месте, повтор confirm не создаёт второй конверт; (2) `payment_record` даёт ту же запись `payments/*` и ту же строку `audit`, что `submitManualPayment`; (3) правка `sink` агентом видна на десктопе ≤ 2 с и на карте воды (Entry 93/94); (4) 72 ч soak: ноль `clobberAlerts` |
+| **Откат** | `agentConfig.lease.enabled=false` / `classB=false`; B-записи обратимы из UI; платежи — reversal-записью; `functions:delete agentRecordPayment`; `_impl`-выделения — `git revert` по коммитам |
+
+### Позже (отдельные одобрения)
+
+Сервисные ключи + плановые дайджесты (план на день утром в Pulse/email); `tenant_create`, `rent_change`, `move_out`, группы; Approve с телефона `/m`; Tasks-расширение MCP, когда его поддержат клиенты; custom domain `api.suitesforall.com`; ремонт `requireEditor` для mapeditor (отдельное auth-решение Тони).
 
 ### Что требуется от Тони по ходу (помимо одобрений)
 
-`firebase login --reauth` перед каждым деплоем functions (токен лапсает каждые несколько дней); завести ChatGPT Business workspace (если ChatGPT — основной канал); проверить, есть ли у организации Anthropic бета «Request headers» (иначе Claude.ai только через OAuth Phase 1); создать свой первый ключ в «AI access» и прогнать сценарии Phase 0 вживую.
+`firebase login --reauth` перед каждым деплоем functions (токен лапсает каждые несколько дней); к Этапу 2 — завести ChatGPT Business workspace и проверить тариф Claude Team (и есть ли у организации Anthropic бета «Request headers»); после Этапа 1 — создать свой первый ключ в «AI access», подключить Claude Code и прогнать «кому напомнить → напомни → выстави инвойс» вживую; подтвердить доступность Stripe test mode (`ENV=test`) и DocuSign demo для проверок.
 
 ---
 
-## 6. Открытые вопросы Тони
+## 6. Вопросы Тони и решения
 
-1. **Кто и чем пользуется.** Какие агенты для каких людей: секретари — ChatGPT? Claude? Grok? Какая роль у секретарей сегодня (manager / viewer) и какие здания им видны (`members.buildings`)?
-2. **Тариф ChatGPT.** Действия с записью из ChatGPT возможны только на Business / Enterprise / Edu (Pro — только чтение). Заводим Business-workspace для секретарей, или ChatGPT только читает, а записи идут через Claude/Grok/встроенный ассистент?
-3. **Подтверждение денег и юридики.** Режим `chat` (секретарь говорит «да» агенту) или `app` (Approve в программе)? Предлагаю: инвойсы/платежи до $5 000 и ≤ 2× contractRent — `chat`; выше порога, договоры и всё от сервисных ключей — `app`. Подтвердите пороги или задайте свои.
-4. **Договоры.** Агенту разрешаем только DocuSign-шаблоны (безопаснее) или и inline-шаблоны из программы, как на десктопе? Создавать ли tenancy при отправке (как с телефона) — и с каким подтверждением?
-5. **Персональные ключи vs общий «агент-секретарь».** Рекомендую персональные (аудит по людям, отзыв по одному). Нужен ли отдельный сервисный агент для утреннего дайджеста (Phase 3)?
-6. **Лимиты рассылок.** Предложено: напоминания 1/юнит/день и 20/день/ключ; инвойсы 20/день/ключ; договоры 3/день/ключ. Устраивает?
-7. **Бюджет.** Инфраструктура укладывается в бесплатные квоты Cloud Run/Firestore; «тёплый» инстанс для скорости ответа ≈ $10/мес — нужен? Secret Manager — $0. Новая зависимость MCP SDK в `functions/` — одобряете? Адрес `suitesforall.web.app/api/...` (правка `firebase.json`) — нужен или достаточно URL функции?
-8. **Viewer/teamviewer.** Давать ли ключи ролям только-чтение вообще (например, бухгалтеру — aging и ledger)?
-9. **Встроенный ассистент.** Переводить ли существующую панель AI на gateway (сейчас она шлёт весь портфель провайдеру прямо из браузера с ключами в localStorage)? Это закрывает и Kimi.
-10. **Порядок фаз.** Начинать со статистики и плана на день (Phase 0, как в плане) или сразу с напоминаний/инвойсов?
+### 6.1 Решения Тони (24.10.2026)
+
+| # | Вопрос | Решение |
+|---|---|---|
+| 1 | Какие агенты у секретарей | **Все четыре**: встроенный ассистент SFA, ChatGPT (Business), Claude.ai (Team), Grok (grok.com). Роли: ключ создаёт сам сотрудник в «AI access», права = его роль в `members` (секретарям для инвойсов/договоров нужна роль manager); отдельно перечислять людей не нужно |
+| 2 | Тариф ChatGPT | ChatGPT с записью → Тони заводит **Business-workspace** к Этапу 2; до этого ChatGPT не подключается (Actions закрываются 11.12.2026) |
+| 3 | Подтверждение денег и договоров | **«Чат» до порога, выше — Approve в программе**: инвойсы/платежи до $5 000 и ≤ 2× contractRent подтверждаются секретарём в чате; выше порога, все договоры и всё от сервисных ключей — Approve в SuitesForAll. Пороги меняются через `agentConfigSet` |
+| 4 | Договоры | **Только шаблоны DocuSign** (`templateId` из `dsListTemplates`); inline-шаблоны программы агентам недоступны; tenancy создаётся при отправке (юнит occupied при отправке, как с телефона) с тем же подтверждением, что договор |
+| 9 | Встроенный ассистент | **Да** — переводится на gateway на Этапе 2 (выбран как канал) |
+| 10 | Порядок | **Сразу напоминания и инвойсы** → Этап 1 (§ 5), статистика третьим этапом |
+
+### 6.2 Принято по умолчанию (рекомендации; Тони может изменить в любой момент)
+
+| # | Вопрос | Значение по умолчанию |
+|---|---|---|
+| 5 | Ключи | персональные, срок 90 дней; сервисный ключ для дайджеста — позже |
+| 6 | Лимиты рассылок | напоминания 1/юнит/день и 20/день/ключ; инвойсы 20/день/ключ; договоры 1/юнит/день и 3/день/ключ |
+| 7 | Бюджет и инфраструктура | MCP SDK как зависимость `functions/` (нужно «да» в § 7); `minInstances: 0`, тёплый инстанс (~$10/мес) только если ChatGPT/Claude будут отваливаться по таймауту на холодном старте; адрес — URL функции, `firebase.json` не трогаем |
+| 8 | Ключи ролям только-чтение | да: viewer (например, бухгалтер) получает чтение финансов; teamviewer — только юниты без контактов и $ |
+
+### 6.3 Осталось уточнить (не блокирует Этап 1)
+
+1. К Этапу 2: есть ли у организации Anthropic тариф Team и бета «Request headers» (иначе Claude.ai — только через наш OAuth, что тоже предусмотрено).
+2. К Этапу 2: ChatGPT Business — кто админ workspace (plugin с MCP публикует только admin/owner).
+3. К проверкам Этапа 1 и 4: доступны ли Stripe test mode (`ENV=test`, `STRIPE_TEST_KEY`) и DocuSign demo-аккаунт; если нет — проверка на одном реальном инвойсе/конверте Тони с немедленным void.
 
 ---
 
-## 7. Чек-лист одобрений (CLAUDE.md § 2) перед стартом каждой фазы
+## 7. Чек-лист одобрений (CLAUDE.md § 2) перед стартом каждого этапа
 
-| Фаза | Требует «да» Тони на |
+| Этап | Требует «да» Тони на |
 |---|---|
-| 0 | правку `functions/index.js` (exports + require); деплой `agentApi, agentMcp, agentKeyCreate, agentKeyList, agentKeyRevoke`; зависимость `@modelcontextprotocol/server` + `@modelcontextprotocol/node` в `functions/`; `@redocly/cli` в `tests/`; новую агентскую матрицу ролей (§ 1.1) как auth-решение |
-| 1 | OAuth-сервер (новая auth-поверхность); деплой `agentOauth, agentOauthApprove`; `_patchBuildingUnitCF` как новый серверный писатель building-docs; `_stripeResendInvoiceImpl` |
-| 2 | выделение `_impl` из денежных/DocuSign callables; `agentRecordPayment` (новый серверный путь записи платежей); пороги и режим подтверждения; включение `classC` в проде; Stripe test-mode и DocuSign demo для проверки |
-| любая | правка `firebase.json` (если выбран rewrite `/api/**`); любые изменения `firestore.rules` — **не планируются** |
+| 1 | правку `functions/index.js` (exports + require + выделение `_stripeResendInvoiceImpl`, `_createStripeInvoiceImpl`, `_voidOrDeleteStripeInvoiceImpl`, `_markInvoicePaidOutOfBandImpl`); деплой `agentApi, agentMcp, agentKeyCreate, agentKeyList, agentKeyRevoke, agentProposalList, agentProposalDecide, agentConfigSet` и редеплой четырёх затронутых callables; зависимость `@modelcontextprotocol/server` + `@modelcontextprotocol/node` в `functions/`; `@redocly/cli` в `tests/`; агентскую матрицу ролей (§ 1.1) как auth-решение; пороги подтверждения ($5 000 / 2× contractRent); включение `classC` в проде после Stripe test mode |
+| 2 | `agentChat` — вызовы LLM-провайдеров из Cloud Functions (внешние API; ключи из `secrets/aiServices`, как у `extractLeaseSignedDate`) и перевод панели AI за флагом; OAuth-сервер (новая auth-поверхность); деплой `agentChat, agentOauth, agentOauthApprove`; ChatGPT Business / Claude Team — заводит Тони |
+| 3 | редеплой `agentApi, agentMcp, agentChat` с портами статистики |
+| 4 | выделение `_dsSendEnvelopeImpl`, `_dsCreateSigningLinkImpl`, `_dsResendImpl`, `_dsVoidImpl`, `_stripeDiscountInvoiceImpl`; `agentRecordPayment` (новый серверный путь записи платежей); `_patchBuildingUnitCF` (новый серверный писатель building-docs); включение договоров через `agentConfig.lease.enabled` после DocuSign demo |
+| любой | правка `firebase.json` — **не планируется** (URL функции); изменения `firestore.rules` — **не планируются**; новые секреты Secret Manager — **не планируются** |
 
 ---
 
