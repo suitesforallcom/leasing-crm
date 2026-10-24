@@ -6665,10 +6665,15 @@
   }
   .map-view-tabs {
     position: absolute; top: 0; left: 0; right: 0;
-    min-height: var(--map-top-bar-h);
-    display: flex; align-items: center; gap: 12px;
-    flex-wrap: wrap; row-gap: 4px;
-    padding: 4px 14px;
+    height: var(--map-top-bar-h);
+    display: flex; align-items: center; gap: 10px;
+    /* ONE row, always (operator 2026-10-24: «Вместе это в одну строку»).
+       No wrapping — when the content is wider than the bar,
+       _mvtFitTopBar() steps through .mvt-tight → .mvt-icons until it
+       fits (JS next to toggleMapLegendPopover). Every direct child is
+       flex-shrink: 0 so the overflow is measurable. */
+    flex-wrap: nowrap;
+    padding: 0 12px;
     /* Floating over the SVG with a translucent backdrop-blur panel so the
        map is still partially visible underneath the bar — the operator can
        pan the plan all the way to the top edge of the canvas without the
@@ -6689,6 +6694,7 @@
     padding: 2px;
     background: var(--surface-2);
     border-radius: 7px;
+    flex-shrink: 0;
   }
   .map-view-tabs .mvt-tab {
     padding: 4px 10px;
@@ -6697,6 +6703,7 @@
     font-size: 11.5px; font-weight: 500;
     color: var(--muted);
     font-family: inherit;
+    white-space: nowrap;
     transition: background .15s, color .15s, box-shadow .15s;
   }
   .map-view-tabs .mvt-tab:hover { color: var(--text); }
@@ -6705,14 +6712,36 @@
     color: var(--text);
     box-shadow: 0 1px 2px rgba(20,18,15,.05);
   }
-  .map-view-tabs .mvt-spacer { flex: 1; }
-  .map-view-tabs .mvt-floor-label {
-    display: inline-flex; align-items: center; gap: 6px;
-    font-size: 11.5px;
-    color: var(--muted);
-    font-variant-numeric: tabular-nums;
+  .map-view-tabs .mvt-spacer { flex: 1 1 0; min-width: 0; }
+  /* Payment-status month chips (rendered by _renderPaymentMonthPicker;
+     colors stay inline, size lives here so the tiers can override it). */
+  .map-view-tabs .mvt-payment-picker { flex-shrink: 0; }
+  .map-view-tabs .mvtp-chip {
+    padding: 4px 9px; font-size: 11px; border-radius: 6px;
+    cursor: pointer; white-space: nowrap; font-family: inherit;
   }
-  .map-view-tabs .mvt-icon { flex-shrink: 0; color: var(--muted); }
+  .map-view-tabs .mlb-legend-wrap { margin-left: 6px; }
+
+  /* Single-row compaction tiers — applied by _mvtFitTopBar() only when
+     the content would overflow the bar; removed again once it fits. */
+  .map-view-tabs.mvt-tight { gap: 8px; padding: 0 10px; }
+  .map-view-tabs.mvt-tight .mvt-tab { padding: 4px 8px; }
+  .map-view-tabs.mvt-tight .mvtp-chip { padding: 4px 7px; }
+  .map-view-tabs.mvt-tight .mlb-pills { gap: 4px; }
+  .map-view-tabs.mvt-tight .mlb-pill { padding: 4px 6px; gap: 5px; }
+  /* Tier 1 already drops the «Legend» word — the swatch-grid icon plus
+     its tooltip is enough, and it buys ~50px before the filter pills
+     have to give up their labels in tier 2. */
+  .map-view-tabs.mvt-tight #mlbLegendBtn > span { display: none; }
+  .map-view-tabs.mvt-tight .mlb-legend-wrap { margin-left: 2px; }
+  /* Icon-only pills: the text span goes, the colored dot becomes a
+     glyph (alert / pen / sparkle); the title tooltip carries the label.
+     Water and Legend already have an icon. */
+  .map-view-tabs .mlb-pill-ic-alt { display: none; }
+  .map-view-tabs.mvt-icons .mlb-pill > span:not(.mlb-pill-dot) { display: none; }
+  .map-view-tabs.mvt-icons .mlb-pill .mlb-pill-dot { display: none; }
+  .map-view-tabs.mvt-icons .mlb-pill-ic-alt { display: block; }
+  .map-view-tabs.mvt-icons .mlb-pill { padding: 4px 6px; }
 
   /* Highlight pills + Water layer toggle + Legend button — live in the
      top bar to the right of the view-mode tabs. They used to sit in a
@@ -6720,10 +6749,12 @@
      2026-10-24 (operator: «нижнее меню бестолковое и занимает много
      места») so the plan gets its full height (FIXES_LOG Entry 93). */
   .map-view-tabs .mlb-pills {
-    display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    display: inline-flex; align-items: center; gap: 5px;
+    flex-wrap: nowrap; flex-shrink: 0;
   }
   .map-view-tabs .mlb-pill {
     display: inline-flex; align-items: center; gap: 6px;
+    white-space: nowrap; flex-shrink: 0;
     padding: 4px 9px;
     border: 1px solid var(--border);
     background: transparent;
@@ -20479,8 +20510,11 @@
       </div>
 
       <!-- Redesigned map overlays — match /redesign/ mock.
-           Docked top bar: segmented view-mode control on the left,
-             contextual floor label on the right.
+           Docked top bar: segmented view-mode control on the left
+             (+ month chips in Payment status). Always ONE row — see
+             _mvtFitTopBar(). The static «Floorplan» label that used to
+             sit at the far right was removed 2026-10-24 (JS never
+             updated it; it cost 80px of a bar that must not wrap).
            Right side of the same bar (since 2026-10-24): highlight pills,
              the Water layer toggle, and a Legend pill whose popover holds
              the contextual color key. Pills toggle the matching filter in
@@ -20496,15 +20530,17 @@
         <!-- Month picker for the Payment status view. Shows 5 months
              (3 back, current, +1 forward). Hidden unless mode='payment'.
              Populated by _renderPaymentMonthPicker on tab switch. -->
-        <div class="mvt-payment-picker" id="mapPaymentMonthPicker" style="display:none; gap:4px; margin-left:10px; align-items:center;"></div>
+        <div class="mvt-payment-picker" id="mapPaymentMonthPicker" style="display:none; gap:4px; align-items:center;"></div>
         <div class="mvt-spacer"></div>
         <div class="mlb-pills" id="mapTopPills">
           <button type="button" class="mlb-pill" data-mlp-key="overdue" onclick="toggleMapFilter('overdue')" title="Highlight units with overdue rent">
             <span class="mlb-pill-dot" style="background:#E11D48"></span>
+            <svg class="mlb-pill-ic mlb-pill-ic-alt" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
             <span>Overdue</span>
           </button>
           <button type="button" class="mlb-pill" data-mlp-key="pending-sig" onclick="toggleMapFilter('pending-sig')" title="Highlight units awaiting signature">
             <span class="mlb-pill-dot" style="background:#0EA5E9"></span>
+            <svg class="mlb-pill-ic mlb-pill-ic-alt" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
             <span>Signatures</span>
           </button>
           <div style="position: relative; display: inline-block;">
@@ -20512,13 +20548,16 @@
                     onclick="toggleBottomNewTenantPicker(event)"
                     title="Pick the time window for highlighting new tenants">
               <span class="mlb-pill-dot" style="background:#F59E0B"></span>
+              <svg class="mlb-pill-ic mlb-pill-ic-alt" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Z"/></svg>
               <span>New (<span id="mlbNewDaysLabel">30d</span>) ▾</span>
             </button>
             <!-- Day-window dropdown for the top-bar pill.
-                 Anchored under the pill; click an option to set the
+                 Anchored under the pill, right-aligned (the pill sits near
+                 the canvas' right edge, so a left-anchored panel would
+                 spill over the right sidebar); click an option to set the
                  window AND activate the filter, or click Off to
                  disable. Click-outside closes. -->
-            <div id="mlbNewPopover" class="mf-new-popover" style="display: none; position: absolute; top: calc(100% + 6px); bottom: auto; left: 0; transform: none; min-width: 240px; z-index: 100;">
+            <div id="mlbNewPopover" class="mf-new-popover" style="display: none; position: absolute; top: calc(100% + 6px); bottom: auto; right: 0; left: auto; transform: none; min-width: 240px; z-index: 100;">
               <!-- ROLLING WINDOW SECTION — sliding ± N days from today.
                    Same options as before; "Off" clears the filter
                    entirely. Picking a window clears any month override
@@ -20582,7 +20621,7 @@
           <!-- Legend — the contextual color key used to live in a
                full-width bottom bar; now it's on demand in a popover
                anchored under this pill. -->
-          <div style="position: relative; display: inline-block; margin-left: 6px;">
+          <div class="mlb-legend-wrap" style="position: relative; display: inline-block;">
             <button type="button" class="mlb-pill" id="mlbLegendBtn" onclick="toggleMapLegendPopover(event)" title="Color key for the current view">
               <svg class="mlb-pill-ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></svg>
               <span>Legend</span>
@@ -20596,13 +20635,6 @@
               </div>
             </div>
           </div>
-        </div>
-        <div class="mvt-floor-label" id="mvtFloorLabel">
-          <svg class="mvt-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="2" width="10" height="12"/>
-            <path d="M6 5h1M9 5h1M6 8h1M9 8h1M6 11h4"/>
-          </svg>
-          <span id="mvtFloorText">Floorplan</span>
         </div>
       </div>
 
@@ -31663,6 +31695,40 @@ function toggleBottomNewTenantPicker(ev) {
     }, 0);
   }
 }
+// Keep the map top bar on ONE row (operator 2026-10-24: «Вместе это в
+// одну строку»). The bar is flex-wrap: nowrap; when its content is wider
+// than the bar we step through two compaction tiers and stop at the
+// first that fits: .mvt-tight (smaller paddings / gaps) → .mvt-icons
+// (pills show only their glyph; the title tooltip carries the label).
+// Measures the direct children (widths + gaps + padding) rather than
+// scrollWidth, because an open New ▾ / Legend popover is absolutely
+// positioned inside the bar and would inflate scrollWidth. ≤ 3 reflows;
+// re-run on any width or content change (ResizeObserver at boot,
+// renderMapLegendBar, _renderPaymentMonthPicker, document.fonts.ready).
+function _mvtFitTopBar() {
+  const bar = document.getElementById('mapViewTabs');
+  if (!bar) return;
+  bar.classList.remove('mvt-tight', 'mvt-icons');
+  const avail = bar.clientWidth;
+  if (!avail) return;                       // hidden (edit mode / other view)
+  const need = () => {
+    const cs = getComputedStyle(bar);
+    let w = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+    let n = 0;
+    for (const el of bar.children) {
+      if (getComputedStyle(el).display === 'none') continue;
+      n++;
+      if (el.classList.contains('mvt-spacer')) continue;   // absorbs the slack
+      w += el.getBoundingClientRect().width;
+    }
+    return w + (parseFloat(cs.columnGap) || 0) * Math.max(0, n - 1);
+  };
+  if (need() <= avail + 0.5) return;
+  bar.classList.add('mvt-tight');
+  if (need() <= avail + 0.5) return;
+  bar.classList.add('mvt-icons');
+}
+
 // Legend popover — opens under the "Legend" pill in the top bar
 // (FIXES_LOG Entry 93). The swatches themselves are rendered by
 // renderMapLegendBar() into #mlbLegend (contextual per view mode);
@@ -31809,6 +31875,8 @@ function renderMapFilterChips() {
     p.classList.toggle('active', s.has(p.dataset.mlpKey));
   });
   if (typeof _syncMapLayerChips === 'function') _syncMapLayerChips();
+  // Labels may have changed width (New (Xd), mode) — keep the bar on one row.
+  if (typeof _mvtFitTopBar === 'function') _mvtFitTopBar();
 }
 
 // =========================================================================
@@ -31916,13 +31984,14 @@ function _renderPaymentMonthPicker() {
     const fg = on ? '#fff' : 'var(--muted)';
     const border = on ? '#312e81' : 'var(--border)';
     const weight = m.isCurrent ? '700' : '500';
-    return `<button type="button"
+    return `<button type="button" class="mvtp-chip"
       onclick="setPaymentViewYm('${m.ym}')"
       title="Show payment status for ${esc(m.longLabel)}"
-      style="padding:4px 9px; font-size:11px; font-weight:${weight}; border-radius:6px; border:1px solid ${border}; background:${bg}; color:${fg}; cursor:pointer; white-space:nowrap;">
+      style="font-weight:${weight}; border:1px solid ${border}; background:${bg}; color:${fg};">
       ${esc(m.label)}${m.isCurrent ? ' ·' : ''}
     </button>`;
   }).join('');
+  if (typeof _mvtFitTopBar === 'function') _mvtFitTopBar();
 }
 function renderMapViewTabs() {
   const mode = getMapViewMode();
@@ -32048,6 +32117,8 @@ function renderMapLegendBar() {
     p.classList.toggle('active', s.has(p.dataset.mlpKey));
   });
   if (typeof _syncMapLayerChips === 'function') _syncMapLayerChips();
+  // Labels may have changed width (New (Xd), mode) — keep the bar on one row.
+  if (typeof _mvtFitTopBar === 'function') _mvtFitTopBar();
 }
 
 // =========================================================================
@@ -163394,6 +163465,16 @@ if (typeof applyMapFilters === 'function') applyMapFilters();
 // Initialize redesigned map overlays (view-mode tabs + legend + highlight pills).
 if (typeof renderMapViewTabs === 'function') renderMapViewTabs();
 if (typeof renderMapLegendBar === 'function') renderMapLegendBar();
+// Keep the map top bar on one row as the canvas width changes (window
+// resize, sidebar / right-panel collapse) and once the webfont has
+// loaded (text gets a touch wider than the fallback font).
+(function () {
+  const bar = document.getElementById('mapViewTabs');
+  if (!bar || typeof _mvtFitTopBar !== 'function') return;
+  if (typeof ResizeObserver === 'function') new ResizeObserver(() => _mvtFitTopBar()).observe(bar);
+  else window.addEventListener('resize', () => _mvtFitTopBar());
+  try { if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => _mvtFitTopBar()); } catch {}
+})();
 // Wire up the draggable bottom toolbar
 if (typeof initBottomToolbarDrag === 'function') initBottomToolbarDrag();
 
