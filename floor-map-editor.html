@@ -69746,6 +69746,11 @@ function renderUnits() {
           // fill): white halo ring → solid colored disc → solid white
           // glyph. Filled shapes stay sharp at any zoom; the halo
           // separates the disc from whatever the unit is painted.
+          // Opacity follows the LABEL TEXT (textOpacity: 1 in view mode,
+          // translucent only in Edit Mode), NOT the fill (unitOpacity —
+          // the Layers «Opacity» slider): with the slider below 100% the
+          // markers washed out together with the fill (operator
+          // 2026-10-24: «значок показывает сверху над фоном»).
           marks.forEach((mk, i) => {
             const cx = 15 + i * 27;
             const cy = u.h - 15;
@@ -69754,7 +69759,7 @@ function renderUnits() {
             halo.setAttribute('cy', cy);
             halo.setAttribute('r', 13);
             halo.setAttribute('fill', '#fff');
-            halo.setAttribute('opacity', effectiveOpacity);
+            halo.setAttribute('opacity', textOpacity);
             halo.setAttribute('style', 'pointer-events: none');
             g.appendChild(halo);
             const disc = document.createElementNS(SVG_NS, 'circle');
@@ -69762,7 +69767,7 @@ function renderUnits() {
             disc.setAttribute('cy', cy);
             disc.setAttribute('r', 11.5);
             disc.setAttribute('fill', mk.color);
-            disc.setAttribute('opacity', effectiveOpacity);
+            disc.setAttribute('opacity', textOpacity);
             disc.setAttribute('style', 'pointer-events: none');
             g.appendChild(disc);
             const ic = document.createElementNS(SVG_NS, 'svg');
@@ -69771,7 +69776,7 @@ function renderUnits() {
             ic.setAttribute('y', cy - 8);
             ic.setAttribute('width', 16);
             ic.setAttribute('height', 16);
-            ic.setAttribute('opacity', effectiveOpacity);
+            ic.setAttribute('opacity', textOpacity);
             ic.setAttribute('style', 'pointer-events: none');
             const tt = document.createElementNS(SVG_NS, 'title');
             tt.textContent = mk.title;
