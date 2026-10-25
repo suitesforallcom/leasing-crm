@@ -414,6 +414,37 @@ service cloud.firestore {
         allow read:  if isMember(wid);
         allow write: if false;
       }
+
+      // ----- Unit mail (UNIT_EMAIL_PLAN.md § 4.5, Phase 0) -------------------
+      // Переписка общего ящика: треды / письма / outbox / dead-letter пишет и
+      // читает ТОЛЬКО Cloud Functions (admin SDK). Клиент ходит через callable-
+      // двери mailListThreads / mailGetThread / mailGetAttachmentUrl /
+      // mailLinkThread, которые сами проверяют роль + гранты mailAccess
+      // (functions/mail-access.js). Явные false-блоки фиксируют намерение:
+      // без match коллекция и так закрыта, но так это видно в ревью.
+      match /mailboxes/{mailboxId}  { allow read, write: if false; }
+      match /mailThreads/{threadId} { allow read, write: if false; }
+      match /mailMessages/{msgId}   { allow read, write: if false; }
+      match /mailOutbox/{outboxId}  { allow read, write: if false; }
+      match /mailDeadLetter/{key}   { allow read, write: if false; }
+
+      // Гранты доступа к почте: read 'all'|'buildings'|'none', buildings[],
+      // directions[], send, seeUnlinked. Пишет только CF mailSetAccess (Phase 2);
+      // пользователь читает свой грант (клиентский canUseMail), admin — любой.
+      match /mailAccess/{uid} {
+        allow read:  if isAdmin(wid)
+                     || (isMember(wid) && request.auth.uid == uid);
+        allow write: if false;
+      }
+
+      // Личное состояние переписки («Hide for me», прочитано) — только свой uid:
+      // id документа = uid + '__' + mailboxId + '__' + gmailThreadId.
+      match /mailUserState/{stateId} {
+        allow read:  if isMember(wid) && stateId.split('__')[0] == request.auth.uid;
+        allow write: if isMember(wid)
+                     && stateId.split('__')[0] == request.auth.uid
+                     && request.resource.data.keys().hasOnly(['hiddenAt', 'readAt', 'lastSeenMessageCount', 'updatedAt']);
+      }
     }
 
     // ----- Legacy per-user state (pre-Stage-2 storage) --------------------

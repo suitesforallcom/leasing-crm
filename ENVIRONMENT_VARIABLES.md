@@ -30,6 +30,10 @@ The file exists at `functions/.env` and is gitignored via `functions/.gitignore`
 | `SENTRY_DSN_FUNCTIONS` | Sentry DSN for server-side error tracking (Functions) | both | optional |
 | `LATE_FEE_DEFAULT_PCT` | Default late-fee percentage (overridable per building) | both | optional |
 | `LATE_FEE_GRACE_DAYS` | Default grace period in days | both | optional |
+| `GMAIL_SA_KEY` | Secret: service-account JSON `pulse-gmail-watcher` (DWD, scope `gmail.metadata` + `calendar.events.readonly`) — Pulse metadata ingest + calendar | live | optional (Pulse) |
+| `GMAIL_PUBSUB_TOPIC` | Pub/Sub topic for the Pulse per-employee Gmail watch (default `gmail-push`) | live | optional |
+| `MAIL_SA_KEY` | Secret: service-account JSON `sfa-mail-sa` (DWD, scopes `gmail.readonly` + `gmail.send`) — Unit mail: shared company mailbox read/send (`functions/mail-*.js`, MAIL_SETUP.md) | live | ✓ for Unit mail |
+| `MAIL_PUBSUB_TOPIC` | Pub/Sub topic for the shared-mailbox Gmail watch (default `sfa-mail-push`) | live | optional |
 
 **Do NOT** create `functions/.env.example` with stub values either — the real `.env` is the canonical source. If a new function needs a new env var, Tony adds it manually to both local `.env` AND production via `firebase functions:secrets:set`.
 

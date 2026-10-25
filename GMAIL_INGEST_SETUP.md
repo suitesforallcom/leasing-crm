@@ -302,6 +302,7 @@ Firestore data (`state.gmailActivity[]`, `gmailWatch/*` docs) можно ост�
 - **Retention** — `state.gmailActivity[]` ограничен 5000 записей (FIFO trim)
 - **Опт-аут** — любой сотрудник может попросить исключить себя; админ запускает `adminStopGmailWatch({userEmail:'x@al-en.com'})`
 - **Сотрудник видит мониторинг** — в его Google Account → Security → Third-party apps появится `SuitesForAll Pulse` с указанием scopes (если выставил Product name в Шаге 3.1)
+- **Отличие от Unit mail (2026-10, MAIL_SETUP.md):** переписка из карточки юнита читает **общий ящик компании целиком** (тела писем и вложения) через ОТДЕЛЬНЫЙ service-account `sfa-mail-sa` с собственным client ID и scopes `gmail.readonly` (+ `gmail.send` для отправки). Личные ящики сотрудников этот модуль не трогает — для них по-прежнему действуют обещания выше (только метаданные через `pulse-gmail-watcher`).
 
 ---
 

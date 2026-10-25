@@ -40,6 +40,22 @@
         { "fieldPath": "ad.status", "order": "ASCENDING" },
         { "fieldPath": "totals.spend", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "mailThreads",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "unitKeys", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "lastMessageAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "mailThreads",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "linked", "order": "ASCENDING" },
+        { "fieldPath": "lastMessageAt", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []
