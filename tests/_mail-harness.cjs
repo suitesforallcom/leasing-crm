@@ -263,7 +263,12 @@ function makeGoogle(fixture) {
           if ((page + 1) * size < all.length) out.nextPageToken = String(page + 1);
           return { data: out };
         },
-        async get(a) { rec('messages.get', a); const b = box(); const m = b.messages.get(a.id); if (!m) throw err(404, 'Not Found'); return { data: clone(m) }; },
+        async get(a) {
+          rec('messages.get', a); const b = box();
+          // b.failGet = { [id]: timesToFail } — сбой ТОЛЬКО на messages.get (history.list работает).
+          if (b.failGet && b.failGet[a.id] > 0) { b.failGet[a.id]--; throw err(500, 'backend error'); }
+          const m = b.messages.get(a.id); if (!m) throw err(404, 'Not Found'); return { data: clone(m) };
+        },
         attachments: {
           async get(a) { rec('attachments.get', a); const b = box(); const att = (b.attachments || {})[a.id]; if (!att) throw err(404, 'Not Found'); return { data: { size: att.length, data: Buffer.from(att).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') } }; },
         },
