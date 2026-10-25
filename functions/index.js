@@ -12519,3 +12519,23 @@ if (process.env.SFA_TEST_EXPORTS === '1') {
   exports._test_pruneOldBackups = _pruneOldBackups;
 }
 
+
+// =========================================================================
+// ===== Unit mail (UNIT_EMAIL_PLAN.md, Phase 0 — чтение) ==================
+// Переписка из карточки юнита: общий ящик компании через DWD service-account
+// (секрет MAIL_SA_KEY), письма в workspaces/default/mail*, HTML и вложения в
+// Storage mail/… Модули functions/mail-*.js; здесь только re-export, чтобы
+// firebase-functions нашёл их при деплое. Деплой — отдельное одобрение Тони.
+// =========================================================================
+const _mailSync = require('./mail-sync');
+exports.mailOnPush        = _mailSync.mailOnPush;
+exports.mailSyncScheduled = _mailSync.mailSyncScheduled;
+exports.mailBackfill      = _mailSync.mailBackfill;
+exports.mailAdminStatus   = _mailSync.mailAdminStatus;
+const _mailRead = require('./mail-read');
+exports.mailListThreads      = _mailRead.mailListThreads;
+exports.mailGetThread        = _mailRead.mailGetThread;
+exports.mailGetAttachmentUrl = _mailRead.mailGetAttachmentUrl;
+const _mailLink = require('./mail-link');
+exports.mailLinkThread = _mailLink.mailLinkThread;
+exports.mailRelinkUnit = _mailLink.mailRelinkUnit;
