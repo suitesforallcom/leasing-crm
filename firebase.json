@@ -22,7 +22,9 @@
       "zieqvwzX",
       "SuitesForAll-handoff-*/**",
       "backups/**",
-      "**/*.md"
+      "**/*.md",
+      "**/.*/**",
+      "_*.jpg"
     ],
     "rewrites": [
       { "source": "/redesign/**", "destination": "/redesign/index.html" },

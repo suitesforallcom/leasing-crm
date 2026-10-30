@@ -644,6 +644,26 @@ else
 fi
 
 echo
+echo "Entry 97 — hosting.ignore: файлы dot-директорий и случайные jpg не попадают на публичный сайт:"
+# 2026-10-30: деплой hosting из рабочего дерева опубликовал /.git/HEAD, /.git/config,
+# /.git/index, /.claude/launch.json и 14 неотслеживаемых _lease-sig-*.jpg. Паттерн
+# **/.* отсекает только записи, чей ПОСЛЕДНИЙ сегмент начинается с точки; файлы
+# ВНУТРИ .git/ .claude/ .playwright-mcp/ .github/ проходят (firebase-tools: glob 10,
+# dot:true). Отслеживаемые .claude/settings.json, launch.json, hooks/* уезжали даже
+# из чистого worktree. Гейт: оба паттерна обязаны стоять в firebase.json; деплой —
+# только из чистого detached worktree коммита (см. FIXES_LOG Entry 97).
+_e97_ok=1
+for _pat in '"**/.*/**"' '"_*.jpg"'; do
+  if ! grep -qF "$_pat" "$ROOT/firebase.json"; then
+    echo "  ✗ firebase.json hosting.ignore lacks $_pat (FIXES_LOG Entry 97)"
+    _e97_ok=0; FAIL=1
+  fi
+done
+if [ "$_e97_ok" = 1 ]; then
+  echo "  ✓ firebase.json hosting.ignore covers **/.*/** (все dot-директории) и _*.jpg"
+fi
+
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."
