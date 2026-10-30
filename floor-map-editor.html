@@ -13585,6 +13585,8 @@
     outline: none; border-color: var(--accent);
     box-shadow: 0 0 0 3px rgba(59,130,246,.12);
   }
+  /* Entry 95: невалидный email на вкладке Tenant — Stripe отклонит счёт, пока не исправят */
+  .input-invalid { border-color: #dc2626 !important; background: #fef2f2 !important; }
   .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   /* Paired fields in a .field-row: force labels to reserve up to 2 lines
      of height so the two inputs always anchor to the same Y, even when
@@ -38581,6 +38583,130 @@ async function fbRevokeInvite(token) {
 // =========================================================================
 function normalizeEmail(e) { return (e || '').trim().toLowerCase(); }
 function isValidEmail(e)   { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e); }
+// ─── Entry 95: tenant contact hygiene ───
+// Инцидент 2026-10-29, Suite 107 / Bay Vista Dr (ZEV GLUCK): email юнита лежал
+// в базе как "ZGLUCK@VIVOHC .COM" — пробел перед .COM. Все гарды send-путей и
+// Cloud Function проверяли только /@/, адрес долетал до Stripe → customers.create
+// 400 email_invalid → onCall отдавал голый INTERNAL, оператор 6 раз видел
+// «Failed: INTERNAL» без указания на поле. Здесь — единые нормализаторы контактов
+// (email / имя / телефон), ключ сравнения имени арендатора и выбор реального
+// Stripe-получателя (toggle «$» → CC). Зеркало на сервере — functions/index.js,
+// блок «Entry 95: tenant email + Stripe error mapping»; tests/email-guard.test.mjs
+// исполняет ОБА блока прямо из исходников и сверяет вердикты.
+
+// Нормализация email. Zero-width символы (U+200B–U+200D, BOM) убираем везде;
+// вставку вида "Zev Gluck <zgluck@vivohc.com>" сводим к адресу из угловых скобок;
+// пробелы убираем ТОЛЬКО вплотную к точке или @ ("VIVOHC .COM", "ZGLUCK @VIVOHC" —
+// опечатка). Любой другой пробел ("a b@c.com", "jdoe@gmail.com - Jane") НЕ
+// склеиваем: угадать, что имелось в виду, нельзя, а склейка дала бы валидный на
+// вид ЧУЖОЙ адрес — такой адрес остаётся невалидным и возвращается оператору.
+// Регистр → lower. repaired === true только если значение изменилось не только
+// по регистру/краям (смена регистра — не ремонт). Валидности не проверяет.
+function _normEmail(raw) {
+  const trimmed = String(raw || '').trim();
+  let s = trimmed.replace(/[​-‍﻿]/g, '');
+  const angled = s.match(/<([^<>]*@[^<>]*)>/);
+  if (angled) s = angled[1].trim();
+  s = s.replace(/\s+([.@])/g, '$1').replace(/([.@])\s+/g, '$1');
+  return { email: s.toLowerCase(), repaired: s !== trimmed };
+}
+// Строже isValidEmail: плюс запрет символов «прозы» — скобок, запятых, кавычек,
+// точки с запятой, двоеточия. "zgluck@vivohc.com(primary)" проходит isValidEmail,
+// но Stripe его отвергнет — не выпускаем такое из гейтов и не пишем как «ремонт».
+function _emailLooksValid(email) {
+  const e = String(email || '');
+  return !!e && isValidEmail(e) && !/[<>()\[\],;:"]/.test(e);
+}
+// null — адрес годится; иначе английский текст для toast'а (пусто → required,
+// не проходит _emailLooksValid после нормализации → invalid с исходным вводом).
+function _tenantEmailProblem(raw) {
+  const email = _normEmail(raw).email;
+  if (!email) return 'Tenant email required — add it on the Tenant tab';
+  if (!_emailLooksValid(email)) {
+    return 'Tenant email looks invalid: "' + String(raw || '').trim() + '" — fix it on the Tenant tab (check for spaces or typos)';
+  }
+  return null;
+}
+// Кому Stripe реально шлёт счёт — зеркало правила Invoice Generator'а:
+// u.stripeBillingContact === 'cc' и валидный CC → CC, иначе primary.
+// Чистая функция, возвращает НОРМАЛИЗОВАННЫЙ адрес.
+function _unitStripeBillingEmail(u) {
+  const cc = _normEmail(u && u.emailCc).email;
+  if (u && u.stripeBillingContact === 'cc' && _emailLooksValid(cc)) return { email: cc, source: 'cc' };
+  return { email: _normEmail(u && u.email).email, source: 'primary' };
+}
+// Чинит u.email и u.emailCc по правилу _normEmail, если после чистки адрес
+// валиден; возвращает [{ field, from, to }]. Валидный адрес, чисто регистровые
+// отличия и «прозу» (не чинится) не трогает. Не сохраняет и не пушит — это
+// делает вызывающий.
+function _repairUnitContactEmails(u) {
+  const repairs = [];
+  if (!u) return repairs;
+  for (const field of ['email', 'emailCc']) {
+    const raw = u[field];
+    if (!raw || !String(raw).trim()) continue;
+    const n = _normEmail(raw);
+    if (!n.repaired || !_emailLooksValid(n.email)) continue;
+    repairs.push({ field, from: String(raw), to: n.email });
+    u[field] = n.email;
+  }
+  return repairs;
+}
+// Ключ сравнения имени арендатора: регистр, двойные/неразрывные/zero-width
+// пробелы и края не делают из "ZEV GLUCK" другого человека, чем "Zev Gluck".
+// Иначе Title Case при Save выглядел бы как смена арендатора — saveUnitDetail
+// сделал бы Tier A wipe (ledger, Stripe-штампы, документы лиза). Тем же ключом
+// матчат recovery-кейсы (submitBouncedCheck), проспекты и _stampTenantAdded.
+function _tenantKey(raw) {
+  return String(raw || '').replace(/[​-‍﻿]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+// Title Case только для «кричащих» значений — целиком UPPER или целиком lower.
+// Смешанный регистр (McDonald, iPhone Repair LLC) оставляем как ввели (кроме
+// чистки пробелов). Аббревиатуры из _TC_UPPER остаются заглавными, PHD → PhD,
+// инициалы (A., J.R., N.A.) — заглавные, токены с & (H&R, AT&T) — как ввели,
+// служебные слова (_TC_SMALL) — строчные, если не первые. Неизвестные
+// аббревиатуры (CVS, JCS) станут словами — цена правила «без капса».
+const _TC_UPPER = new Set(['LLC', 'L.L.C', 'LP', 'L.P', 'LLP', 'L.L.P', 'PLLC', 'PA', 'P.A', 'PC', 'P.C',
+  'PLC', 'DBA', 'D/B/A', 'II', 'III', 'IV', 'VI', 'VII', 'MD', 'DDS', 'DMD', 'CPA', 'RN', 'NP',
+  'PT', 'JD', 'DC', 'OD', 'USA', 'US', 'UK']);
+const _TC_SMALL = new Set(['of', 'and', 'the', 'for', 'at', 'in', 'on', 'by', 'to', 'a', 'an', 'de', 'la',
+  'del', 'van', 'von', 'der', 'di', 'da', 'du', 'le', 'les', 'des', 'y', 'e']);
+function _tcWord(tok, isFirst) {
+  // Ядро токена — без обрамляющей пунктуации (запятые, точки, скобки): "LLC," → "LLC".
+  const core = tok.replace(/^[^\p{L}\p{N}]+/u, '').replace(/[^\p{L}\p{N}]+$/u, '');
+  if (!core) return tok; // "&", "—" и т.п.
+  if (core.includes('&')) return tok; // H&R, AT&T, A&M — аббревиатуры, как ввели
+  const coreUp = core.toUpperCase();
+  if (_TC_UPPER.has(coreUp)) return tok.toUpperCase();
+  if (coreUp === 'PHD') return tok.replace(core, 'PhD');
+  if (/^\p{L}(\.\p{L})*$/u.test(core)) return tok.toUpperCase(); // инициалы: A, A., J.R., N.A.
+  const low = tok.toLowerCase();
+  if (!isFirst && _TC_SMALL.has(core.toLowerCase())) return low;
+  // Заглавная — первая буква (после открывающей пунктуации), после дефиса и слэша;
+  // после апострофа только если дальше ≥ 2 букв (O'Neil, D'Angelo — да; Smith's — нет).
+  return low.replace(/(^[^\p{L}\p{N}]*|[-\/])(\p{L})|(['’])(\p{L})(?=\p{L})/gu,
+    (m, pre, ch, apos, ch2) => (apos !== undefined ? apos + ch2.toUpperCase() : pre + ch.toUpperCase()));
+}
+function _titleCaseIfShouty(raw) {
+  const s = String(raw || '').replace(/[​-‍﻿]/g, '').trim().replace(/\s+/g, ' ');
+  if (!s || !/\p{L}/u.test(s)) return s;
+  const shouty = s === s.toUpperCase() || s === s.toLowerCase();
+  if (!shouty) return s;
+  return s.split(' ').map((tok, i) => _tcWord(tok, i === 0)).join(' ');
+}
+function _normPersonName(raw) { return _titleCaseIfShouty(raw); }
+function _normCompanyName(raw) { return _titleCaseIfShouty(raw); }
+// Телефон: 10 цифр или 11 с ведущей 1 → XXX-XXX-XXXX; иначе (международный,
+// добавочный) — только чистка пробелов, значение не трогаем.
+function _normPhone(raw) {
+  const s = String(raw || '').replace(/[​-‍﻿]/g, '').trim().replace(/\s+/g, ' ');
+  const digits = s.replace(/\D/g, '');
+  const fmt = d => d.slice(0, 3) + '-' + d.slice(3, 6) + '-' + d.slice(6);
+  if (digits.length === 10) return fmt(digits);
+  if (digits.length === 11 && digits[0] === '1') return fmt(digits.slice(1));
+  return s;
+}
+// ─── /Entry 95 ───
 
 async function fbAddEmailInvite(email, role, buildings) {
   if (!canManageMembers()) { toast('Only admins can invite', 'error'); return false; }
@@ -77597,11 +77723,13 @@ function saveGroupAssign() {
   const draft = _groupAssignDraft;
   if (!draft) return;
   const wholeFloor = draft.wholeFloor || null;
+  // Entry 95: та же гигиена, что в saveDetail / saveQuickAddTenant — значения
+  // расходятся на все юниты группы, сырой ALL-CAPS / пробел в адресе размножать нельзя.
   const tenantData = {
-    tenant:    document.getElementById('groupAssignTenant').value.trim(),
-    company:   document.getElementById('groupAssignCompany').value.trim(),
-    email:     document.getElementById('groupAssignEmail').value.trim(),
-    tel:       document.getElementById('groupAssignPhone').value.trim(),
+    tenant:    _normPersonName(document.getElementById('groupAssignTenant').value),
+    company:   _normCompanyName(document.getElementById('groupAssignCompany').value),
+    email:     _normEmail(document.getElementById('groupAssignEmail').value).email,
+    tel:       _normPhone(document.getElementById('groupAssignPhone').value),
     leaseStart:document.getElementById('groupAssignStart').value || '',
     until:     document.getElementById('groupAssignEnd').value || '',
     deposit:   +document.getElementById('groupAssignDeposit').value || 0,
@@ -77609,6 +77737,11 @@ function saveGroupAssign() {
   };
   if (!tenantData.tenant) {
     if (typeof toast === 'function') toast('Tenant name is required', 'error');
+    return;
+  }
+  // Entry 95: адрес введён, но невалиден даже после чистки — не пишем его на всю группу молча.
+  if (tenantData.email && !_emailLooksValid(tenantData.email)) {
+    if (typeof toast === 'function') toast('Email "' + document.getElementById('groupAssignEmail').value.trim() + '" looks invalid — check for spaces or typos', 'error');
     return;
   }
   if (tenantData.totalRent <= 0) {
@@ -81580,13 +81713,18 @@ function _renderUnitOverviewAlerts(u) {
       }
     }
   }
-  // Missing tenant email (blocks invoicing)
-  if (u.tenant && (!u.email || !/@/.test(u.email))) {
+  // Email арендатора отсутствует ИЛИ невалиден после нормализации (Entry 95) —
+  // блокирует инвойсинг. Непустой невалидный адрес называем явно, с CTA «Fix».
+  const _billAlert = _unitStripeBillingEmail(u); // Entry 95: как на путях отправки — CC по тумблеру «$»
+  if ((u.tenant || u.company) && _tenantEmailProblem(_billAlert.email)) {
+    const _emailText = String(u.email || '').trim();
     alerts.push({
       tone: 'warn',
       icon: 'mail',
-      text: `No tenant email — required for Stripe invoicing`,
-      cta: 'Add',
+      text: _emailText
+        ? `Tenant email "${u.email}" is invalid — Stripe will reject invoices`
+        : `No tenant email — required for Stripe invoicing`,
+      cta: _emailText ? 'Fix' : 'Add',
       onClick: `setUnitTab('tenant')`,
     });
   }
@@ -82229,12 +82367,16 @@ function _renderUnitTenantPane(u, editOn, ro) {
         const dis = editOn ? '' : 'disabled';
         return `<button type="button" class="field-stripe-btn${isActive ? ' active' : ''}" data-target="${target}" data-email="${esc(targetEmail)}" ${onclick} ${dis} title="${esc(tip)}" aria-label="${esc(tip)}">$</button>`;
       };
+      // Entry 95: непустой, но невалидный (даже после нормализации) адрес
+      // подсвечиваем красным + tooltip — Stripe отклонит счёт, пока не исправят.
+      const _invalidAttr = (v) => (v && _tenantEmailProblem(v))
+        ? ' class="input-invalid" title="Invalid email — Stripe will reject invoices until it is fixed"' : '';
       // Сам HTML двух полей — Email + Email CC (или add-button).
       return `
     <div class="field">
       <label>Email</label>
       <div class="field-with-copy">
-        <input type="email" id="fEmail" value="${esc(u.email || '')}" ${ro} placeholder="tenant@example.com">
+        <input type="email" id="fEmail" value="${esc(u.email || '')}" ${ro} placeholder="tenant@example.com"${_invalidAttr(u.email)}>
         ${_stripeBtn('primary')}
         ${u.email ? `<button type="button" class="field-copy-btn" onclick="_copyFieldValue('fEmail', this)" title="Copy email">${_rdIc('copy', 15)}</button>` : ''}
       </div>
@@ -82243,7 +82385,7 @@ function _renderUnitTenantPane(u, editOn, ro) {
     <div class="field" id="fEmailCcRow" style="${(!u.emailCc && !editOn) ? 'display:none;' : ''}">
       <label>Email (CC) <span style="color:var(--muted); font-weight:400; font-size:11px;">— second contact</span></label>
       <div class="field-with-copy">
-        <input type="email" id="fEmailCc" value="${esc(u.emailCc || '')}" ${ro} placeholder="cc@example.com">
+        <input type="email" id="fEmailCc" value="${esc(u.emailCc || '')}" ${ro} placeholder="cc@example.com"${_invalidAttr(u.emailCc)}>
         ${_stripeBtn('cc')}
         ${u.emailCc ? `<button type="button" class="field-copy-btn" onclick="_copyFieldValue('fEmailCc', this)" title="Copy CC email">${_rdIc('copy', 15)}</button>` : ''}
       </div>
@@ -83142,12 +83284,21 @@ async function _sendInvoiceWithLateFees(unitId, totalFee, opts) {
     }
   }
   if (!u || !b || !f) { toast('Unit not found', 'error'); return; }
-  if (!u.email || !/@/.test(u.email)) { toast('Tenant email required — fix in Tenant tab', 'error'); return; }
+  // Entry 95: чистим пробелы в адресах и валидируем реального Stripe-получателя
+  // (primary или CC по toggle «$»), а не просто наличие «@».
+  const _repairs = _repairUnitContactEmails(u);
+  if (_repairs.length) {
+    saveState();
+    for (const r of _repairs) toast('Email cleaned up: "' + r.from + '" → "' + r.to + '"', 'info');
+  }
+  const _bill = _unitStripeBillingEmail(u);
+  const _emailErr = _tenantEmailProblem(_bill.email);
+  if (_emailErr) { toast(_emailErr, 'error'); return; }
   const fee = +totalFee;
   if (!isFinite(fee) || fee <= 0) { toast('Nothing to invoice', 'error'); return; }
 
   if (!opts.skipConfirm && !confirm(
-    `Send a SEPARATE late-fee invoice to ${u.email}?\n\n` +
+    `Send a SEPARATE late-fee invoice to ${_bill.email}?\n\n` +
     `Amount: $${fee.toFixed(2)}\n\n` +
     `This is a stand-alone invoice — does NOT include rent or other charges. ` +
     `The tenant will receive a dedicated email for the late fee.`
@@ -83264,7 +83415,7 @@ async function _sendInvoiceWithLateFees(unitId, totalFee, opts) {
       purpose: 'late_fee',
       amountOverride: fee,
       description: desc,
-      emailOverride: u.email,
+      emailOverride: _bill.email,       // Entry 95: нормализованный primary/CC получатель
       tenantNameOverride: u.tenant || u.company || '',
       allowDuplicate,                   // operator forced past preflight → bypass cloud dedup
     });
@@ -90767,7 +90918,15 @@ async function createMoveInInvoices(mode) {
   const rent = +document.getElementById('fContractRent')?.value || +u.contractRent || 0;
   const deposit = +document.getElementById('fDeposit')?.value || +u.deposit || 0;
   const startIso = document.getElementById('fLeaseStart')?.value || u.leaseStart || u.signed || '';
-  if (!u.email) { toast('Tenant email required to send invoices', 'error'); return; }
+  // Entry 95: гард по реальному Stripe-получателю (пробелы чистим, валидность проверяем)
+  const _repairs = _repairUnitContactEmails(u);
+  if (_repairs.length) {
+    saveState();
+    for (const r of _repairs) toast('Email cleaned up: "' + r.from + '" → "' + r.to + '"', 'info');
+  }
+  const _bill = _unitStripeBillingEmail(u);
+  const _emailErr = _tenantEmailProblem(_bill.email);
+  if (_emailErr) { toast(_emailErr, 'error'); return; }
   if (!startIso) { toast('Lease start date missing', 'error'); return; }
   const b = currentBuilding();
   const f = currentFloor();
@@ -90878,7 +91037,16 @@ async function _sendMoveInDirect(mode, btn) {
   // is still the old value and the guard below falsely trips "Tenant
   // email required" even when the input visibly has a valid address.
   _flushUnitInputsToState(u);
-  if (!u.email || !/@/.test(u.email)) { toast('Tenant email required', 'error'); return; }
+  // Entry 95: чистим пробелы в адресах и валидируем реального Stripe-получателя
+  // (primary или CC по toggle «$»). _queueBackgroundPush ниже дотолкает ремонт в Firestore.
+  const _repairs = _repairUnitContactEmails(u);
+  if (_repairs.length) {
+    saveState();
+    for (const r of _repairs) toast('Email cleaned up: "' + r.from + '" → "' + r.to + '"', 'info');
+  }
+  const _bill = _unitStripeBillingEmail(u);
+  const _emailErr = _tenantEmailProblem(_bill.email);
+  if (_emailErr) { toast(_emailErr, 'error'); return; }
 
   const rent = +u.contractRent || 0;
   const deposit = +u.deposit || 0;
@@ -91015,7 +91183,7 @@ async function _sendMoveInDirect(mode, btn) {
       ym, daysUntilDue: 7,
       dueDateUnix: _rentDueUnix(amount, ym, startIso, u),   // Entry 60: due = leaseStart+grace
       purpose: 'rent', amountOverride: amount, description,
-      emailOverride: u.email,
+      emailOverride: _bill.email,       // Entry 95: нормализованный primary/CC получатель
       tenantNameOverride: (u.tenant || u.company || ''),
     });
     const uL = _freshU();               // race guard — см. комментарий выше
@@ -91051,7 +91219,7 @@ async function _sendMoveInDirect(mode, btn) {
       daysUntilDue: 7,
       purpose: 'deposit', amountOverride: deposit,
       description: depDesc,
-      emailOverride: u.email,
+      emailOverride: _bill.email,       // Entry 95: нормализованный primary/CC получатель
       tenantNameOverride: (u.tenant || u.company || ''),
     });
     const uL = _freshU();               // race guard — см. комментарий выше
@@ -94986,10 +95154,13 @@ async function saveQuickAddTenant() {
     err.style.display = '';
   };
   const val = id => (document.getElementById(id)?.value || '').trim();
-  const tenant = val('qatTenant');
-  const company = val('qatCompany');
-  const email = val('qatEmail');
-  const tel = val('qatTel');
+  // Entry 95: гигиена при добавлении — Title Case для «кричащих» имён,
+  // email без пробелов и в нижнем регистре, телефон в едином формате.
+  const tenant = _normPersonName(val('qatTenant'));
+  const company = _normCompanyName(val('qatCompany'));
+  const emailRaw = val('qatEmail');
+  const email = _normEmail(emailRaw).email;
+  const tel = _normPhone(val('qatTel'));
   const leaseStart = val('qatLeaseStart');
   // 'custom:<N>' — оператор выставил дату окончания вручную (см.
   // _qatAutoDetectTerm); в u.leaseTerm пишем округлённые месяцы N (или ''),
@@ -95012,7 +95183,7 @@ async function saveQuickAddTenant() {
   // PDF, so we block the save instead of silently filling with empties.
   const missing = [];
   if (!tenant) missing.push('Tenant name');
-  if (!email || !/@/.test(email)) missing.push('Valid email');
+  if (!email) missing.push('Valid email');
   if (!leaseStart) missing.push('Lease start date');
   if (!term) missing.push('Lease term');
   if (rent <= 0) missing.push('Monthly rent');
@@ -95024,6 +95195,9 @@ async function saveQuickAddTenant() {
         : `Missing required fields: ${missing.join(', ')}. All are needed for the lease and invoicing.`
     );
   }
+  // Entry 95: адрес введён, но даже после нормализации не проходит isValidEmail
+  // (опечатка, нет домена) — показываем ввод как есть, чтобы оператор нашёл ошибку.
+  if (!_emailLooksValid(email)) return showErr('Email "' + emailRaw + '" looks invalid — check for spaces or typos.');
   // Guard past-dated lease starts (same rule as the Lease tab).
   if (leaseStart < _todayIso()) return showErr('Lease start cannot be in the past.');
   // Гард «email вместо имени» (аудит 2026-08-16): адрес, введённый в поле
@@ -95584,7 +95758,9 @@ function _findDepositInvoiceInCache(u) {
   const cache = (typeof _invoicesCache !== 'undefined' && _invoicesCache) || null;
   if (!cache || !u) return null;
   if (!u.tenant && !u.company) return null; // вакантная suite — нечего матчить
-  const email = (u.email || '').toLowerCase().trim();
+  // Entry 95: счёт мог уйти на CC-адрес (toggle «$» на вкладке Tenant) —
+  // «свои» адреса текущего тенанта = primary + CC (нормализованные, непустые).
+  const _ownEmails = new Set([_normEmail(u.email).email, _normEmail(u.emailCc).email].filter(Boolean));
   const suiteId = String(u.id || '').toLowerCase();
   if (!suiteId) return null;
 
@@ -95599,7 +95775,7 @@ function _findDepositInvoiceInCache(u) {
   const candidates = [];
   for (const r of cache) {
     const descLC = (r.description || '').toLowerCase();
-    const emailLC = (r.customerEmail || '').toLowerCase();
+    const emailLC = _normEmail(r.customerEmail).email;
     const meta = r.metadata || {};
     const isDepositDesc = /\bdeposit\b/.test(descLC) || meta.purpose === 'deposit';
     if (!isDepositDesc) continue;
@@ -95615,9 +95791,10 @@ function _findDepositInvoiceInCache(u) {
     if (!metaSuiteMatch && !descSuiteMatch) continue;
 
     // Email — единственный сигнал, отличающий тенантов внутри одной suite.
-    // metadata.unitId/описание идентифицируют SUITE, не человека. Если оба
-    // email присутствуют и не совпадают — это другой тенант, не наш.
-    if (email && emailLC && emailLC !== email) continue;
+    // metadata.unitId/описание идентифицируют SUITE, не человека. Если адрес
+    // счёта известен и не совпадает ни с primary, ни с CC текущего тенанта —
+    // это другой тенант, не наш (защита от прошлых жильцов сохранена).
+    if (_ownEmails.size && emailLC && !_ownEmails.has(emailLC)) continue;
 
     candidates.push(r);
   }
@@ -96787,15 +96964,16 @@ function _depositPaidFromCache(u) {
   } catch {}
   if (!rows || !rows.length) return null;
   const custId = u.stripe?.customerId || null;
-  const email = String(u.email || '').trim().toLowerCase();
-  if (!custId && !email) return null;
+  // Entry 95: CC-routed счета (toggle «$») тоже «наши» — матчим по primary и CC.
+  const _ownEmails = new Set([_normEmail(u.email).email, _normEmail(u.emailCc).email].filter(Boolean));
+  if (!custId && !_ownEmails.size) return null;
   for (const r of rows) {
     if (!r || r.bucket !== 'paid') continue;
     const purpose = (r.metadata && r.metadata.purpose) || r.purpose || '';
     if (purpose !== 'deposit') continue;
     const rowCust = r.customerId || null;
-    const rowEmail = String(r.customerEmail || '').trim().toLowerCase();
-    const belongs = (custId && rowCust && rowCust === custId) || (email && rowEmail && rowEmail === email);
+    const rowEmail = _normEmail(r.customerEmail).email;
+    const belongs = (custId && rowCust && rowCust === custId) || (!!rowEmail && _ownEmails.has(rowEmail));
     if (belongs) return r.id || null;
   }
   return null;
@@ -97352,7 +97530,8 @@ async function _voidAndResendMoveIn(kind, btn) {
 // Very strict match criteria to avoid false positives:
 //   - metadata.source === 'suitesforall' (our own invoice)
 //   - metadata.unitId === u.id
-//   - metadata.purpose matches the type we just sent
+//   - metadata.purpose matches the type we just sent ('rent'; for Deposit —
+//     'deposit', or legacy 'custom' + "deposit" in the description — Entry 95)
 //   - created in the last 10 minutes
 async function _verifyAndStampAfterSend(u, type) {
   if (!u || !fbSync?.enabled) return false;
@@ -97368,7 +97547,10 @@ async function _verifyAndStampAfterSend(u, type) {
       const createdMs = r.created ? new Date(r.created).getTime() : 0;
       if (createdMs < cutoffMs) return false;
       if (type === 'Deposit') {
-        return m.purpose === 'custom' && /deposit/i.test(r.description || '');
+        // Entry 95: новые депозиты уходят с purpose 'deposit'; legacy — 'custom'
+        // + «deposit» в описании. Раньше матчился только legacy → штамп после
+        // таймаута не восстанавливался, карточка оставалась «Not sent».
+        return m.purpose === 'deposit' || (m.purpose === 'custom' && /deposit/i.test(r.description || ''));
       }
       if (type === 'Rent') {
         return m.purpose === 'rent';
@@ -97511,13 +97693,22 @@ function _flushUnitInputsToState(u) {
     const el = get(id);
     return el ? String(el.value || '').trim() : null;
   };
-  const email = readTrim('fEmail');
+  // Entry 95: те же нормализаторы, что в saveDetail — иначе quiet flush перед
+  // отправкой протащит в state (и в Stripe) сырое значение из input'а.
+  // Email: нормализованный адрес берём, только если он валиден; иначе оставляем
+  // ввод как есть (как делает saveDetail), чтобы не затирать текст оператора.
+  const emailRaw = readTrim('fEmail');
+  const email = emailRaw === null ? null
+    : (_emailLooksValid(_normEmail(emailRaw).email) ? _normEmail(emailRaw).email : emailRaw);
   if (email !== null && email !== (u.email || '')) u.email = email;
-  const tenant = readTrim('fTenant');
+  const tenantRaw = readTrim('fTenant');
+  const tenant = tenantRaw === null ? null : _normPersonName(tenantRaw);
   if (tenant !== null && tenant !== (u.tenant || '')) u.tenant = tenant;
-  const company = readTrim('fCompany');
+  const companyRaw = readTrim('fCompany');
+  const company = companyRaw === null ? null : _normCompanyName(companyRaw);
   if (company !== null && company !== (u.company || '')) u.company = company;
-  const tel = readTrim('fTel');
+  const telRaw = readTrim('fTel');
+  const tel = telRaw === null ? null : _normPhone(telRaw);
   if (tel !== null && tel !== (u.tel || '')) u.tel = tel;
   const leaseStart = readTrim('fLeaseStart');
   if (leaseStart) u.leaseStart = leaseStart;
@@ -97740,7 +97931,15 @@ function openSplitMoveInRentModal() {
   const rent = +u.contractRent || 0;
   const startIso = u.leaseStart || u.signed || '';
   if (!startIso || rent <= 0) { toast('Set rent and lease start first', 'error'); return; }
-  if (!u.email || !/@/.test(u.email)) { toast('Tenant email required', 'error'); return; }
+  // Entry 95: чистим пробелы в адресах и валидируем реального Stripe-получателя
+  // (primary или CC по toggle «$»); сам выбор адреса для payload — в _confirmSplitMoveInRent.
+  const _repairs = _repairUnitContactEmails(u);
+  if (_repairs.length) {
+    saveState();
+    for (const r of _repairs) toast('Email cleaned up: "' + r.from + '" → "' + r.to + '"', 'info');
+  }
+  const _emailErr = _tenantEmailProblem(_unitStripeBillingEmail(u).email);
+  if (_emailErr) { toast(_emailErr, 'error'); return; }
 
   // Если уже отправили rent — сплит не имеет смысла. Защита от
   // повторного клика после успешного _ntoSendRent.
@@ -97918,6 +98117,12 @@ async function _confirmSplitMoveInRent(btn) {
   const desc1 = `Prorated rent (1 of 2) — ${monthLabel} · ${fmtMD(periodOneStart)}–${fmtMD(periodOneEnd)} · ${daysFirst} day${daysFirst === 1 ? '' : 's'} @ $${dailyRate.toFixed(2)}/day`;
   const desc2 = `Prorated rent (2 of 2) — ${monthLabel} · ${fmtMD(periodTwoStart)}–${fmtMD(periodTwoEnd)} · ${daysRem} day${daysRem === 1 ? '' : 's'} @ $${dailyRate.toFixed(2)}/day (split move-in, total $${totalAmt.toFixed(2)})`;
 
+  // Entry 95: получатель Stripe-счёта — primary или CC по toggle «$» (адрес уже
+  // почищен при открытии модалки; здесь выбор адреса + повторный гард).
+  const _bill = _unitStripeBillingEmail(u);
+  const _emailErr = _tenantEmailProblem(_bill.email);
+  if (_emailErr) { toast(_emailErr, 'error'); return; }
+
   if (!_acquireSendLock(u, 'Rent')) {
     toast('Rent invoice send already in progress — wait a moment', 'error');
     return;
@@ -97938,7 +98143,7 @@ async function _confirmSplitMoveInRent(btn) {
       purpose: 'rent',
       amountOverride: amountFirst,
       description: desc1,
-      emailOverride: u.email,
+      emailOverride: _bill.email,       // Entry 95: нормализованный primary/CC получатель
       tenantNameOverride: (u.tenant || u.company || ''),
     }), 30_000, 'Rent invoice 1/2');
     console.log('[split-rent] ✓ invoice 1/2', inv1.invoiceId);
@@ -97953,7 +98158,7 @@ async function _confirmSplitMoveInRent(btn) {
       purpose: 'rent',
       amountOverride: amountRem,
       description: desc2,
-      emailOverride: u.email,
+      emailOverride: _bill.email,       // Entry 95: нормализованный primary/CC получатель
       tenantNameOverride: (u.tenant || u.company || ''),
       allowDuplicate: true,
     }), 30_000, 'Rent invoice 2/2');
@@ -98040,7 +98245,16 @@ async function _ntoSendRent(btn) {
   const rent = +u.contractRent || 0;
   const startIso = u.leaseStart || u.signed || '';
   if (!startIso || rent <= 0) { toast('Set rent and lease start first', 'error'); return; }
-  if (!u.email || !/@/.test(u.email)) { toast('Tenant email required', 'error'); return; }
+  // Entry 95: чистим пробелы в адресах и валидируем реального Stripe-получателя
+  // (primary или CC по toggle «$»); _queueBackgroundPush ниже дотолкает ремонт.
+  const _repairs = _repairUnitContactEmails(u);
+  if (_repairs.length) {
+    saveState();
+    for (const r of _repairs) toast('Email cleaned up: "' + r.from + '" → "' + r.to + '"', 'info');
+  }
+  const _bill = _unitStripeBillingEmail(u);
+  const _emailErr = _tenantEmailProblem(_bill.email);
+  if (_emailErr) { toast(_emailErr, 'error'); return; }
   // Background-only push — cloud function accepts emailOverride so
   // we don't block the UI on Firestore round-trip.
   _queueBackgroundPush(u);
@@ -98071,7 +98285,7 @@ async function _ntoSendRent(btn) {
   try { renderDetail(); } catch {}
 
   try {
-    console.log('[nto-rent] → stripeCreateInvoice', {ym, amount, email: u.email});
+    console.log('[nto-rent] → stripeCreateInvoice', {ym, amount, email: _bill.email});
     const res = await _withTimeout(stripeCreateInvoice({
       buildingId: ctx.buildingId, floorId: ctx.floorId, unitId: ctx.unitId,
       ym, daysUntilDue: 7,
@@ -98079,7 +98293,7 @@ async function _ntoSendRent(btn) {
       purpose: 'rent',
       amountOverride: amount,
       description,
-      emailOverride: u.email,
+      emailOverride: _bill.email,       // Entry 95: нормализованный primary/CC получатель
       tenantNameOverride: (u.tenant || u.company || ''),
     }), 30_000, 'Rent invoice');
     console.log('[nto-rent] ✓ invoice created', res.invoiceId);
@@ -98133,7 +98347,16 @@ async function _ntoSendDeposit(btn) {
   _flushUnitInputsToState(u);   // pull any uncommitted form edits
   const deposit = +u.deposit || 0;
   if (deposit <= 0) { toast('Set deposit amount first', 'error'); return; }
-  if (!u.email || !/@/.test(u.email)) { toast('Tenant email required', 'error'); return; }
+  // Entry 95: чистим пробелы в адресах и валидируем реального Stripe-получателя
+  // (primary или CC по toggle «$»); _queueBackgroundPush ниже дотолкает ремонт.
+  const _repairs = _repairUnitContactEmails(u);
+  if (_repairs.length) {
+    saveState();
+    for (const r of _repairs) toast('Email cleaned up: "' + r.from + '" → "' + r.to + '"', 'info');
+  }
+  const _bill = _unitStripeBillingEmail(u);
+  const _emailErr = _tenantEmailProblem(_bill.email);
+  if (_emailErr) { toast(_emailErr, 'error'); return; }
   _queueBackgroundPush(u);
 
   // Already sent? Convert into a reminder so the operator gets the
@@ -98153,7 +98376,7 @@ async function _ntoSendDeposit(btn) {
   try { renderDetail(); } catch {}
 
   try {
-    console.log('[nto-deposit] → stripeCreateInvoice', {amount: deposit, email: u.email, suite: u.id});
+    console.log('[nto-deposit] → stripeCreateInvoice', {amount: deposit, email: _bill.email, suite: u.id});
     // Include lease-start month in description so it's obvious which
     // move-in this deposit belongs to (especially helpful when the
     // operator has multiple units with the same suite number).
@@ -98174,7 +98397,7 @@ async function _ntoSendDeposit(btn) {
       purpose: 'deposit',
       amountOverride: deposit,
       description: depDesc,
-      emailOverride: u.email,
+      emailOverride: _bill.email,       // Entry 95: нормализованный primary/CC получатель
       tenantNameOverride: (u.tenant || u.company || ''),
     }), 30_000, 'Deposit invoice');
     console.log('[nto-deposit] ✓ invoice created', res.invoiceId);
@@ -98378,16 +98601,20 @@ async function _triggerAutoInvoiceNowIfNeeded(u) {
       if (typeof renderDetail === 'function') renderDetail();
     } catch (e) { console.warn('[auto-invoice precondition stamp] failed', e); }
   };
-  // Validate email — must look like a real address. Matches Stripe's
-  // requirement (single address, no whitespace, exactly one @).
-  const emailRaw = (u.email || '').trim();
-  const looksValid = /^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$/.test(emailRaw);
-  if (!emailRaw || !looksValid) {
-    const reason = !emailRaw
-      ? 'Tenant email is missing — add a valid email in the Tenant tab and retry.'
-      : `Tenant email "${emailRaw}" doesn't look like a valid address. Fix it in the Tenant tab and retry.`;
-    toast('Auto-invoice failed: ' + reason, 'error');
-    _stampPreconditionFail(reason);
+  // Entry 95: тот же гейт, что на остальных путях отправки — ремонт пробелов у
+  // точки/@ в сохранённых адресах, получатель по тумблеру «$» (CC или primary),
+  // строгая валидация ДО вызова Cloud Function. Раньше здесь был свой regex по
+  // сырому u.email: без ремонта, без учёта CC, и в payload уходил сырой u.email.
+  const _repairs = _repairUnitContactEmails(u);
+  if (_repairs.length) {
+    saveState();
+    for (const r of _repairs) toast('Email cleaned up: "' + r.from + '" → "' + r.to + '"', 'info');
+  }
+  const _bill = _unitStripeBillingEmail(u);
+  const _emailErr = _tenantEmailProblem(_bill.email);
+  if (_emailErr) {
+    toast('Auto-invoice failed: ' + _emailErr, 'error');
+    _stampPreconditionFail(_emailErr);
     return;
   }
   const rent = +u.contractRent || +u.rent || 0;
@@ -98478,7 +98705,7 @@ async function _triggerAutoInvoiceNowIfNeeded(u) {
       dueDateUnix: _rentDueUnix((u.contractRent || u.rent || 0), ym, (u.leaseStart || u.signed || ''), u),   // Entry 60
       purpose: 'rent',
       description: `Rent for ${_fmtMonthName(ym)} · ${_unitNoun(u)} ${u.id}`,
-      emailOverride: u.email,
+      emailOverride: _bill.email,       // Entry 95: нормализованный primary/CC получатель
       tenantNameOverride: u.tenant || u.company || '',
       // auto flag — tells the backend to use the "RA-" prefix in
       // the custom invoice number so the operator can tell at a
@@ -102115,12 +102342,13 @@ function saveUnitDetail() {
   const u = currentUnits().find(x => x.id === selectedIds[0]);
   if (!u) { saveDetail(); window._unitEditOn = false; renderDetail(); return; }
   const wasVacant   = u.status !== 'occupied';
-  const prevTenant  = ((u.tenant || u.company) || '').trim();
-  const hadTenant   = !!prevTenant;
+  const prevTenant = ((u.tenant || u.company) || '').trim();
+  const prevTenantKey = _tenantKey(prevTenant); // Entry 95: Title Case / пробелы при Save — не смена арендатора
+  const hadTenant = !!prevTenantKey;
   // Snapshot the pre-save email too — any change here invalidates
   // outstanding Stripe stamps (the prior invoice was issued to a
   // different customer, by definition).
-  const prevEmail   = String(u.email || '').toLowerCase().trim();
+  const prevEmail = _normEmail(u.email).email; // Entry 95: чистка пробелов у точки/@ — не смена email (иначе Tier B сбросил бы Stripe-указатели)
 
   if (saveDetail() === false) return;   // commits form fields to state; false = гард отклонил сейв — остаёмся в edit-режиме, ввод оператора не теряем
   // Multi-suite lease auto-sync — if this unit is the PRIMARY of a tenant
@@ -102144,13 +102372,14 @@ function saveUnitDetail() {
 
   const u2 = currentUnits().find(x => x.id === selectedIds[0]);
   if (!u2) return;
-  const curTenant   = ((u2.tenant || u2.company) || '').trim();
+  const curTenant = ((u2.tenant || u2.company) || '').trim();
+  const curTenantKey = _tenantKey(curTenant); // Entry 95
   const nowOccupied = u2.status === 'occupied';
-  const curEmail    = String(u2.email || '').toLowerCase().trim();
+  const curEmail = _normEmail(u2.email).email; // Entry 95
 
-  const filledFromEmpty       = !hadTenant && !!curTenant;
-  const wasVacantNowOccupied  = wasVacant && nowOccupied && !!curTenant;
-  const tenantNameChanged     = !!curTenant && hadTenant && prevTenant !== curTenant;
+  const filledFromEmpty = !hadTenant && !!curTenantKey;
+  const wasVacantNowOccupied = wasVacant && nowOccupied && !!curTenantKey;
+  const tenantNameChanged = !!curTenantKey && hadTenant && prevTenantKey !== curTenantKey; // Entry 95: ключи, не сырые строки
   const emailChanged          = prevEmail !== curEmail && (prevEmail || curEmail);
 
   const crossedThreshold = filledFromEmpty || wasVacantNowOccupied || tenantNameChanged;
@@ -104504,7 +104733,7 @@ function submitBouncedCheck() {
   let rcase = state.recoveryCases
     .filter(c => c.unitId === u.id && c.buildingId === b.id
                 && c.status !== 'recovered'
-                && (c.tenant === lastTenant.name || !c.tenant))
+                && (_tenantKey(c.tenant) === _tenantKey(lastTenant.name) || !c.tenant)) // Entry 95: Title Case при Save ≠ другой арендатор
     .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0];
   const totalAdded = amount + nsfFee;
   if (!rcase) {
@@ -105115,9 +105344,12 @@ function saveDetail() {
     sink: !!u.sink, window: !!u.window, rentable: u.rentable !== false,
   };
   const get = id => document.getElementById(id);
-  if (get('fTenant'))  u.tenant  = get('fTenant').value.trim();
-  if (get('fCompany')) u.company = get('fCompany').value.trim();
-  if (get('fTel'))     u.tel     = get('fTel').value.trim();
+  // Entry 95: гигиена данных — Title Case для «кричащих» (ALL-CAPS / all-lower)
+  // имён, единый формат телефона XXX-XXX-XXXX. Нормализованное значение
+  // возвращаем в input, чтобы оператор видел результат чистки.
+  if (get('fTenant'))  { u.tenant  = _normPersonName(get('fTenant').value);   get('fTenant').value  = u.tenant; }
+  if (get('fCompany')) { u.company = _normCompanyName(get('fCompany').value); get('fCompany').value = u.company; }
+  if (get('fTel'))     { u.tel     = _normPhone(get('fTel').value);           get('fTel').value     = u.tel; }
   // Авто-флип vacant → occupied, когда оператор вводит арендатора/компанию
   // напрямую через таб Tenant. Без этого статус застревал в 'vacant':
   // пилюля сверху врала, кебаб-меню прятал Send invoice / Record payment,
@@ -105145,9 +105377,21 @@ function saveDetail() {
     const uniq = [];
     for (const m of matches) if (!uniq.includes(m)) uniq.push(m);
     if (uniq.length === 0) {
-      // No email found — keep whatever the operator typed (Stripe will
-      // reject later if invalid; better than wiping their input).
-      u.email = raw;
+      // Entry 95: regex не нашёл адрес — пробуем убрать пробелы/zero-width
+      // ("ZGLUCK@VIVOHC .COM" → "zgluck@vivohc.com"). Если и после чистки
+      // невалидно — оставляем ввод как есть (не затираем), но предупреждаем:
+      // Stripe такой адрес отклонит.
+      const fixed = _normEmail(raw).email;
+      if (_emailLooksValid(fixed)) {
+        u.email = fixed;
+        get('fEmail').value = fixed;
+        if (typeof toast === 'function') toast('Email cleaned up: "' + raw + '" → "' + fixed + '"', 'info');
+      } else {
+        u.email = raw;
+        if (raw && typeof toast === 'function') {
+          toast('Email "' + raw + '" does not look like a valid address — Stripe will reject invoices until it is fixed', 'warning');
+        }
+      }
     } else {
       u.email = uniq[0];
       // Reflect the clean value back into the input so it sticks.
@@ -105187,7 +105431,19 @@ function saveDetail() {
   // auto-promoted CC isn't immediately wiped.
   if (get('fEmailCc')) {
     const cc = get('fEmailCc').value.trim();
-    if (cc) u.emailCc = cc;
+    if (cc) {
+      // Entry 95: та же чистка, что и для primary — пробелы/zero-width долой,
+      // регистр → lower; toast только когда реально что-то вычистили.
+      const ccNorm = _normEmail(cc);
+      if (_emailLooksValid(ccNorm.email)) {
+        u.emailCc = ccNorm.email;
+        get('fEmailCc').value = ccNorm.email;
+        if (ccNorm.repaired && typeof toast === 'function') toast('Email cleaned up: "' + cc + '" → "' + ccNorm.email + '"', 'info');
+      } else {
+        u.emailCc = cc;
+        if (typeof toast === 'function') toast('CC email "' + cc + '" does not look like a valid address — Stripe will reject invoices until it is fixed', 'warning');
+      }
+    }
     else delete u.emailCc;
   }
   // Stripe billing recipient — встроенная "$" кнопка рядом с email-полем.
@@ -115408,7 +115664,7 @@ function _advanceProspect(bId, fId, uId, pId) {
 function _convertProspectToTenant(bId, fId, uId, pId) {
   const ctx = _findProspect(bId, fId, uId, pId);
   if (!ctx) return;
-  const hasOther = ctx.u.tenant && String(ctx.u.tenant).trim() && ctx.u.tenant !== ctx.p.name;
+  const hasOther = ctx.u.tenant && String(ctx.u.tenant).trim() && _tenantKey(ctx.u.tenant) !== _tenantKey(ctx.p.name); // Entry 95
   const msg = hasOther
     ? `Unit already has tenant "${ctx.u.tenant}". Mark "${ctx.p.name}" as signed but do NOT overwrite tenant fields?`
     : `Mark "${ctx.p.name}" as signed and write tenant fields (name, email, phone, rent, lease start/term) onto unit ${ctx.u.id}?`;
@@ -115486,15 +115742,17 @@ function _deleteProspect(bId, fId, uId, pId) {
 // решит через UI; просто бросаем toast с подсказкой.
 function _promoteProspectToTenant(u, p) {
   if (!u || !p) return;
-  if (u.tenant && String(u.tenant).trim() && u.tenant !== p.name) {
+  if (u.tenant && String(u.tenant).trim() && _tenantKey(u.tenant) !== _tenantKey(p.name)) { // Entry 95: регистр/пробелы — тот же человек
     if (typeof toast === 'function') {
       toast(`Heads up: unit already has tenant "${u.tenant}". Prospect "${p.name}" marked signed but NOT promoted — edit tenant manually if needed.`, 'warn');
     }
     return;
   }
-  u.tenant = p.name || u.tenant;
-  u.email  = p.email || u.email;
-  u.phone  = p.phone || u.phone;
+  // Entry 95: нормализуем при переносе из проспекта — Title Case для «кричащих»
+  // имён, email lower без пробелов у точки/@, телефон XXX-XXX-XXXX.
+  u.tenant = _normPersonName(p.name) || u.tenant;
+  u.email  = _normEmail(p.email).email || u.email;
+  u.phone  = _normPhone(p.phone) || u.phone;
   if (p.loiRent && !u.contractRent)       u.contractRent = +p.loiRent || 0;
   if (p.loiStartDate && !u.leaseStart)    u.leaseStart   = p.loiStartDate;
   if (p.loiTermMonths && !u.leaseTerm)    u.leaseTerm    = String(p.loiTermMonths);
@@ -130333,7 +130591,7 @@ function _stampTenantAdded(u) {
   const curTenant = ((u.tenant || u.company) || '').trim();
   if (!curTenant) return;
   const lastTenant = (u._lastStampedTenant || '').trim();
-  if (u._tenantAddedAt && lastTenant === curTenant) return;
+  if (u._tenantAddedAt && _tenantKey(lastTenant) === _tenantKey(curTenant)) return; // Entry 95: регистр/пробелы — не новая аренда
   u._tenantAddedAt = new Date().toISOString();
   u._lastStampedTenant = curTenant;
 }
@@ -153636,15 +153894,21 @@ function ciRenderPreview() {
     return f?.units.find(x => x.id === _ciSelection.unitId);
   })();
   const checksHost = document.getElementById('ciChecks');
+  // Entry 95: готовность email — по реальному Stripe-получателю (primary или CC
+  // по toggle «$») и полной валидации, а не по наличию «@». Невалидный адрес
+  // подписываем явно, чтобы оператор шёл чинить поле, а не гадал «что не так».
+  const hasEmail = !!u && !_tenantEmailProblem(_unitStripeBillingEmail(u).email);
+  const emailCheckLabel = (!hasEmail && u && String(u.email || '').trim())
+    ? 'Email invalid — fix on Tenant tab'
+    : 'Email on file';
   if (checksHost) {
     const hasTenant = !!u;
-    const hasEmail = !!(u?.email && /@/.test(u.email));
     const hasLines = all.length > 0;
     const totalOk = total > 0;
     const ck = (ok, label) => `<div style="display:flex; gap:6px; align-items:center;">${ok ? '✅' : '⚪'} ${esc(label)}</div>`;
     checksHost.innerHTML =
       ck(hasTenant, 'Tenant selected') +
-      ck(hasEmail, 'Email on file') +
+      ck(hasEmail, emailCheckLabel) +
       ck(hasLines, 'Line items present') +
       ck(totalOk, 'Total > $0') +
       ck(true, 'Stripe payment flow ready');
@@ -153652,7 +153916,7 @@ function ciRenderPreview() {
   // Update Send button
   const sendBtn = document.getElementById('ciSendBtn');
   if (sendBtn) {
-    sendBtn.disabled = !u || !u.email || !/@/.test(u.email) || total <= 0
+    sendBtn.disabled = !hasEmail || total <= 0
       || sendBtn.dataset.leaseBlocked === '1';
   }
   // Customer-facing preview
@@ -154303,7 +154567,7 @@ function ciBuildSuggestions(query) {
           floorLabel: f.name,
           label: `Suite ${u.id} · ${u.tenant || u.company || '(no name)'}`,
           sub: `${u.email || 'no email'} · $${(+u.contractRent || +u.rent || 0).toLocaleString()}/mo`,
-          hasEmail: !!(u.email && /@/.test(u.email)),
+          hasEmail: !_tenantEmailProblem(_unitStripeBillingEmail(u).email),   // Entry 95: то же правило, что гард выбора
           rent: +u.contractRent || +u.rent || 0,
           tenant: u.tenant || u.company,
         });
@@ -154356,10 +154620,9 @@ function ciSelectSuggestion(buildingId, floorId, unitId) {
   const u = f?.units.find(x => x.id === unitId);
   if (!u) return;
 
-  if (!u.email || !/@/.test(u.email)) {
-    toast('This tenant has no email. Add one in Rent Roll first.', 'error');
-    return;
-  }
+  // Entry 95: валидируем реального Stripe-получателя (primary или CC по toggle «$»)
+  const _emailErr = _tenantEmailProblem(_unitStripeBillingEmail(u).email);
+  if (_emailErr) { toast(_emailErr, 'error'); return; }
   const rent = +u.contractRent || +u.rent || 0;
   if (rent <= 0) {
     toast('This unit has no rent set. Add Current Rent in Rent Roll.', 'error');
@@ -154375,8 +154638,9 @@ function ciSelectSuggestion(buildingId, floorId, unitId) {
   // на карточке арендатора (u.stripeBillingContact === 'cc') и есть валидный
   // u.emailCc — показываем CC и метку "(second contact)" чтобы было
   // визуально понятно что выбран не дефолтный адрес.
-  const _useCcRecipient = u.stripeBillingContact === 'cc' && u.emailCc && /@/.test(u.emailCc);
-  const _billingEmail   = _useCcRecipient ? u.emailCc : u.email;
+  const _billSel        = _unitStripeBillingEmail(u);   // Entry 95: единое правило получателя
+  const _useCcRecipient = _billSel.source === 'cc';
+  const _billingEmail   = _billSel.email;
   const _billingTag     = _useCcRecipient ? ' (second contact)' : '';
   document.getElementById('ciSelectedSub').textContent = `${buildingLabel(b)} · ${_billingEmail}${_billingTag} · $${rent.toLocaleString()}/mo`;
   document.getElementById('ciSelectedPanel').style.display = '';
@@ -154675,6 +154939,10 @@ async function ciSubmit() {
       const b = state.buildings.find(x => x.id === _ciSelection.buildingId);
       const f = b?.floors.find(x => x.id === _ciSelection.floorId);
       const u = f?.units.find(x => x.id === _ciSelection.unitId);
+      // Entry 95: получатель считается ОДНИМ правилом (_unitStripeBillingEmail)
+      // для subline, confirm-диалога и payload'а — раньше confirm брал сырой
+      // u.emailCc без валидации и мог разойтись с тем, что видел оператор.
+      const _bill = _unitStripeBillingEmail(u);
       return {
         suite: u?.id || _ciSelection.unitId,
         tenant: u?.tenant || u?.company || '(no name)',
@@ -154684,8 +154952,10 @@ async function ciSubmit() {
         // recipient" radio. 'cc' = route invoices to emailCc; default
         // (anything else) = route to primary email.
         billingContact: u?.stripeBillingContact || 'primary',
+        billingEmail: _bill.email || '(no email)',
+        billingSource: _bill.source,
       };
-    } catch { return { suite: _ciSelection.unitId, tenant: '(unknown)', email: '(unknown)', emailCc: null, billingContact: 'primary' }; }
+    } catch { return { suite: _ciSelection.unitId, tenant: '(unknown)', email: '(unknown)', emailCc: null, billingContact: 'primary', billingEmail: '(unknown)', billingSource: 'primary' }; }
   })();
   const purposeLbl = ({rent:'Monthly rent', late_fee:'Late fee', keys:'Replacement keys', damages:'Damages', cleaning:'Cleaning fee', custom:'Other charge'})[purpose] || purpose;
   // Multi-month: monthLbl показывает range/count для понятности в confirm-dialog.
@@ -154703,19 +154973,21 @@ async function ciSubmit() {
   // u.stripeBillingContact (toggle на карточке арендатора). Когда
   // 'cc' и u.emailCc валидный — Stripe-счёт идёт на CC. Иначе —
   // на primary u.email (поведение по умолчанию для всех юнитов
-  // без явной настройки).
+  // без явной настройки). Entry 95: правило одно — _unitStripeBillingEmail
+  // (см. tenantInfo.billingEmail/billingSource), адрес уже нормализован.
   //
-  // emailOverride передаётся в backend ТОЛЬКО когда выбран CC.
+  // emailOverride передаём в backend ВСЕГДА (Entry 95) — тот же
+  // нормализованный адрес, который оператор видит в confirm-диалоге.
   // Backend (functions/index.js, секция "Email routing") уважает
-  // emailOverride и направляет Stripe туда. Если override не передан,
-  // backend берёт u.email из Firestore — без изменений старого поведения.
+  // emailOverride; раньше для primary override не передавался и backend
+  // брал сырой u.email из Firestore (класс "ZGLUCK@VIVOHC .COM").
   //
   // ВАЖНО: старая логика popup'а показывала ОБЕ строки — "Email:
   // primary" + "CC: cc" — но Stripe фактически никогда не CC'ил CC
   // (поле u.emailCc игнорировалось backend'ом). Теперь показываем
   // только реального получателя + тег если это не дефолт.
-  const useCcContact = tenantInfo.billingContact === 'cc' && !!tenantInfo.emailCc;
-  const recipientEmail = useCcContact ? tenantInfo.emailCc : tenantInfo.email;
+  const useCcContact = tenantInfo.billingSource === 'cc';
+  const recipientEmail = tenantInfo.billingEmail;
   // 2026-05-28: native confirm() заменён на appConfirm() — операторам было
   // тесно в 480px native popup, текст уходил под скролл (особенно для
   // multi-month advance). Custom modal масштабируется (620px max-width,
@@ -154958,11 +155230,11 @@ async function ciSubmit() {
       amountOverride,
       description: description || undefined,
       autoPayConsent,
-      // Маршрутизация получателя: когда оператор переключил radio на
-      // Second contact, передаём emailOverride с адресом CC. Backend
-      // теперь уважает явно переданный emailOverride и направляет
-      // Stripe-счёт туда. undefined = backend берёт u.email (default).
-      emailOverride: useCcContact ? tenantInfo.emailCc : undefined,
+      // Маршрутизация получателя (Entry 95): нормализованный адрес из
+      // _unitStripeBillingEmail — primary или CC по toggle «$». Backend
+      // уважает явно переданный emailOverride; undefined только если
+      // адреса нет вовсе (тогда backend сам упадёт с понятной ошибкой).
+      emailOverride: _emailLooksValid(recipientEmail) ? recipientEmail : undefined,
       // Idempotency key — locked at modal open, NOT reset between
       // failed attempts. If the user clicks Send twice (or hits
       // Enter twice), the second call hits Stripe with the same key

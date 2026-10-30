@@ -21,6 +21,10 @@ Format:
 
 ---
 
+## 2026-10-29
+
+- ⚠️ `(этот коммит)` **Entry 95: email с пробелом («ZGLUCK@VIVOHC .COM») блокировал счета Suite 107 голым INTERNAL** — строгая валидация email на всех 8 путях отправки и в CF до Stripe, маппинг Stripe 4xx в HttpsError с причиной, авто-ремонт пробела у точки/@, Title Case / телефон / email при сохранении и добавлении, `_tenantKey` в детекторе смены арендатора (иначе Title Case стирал ledger — находка ревью). Деплой hosting + functions:createStripeInvoice,ensureStripeCustomer.
+
 ## 2026-09-02
 
 - 🆕 `(этот коммит)` **Entry 80: renewal/amendment уходят одностраничным Amendment, не вторым полным договором** — `_dsBuildAmendmentHtml` (текст согласован Tony: recitals со ссылкой на оригинал, Term extended, Deposit carry-over «no additional deposit is due», «this Amendment controls»), generated-ветка в резолвере перед stub'ом (unit/workspace-шаблоны выигрывают), docKind прокинут через payload → send/оба превью. Новое merge-поле `{{renewal_start}}` (pend.effDate → until+1). Байт-идентичность полного договора SHA-256 подтверждена (live `d02ad917…`, raw `c2f1991a…`). DEPLOYED.

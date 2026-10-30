@@ -519,6 +519,67 @@ done
 [ "$VOK" -eq 1 ] && echo "  ✓ vendor-движок фото (OpenCV+jscanify) на месте и путями совпадает"
 
 echo
+echo "Entry 95 — tenant email validation + Stripe error mapping:"
+# 2026-10-29, Suite 107 / Bay Vista Dr: u.email хранился как "ZGLUCK@VIVOHC .COM"
+# (обычный пробел перед .COM). Все клиентские гейты путей отправки и CF
+# проверяли только /@/ → адрес ушёл в Stripe → 400 email_invalid →
+# необработанный StripeInvalidRequestError → onCall отдал голый INTERNAL;
+# оператор шесть раз увидел «Failed: INTERNAL — checking Stripe for orphan
+# invoice…» без указания на поле. Заодно: тумблер «$» (u.stripeBillingContact
+# === 'cc') учитывал только Invoice Generator — пути Move-in всегда слали на
+# u.email; а _verifyAndStampAfterSend матчил только legacy purpose:'custom' и
+# не мог восстановить новый штамп депозита.
+# Гейты: строгий isValidEmail на каждом пути отправки (_tenantEmailProblem),
+# получатель через _unitStripeBillingEmail, Title Case имён при сохранении
+# (saveDetail → _normPersonName); CF валидирует адрес до любого вызова Stripe
+# (_assertTenantEmail) и маппит 4xx Stripe в HttpsError с настоящей причиной
+# (_stripeErrToHttps на customer / invoice / finalize). Тест: tests/email-guard.test.mjs.
+check_gate 95 _sendMoveInDirect '_tenantEmailProblem\(' 40
+check_gate 95 _ntoSendRent '_tenantEmailProblem\(' 40
+check_gate 95 _ntoSendDeposit '_tenantEmailProblem\(' 40
+check_gate 95 _verifyAndStampAfterSend "purpose === 'deposit'" 40
+check_gate 95 saveDetail '_normPersonName\(' 120
+# Ревью Entry 95: остальные пути отправки + авто-счёт при включении AUTO обязаны
+# идти через тот же гейт; детектор смены арендатора и матчеры имени — через _tenantKey
+# (иначе Title Case при Save выглядит как другой арендатор → Tier A wipe ledger'а);
+# групповое назначение пишет нормализованные контакты.
+check_gate 95 _triggerAutoInvoiceNowIfNeeded '_tenantEmailProblem\(' 60
+check_gate 95 _sendInvoiceWithLateFees '_tenantEmailProblem\(' 60
+check_gate 95 createMoveInInvoices '_tenantEmailProblem\(' 40
+check_gate 95 _confirmSplitMoveInRent '_tenantEmailProblem\(' 60
+check_gate 95 openSplitMoveInRentModal '_tenantEmailProblem\(' 40
+check_gate 95 saveUnitDetail '_tenantKey\(' 60
+check_gate 95 _promoteProspectToTenant '_tenantKey\(' 20
+check_gate 95 _stampTenantAdded '_tenantKey\(' 20
+check_gate 95 saveGroupAssign '_normPersonName\(' 20
+if [ "$(grep -c "emailOverride: u.email" "$HTML" || true)" -eq 0 ]; then
+  echo "  ✓ emailOverride: u.email — нигде (получатель всегда через _unitStripeBillingEmail)"
+else
+  echo "  ✗ emailOverride: u.email всё ещё встречается — путь отправки обходит _unitStripeBillingEmail (FIXES_LOG Entry 95)"
+  FAIL=1
+fi
+# CF-гейты по МЕСТУ вызова (ревью: счётчик вхождений проходил и при убранном вызове
+# на пути инцидента). Тело createStripeInvoice лежит либо inline в
+# exports.createStripeInvoice = onCall(, либо вынесено в _createStripeInvoiceImpl
+# (agent-gateway) — берём регион от первого из якорей до exports.startAutoPay.
+_e95_inv="$(awk '/^async function _createStripeInvoiceImpl\(|^exports\.createStripeInvoice = onCall\(/ {on=1} /^exports\.startAutoPay/ {on=0} on' "$FN_JS")"
+_e95_ens="$(awk '/^exports\.ensureStripeCustomer = onCall\(/ {on=1; print; next} on && /^(exports\.|async function |function |const )/ {on=0} on' "$FN_JS")"
+_e95_cf_ok=1
+printf '%s' "$_e95_inv" | grep -q "_assertTenantEmail(" || _e95_cf_ok=0
+printf '%s' "$_e95_inv" | grep -qF "'invoicing')" || _e95_cf_ok=0
+for _ctx in customer invoice finalize; do
+  printf '%s' "$_e95_inv" | grep -qF "_stripeErrToHttps(e, '$_ctx')" || _e95_cf_ok=0
+done
+printf '%s' "$_e95_ens" | grep -q "_assertTenantEmail(" || _e95_cf_ok=0
+printf '%s' "$_e95_ens" | grep -qF "_stripeErrToHttps(e, 'customer')" || _e95_cf_ok=0
+if [ "$_e95_cf_ok" = 1 ]; then
+  echo "  ✓ functions/index.js — _assertTenantEmail до Stripe и _stripeErrToHttps(e, customer/invoice/finalize) по месту вызова в createStripeInvoice + ensureStripeCustomer"
+else
+  echo "  ✗ functions/index.js — Entry 95: в createStripeInvoice / ensureStripeCustomer нет _assertTenantEmail( или _stripeErrToHttps(e, 'customer'|'invoice'|'finalize') на месте вызова"
+  FAIL=1
+fi
+
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."

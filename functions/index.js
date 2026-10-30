@@ -809,6 +809,91 @@ function buildCustomInvoiceNumber({purpose, unitId, ym, auto, code}) {
   return n;
 }
 
+// ─── Entry 95: tenant email + Stripe error mapping ───
+// Инцидент 2026-10-29 (Suite 107 / Bay Vista Dr, арендатор ZEV GLUCK): email юнита
+// хранился как "ZGLUCK@VIVOHC .COM" (пробел перед .COM). Все гарды (клиент и CF)
+// проверяли только /@/ — адрес дошёл до Stripe, customers.create ответил
+// 400 email_invalid, StripeInvalidRequestError вылетел необработанным, onCall
+// превратил его в голый "INTERNAL", и оператор не увидел, какое поле чинить.
+// Здесь: нормализация + валидация email ДО Stripe и маппинг 4xx-ошибок Stripe
+// в HttpsError с понятным текстом; 5xx/сеть возвращаем как есть (их ретраит клиент).
+const _TENANT_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Та же нормализация, что в клиентском _normEmail (контракт один, тест
+// email-guard сверяет оба): zero-width символы убрать везде; "Имя <адрес>" →
+// адрес из угловых скобок; пробелы убрать ТОЛЬКО вплотную к точке или @
+// ("VIVOHC .COM", "ZGLUCK @VIVOHC" — опечатка); любой другой пробел оставить
+// ("a b@c.com", "jdoe@gmail.com - Jane" НЕ склеиваем в чужой валидный адрес);
+// lowercase. Не валидирует.
+function _normTenantEmailCF(raw) {
+  let s = String(raw || '').trim().replace(/[\u200B-\u200D\uFEFF]/g, '');
+  const angled = s.match(/<([^<>]*@[^<>]*)>/);
+  if (angled) s = angled[1].trim();
+  return s.replace(/\s+([.@])/g, '$1').replace(/([.@])\s+/g, '$1').toLowerCase();
+}
+
+// Плюс запрет символов «прозы» (скобки, запятые, кавычки, ; :) — зеркало
+// клиентского _emailLooksValid: "zgluck@vivohc.com(primary)" не должен уйти в Stripe.
+function _isValidTenantEmail(raw) {
+  const e = _normTenantEmailCF(raw);
+  return !!e && e.length <= 254 && _TENANT_EMAIL_RE.test(e) && !/[<>()\[\],;:"]/.test(e);
+}
+
+// Возвращает нормализованный email или бросает failed-precondition с текстом,
+// указывающим оператору на поле (Tenant tab) и на сам адрес как он введён.
+function _assertTenantEmail(raw, where) {
+  const w = where || 'invoicing';
+  const email = _normTenantEmailCF(raw);
+  if (!email) {
+    throw new HttpsError('failed-precondition',
+      `Unit has no tenant email — add one on the Tenant tab before ${w}`);
+  }
+  if (!_isValidTenantEmail(email)) {
+    throw new HttpsError('failed-precondition',
+      `Tenant email "${String(raw || '').trim()}" is not a valid address (check for spaces or typos) — fix it on the Tenant tab before ${w}`);
+  }
+  return email;
+}
+
+// Ошибка Stripe → HttpsError. 4xx-класс (invalid_request, card, idempotency,
+// permission/auth, rate limit) получает осмысленный код и текст Stripe (его
+// видит оператор в тосте). Всё остальное — StripeAPIError, StripeConnectionError
+// (транзиентные 5xx/сеть), не-Stripe ошибки и уже готовые HttpsError — возвращаем
+// ТЕМ ЖЕ объектом, чтобы клиентский retry-слой мог повторить вызов.
+function _stripeErrToHttps(err, ctx) {
+  if (!err || err instanceof HttpsError || err.httpErrorCode) return err;
+  const type = String(err.type || '');
+  if (!type.startsWith('Stripe')) return err;
+  let code;
+  switch (type) {
+    case 'StripeInvalidRequestError':
+      code = (err.code === 'resource_missing') ? 'not-found' : 'invalid-argument';
+      break;
+    case 'StripeCardError':
+      code = 'failed-precondition';
+      break;
+    case 'StripeIdempotencyError':
+      code = 'aborted';
+      break;
+    case 'StripePermissionError':
+    case 'StripeAuthenticationError':
+      code = 'permission-denied';
+      break;
+    case 'StripeRateLimitError':
+      code = 'resource-exhausted';
+      break;
+    default:
+      return err; // StripeAPIError / StripeConnectionError — транзиентные, отдаём как есть
+  }
+  const message = 'Stripe rejected the request' + (ctx ? ` (${ctx})` : '') + ': '
+    + (err.message || err.code || err.type);
+  // В лог — тип/код/контекст + param/requestId/status для разбора в Stripe Dashboard,
+  // без err.message (там может быть email — PII-маск, аудит P2).
+  logger.warn(`[stripe] ${type}${ctx ? ' (' + ctx + ')' : ''} code=${err.code || '-'} param=${err.param || '-'} requestId=${err.requestId || '-'} status=${err.statusCode || '-'} → ${code}`);
+  return new HttpsError(code, message);
+}
+// ─── /Entry 95 ───
+
 // =========================================================================
 // ===== Stripe — Customer sync ============================================
 // Ensures a Stripe Customer exists for a given tenant email. Idempotent.
@@ -816,11 +901,14 @@ function buildCustomInvoiceNumber({purpose, unitId, ym, auto, code}) {
 exports.ensureStripeCustomer = onCall(
   {secrets: [STRIPE_SECRET_KEY], timeoutSeconds: 60, memory: '512MiB'},
   async (req) => {
-    const {email, name, unitId, buildingId} = req.data || {};
+    const {email: _rawEmail, name, unitId, buildingId} = req.data || {};
     await requireEditor(req.auth);
-    if (!email || !name) {
+    if (!_rawEmail || !name) {
       throw new HttpsError('invalid-argument', 'email and name are required');
     }
+    // Entry 95: нормализуем (пробелы/zero-width убраны, lowercase) и валидируем
+    // адрес ДО Stripe; невалидный → failed-precondition с указанием на Tenant tab.
+    const email = _assertTenantEmail(_rawEmail, 'connecting a Stripe customer');
 
     // Гард NEW- (прод-аудит 2026-08-16, п.7): не создаём и не перепривязываем
     // живого Stripe-customer под placeholder-юнит — оттуда NEW- тянется в
@@ -856,10 +944,15 @@ exports.ensureStripeCustomer = onCall(
     // the string and inject extra clauses (e.g., to broaden the search
     // beyond this workspace). Same fix as the createStripeInvoice path.
     const safeEmail = String(emailLower).replace(/[\\"]/g, '');
-    const search = await stripe.customers.search({
-      query: `email:"${safeEmail}"`,
-      limit: 5,
-    });
+    let search;
+    try {
+      search = await stripe.customers.search({
+        query: `email:"${safeEmail}"`,
+        limit: 5,
+      });
+    } catch (e) {
+      throw _stripeErrToHttps(e, 'customer'); // Entry 95: 4xx Stripe → понятный HttpsError
+    }
     // Prefer a customer that already has our workspace tag (cheapest).
     // SAFETY (#80): if the email matches but customer is tagged with
     // a DIFFERENT workspace, do NOT adopt it — adopting would let
@@ -902,15 +995,19 @@ exports.ensureStripeCustomer = onCall(
       }
       logger.info(`[stripe] linked existing customer ${customer.id} for ${_maskEmail(emailLower)} (adopted=${needsTag})`); // PII-маск (аудит P2)
     } else {
-      customer = await stripe.customers.create({
-        email, name,
-        metadata: {
-          workspaceId: WORKSPACE_ID,
-          unitId: unitId || '',
-          buildingId: buildingId || '',
-          source: 'suitesforall',
-        },
-      });
+      try {
+        customer = await stripe.customers.create({
+          email, name,
+          metadata: {
+            workspaceId: WORKSPACE_ID,
+            unitId: unitId || '',
+            buildingId: buildingId || '',
+            source: 'suitesforall',
+          },
+        });
+      } catch (e) {
+        throw _stripeErrToHttps(e, 'customer'); // Entry 95
+      }
       logger.info(`[stripe] created customer ${customer.id} for ${_maskEmail(emailLower)}`); // PII-маск (аудит P2)
     }
 
@@ -1119,28 +1216,27 @@ exports.createStripeInvoice = onCall(
     if (!found) throw new HttpsError('not-found', 'Unit not found in workspace state');
     const {unit, building, floor} = found;
 
-    // Email routing — emailOverride (when explicitly provided as a valid
-    // address) WINS over unit.email. This lets the client route a
-    // specific invoice to the unit's CC / second contact instead of the
-    // primary, without permanently rewriting unit.email. Falls back to
-    // unit.email otherwise. The original "fallback when missing" behavior
-    // for just-added tenants is preserved (override still wins).
+    // Email routing — emailOverride (when explicitly provided, non-empty)
+    // WINS over unit.email. This lets the client route a specific invoice
+    // to the unit's CC / second contact instead of the primary, without
+    // permanently rewriting unit.email. Falls back to unit.email otherwise.
+    //
+    // Entry 95: выбранный адрес проходит _assertTenantEmail — нормализуется
+    // (пробелы/zero-width убраны, lowercase) и валидируется ДО Stripe; пустой или
+    // невалидный → failed-precondition, в тексте сам адрес и указание на Tenant tab
+    // (инцидент 2026-10-29: "ZGLUCK@VIVOHC .COM" проходил гард /@/ → Stripe 400 → INTERNAL).
     //
     // Side effect: if emailOverride differs from unit.email, the
     // customer lookup below may create a SEPARATE Stripe customer for
     // that address (Stripe identifies customers by email). Acceptable
     // for the per-invoice routing use case; operator can consolidate
     // manually in Stripe Dashboard if needed.
-    const email = (emailOverride && /@/.test(emailOverride))
-      ? String(emailOverride).trim()
-      : (unit.email && /@/.test(unit.email) ? unit.email : null);
+    const email = _assertTenantEmail(
+      (emailOverride != null && String(emailOverride).trim()) || unit.email || '',
+      'invoicing');
     const tenantName = unit.tenant || unit.company
       || (tenantNameOverride ? String(tenantNameOverride).trim() : null)
       || 'Tenant';
-    if (!email) {
-      throw new HttpsError('failed-precondition',
-        'Unit has no tenant email — add one in Rent Roll before invoicing');
-    }
     // Amount: rent invoices use the unit's configured rent; other purposes
     // must supply amountOverride (in $). Defense against $0 invoices for
     // rent (but non-rent can theoretically be any positive amount).
@@ -1178,18 +1274,22 @@ exports.createStripeInvoice = onCall(
       // syntactic meaning in the query string) to guarantee the
       // email is treated as a single literal.
       const safeEmail = String(emailLower).replace(/[\\"]/g, '');
-      const search = await stripe.customers.search({
-        query: `email:"${safeEmail}" AND metadata["workspaceId"]:"${WORKSPACE_ID}"`,
-        limit: 1,
-      });
-      if (search.data[0]) {
-        customerId = search.data[0].id;
-      } else {
-        const created = await stripe.customers.create({
-          email, name: tenantName,
-          metadata: {workspaceId: WORKSPACE_ID, unitId, buildingId, source: 'suitesforall'},
+      try {
+        const search = await stripe.customers.search({
+          query: `email:"${safeEmail}" AND metadata["workspaceId"]:"${WORKSPACE_ID}"`,
+          limit: 1,
         });
-        customerId = created.id;
+        if (search.data[0]) {
+          customerId = search.data[0].id;
+        } else {
+          const created = await stripe.customers.create({
+            email, name: tenantName,
+            metadata: {workspaceId: WORKSPACE_ID, unitId, buildingId, source: 'suitesforall'},
+          });
+          customerId = created.id;
+        }
+      } catch (e) {
+        throw _stripeErrToHttps(e, 'customer'); // Entry 95: 4xx Stripe → понятный HttpsError
       }
       await mutateWorkspaceState((s) => {
         s.stripeCustomers = s.stripeCustomers || {};
@@ -1548,63 +1648,68 @@ exports.createStripeInvoice = onCall(
       ? { idempotencyKey: safeIdempotencyKey }
       : undefined;
 
-    const invoice = await stripe.invoices.create({
-      customer: customerId,
-      auto_advance: false,                // we control the finalize sequence
-      collection_method: collectionMethod,
-      // Entry 60: due_date (rent, future anchor) ЛИБО days_until_due. Никогда оба.
-      ...(collectionMethod === 'send_invoice'
-          ? (_rentAbsDue ? { due_date: _rentAbsDue }
-             : (_rentDueNow ? { days_until_due: 0 } : { days_until_due: daysDue }))
-          : {}),
-      ...(paymentSettings ? { payment_settings: paymentSettings } : {}),
-      description: topSummary,
-      footer: footerText,
-      pending_invoice_items_behavior: 'exclude',
-      // Every invoice shows Suite + Billing month + Charge type — the
-      // three facts the tenant (and operator auditing later) needs to
-      // decode what they're paying for at a glance. Stripe caps
-      // custom_fields at 4, so Property is only included when it fits.
-      custom_fields: ([
-        {name: unitNoun,         value: String(unitId)},
-        {name: 'Charge type',    value: copy.label},
-        {name: 'Billing month',  value: `${monthLabel} ${year}`},
-        ...(addressLine ? [{name: 'Property', value: addressLine}] : []),
-      ]).slice(0, 4),
-      metadata: {
-        source: 'suitesforall',
-        workspaceId: WORKSPACE_ID,
-        buildingId, floorId, unitId,
-        ym: effectiveYm,
-        purpose: invPurpose,
-        suite: String(unitId),
-        billingMonth: `${year}-${month}`,
-        customNumber,
-        ...(allowDup ? {duplicateOverride: 'true'} : {}),
-        ...(req.data?.autoPayConsent === true ? {autoPayConsent: 'true'} : {}),
-        // Private note is kept in metadata only — visible to the operator
-        // in Stripe Dashboard, NEVER rendered on the tenant's PDF/email.
-        ...(privateNote ? {privateNote: String(privateNote).slice(0, 500)} : {}),
-        // Phase 4 (roll-late-fee): cross-reference на standalone invoice,
-        // late-fee которого был перенесён сюда. Reporting (Phase 5) и
-        // operator-debug используют этот линк.
-        ...(_rollInRecord ? { rolledInLateFeeFrom: _rollInRecord.id } : {}),
-      },
-    }, stripeReqOpts);
+    let invoice;
+    try {
+      invoice = await stripe.invoices.create({
+        customer: customerId,
+        auto_advance: false,                // we control the finalize sequence
+        collection_method: collectionMethod,
+        // Entry 60: due_date (rent, future anchor) ЛИБО days_until_due. Никогда оба.
+        ...(collectionMethod === 'send_invoice'
+            ? (_rentAbsDue ? { due_date: _rentAbsDue }
+               : (_rentDueNow ? { days_until_due: 0 } : { days_until_due: daysDue }))
+            : {}),
+        ...(paymentSettings ? { payment_settings: paymentSettings } : {}),
+        description: topSummary,
+        footer: footerText,
+        pending_invoice_items_behavior: 'exclude',
+        // Every invoice shows Suite + Billing month + Charge type — the
+        // three facts the tenant (and operator auditing later) needs to
+        // decode what they're paying for at a glance. Stripe caps
+        // custom_fields at 4, so Property is only included when it fits.
+        custom_fields: ([
+          {name: unitNoun,         value: String(unitId)},
+          {name: 'Charge type',    value: copy.label},
+          {name: 'Billing month',  value: `${monthLabel} ${year}`},
+          ...(addressLine ? [{name: 'Property', value: addressLine}] : []),
+        ]).slice(0, 4),
+        metadata: {
+          source: 'suitesforall',
+          workspaceId: WORKSPACE_ID,
+          buildingId, floorId, unitId,
+          ym: effectiveYm,
+          purpose: invPurpose,
+          suite: String(unitId),
+          billingMonth: `${year}-${month}`,
+          customNumber,
+          ...(allowDup ? {duplicateOverride: 'true'} : {}),
+          ...(req.data?.autoPayConsent === true ? {autoPayConsent: 'true'} : {}),
+          // Private note is kept in metadata only — visible to the operator
+          // in Stripe Dashboard, NEVER rendered on the tenant's PDF/email.
+          ...(privateNote ? {privateNote: String(privateNote).slice(0, 500)} : {}),
+          // Phase 4 (roll-late-fee): cross-reference на standalone invoice,
+          // late-fee которого был перенесён сюда. Reporting (Phase 5) и
+          // operator-debug используют этот линк.
+          ...(_rollInRecord ? { rolledInLateFeeFrom: _rollInRecord.id } : {}),
+        },
+      }, stripeReqOpts);
 
-    await stripe.invoiceItems.create({
-      customer: customerId,
-      invoice: invoice.id,
-      amount: rentCents,
-      currency: 'usd',
-      description: lineDesc,
-      metadata: {
-        source: 'suitesforall',
-        purpose: invPurpose,
-        suite: String(unitId),
-        billingMonth: `${year}-${month}`,
-      },
-    });
+      await stripe.invoiceItems.create({
+        customer: customerId,
+        invoice: invoice.id,
+        amount: rentCents,
+        currency: 'usd',
+        description: lineDesc,
+        metadata: {
+          source: 'suitesforall',
+          purpose: invPurpose,
+          suite: String(unitId),
+          billingMonth: `${year}-${month}`,
+        },
+      });
+    } catch (e) {
+      throw _stripeErrToHttps(e, 'invoice'); // Entry 95: 4xx Stripe → понятный HttpsError
+    }
 
     // Additional monthly services (parking, cleaning, conference room,
     // etc.) — added as separate Stripe invoice line items so the
@@ -1755,7 +1860,12 @@ exports.createStripeInvoice = onCall(
       }
     }
 
-    const finalized = await stripe.invoices.finalizeInvoice(invoice.id);
+    let finalized;
+    try {
+      finalized = await stripe.invoices.finalizeInvoice(invoice.id);
+    } catch (e) {
+      throw _stripeErrToHttps(e, 'finalize'); // Entry 95
+    }
     let sent = finalized;
     if (collectionMethod === 'charge_automatically') {
       // Stripe auto-charges the saved payment method on finalize.
