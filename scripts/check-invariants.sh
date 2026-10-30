@@ -580,6 +580,70 @@ else
 fi
 
 echo
+echo "Entry 96 — AutoPay email guard · CF retry по кодам модульного SDK · общий модуль контактов (m/ + CF):"
+# Хвосты Entry 95 (2026-10-30). (1) startAutoPay передавал unit.email в Stripe с одной
+# проверкой на пустоту — тот же класс инцидента Suite 107 (голый INTERNAL). (2) isRetriable
+# в stripeCallable сравнивал код без префикса, а модульный SDK отдаёт 'functions/<code>' —
+# транзиентные ошибки не ретраились никогда; срез префикса + allowlist безопасных вызовов
+# (чтения, createStripeInvoice с ключом идемпотентности, ensureStripeCustomer), чтобы
+# повтор не дал вторую мутацию; тот же срез в audit-outbox (битые записи крутились вечно).
+# (3) Нормализаторы контактов вынесены в functions/lib/contact.js ≡ m/lib/contact.js
+# (UMD, байт-в-байт): их зовут _dsSanitizeTenancy (аренда с телефона) и m/ui/lease.js.
+# Тесты: tests/email-guard.test.mjs, tests/tenancy.test.mjs, tests/m-harness.html (4n2).
+_e96_ok=1
+_e96_ap="$(awk '/^exports\.startAutoPay = onCall\(/ {on=1; print; next} on && /^(exports\.|async function |function |const )/ {on=0} on' "$FN_JS")"
+printf '%s' "$_e96_ap" | grep -qF "_assertTenantEmail(unit.email, 'starting AutoPay')" || _e96_ok=0
+printf '%s' "$_e96_ap" | grep -qF "_stripeErrToHttps(e, 'customer')" || _e96_ok=0
+printf '%s' "$_e96_ap" | grep -qF "_stripeErrToHttps(e, 'checkout')" || _e96_ok=0
+if [ "$_e96_ok" = 1 ]; then
+  echo "  ✓ functions/index.js — startAutoPay: _assertTenantEmail до Stripe, _stripeErrToHttps(e, customer/checkout) по месту вызова"
+else
+  echo "  ✗ functions/index.js — Entry 96: в startAutoPay нет _assertTenantEmail(unit.email, 'starting AutoPay') или _stripeErrToHttps(e, 'customer'|'checkout')"
+  FAIL=1
+fi
+_e96_sc="$(awk '/^function stripeCallable\(name\) \{/ {on=1} on {print} on && /^\}/ {on=0}' "$HTML")"
+if printf '%s' "$_e96_sc" | grep -qF "replace(/^functions\\//, '')" && printf '%s' "$_e96_sc" | grep -qF "_CF_RETRY_SAFE"; then
+  echo "  ✓ stripeCallable — isRetriable срезает префикс functions/ и ретраит серверные коды только из _CF_RETRY_SAFE"
+else
+  echo "  ✗ stripeCallable — Entry 96: нет среза префикса functions/ или allowlist _CF_RETRY_SAFE"
+  FAIL=1
+fi
+check_gate 96 _auditOutboxDrain 'replace\(/\^functions' 60
+_e96_ds="$(awk '/^function _dsSanitizeTenancy\(t\) \{/ {on=1} on {print} /^exports\.dsSendEnvelope/ {on=0}' "$FN_JS")"
+_e96_ok=1
+for _fn in _contact.normPersonName _contact.normCompanyName _contact.normEmail _contact.emailLooksValid _contact.normPhone; do
+  printf '%s' "$_e96_ds" | grep -qF "$_fn(" || _e96_ok=0
+done
+grep -qF "require('./lib/contact.js')" "$FN_JS" || _e96_ok=0
+if [ "$_e96_ok" = 1 ]; then
+  echo "  ✓ functions/index.js — require('./lib/contact.js'); _dsSanitizeTenancy нормализует tenant/company/email/tel через _contact.*"
+else
+  echo "  ✗ functions/index.js — Entry 96: нет require('./lib/contact.js') или _dsSanitizeTenancy не зовёт _contact.norm*/emailLooksValid"
+  FAIL=1
+fi
+_e96_c1="$ROOT/functions/lib/contact.js"; _e96_c2="$ROOT/m/lib/contact.js"
+if [ -s "$_e96_c1" ] && cmp -s "$_e96_c1" "$_e96_c2" && ! grep -qE '^[[:space:]]*(import|export)[[:space:]]|[^A-Za-z_]require\(' "$_e96_c1"; then
+  echo "  ✓ functions/lib/contact.js ≡ m/lib/contact.js (байт-в-байт, UMD без import/export/require)"
+else
+  echo "  ✗ Entry 96: m/lib/contact.js разошёлся с functions/lib/contact.js (cp functions/lib/contact.js m/lib/contact.js) или модуль содержит import/export/require"
+  FAIL=1
+fi
+M_LEASE="$(dirname "$HTML")/m/ui/lease.js"
+_e96_send="$(awk '/^async function send\(ctx, L\) \{/ {on=1} on {print} on && /^\}/ {on=0}' "$M_LEASE")"
+_e96_ok=1
+for _fn in normPersonName normCompanyName normPhone normEmail emailLooksValid; do
+  printf '%s' "$_e96_send" | grep -qF "$_fn(" || _e96_ok=0
+done
+grep -qF "'./lib/contact.js'" "$M_APP" || _e96_ok=0
+grep -qF "callCF, contact" "$M_APP" || _e96_ok=0
+if [ "$_e96_ok" = 1 ]; then
+  echo "  ✓ m/ — app.js грузит ./lib/contact.js и отдаёт contact в ctx; lease.js send() нормализует имя/компанию/телефон/email до отправки"
+else
+  echo "  ✗ m/ — Entry 96: app.js не грузит ./lib/contact.js / ctx без contact, или lease.js send() не зовёт норм-функции"
+  FAIL=1
+fi
+
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."

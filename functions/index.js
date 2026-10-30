@@ -817,7 +817,13 @@ function buildCustomInvoiceNumber({purpose, unitId, ym, auto, code}) {
 // превратил его в голый "INTERNAL", и оператор не увидел, какое поле чинить.
 // Здесь: нормализация + валидация email ДО Stripe и маппинг 4xx-ошибок Stripe
 // в HttpsError с понятным текстом; 5xx/сеть возвращаем как есть (их ретраит клиент).
-const _TENANT_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Entry 96: нормализаторы вынесены в общий модуль functions/lib/contact.js (копия для
+// телефона — m/lib/contact.js, байт-в-байт; совпадение держат check-invariants и тест).
+// Здесь остаются обёртки с серверной семантикой: лимит длины и HttpsError. require
+// внутри блока — tests/email-guard.test.mjs исполняет блок как есть и подставляет
+// свой require.
+const _contact = require('./lib/contact.js');
+const _TENANT_EMAIL_RE = _contact.EMAIL_RE;
 
 // Та же нормализация, что в клиентском _normEmail (контракт один, тест
 // email-guard сверяет оба): zero-width символы убрать везде; "Имя <адрес>" →
@@ -826,17 +832,14 @@ const _TENANT_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // ("a b@c.com", "jdoe@gmail.com - Jane" НЕ склеиваем в чужой валидный адрес);
 // lowercase. Не валидирует.
 function _normTenantEmailCF(raw) {
-  let s = String(raw || '').trim().replace(/[\u200B-\u200D\uFEFF]/g, '');
-  const angled = s.match(/<([^<>]*@[^<>]*)>/);
-  if (angled) s = angled[1].trim();
-  return s.replace(/\s+([.@])/g, '$1').replace(/([.@])\s+/g, '$1').toLowerCase();
+  return _contact.normEmail(raw).email;
 }
 
 // Плюс запрет символов «прозы» (скобки, запятые, кавычки, ; :) — зеркало
 // клиентского _emailLooksValid: "zgluck@vivohc.com(primary)" не должен уйти в Stripe.
 function _isValidTenantEmail(raw) {
   const e = _normTenantEmailCF(raw);
-  return !!e && e.length <= 254 && _TENANT_EMAIL_RE.test(e) && !/[<>()\[\],;:"]/.test(e);
+  return !!e && e.length <= 254 && _contact.emailLooksValid(e);
 }
 
 // Возвращает нормализованный email или бросает failed-precondition с текстом,
@@ -2007,29 +2010,38 @@ exports.startAutoPay = onCall(
         `Unit "${unitId}" is an unsaved placeholder (NEW-…). Give the suite its real number in the editor before enabling autopay.`);
     }
 
-    const email = unit.email;
-    if (!email) throw new HttpsError('failed-precondition', 'Tenant email missing');
+    // Entry 96: тот же гейт, что в createStripeInvoice / ensureStripeCustomer (Entry 95) —
+    // адрес нормализуется и проверяется ДО Stripe; иначе «ZGLUCK@VIVOHC .COM» долетал
+    // бы до customers.create и возвращался оператору голым INTERNAL.
+    const email = _assertTenantEmail(unit.email, 'starting AutoPay');
     const tenantName = unit.tenant || unit.company || 'Tenant';
     const rentCents = unitRentCents(unit);
     if (rentCents <= 0) throw new HttpsError('failed-precondition', 'Rent amount missing');
 
-    // Ensure Stripe Customer
-    const emailLower = email.toLowerCase();
-    let customerId = state.stripeCustomers?.[emailLower]?.customerId;
+    // Ensure Stripe Customer — ключ state.stripeCustomers: нормализованный email
+    // (lowercase, без пробелов у точки/@), тот же, что пишет ensureStripeCustomer.
+    let customerId = state.stripeCustomers?.[email]?.customerId;
     if (!customerId) {
-      const created = await stripe.customers.create({
-        email, name: tenantName,
-        metadata: {workspaceId: WORKSPACE_ID, unitId, buildingId, source: 'suitesforall'},
-      });
+      let created;
+      try {
+        created = await stripe.customers.create({
+          email, name: tenantName,
+          metadata: {workspaceId: WORKSPACE_ID, unitId, buildingId, source: 'suitesforall'},
+        });
+      } catch (e) {
+        throw _stripeErrToHttps(e, 'customer'); // Entry 96: 4xx Stripe → понятный HttpsError, не INTERNAL
+      }
       customerId = created.id;
       await mutateWorkspaceState((s) => {
         s.stripeCustomers = s.stripeCustomers || {};
-        s.stripeCustomers[emailLower] = {customerId, name: tenantName, updatedAt: new Date().toISOString()};
+        s.stripeCustomers[email] = {customerId, name: tenantName, updatedAt: new Date().toISOString()};
       });
     }
 
     // Create a Checkout Session. mode='subscription' with inline price_data
     // avoids having to maintain a Stripe Price catalog per unit.
+    // Entry 96: 4xx Stripe при создании Checkout (выключенный способ оплаты, кривой
+    // customer…) — понятный HttpsError вместо голого INTERNAL (.catch ниже).
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       customer: customerId,
@@ -2059,7 +2071,7 @@ exports.startAutoPay = onCall(
         workspaceId: WORKSPACE_ID,
         buildingId, floorId, unitId,
       },
-    });
+    }).catch((e) => { throw _stripeErrToHttps(e, 'checkout'); });
 
     return {checkoutUrl: session.url, customerId};
   }
@@ -11332,11 +11344,16 @@ function _dsSanitizeTenancy(t) {
     }
     return Math.round(n * 100) / 100;
   };
-  const tenant = str(t.tenant, 200, 'tenant');
-  const company = str(t.company, 200, 'company');
+  // Entry 96: те же нормализаторы, что на десктопе при Save (Entry 95) и в m/ui/lease.js —
+  // общий модуль functions/lib/contact.js. Сервер — последний рубеж: «ZEV GLUCK» → «Zev Gluck»
+  // (Title Case только для «кричащих» значений, McDonald остаётся), «ZGLUCK@VIVOHC .COM» →
+  // «zgluck@vivohc.com» (пробел у точки/@ — опечатка; прочие пробелы и «проза» → отказ),
+  // «(347) 563-7418» → «347-563-7418». Лимиты длины — по сырому вводу, как раньше.
+  const tenant = _contact.normPersonName(str(t.tenant, 200, 'tenant'));
+  const company = _contact.normCompanyName(str(t.company, 200, 'company'));
   if (!tenant && !company) throw new HttpsError('invalid-argument', 'tenancy needs a tenant name or company');
-  const email = str(t.email, 254, 'email');
-  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+  const email = _contact.normEmail(str(t.email, 254, 'email')).email;
+  if (email && !_contact.emailLooksValid(email)) {
     throw new HttpsError('invalid-argument', 'tenancy.email is not a valid address');
   }
   // Гард «email вместо имени» (аудит 2026-08-16): email в tenant/company уезжал
@@ -11379,7 +11396,7 @@ function _dsSanitizeTenancy(t) {
   // (docs собраны выше)
   return {
     tenant, company, email,
-    tel: str(t.tel, 40, 'tel'),
+    tel: _contact.normPhone(str(t.tel, 40, 'tel')),
     leaseStart, leaseEnd,
     contractRent: money(t.contractRent, 'contractRent'),
     deposit: money(t.deposit, 'deposit'),
