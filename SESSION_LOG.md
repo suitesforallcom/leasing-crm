@@ -23,6 +23,7 @@ Format:
 
 ## 2026-10-29
 
+- ⚠️ `(этот коммит)` **Хостинг публично отдавал служебные файлы из корня репо** — `SuitesForAll-handoff-2026-05-02*/` (md), два zip, `zieqvwzX` и `backups/` (экспорты данных зданий/платежей 2026-07-02, старый `functions/index.js`): `firebase.json` hosting.ignore теперь исключает `*.zip`, `zieqvwzX`, `SuitesForAll-handoff-*/**`, `backups/**`, `**/*.md`; редеплой хостинга из чистого worktree. Локальные файлы не удалялись.
 - ⚠️ `(этот коммит)` **Entry 95: email с пробелом («ZGLUCK@VIVOHC .COM») блокировал счета Suite 107 голым INTERNAL** — строгая валидация email на всех 8 путях отправки и в CF до Stripe, маппинг Stripe 4xx в HttpsError с причиной, авто-ремонт пробела у точки/@, Title Case / телефон / email при сохранении и добавлении, `_tenantKey` в детекторе смены арендатора (иначе Title Case стирал ledger — находка ревью). Деплой hosting + functions:createStripeInvoice,ensureStripeCustomer.
 
 ## 2026-09-02

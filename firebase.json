@@ -17,7 +17,12 @@
       "*.rules",
       "index.html",
       "blueprint-demo.html",
-      "pinellas-park-4th-floor.html"
+      "pinellas-park-4th-floor.html",
+      "*.zip",
+      "zieqvwzX",
+      "SuitesForAll-handoff-*/**",
+      "backups/**",
+      "**/*.md"
     ],
     "rewrites": [
       { "source": "/redesign/**", "destination": "/redesign/index.html" },
