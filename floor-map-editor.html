@@ -30301,18 +30301,36 @@ function stripeCallable(name) {
   //
   // SAFETY for money operations: callers that pass an idempotency
   // key (e.g. createStripeInvoice) are safe under retry — Stripe
-  // dedupes by key. Callers without idempotency are still retried
-  // ONLY for read-like operations (the retriable codes below exclude
-  // the ones that can leave partial state). Mutations without
-  // idempotency keys are conservative — only retried on network-level
+  // dedupes by key. Callers without idempotency are retried on
+  // server-side codes ONLY when listed in _CF_RETRY_SAFE below
+  // (reads + search-then-create ensureStripeCustomer). Every other
+  // mutation is conservative — only retried on network-level
   // failures (no HTTP response) where the request never reached the
   // server.
   const raw = fbSync.sdk.httpsCallable(fbSync.functions, name);
+  // Entry 96: серверные коды повторяем ТОЛЬКО для вызовов, безопасных под повтором —
+  // чтения и мутации с идемпотентностью (createStripeInvoice несёт ключ в payload,
+  // ensureStripeCustomer — search-then-create). Остальные мутации (resend, restore,
+  // void, markPaid, startAutoPay, bank-операции…) после deadline-exceeded / internal
+  // могли уже выполниться на сервере — повтор дал бы вторую мутацию. Для них
+  // остаётся только network-level ветка ниже.
+  const _CF_RETRY_SAFE = new Set([
+    'listStripeInvoices', 'listBankTransactions', 'listBankTransactionsForUnit', 'listAuditEntries',
+    'listAutoAppliedHistory', 'listBackups', 'getBankSyncHealthSummary', 'getScalingReconcileHistory',
+    'diagnoseBankAccount',
+    'createStripeInvoice', 'ensureStripeCustomer',
+  ]);
+  const retrySafe = _CF_RETRY_SAFE.has(name);
   const isRetriable = (err) => {
-    const code = err?.code || err?.details?.code || '';
+    // Модульный Firebase SDK отдаёт код как 'functions/<code>' (compat — голый
+    // '<code>'); до Entry 96 список ниже сравнивался без среза префикса и не
+    // совпадал никогда — транзиентные ошибки Stripe (CF отдаёт их как есть,
+    // см. _stripeErrToHttps) не ретраились.
+    const code = String(err?.code || err?.details?.code || '').replace(/^functions\//, '');
     // Network-level (no response): always retriable. Transport errors
     // surface as `internal` from the Functions SDK with no httpStatus.
     if (!err?.httpErrorCode && /network|fetch|timeout/i.test(err?.message || '')) return true;
+    if (!retrySafe) return false;
     // 5xx server-side errors are retriable.
     return ['unavailable', 'deadline-exceeded', 'internal', 'aborted', 'resource-exhausted']
       .includes(code);
@@ -30569,7 +30587,9 @@ async function _auditOutboxDrain() {
         // on retry). Permanent: drop the entry so the queue doesn't
         // get stuck retrying garbage forever. Transient: stop the
         // batch and try again on the next 30s tick.
-        const code = err?.code || err?.details?.code || '';
+        // Entry 96: модульный SDK отдаёт 'functions/<code>' — без среза префикса
+        // «permanent» не матчился никогда, и очередь крутила битую запись каждые 30 с.
+        const code = String(err?.code || err?.details?.code || '').replace(/^functions\//, '');
         const isPermanent = ['invalid-argument', 'failed-precondition',
                               'permission-denied', 'unauthenticated', 'not-found']
                               .includes(code);
