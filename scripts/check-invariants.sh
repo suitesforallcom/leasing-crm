@@ -713,6 +713,26 @@ if [ "$_e99_ok" = 1 ]; then
 fi
 
 echo
+echo "Entry 100 — дашборд: доля денег и доля площади рядом, без подписи «potential»:"
+# 2026-10-30 (Тони: «Деньги + площадь рядом»): «64% of potential» читалось как
+# заполненность, хотя это actual ÷ pot (контракт занятых ÷ проформа всех
+# rentable). Площадная доля пишется в #revAreaPct из того же occPct, что и
+# плитка Rentable — отдельного расчёта быть не должно.
+_e100_ok=1
+_e100_chk() {
+  if ! grep -qF -- "$2" "$ROOT/floor-map-editor.html"; then
+    echo "  ✗ Entry 100: $1 — missing: $2 (FIXES_LOG Entry 100)"
+    _e100_ok=0; FAIL=1
+  fi
+}
+_e100_chk "hero labels the money share as asking rent" "</b> of asking rent <span id=\"revPot\">"
+_e100_chk "hero carries the area share"                "<span id=\"revAreaPct\">0%</span></b> of rentable ft² leased"
+_e100_chk "area share comes from the same occPct"      "setText('revAreaPct', occPct + '%');"
+if [ "$_e100_ok" = 1 ]; then
+  echo "  ✓ dashboard hero: X% of asking rent · Y% of rentable ft² leased (один occPct с плиткой Rentable)"
+fi
+
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."

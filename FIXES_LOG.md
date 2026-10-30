@@ -60,6 +60,23 @@ to the replacement entry) if a fix is intentionally rewritten.
 
 ---
 
+### 100. Dashboard hero: «64% of potential» was read as occupancy — the sub-line now shows the money share and the area share side by side, each with its own label and tooltip (right panel · Dashboard, 2026-10-30)
+
+- **Status:** active (lands with the commit that carries this entry)
+- **Branch / commit:** main @ (pending commit; parent 3bea870)
+- **Area:** Right panel · Dashboard tab · revenue hero
+- **Files:** floor-map-editor.html, scripts/check-invariants.sh
+- **Functions:** `updateStats` (writes `#revAreaPct` from the same `occPct` that feeds the Rentable tile), hero markup `.revenue-sub`
+- **Bug it fixed:** Operator 2026-10-30, Pinellas Park 4th floor («$26,285 / month · 64% of potential $41,220», Rentable «5,184 / 6,963 ft² · 74% occupied»): «64% должно показывать количество свободной площади от площади всех юнитов не учитывая холла, туалетов и всего остального». The 64% was never an area figure: `calcStatsForUnits` divides the collected contract rent of occupied rentable suites by the asking (proforma) rent of every rentable suite, so tenants paying below asking pull it down even at full occupancy, and vacant suites priced above average widen the gap; the area share lived only in the Rentable tile. Common-area rooms (hallway, restroom, mechanical, kitchen, storage, atrium, stairs, elevator) were already excluded from every panel figure by the type rule (`_isRentableType`: empty / office / apt_*) and the Rentable flag — nothing to fix there.
+- **What changed:** The hero sub-line reads «X% of asking rent $Y · Z% of rentable ft² leased». The money ratio keeps its value and its bar but is labelled as asking rent; the area ratio — `occPct` (occupied rentable ft² ÷ floor RSF if entered, else Σ rentable sqft; entire-floor leases honoured) — is written next to it into `#revAreaPct` right where the Rentable tile gets it, never recomputed. Each half carries a `title` tooltip with its formula. No formula changed; both numbers are the ones the panel already computed.
+- **Invariant — DO NOT BREAK:** (1) `#revAreaPct` is written from the same `occPct` as `#occPctText` — the two must never diverge. (2) The money share stays `actual ÷ pot` from `calcStatsForUnits` (contract for occupied ÷ proforma for ALL rentable); never relabel it as occupancy. (3) Open, deliberately not changed here: the Stacking view defines «potential» as contract-for-occupied + proforma-for-vacant (its own header tooltip) — two definitions coexist; unify in a separate entry if Tony wants one number.
+- **Verification:** localhost:5599 (working tree served statically, cache-busted `?v=e100`, local-only demo building, 4th Floor): hero reads «$20,760 / month · 48% of asking rent $43,145 · 55% of rentable ft² leased»; `#revPct` 48% == round(actual 20,760 / pot 43,145); `#revAreaPct` 55% == round(occSqft 3,366 / 6,161) == the Rentable tile's «55% occupied» (floor has no manual RSF, denominator = Σ rentable sqft 6,161; 27 occupied · 21 vacant · 0 reserved = 48 units); both tooltips present; no horizontal overflow (`scrollWidth == clientWidth`), the line wraps to two rows only in a 247px-wide panel. `npm run parse-check`: 4 blocks, 0 failures. Gate Entry 100 ✓ (0/3 strings on the previous page, 3/3 now). Live Pinellas Park data not re-checked — production needs Tony's own sign-in. Deploy: see the follow-up commit.
+- **Regression test:** `scripts/check-invariants.sh` Entry 100 (three fixed strings: the «of asking rent» label, the `#revAreaPct` span, the `setText('revAreaPct', occPct + '%')` write); `npm run parse-check`.
+- **Related PR / issue:** none (Tony's request 2026-10-30; option «Деньги + площадь рядом»).
+- **Porting note:** none — m.html has no revenue hero («potential» appears nowhere in m/).
+
+---
+
 ### 99. Floor plan: pedicure chair as a third water fixture — right-click row, map marker with a width guard, Water ▾ / Legend / Layers, unit card switch, rent-roll water column (floor map UI, 2026-10-30)
 
 - **Status:** active (lands with the commit that carries this entry)

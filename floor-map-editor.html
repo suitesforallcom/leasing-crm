@@ -21125,7 +21125,13 @@
           <div id="revServicesLine" style="display:none; font-size: 12px; color: var(--accent); font-weight: 600; margin-top: 2px;">
             <!-- populated when portfolio has additional-services revenue -->
           </div>
-          <div class="revenue-sub"><b><span id="revPct">0%</span></b> of potential <span id="revPot">$0</span></div>
+          <!-- Entry 100: two ratios side by side — money (collected contract
+               rent ÷ asking rent of every rentable suite at proforma) and
+               area (occupied rentable ft² ÷ rentable ft²). The money share
+               used to be labelled «of potential» and was read as occupancy
+               (operator 2026-10-30); each half now has its own label and a
+               tooltip with the formula. Values and the bar are unchanged. -->
+          <div class="revenue-sub"><span title="Collected rent (contract; proforma for legacy units) ÷ asking rent of every rentable suite at proforma — what the floor would bring fully leased at asking. Common areas excluded."><b><span id="revPct">0%</span></b> of asking rent <span id="revPot">$0</span></span> · <span title="Occupied rentable ft² ÷ rentable ft² of the floor — hallways, restrooms and other common areas excluded. Same figure as the Rentable tile below."><b><span id="revAreaPct">0%</span></b> of rentable ft² leased</span></div>
           <div class="revenue-bar">
             <div id="revBarActual" style="background: var(--success); width: 0%"></div>
             <div id="revBarLoss" style="background: var(--surface-3); width: 100%"></div>
@@ -106122,6 +106128,10 @@ function updateStats() {
   setText('occSqft', occSqftEff.toLocaleString());
   setText('totSqft', denom.toLocaleString());
   setText('occPctText', occPct + '% occupied');
+  // Entry 100: the hero sub-line shows the area share next to the money
+  // share — written from the SAME occPct as the Rentable tile, never a
+  // second computation, so the two can't drift apart.
+  setText('revAreaPct', occPct + '%');
   // Полная (gross) площадь этажа — read-only показатель рядом с Rentable.
   // Нет выбранного этажа → «—». В денежные расчёты не входит.
   const floorGross = f ? _floorGrossSqft(f) : 0;
