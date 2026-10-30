@@ -34,6 +34,19 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g,
 const usd = (ctx, n) => (ctx.fmt && ctx.fmt.money) ? ctx.fmt.money(n) : '$' + Math.round(+n || 0).toLocaleString('en-US');
 const dlong = (ctx, iso) => (iso && ctx.fmt && ctx.fmt.dateLong) ? ctx.fmt.dateLong(iso) : (iso || '—');
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;      // строже десктопного /@/ — договор уходит НАВСЕГДА
+// Entry 96: нормализаторы контактов — общий с сервером модуль /m/lib/contact.js
+// (канон functions/lib/contact.js, байт-в-байт), приходит через ctx.contact из
+// app.js. Без него (стенд без модуля) — прежняя проверка по EMAIL_RE без ремонта.
+const contactOf = (ctx) => (ctx && ctx.contact) || null;
+function normEmailOf(ctx, raw) {
+  const c = contactOf(ctx);
+  return c ? c.normEmail(raw).email : String(raw || '').trim();
+}
+function emailOk(ctx, raw) {
+  const c = contactOf(ctx);
+  return c ? c.emailLooksValid(c.normEmail(raw).email) : EMAIL_RE.test(String(raw || '').trim());
+}
+
 // Зеркало money.isAptType (локальная копия — как esc): «Apt» уходит в тему
 // письма DocuSign и в текст для арендатора — квартире нельзя писать «Suite».
 const isAptType = (t) => String(t || '').slice(0, 4) === 'apt_';
@@ -452,9 +465,9 @@ function step2(ctx, L) {
   const seen = new Set();
   const people = (snap.units || []).filter((e) => {
     const u = e.unit;
-    if (!u || !EMAIL_RE.test(String(u.email || ''))) return false;
+    if (!u || !emailOk(ctx, u.email)) return false;   // Entry 96: «ZGLUCK@VIVOHC .COM» снова в списке — пробел чинится при отправке
     if (scope !== 'all' && String(e.building.id) !== scope) return false;
-    const k = String(u.email).toLowerCase();
+    const k = normEmailOf(ctx, u.email).toLowerCase();
     if (seen.has(k)) return false;
     seen.add(k); return true;
   });
@@ -503,7 +516,7 @@ function step3(ctx, L, hit) {
     + esc(L.email || 'no email yet') + '</span><span class="s">' + esc(L.name || 'no name yet')
     + ' · only this address can sign</span></span>'
     + '<button class="chg" data-act="lease:step" data-d="-1">Change</button></div>'
-    + (EMAIL_RE.test(L.email) ? '' : '<div class="hintline" style="color:var(--bad)">That address is not a valid '
+    + (emailOk(ctx, L.email) ? '' : '<div class="hintline" style="color:var(--bad)">That address is not a valid '
       + 'email — go back and fix it.</div>') + '</div>'
     + '<div id="lsRecap">' + (bindRecap(ctx, L, hit), recapHtml(ctx, L, hit)) + '</div>'
     + '<div class="whatnext">' + I.info + '<span>The tenant gets a DocuSign email; signature status appears under '
@@ -812,7 +825,7 @@ export function foot(ctx) {
   if (L.step === 1) return '';
   const back = '<button class="big-btn ghost" data-act="lease:step" data-d="-1">' + I.left + '</button>';
   if (L.step === 2) {
-    const ok = !!String(L.name).trim() && EMAIL_RE.test(String(L.email).trim());
+    const ok = !!String(L.name).trim() && emailOk(ctx, L.email);   // Entry 96: с ремонтом пробела у точки/@
     return back + '<button class="big-btn" data-act="lease:step" data-d="1"' + (ok ? '' : ' disabled') + '>Continue</button>';
   }
   // Неоднозначная ошибка (таймаут/сеть): конверт мог уйти. Повтор — только
@@ -922,11 +935,22 @@ async function send(ctx, L) {
   const snap = ctx.snap || {};
   const buildingId = L.buildingId, floorId = L.floorId, unitId = L.unitId;
   const hit = findUnit(snap, buildingId, unitId);
+  // Entry 96: те же нормализаторы, что на десктопе при Save и в CF (_dsSanitizeTenancy):
+  // имя / компания — Title Case только для «кричащих» значений, телефон — XXX-XXX-XXXX,
+  // email — ремонт пробела у точки/@ + lowercase. Пишем обратно в черновик ДО сборки
+  // документа, подписанта и аренды — в DocuSign и на юнит уходит одно и то же.
+  // Невалидный и после ремонта email в черновике не трогаем — ниже прежний отказ.
+  const c = contactOf(ctx);
+  if (c) {
+    L.name = c.normPersonName(L.name); L.company = c.normCompanyName(L.company); L.phone = c.normPhone(L.phone);
+    const ne = c.normEmail(L.email).email;
+    if (c.emailLooksValid(ne)) L.email = ne;
+  }
   const email = String(L.email || '').trim(), name = String(L.name || '').trim();
 
   if (!hit) return fail(ctx, L, 'That unit is no longer in this snapshot. Pick it again.', true);
   if (isOccupied(hit.unit)) return fail(ctx, L, 'That unit is occupied — a lease cannot be sent onto it.', false);
-  if (!EMAIL_RE.test(email)) return fail(ctx, L, 'That recipient email is not valid.', true);
+  if (!emailOk(ctx, email)) return fail(ctx, L, 'That recipient email is not valid.', true);
   if (!name) return fail(ctx, L, 'The tenant name is missing.', true);
   if (!buildingId || !floorId || !unitId) return fail(ctx, L, 'This unit is missing its building or floor — open it in the full version.', false);
   if (typeof ctx.callCF !== 'function') return fail(ctx, L, 'The app is not connected to the server yet.', true);

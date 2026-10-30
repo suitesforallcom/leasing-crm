@@ -17,8 +17,12 @@ const [data, money, fmt, home, payments, unit, lease, invoice, switcher, plan, i
   './lib/data.js', './lib/money.js', './lib/format.js', './ui/home.js', './ui/payments.js',
   './ui/unit.js', './ui/lease.js', './ui/invoice.js', './ui/switcher.js', './ui/plan.js',
   './lib/idphoto.js',
+  './lib/contact.js',   // Entry 96: UMD без export — API кладёт в globalThis.sfaContact
 ].map((m) => import(m + _q)));
 const { initApp, subscribe, getSnapshot, refresh, callCF } = data;
+// Гигиена контактов (email / имя / телефон) — общий с сервером модуль
+// (functions/lib/contact.js ≡ m/lib/contact.js). Экраны берут его из ctx.contact.
+const contact = globalThis.sfaContact || null;
 
 const SCOPE_KEY = 'sfa_m_building';   // здание запоминается на устройстве
 const BOOT_STUCK_MS = 12000;          // не оставляем оператора на вечном сплэше
@@ -120,7 +124,7 @@ function ensureScope(){
 /* ---------------- ctx для UI-модулей ---------------- */
 function ctx(){
   return {
-    S, snap, money, fmt, callCF,
+    S, snap, money, fmt, callCF, contact,
     building: curBld(),
     go, openSheet, closeSheet, toast,
     idphoto, uploadDoc: data.uploadTenantDoc,

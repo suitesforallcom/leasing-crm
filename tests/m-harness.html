@@ -51,6 +51,7 @@ const [money, fmt, home, payments, unit, lease, invoice, switcher, plan] = await
   import('../m/ui/home.js' + V), import('../m/ui/payments.js' + V), import('../m/ui/unit.js' + V),
   import('../m/ui/lease.js' + V), import('../m/ui/invoice.js' + V), import('../m/ui/switcher.js' + V),
   import('../m/ui/plan.js' + V),
+  import('../m/lib/contact.js' + V),   // Entry 96: UMD без export — API в globalThis.sfaContact
 ]);
 
 // Стиль подтягивается асинхронно — без ожидания проверка классов даст ложную тревогу.
@@ -149,6 +150,7 @@ const S = { tab: 'home', scope: 'b1', buildingId: 'b1', ym: YM, floor: 'all', q:
 const calls = [];
 const ctx = () => ({
   S, snap, money, fmt,
+  contact: globalThis.sfaContact || null,   // Entry 96: как в m/app.js ctx()
   callCF: (n, p) => { calls.push([n, p]); return Promise.resolve({}); },
   building: snap.buildings[0],
   go(){}, openSheet(){}, closeSheet(){}, toast(){}, setScope(k){ S.scope = k; },
@@ -760,6 +762,49 @@ else say('ok', 'hostile tenant name is escaped in every rendered view');
   if (!doc || !doc.documentBase64 || doc.documentBase64.length < 500) bad2.push('документ не сформирован');
   if (bad2.length) { say('bad', 'договор: ' + bad2.join('; ')); bad++; }
   else say('ok', 'договор и аренда собраны верно (имя, почта, срок, ставка, документ)');
+  S.lease = null; S.sheet = null; S.sheetPayload = null; S.sheetArg = null; S.payload = null;
+}
+
+/* ---- 4n2. Entry 96: контакты нормализуются ДО отправки — «кричащее» имя и
+   компания, телефон со скобками и email с пробелом перед .COM уходят в DocuSign
+   и в аренду в каноническом виде (тот же модуль, что на сервере: m/lib/contact.js
+   ≡ functions/lib/contact.js). Невалидный и после ремонта адрес — отказ без
+   вызова сервера, черновик не тронут. ---- */
+{
+  const sc = globalThis.sfaContact;
+  if (!sc || typeof sc.normEmail !== 'function' || typeof sc.normPersonName !== 'function' || typeof sc.normPhone !== 'function') {
+    say('bad', 'm/lib/contact.js не выставил globalThis.sfaContact (ES-модуль в браузере)'); bad++;
+  } else say('ok', 'm/lib/contact.js грузится как ES-модуль и выставляет globalThis.sfaContact');
+  S.lease = null; S.sheet = 'lease';
+  const lid = { buildingId: 'b1', floorId: 'f4', unitId: '440' };   // свободный
+  S.sheetPayload = lid; S.sheetArg = lid; S.payload = lid;
+  const calls = [];
+  const sendCtx = () => Object.assign(ctx(), {
+    callCF: (n, p) => { calls.push({ n, p }); return Promise.resolve({ envelopeId: 'env_2', status: 'sent', stateWriteOk: true }); },
+  });
+  lease.render(sendCtx());
+  Object.assign(S.lease, { step: 3, name: 'TEST TENANT', email: 'TONY@AL-EN .COM', phone: '(727) 555-0000',
+    company: 'ACME CONSULTING LLC', start: '2026-09-01', term: '12', rent: '1', deposit: '1' });
+  await lease.handle('lease:send', null, sendCtx());
+  const p = (calls[0] && calls[0].p) || {}, t = p.tenancy || {};
+  const signer = (p.payload && p.payload.recipients && p.payload.recipients.signers && p.payload.recipients.signers[0]) || {};
+  const bad3 = [];
+  if (calls.length !== 1) bad3.push(calls.length + ' вызовов сервера');
+  if (t.tenant !== 'Test Tenant') bad3.push('имя ' + JSON.stringify(t.tenant));
+  if (t.company !== 'Acme Consulting LLC') bad3.push('компания ' + JSON.stringify(t.company));
+  if (t.email !== 'tony@al-en.com') bad3.push('почта ' + JSON.stringify(t.email));
+  if (t.tel !== '727-555-0000') bad3.push('телефон ' + JSON.stringify(t.tel));
+  if (p.recipientEmail !== 'tony@al-en.com') bad3.push('получатель ' + JSON.stringify(p.recipientEmail));
+  if (signer.email !== 'tony@al-en.com' || signer.name !== 'Test Tenant') bad3.push('подписант ' + JSON.stringify([signer.email, signer.name]));
+  if (!S.lease.done || S.lease.done.email !== 'tony@al-en.com') bad3.push('итог ' + JSON.stringify(S.lease.done && S.lease.done.email));
+  if (bad3.length) { say('bad', 'Entry 96 нормализация: ' + bad3.join('; ')); bad++; }
+  else say('ok', 'Entry 96: имя, компания, телефон и email нормализованы до DocuSign и аренды');
+  calls.length = 0;
+  Object.assign(S.lease, { step: 3, busy: false, err: null, done: null, email: 'tony@al-en.com (primary)' });
+  await lease.handle('lease:send', null, sendCtx());
+  if (calls.length !== 0 || !S.lease.err || !/not valid/.test(S.lease.err.msg) || S.lease.email !== 'tony@al-en.com (primary)') {
+    say('bad', 'Entry 96: невалидный email должен отклоняться без вызова сервера и без правки черновика'); bad++;
+  } else say('ok', 'Entry 96: «проза» в адресе → отказ без вызова сервера, черновик как набран');
   S.lease = null; S.sheet = null; S.sheetPayload = null; S.sheetArg = null; S.payload = null;
 }
 
