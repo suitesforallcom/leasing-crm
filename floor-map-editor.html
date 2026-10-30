@@ -38672,11 +38672,14 @@ function _tenantEmailProblem(raw) {
 }
 // Кому Stripe реально шлёт счёт — зеркало правила Invoice Generator'а:
 // u.stripeBillingContact === 'cc' и валидный CC → CC, иначе primary.
-// Чистая функция, возвращает НОРМАЛИЗОВАННЫЙ адрес.
+// Чистая функция, возвращает НОРМАЛИЗОВАННЫЙ адрес (email — он уходит в Stripe)
+// и исходную строку выбранного поля (raw — её цитируют тосты гардов, Entry 101:
+// оператор ищет на вкладке Tenant то, что там написано, а не lower-case без
+// display-name). Вердикт гарда от raw/email не зависит — _normEmail идемпотентна.
 function _unitStripeBillingEmail(u) {
   const cc = _normEmail(u && u.emailCc).email;
-  if (u && u.stripeBillingContact === 'cc' && _emailLooksValid(cc)) return { email: cc, source: 'cc' };
-  return { email: _normEmail(u && u.email).email, source: 'primary' };
+  if (u && u.stripeBillingContact === 'cc' && _emailLooksValid(cc)) return { email: cc, source: 'cc', raw: String((u && u.emailCc) || '') };
+  return { email: _normEmail(u && u.email).email, source: 'primary', raw: String((u && u.email) || '') };
 }
 // Чинит u.email и u.emailCc по правилу _normEmail, если после чистки адрес
 // валиден; возвращает [{ field, from, to }]. Валидный адрес, чисто регистровые
@@ -83362,7 +83365,7 @@ async function _sendInvoiceWithLateFees(unitId, totalFee, opts) {
     for (const r of _repairs) toast('Email cleaned up: "' + r.from + '" → "' + r.to + '"', 'info');
   }
   const _bill = _unitStripeBillingEmail(u);
-  const _emailErr = _tenantEmailProblem(_bill.email);
+  const _emailErr = _tenantEmailProblem(_bill.raw); // Entry 101: в тосте — ввод как есть, вердикт тот же
   if (_emailErr) { toast(_emailErr, 'error'); return; }
   const fee = +totalFee;
   if (!isFinite(fee) || fee <= 0) { toast('Nothing to invoice', 'error'); return; }
@@ -90995,7 +90998,7 @@ async function createMoveInInvoices(mode) {
     for (const r of _repairs) toast('Email cleaned up: "' + r.from + '" → "' + r.to + '"', 'info');
   }
   const _bill = _unitStripeBillingEmail(u);
-  const _emailErr = _tenantEmailProblem(_bill.email);
+  const _emailErr = _tenantEmailProblem(_bill.raw); // Entry 101: в тосте — ввод как есть, вердикт тот же
   if (_emailErr) { toast(_emailErr, 'error'); return; }
   if (!startIso) { toast('Lease start date missing', 'error'); return; }
   const b = currentBuilding();
@@ -91115,7 +91118,7 @@ async function _sendMoveInDirect(mode, btn) {
     for (const r of _repairs) toast('Email cleaned up: "' + r.from + '" → "' + r.to + '"', 'info');
   }
   const _bill = _unitStripeBillingEmail(u);
-  const _emailErr = _tenantEmailProblem(_bill.email);
+  const _emailErr = _tenantEmailProblem(_bill.raw); // Entry 101: в тосте — ввод как есть, вердикт тот же
   if (_emailErr) { toast(_emailErr, 'error'); return; }
 
   const rent = +u.contractRent || 0;
@@ -98008,7 +98011,7 @@ function openSplitMoveInRentModal() {
     saveState();
     for (const r of _repairs) toast('Email cleaned up: "' + r.from + '" → "' + r.to + '"', 'info');
   }
-  const _emailErr = _tenantEmailProblem(_unitStripeBillingEmail(u).email);
+  const _emailErr = _tenantEmailProblem(_unitStripeBillingEmail(u).raw); // Entry 101: в тосте — ввод как есть, вердикт тот же
   if (_emailErr) { toast(_emailErr, 'error'); return; }
 
   // Если уже отправили rent — сплит не имеет смысла. Защита от
@@ -98190,7 +98193,7 @@ async function _confirmSplitMoveInRent(btn) {
   // Entry 95: получатель Stripe-счёта — primary или CC по toggle «$» (адрес уже
   // почищен при открытии модалки; здесь выбор адреса + повторный гард).
   const _bill = _unitStripeBillingEmail(u);
-  const _emailErr = _tenantEmailProblem(_bill.email);
+  const _emailErr = _tenantEmailProblem(_bill.raw); // Entry 101: в тосте — ввод как есть, вердикт тот же
   if (_emailErr) { toast(_emailErr, 'error'); return; }
 
   if (!_acquireSendLock(u, 'Rent')) {
@@ -98323,7 +98326,7 @@ async function _ntoSendRent(btn) {
     for (const r of _repairs) toast('Email cleaned up: "' + r.from + '" → "' + r.to + '"', 'info');
   }
   const _bill = _unitStripeBillingEmail(u);
-  const _emailErr = _tenantEmailProblem(_bill.email);
+  const _emailErr = _tenantEmailProblem(_bill.raw); // Entry 101: в тосте — ввод как есть, вердикт тот же
   if (_emailErr) { toast(_emailErr, 'error'); return; }
   // Background-only push — cloud function accepts emailOverride so
   // we don't block the UI on Firestore round-trip.
@@ -98425,7 +98428,7 @@ async function _ntoSendDeposit(btn) {
     for (const r of _repairs) toast('Email cleaned up: "' + r.from + '" → "' + r.to + '"', 'info');
   }
   const _bill = _unitStripeBillingEmail(u);
-  const _emailErr = _tenantEmailProblem(_bill.email);
+  const _emailErr = _tenantEmailProblem(_bill.raw); // Entry 101: в тосте — ввод как есть, вердикт тот же
   if (_emailErr) { toast(_emailErr, 'error'); return; }
   _queueBackgroundPush(u);
 
@@ -98681,7 +98684,7 @@ async function _triggerAutoInvoiceNowIfNeeded(u) {
     for (const r of _repairs) toast('Email cleaned up: "' + r.from + '" → "' + r.to + '"', 'info');
   }
   const _bill = _unitStripeBillingEmail(u);
-  const _emailErr = _tenantEmailProblem(_bill.email);
+  const _emailErr = _tenantEmailProblem(_bill.raw); // Entry 101: в тосте — ввод как есть, вердикт тот же
   if (_emailErr) {
     toast('Auto-invoice failed: ' + _emailErr, 'error');
     _stampPreconditionFail(_emailErr);
@@ -154704,7 +154707,7 @@ function ciSelectSuggestion(buildingId, floorId, unitId) {
   if (!u) return;
 
   // Entry 95: валидируем реального Stripe-получателя (primary или CC по toggle «$»)
-  const _emailErr = _tenantEmailProblem(_unitStripeBillingEmail(u).email);
+  const _emailErr = _tenantEmailProblem(_unitStripeBillingEmail(u).raw); // Entry 101: в тосте — ввод как есть, вердикт тот же
   if (_emailErr) { toast(_emailErr, 'error'); return; }
   const rent = +u.contractRent || +u.rent || 0;
   if (rent <= 0) {

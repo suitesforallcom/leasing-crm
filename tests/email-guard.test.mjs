@@ -337,6 +337,29 @@ if (C) {
     assert.strictEqual(r.email, '');
     assert.strictEqual(r.source, 'primary');
   });
+  // Entry 101: raw — исходная строка выбранного поля; её (не email) цитируют тосты гардов отправки.
+  t('Entry 101: raw — ввод выбранного поля как есть (CC при тумблере, иначе primary; пусто → "")', () => {
+    assert.strictEqual(_unitStripeBillingEmail(unit107()).raw, 'JCASHAW@VIVOHC.COM');
+    const u = unit107(); delete u.stripeBillingContact;
+    assert.strictEqual(_unitStripeBillingEmail(u).raw, 'ZGLUCK@VIVOHC .COM');
+    assert.strictEqual(_unitStripeBillingEmail({ ...unit107(), emailCc: 'bad' }).raw, 'ZGLUCK@VIVOHC .COM', 'CC невалиден → raw primary');
+    assert.strictEqual(_unitStripeBillingEmail({}).raw, '');
+    assert.strictEqual(_unitStripeBillingEmail({ email: null, emailCc: undefined, stripeBillingContact: 'cc' }).raw, '');
+  });
+  t('Entry 101: вердикт гарда одинаков на raw и на нормализованном email (нормализация идемпотентна)', () => {
+    for (const s of EMAIL_SAMPLES) {
+      const b = _unitStripeBillingEmail({ email: s });
+      assert.strictEqual(_tenantEmailProblem(b.raw) === null, _tenantEmailProblem(b.email) === null, JSON.stringify(s));
+      assert.strictEqual(_normEmail(b.email).email, b.email, 'не идемпотентна на ' + JSON.stringify(s));
+    }
+  });
+  t('Entry 101: тост гарда цитирует ввод как набран, а не нормализованную форму', () => {
+    const b = _unitStripeBillingEmail({ email: 'Zev Gluck <zgluck@vivohc>' });
+    assert.strictEqual(b.email, 'zgluck@vivohc');
+    const p = _tenantEmailProblem(b.raw);
+    assert.ok(p && p.includes('"Zev Gluck <zgluck@vivohc>"'), 'ожидалась цитата как набрано, получено: ' + p);
+    assert.ok(_tenantEmailProblem(b.email).includes('"zgluck@vivohc"'), 'контроль: нормализованная форма цитирует lower-case адрес');
+  });
   t('чистая функция — юнит не мутирует', () => {
     const u = unit107(); const before = JSON.stringify(u);
     _unitStripeBillingEmail(u);
@@ -529,6 +552,12 @@ if (htmlSrc) {
   }
   t('нигде не осталось emailOverride: u.email — получатель всегда через _unitStripeBillingEmail', () => {
     assert.strictEqual(count(htmlSrc, 'emailOverride: u.email'), 0);
+  });
+  t('Entry 101: гарды путей отправки получают ввод как есть (_bill.raw); нормализованный _bill.email в гард не уходит', () => {
+    assert.strictEqual(count(htmlSrc, '_tenantEmailProblem(_bill.email)'), 0, 'остался гард с нормализованным адресом');
+    assert.strictEqual(count(htmlSrc, 'const _emailErr = _tenantEmailProblem(_unitStripeBillingEmail(u).email)'), 0, 'остался inline-гард с нормализованным адресом');
+    assert.strictEqual(count(htmlSrc, '_tenantEmailProblem(_bill.raw)'), 7, 'семь гардов через _bill.raw');
+    assert.strictEqual(count(htmlSrc, 'const _emailErr = _tenantEmailProblem(_unitStripeBillingEmail(u).raw)'), 2, 'два inline-гарда через .raw');
   });
   t("_verifyAndStampAfterSend: матчит новый штамп депозита (m.purpose === 'deposit')", () => {
     assert.ok(fnSource(htmlSrc, '_verifyAndStampAfterSend', 4000).includes("m.purpose === 'deposit'"));

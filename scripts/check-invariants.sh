@@ -733,6 +733,32 @@ if [ "$_e100_ok" = 1 ]; then
 fi
 
 echo
+echo "Entry 101 — тосты путей отправки цитируют адрес как набран (хвост Entry 95):"
+# 2026-10-30: девять гардов отправки звали _tenantEmailProblem(_bill.email) —
+# нормализованную форму (lower, без display-name, без пробелов у точки/@) — и
+# тост цитировал строку, которой на вкладке Tenant нет. Теперь
+# _unitStripeBillingEmail отдаёт ещё raw (ввод выбранного поля как есть), гарды
+# передают его; вердикт тот же (нормализация идемпотентна), меняется только
+# цитата. Нормализованный email в гард уходить не должен.
+_e101_ok=1
+_e101_cnt() {  # $1 описание, $2 строка, $3 ожидаемое число строк
+  _e101_n=$(grep -cF -- "$2" "$ROOT/floor-map-editor.html" || true)
+  if [ "$_e101_n" != "$3" ]; then
+    echo "  ✗ Entry 101: $1 — expected $3 line(s) of: $2 — found $_e101_n (FIXES_LOG Entry 101)"
+    _e101_ok=0; FAIL=1
+  fi
+}
+_e101_cnt "billing email carries the as-typed primary field"      "source: 'primary', raw: String((u && u.email) || '')" 1
+_e101_cnt "billing email carries the as-typed CC field"           "source: 'cc', raw: String((u && u.emailCc) || '')" 1
+_e101_cnt "no send-path guard gets the normalized address"        "_tenantEmailProblem(_bill.email)" 0
+_e101_cnt "no inline send-path guard gets the normalized address" "const _emailErr = _tenantEmailProblem(_unitStripeBillingEmail(u).email)" 0
+_e101_cnt "seven guards pass the as-typed field"                  "_tenantEmailProblem(_bill.raw)" 7
+_e101_cnt "two inline guards pass the as-typed field"             "const _emailErr = _tenantEmailProblem(_unitStripeBillingEmail(u).raw)" 2
+if [ "$_e101_ok" = 1 ]; then
+  echo "  ✓ send-path toasts quote the Tenant-tab value as typed (9 guards via raw; verdict unchanged)"
+fi
+
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."
