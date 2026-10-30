@@ -6778,14 +6778,17 @@
   .map-view-tabs .mlb-pill[data-mlp-key="pending-sig"].active { color: #075985; background: #E0F2FE; border-color: #0EA5E9; }
   .map-view-tabs .mlb-pill[data-mlp-key="new-tenants"].active { color: #92400E; background: #FDF3E0; border-color: #F59E0B; }
   /* Water ▾ pill — teal frame when any marker is on; shows the glyph(s)
-     of what is on (violet bottle = shampoo station, teal droplet = sink)
+     of what is on (violet bottle = shampoo station, teal droplet = sink,
+     rose footprint = pedicure chair — Entry 99)
      and a muted droplet when nothing is. .open = dropdown is showing. */
   .map-view-tabs .mlb-pill[data-layer="water"].active         { color: #0F6E56; background: #E1F5EE; border-color: #1D9E75; }
   .map-view-tabs .mlb-pill[data-layer="water"].open           { box-shadow: 0 0 0 2px rgba(15,110,86,0.18); }
   .map-view-tabs .mlb-pill[data-layer="water"] .mlb-water-ic-shampoo,
-  .map-view-tabs .mlb-pill[data-layer="water"] .mlb-water-ic-sink { display: none; }
-  .map-view-tabs .mlb-pill[data-layer="water"].has-shampoo .mlb-water-ic-shampoo { display: block; color: #534AB7; }
-  .map-view-tabs .mlb-pill[data-layer="water"].has-sink .mlb-water-ic-sink       { display: block; color: #0F6E56; }
+  .map-view-tabs .mlb-pill[data-layer="water"] .mlb-water-ic-sink,
+  .map-view-tabs .mlb-pill[data-layer="water"] .mlb-water-ic-pedicure { display: none; }
+  .map-view-tabs .mlb-pill[data-layer="water"].has-shampoo .mlb-water-ic-shampoo   { display: block; color: #534AB7; }
+  .map-view-tabs .mlb-pill[data-layer="water"].has-sink .mlb-water-ic-sink         { display: block; color: #0F6E56; }
+  .map-view-tabs .mlb-pill[data-layer="water"].has-pedicure .mlb-water-ic-pedicure { display: block; color: #BE185D; }
   .map-view-tabs .mlb-pill[data-layer="water"].active .mlb-water-ic-off           { display: none; }
   /* The dropdown rows (checkbox + glyph + label). */
   .mlb-water-menu .mlb-water-opt {
@@ -18070,6 +18073,7 @@
     <symbol id="i-dollar" viewBox="0 0 24 24"><line x1="12" y1="2" x2="12" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></symbol>
     <symbol id="i-drop" viewBox="0 0 24 24"><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z"/></symbol>
     <symbol id="i-bottle" viewBox="0 0 24 24"><path d="M10 3h4v4.5c1.8.9 3 2.7 3 4.8V19a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-6.7c0-2.1 1.2-3.9 3-4.8V3Z"/><line x1="9" y1="14" x2="15" y2="14"/></symbol>
+    <symbol id="i-foot" viewBox="0 0 24 24"><path d="M7.6 11.2c0-2.3 2-4 4.4-4s4.4 1.7 4.4 4c0 1.9-1.1 3.4-1.5 5.3-.3 1.4-.5 2.6-.9 3.8-.4 1.1-1.1 1.7-2 1.7s-1.6-.6-2-1.7c-.4-1.2-.6-2.4-.9-3.8-.4-1.9-1.5-3.4-1.5-5.3Z"/><circle cx="8.3" cy="5.2" r="2"/><circle cx="11.3" cy="3.4" r="1.5"/><circle cx="13.9" cy="3.3" r="1.35"/><circle cx="16.1" cy="4.3" r="1.2"/><circle cx="17.7" cy="6" r="1.05"/></symbol>
     <symbol id="i-sign" viewBox="0 0 24 24"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M5 17V5a2 2 0 0 1 2-2h7l5 5v3"/><path d="M3 21s2-1 4-1 3 1 5 1 3-1 5-1 4 1 4 1"/></symbol>
     <symbol id="i-invoice" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="2"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="12" y2="16"/></symbol>
     <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 3 2.7 5.6 6.1.8-4.5 4.3 1.1 6-5.4-2.9-5.4 2.9 1.1-6L3.2 9.4l6.1-.8L12 3Z"/></symbol>
@@ -20639,10 +20643,11 @@
               </div>
             </div>
           </div>
-          <!-- Water ▾ — NOT a filter. Dropdown with two checkboxes that
+          <!-- Water ▾ — NOT a filter. Dropdown with three checkboxes that
                switch the water markers on units: violet bottle = shampoo
                station (showShampoo), teal droplet = sink / plumbing
-               (showSink). Either, both or none. Default off (grey); the
+               (showSink), rose footprint = pedicure chair (showPedicure,
+               Entry 99). Any combination. Default off (grey); the
                pill turns teal when any marker is on and shows the glyph(s)
                of what is on. Sync via _syncMapLayerChips, not the filter
                sweep, so other filter changes don't reset it. -->
@@ -20652,6 +20657,7 @@
               <svg class="mlb-pill-ic mlb-water-ic-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z"/></svg>
               <svg class="mlb-pill-ic mlb-water-ic-shampoo" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 3h4v4.5c1.8.9 3 2.7 3 4.8V19a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-6.7c0-2.1 1.2-3.9 3-4.8V3Z"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
               <svg class="mlb-pill-ic mlb-water-ic-sink" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z"/></svg>
+              <svg class="mlb-pill-ic mlb-water-ic-pedicure" viewBox="0 0 24 24" aria-hidden="true"><path d="M7.6 11.2c0-2.3 2-4 4.4-4s4.4 1.7 4.4 4c0 1.9-1.1 3.4-1.5 5.3-.3 1.4-.5 2.6-.9 3.8-.4 1.1-1.1 1.7-2 1.7s-1.6-.6-2-1.7c-.4-1.2-.6-2.4-.9-3.8-.4-1.9-1.5-3.4-1.5-5.3Z"/><circle cx="8.3" cy="5.2" r="2"/><circle cx="11.3" cy="3.4" r="1.5"/><circle cx="13.9" cy="3.3" r="1.35"/><circle cx="16.1" cy="4.3" r="1.2"/><circle cx="17.7" cy="6" r="1.05"/></svg>
               <span>Water ▾</span>
             </button>
             <div id="mlbWaterMenu" class="mf-new-popover mlb-water-menu" style="display: none; position: absolute; top: calc(100% + 6px); bottom: auto; right: 0; left: auto; transform: none; min-width: 196px; z-index: 100;">
@@ -20665,6 +20671,11 @@
                 <input type="checkbox" id="mlbWaterSink" onchange="setWaterMarker('sink', this.checked)" style="accent-color:#0F6E56">
                 <svg class="mlp-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="12" fill="#0F6E56"/><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z" fill="#fff" transform="translate(12 12) scale(.68) translate(-12 -12)"/></svg>
                 <span>Sink / plumbing</span>
+              </label>
+              <label class="mlb-water-opt">
+                <input type="checkbox" id="mlbWaterPedicure" onchange="setWaterMarker('pedicure', this.checked)" style="accent-color:#BE185D">
+                <svg class="mlp-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="12" fill="#BE185D"/><g transform="translate(12 12) scale(.68) translate(-12 -12)" fill="#fff"><path d="M7.6 11.2c0-2.3 2-4 4.4-4s4.4 1.7 4.4 4c0 1.9-1.1 3.4-1.5 5.3-.3 1.4-.5 2.6-.9 3.8-.4 1.1-1.1 1.7-2 1.7s-1.6-.6-2-1.7c-.4-1.2-.6-2.4-.9-3.8-.4-1.9-1.5-3.4-1.5-5.3Z"/><circle cx="8.3" cy="5.2" r="2"/><circle cx="11.3" cy="3.4" r="1.5"/><circle cx="13.9" cy="3.3" r="1.35"/><circle cx="16.1" cy="4.3" r="1.2"/><circle cx="17.7" cy="6" r="1.05"/></g></svg>
+                <span>Pedicure chair</span>
               </label>
               <div class="mlb-water-hint">Per unit: its card › ··· › Edit unit › Unit specifications</div>
             </div>
@@ -20683,6 +20694,7 @@
               <div class="mlp-amen">
                 <span><svg class="mlp-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="12" fill="#0F6E56"/><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z" fill="#fff" transform="translate(12 12) scale(.68) translate(-12 -12)"/></svg>Sink / plumbing</span>
                 <span><svg class="mlp-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="12" fill="#534AB7"/><g transform="translate(12 12) scale(.68) translate(-12 -12)"><path d="M10 3h4v4.5c1.8.9 3 2.7 3 4.8V19a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-6.7c0-2.1 1.2-3.9 3-4.8V3Z" fill="#fff"/><line x1="9" y1="14" x2="15" y2="14" stroke="#534AB7" stroke-width="2.4" stroke-linecap="round"/></g></svg>Shampoo station</span>
+                <span><svg class="mlp-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="12" fill="#BE185D"/><g transform="translate(12 12) scale(.68) translate(-12 -12)" fill="#fff"><path d="M7.6 11.2c0-2.3 2-4 4.4-4s4.4 1.7 4.4 4c0 1.9-1.1 3.4-1.5 5.3-.3 1.4-.5 2.6-.9 3.8-.4 1.1-1.1 1.7-2 1.7s-1.6-.6-2-1.7c-.4-1.2-.6-2.4-.9-3.8-.4-1.9-1.5-3.4-1.5-5.3Z"/><circle cx="8.3" cy="5.2" r="2"/><circle cx="11.3" cy="3.4" r="1.5"/><circle cx="13.9" cy="3.3" r="1.35"/><circle cx="16.1" cy="4.3" r="1.2"/><circle cx="17.7" cy="6" r="1.05"/></g></svg>Pedicure chair</span>
               </div>
             </div>
           </div>
@@ -21301,9 +21313,9 @@
         <div class="toggle-row" style="padding-left: 14px;" title="Shows the tenant's name inside the unit on the map."><label>Show tenant name <span style="color:var(--muted); font-weight:400; font-size:10px;">(on map)</span></label><div class="toggle on" id="tglTenant" onclick="toggleShowTenant()"></div></div>
 
         <!-- Map markers — feature overlays that aren't text labels.
-             Two per-device switches (the same state as the Water ▾
-             dropdown in the map top bar): shampoo-station and sink
-             discs. Default OFF (opt-in) so the map stays clean for
+             Three per-device switches (the same state as the Water ▾
+             dropdown in the map top bar): shampoo-station, sink and
+             pedicure-chair discs. Default OFF (opt-in) so the map stays clean for
              anyone not currently scoping out wet-spec offices. -->
         <div class="panel-title">Map markers</div>
         <div class="toggle-row">
@@ -21313,6 +21325,10 @@
         <div class="toggle-row">
           <label><svg class="rd-ic" style="width:14px;height:14px;vertical-align:-2px" aria-hidden="true"><use href="#i-drop"></use></svg> Sink / plumbing markers</label>
           <div class="toggle" id="tglSink" onclick="toggleShowSink()"></div>
+        </div>
+        <div class="toggle-row">
+          <label><svg class="rd-ic" style="width:14px;height:14px;vertical-align:-2px" aria-hidden="true"><use href="#i-foot"></use></svg> Pedicure chair markers</label>
+          <div class="toggle" id="tglPedicure" onclick="toggleShowPedicure()"></div>
         </div>
 
         <!-- Unit panel rent layers — control which figures appear in the
@@ -28506,6 +28522,7 @@ function loadState() {
       state.settings.showSqft = false;
       state.settings.showSink = false;
       state.settings.showShampoo = false;
+      state.settings.showPedicure = false;
       state.settings.useCompactStatus = true;
       localStorage.setItem(REDESIGN_MAP_MIGRATION_KEY, '1');
     }
@@ -32861,7 +32878,7 @@ function printRentRollTable() {
     // Plain-text rendering for print (strip links / badges)
     if      (c.key === 'status')         v = r.status || '';
     else if (c.key === 'window')         v = r.window ? '✓' : '';
-    else if (c.key === 'sink')           v = r.sink ? (r.shampoo ? '✓ + shampoo' : '✓') : (r.shampoo ? 'shampoo' : '');
+    else if (c.key === 'sink')           v = [r.sink ? '✓' : '', r.shampoo ? 'shampoo' : '', r.pedicure ? 'pedicure' : ''].filter(Boolean).join(' + ');
     else if (c.key === 'rent')           v = r.rent ? '$' + r.rent.toLocaleString() : '';
     else if (c.key === 'contractRent')   v = r.contractRent ? '$' + r.contractRent.toLocaleString() : '';
     else if (c.key === 'rate')           v = r.rate ? '$' + (+r.rate).toFixed(2) : '';
@@ -34203,7 +34220,7 @@ try {
 // обобщено до whitelist в Entry 48.
 const PER_USER_SETTINGS_KEYS = new Set([
   'theme', 'editMode', 'snap', 'snapEdge',
-  'showLabels', 'showRent', 'showSqft', 'showTenant', 'showSink', 'showShampoo',
+  'showLabels', 'showRent', 'showSqft', 'showTenant', 'showSink', 'showShampoo', 'showPedicure',
   'useCompactStatus', 'showLeaseIcon', 'showRentIcon', 'showNewBadge',
   'showOverdueAlert', 'showPendingOnboarding',
   'showUnitPrice', 'showRatePerSqft', 'showProformaPrice', 'showProformaRate',
@@ -69255,7 +69272,7 @@ function saveAddUnitModal(opts) {
   // the field-mapping in one place.
   const unitPayload = {
     id: suite,
-    status, type, window: false, sink: false, shampoo: false, rentable: true,
+    status, type, window: false, sink: false, shampoo: false, pedicure: false, rentable: true,
     sqft, cap: 0, rent, contractRent,
     rate: sqft ? +(rent * 12 / sqft).toFixed(2) : 0,
     tenant, company, tel: phone, email,
@@ -69773,9 +69790,10 @@ function renderUnits() {
         const showSqft   = state.settings.showSqft   === true;   // opt-in
         const showTenant = state.settings.showTenant !== false;
         // Water markers — two per-device switches (Water ▾ dropdown).
-        const _water      = (typeof _waterFlags === 'function') ? _waterFlags() : { sink: false, shampoo: false };
-        const showSink    = _water.sink;      // opt-in
-        const showShampoo = _water.shampoo;   // opt-in
+        const _water        = (typeof _waterFlags === 'function') ? _waterFlags() : { sink: false, shampoo: false, pedicure: false };
+        const showSink      = _water.sink;      // opt-in
+        const showShampoo   = _water.shampoo;   // opt-in
+        const showPedicure  = _water.pedicure;  // opt-in (Entry 99)
 
         // Label positioning. Operator request 2026-05-10: «у квадрата
         // номер внутри, у многоугольника снаружи — сделай как у квадрата».
@@ -69878,16 +69896,19 @@ function renderUnits() {
         num.textContent = u.id;
         g.appendChild(num);
         // Water markers — small discs in the bottom-LEFT corner ONLY on
-        // units that have a sink and/or a shampoo station (FIXES_LOG
-        // Entry 93). Teal droplet = sink / plumbing (showSink), violet
-        // bottle = shampoo station (showShampoo) — each kind has its own
-        // checkbox in the Water ▾ dropdown; a unit with both switched-on
-        // kinds gets two discs side by side. Units without water stay clean (no marker) so the plan
+        // units that have a sink, a shampoo station and/or a pedicure
+        // chair (FIXES_LOG Entry 93, Entry 99). Teal droplet = sink /
+        // plumbing (showSink), violet bottle = shampoo station
+        // (showShampoo), rose footprint = pedicure chair (showPedicure) —
+        // each kind has its own checkbox in the Water ▾ dropdown; a unit
+        // with several switched-on kinds gets the discs side by side, as
+        // many as fit its width (Entry 99 guard below). Units without
+        // water stay clean (no marker) so the plan
         // isn't noisy. Skip very small units (h < 38) — no room for the
         // discs without clipping the price/tenant text above. Icons are
         // inline SVG paths (not emoji) so they render identically on
         // every OS / browser.
-        if (isRentable && u.h >= 38 && ((u.sink && showSink) || (u.shampoo && showShampoo))) {
+        if (isRentable && u.h >= 38 && ((u.sink && showSink) || (u.shampoo && showShampoo) || (u.pedicure && showPedicure))) {
           const SVG_NS = 'http://www.w3.org/2000/svg';
           const marks = [];
           if (u.sink && showSink) marks.push({
@@ -69899,6 +69920,21 @@ function renderUnits() {
             shapes: [['path', { d: 'M10 3h4v4.5c1.8.9 3 2.7 3 4.8V19a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-6.7c0-2.1 1.2-3.9 3-4.8V3Z', fill: '#fff' }],
                      ['line', { x1: 9, y1: 14, x2: 15, y2: 14, stroke: '#534AB7', 'stroke-width': 2.4, 'stroke-linecap': 'round' }]],
           });
+          if (u.pedicure && showPedicure) marks.push({
+            title: 'Pedicure chair', color: '#BE185D',
+            shapes: [['path', { d: 'M7.6 11.2c0-2.3 2-4 4.4-4s4.4 1.7 4.4 4c0 1.9-1.1 3.4-1.5 5.3-.3 1.4-.5 2.6-.9 3.8-.4 1.1-1.1 1.7-2 1.7s-1.6-.6-2-1.7c-.4-1.2-.6-2.4-.9-3.8-.4-1.9-1.5-3.4-1.5-5.3Z', fill: '#fff' }],
+                     ['circle', { cx: 8.3, cy: 5.2, r: 2, fill: '#fff' }],
+                     ['circle', { cx: 11.3, cy: 3.4, r: 1.5, fill: '#fff' }],
+                     ['circle', { cx: 13.9, cy: 3.3, r: 1.35, fill: '#fff' }],
+                     ['circle', { cx: 16.1, cy: 4.3, r: 1.2, fill: '#fff' }],
+                     ['circle', { cx: 17.7, cy: 6, r: 1.05, fill: '#fff' }]],
+          });
+          // Width guard (Entry 99): disc i is centred at 15 + 27·i with a
+          // 13px halo, so its right edge is 28 + 27·i. Drop the discs that
+          // would stick out past the unit's right edge; always keep one
+          // (narrow units showed a single disc before this guard too).
+          const _fitMarks = Math.max(1, Math.floor((u.w - 28) / 27) + 1);
+          if (marks.length > _fitMarks) marks.length = _fitMarks;
           // Crisp "map pin" look (operator 2026-10-24: «сделай более
           // чёткое изображение» — the first cut was a pale disc with a
           // thin stroked glyph, which washed out on the mint «Paid»
@@ -72247,6 +72283,7 @@ function _unitSplitAt(unitId, edge, projX, projY) {
       window: !!u.window,
       sink: !!u.sink,
       shampoo: !!u.shampoo,
+      pedicure: !!u.pedicure,
       sqft: 0, cap: 0,
       rent: 0, contractRent: 0, deposit: 0,
       rate: 0,
@@ -72280,6 +72317,7 @@ function _unitSplitAt(unitId, edge, projX, projY) {
       window: !!u.window,
       sink: !!u.sink,
       shampoo: !!u.shampoo,
+      pedicure: !!u.pedicure,
       sqft: 0, cap: 0,
       rent: 0, contractRent: 0, deposit: 0,
       rate: 0,
@@ -72537,6 +72575,7 @@ function _unitContextMenuView(event, u) {
   items.push(`<div style="padding:4px 10px 2px; font-size:10.5px; color:#94a3b8; text-transform:uppercase; letter-spacing:.5px; font-weight:700;">Water</div>`);
   items.push(_unitMenuCheck('Shampoo station', !!u.shampoo, `_ctxToggleUnitSpec('${uId}','shampoo')`, '#534AB7', can));
   items.push(_unitMenuCheck('Sink / plumbing', !!u.sink, `_ctxToggleUnitSpec('${uId}','sink')`, '#0F6E56', can));
+  items.push(_unitMenuCheck('Pedicure chair', !!u.pedicure, `_ctxToggleUnitSpec('${uId}','pedicure')`, '#BE185D', can));
   if (!can) items.push(`<div style="padding:2px 10px 8px; font-size:10.5px; color:#94a3b8;">View only — your role cannot edit units.</div>`);
   const menu = _unitEnsureMenuEl();
   menu.innerHTML = items.join('');
@@ -72555,7 +72594,7 @@ function _ctxEditUnit(unitId) {
 // switched on, so the operator sees what they just set. The menu stays
 // open with fresh check marks so the second box needs no new right-click.
 function _ctxToggleUnitSpec(unitId, field) {
-  if (field !== 'shampoo' && field !== 'sink') return;
+  if (field !== 'shampoo' && field !== 'sink' && field !== 'pedicure') return;
   if (typeof canEdit === 'function' && !canEdit()) {
     if (typeof toast === 'function') toast('You do not have permission to edit units.', 'warning');
     return;
@@ -72577,7 +72616,8 @@ function _ctxToggleUnitSpec(unitId, field) {
     _unitContextMenuView({ clientX: x, clientY: y }, u);
   }
   if (typeof toast === 'function') {
-    toast(`Suite ${u.id}: ${field === 'shampoo' ? 'shampoo station' : 'sink'} ${u[field] ? 'added' : 'removed'}`, 'success');
+    const _specLabel = { shampoo: 'shampoo station', sink: 'sink', pedicure: 'pedicure chair' }[field] || field;
+    toast(`Suite ${u.id}: ${_specLabel} ${u[field] ? 'added' : 'removed'}`, 'success');
   }
 }
 
@@ -72825,6 +72865,7 @@ function _unitAddSubRoom(parentId, shape) {
         window: !!parent.window,
         sink: !!parent.sink,
         shampoo: !!parent.shampoo,
+        pedicure: !!parent.pedicure,
         sqft: 0, cap: 0,
         rent: 0, contractRent: 0,
         rate: 0,
@@ -72898,6 +72939,7 @@ function _unitAddSubRoom(parentId, shape) {
     window: !!parent.window,
     sink: !!parent.sink,
     shampoo: !!parent.shampoo,
+    pedicure: !!parent.pedicure,
     sqft: 0, cap: 0,
     rent: 0, contractRent: 0,
     rate: 0,
@@ -78632,6 +78674,7 @@ function renderDetail() {
         <div class="toggle-row"><label>${_rdIc('window', 14)}Window</label><label class="rd-sw"><input type="checkbox" ${u.window ? 'checked' : ''} ${editOn ? `onchange="toggleField('window')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>
         <div class="toggle-row"><label>${_rdIc('drop', 14)}Sink / plumbing</label><label class="rd-sw"><input type="checkbox" ${u.sink ? 'checked' : ''} ${editOn ? `onchange="toggleField('sink')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>`}
         <div class="toggle-row" title="Backwash / shampoo bowl for a hair-stylist suite. Shows a violet bottle marker on the map when the Water layer is on."><label>${_rdIc('bottle', 14)}Shampoo station</label><label class="rd-sw"><input type="checkbox" ${u.shampoo ? 'checked' : ''} ${editOn ? `onchange="toggleField('shampoo')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>
+        <div class="toggle-row" title="Pedicure chair with a plumbed foot basin for a nail-tech suite. Shows a rose footprint marker on the map when the Water layer is on."><label>${_rdIc('foot', 14)}Pedicure chair</label><label class="rd-sw"><input type="checkbox" ${u.pedicure ? 'checked' : ''} ${editOn ? `onchange="toggleField('pedicure')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>
         ${(() => {
           // Floor lease-type селектор. Меняет f.leaseType (общее для всего этажа,
           // не только этого юнита). Показываем только для rentable office юнитов
@@ -79024,6 +79067,7 @@ function renderDetail() {
         <div class="toggle-row"><label>🌞 Window</label><div class="toggle ${u.window ? 'on' : ''}" style="${cursorStyle}" ${editOn ? `onclick="toggleField('window')"` : ''}></div></div>
         <div class="toggle-row"><label>🚰 Sink / plumbing</label><div class="toggle ${u.sink ? 'on' : ''}" style="${cursorStyle}" ${editOn ? `onclick="toggleField('sink')"` : ''}></div></div>
         <div class="toggle-row"><label>🧴 Shampoo station</label><div class="toggle ${u.shampoo ? 'on' : ''}" style="${cursorStyle}" ${editOn ? `onclick="toggleField('shampoo')"` : ''}></div></div>
+        <div class="toggle-row"><label>🦶 Pedicure chair</label><div class="toggle ${u.pedicure ? 'on' : ''}" style="${cursorStyle}" ${editOn ? `onclick="toggleField('pedicure')"` : ''}></div></div>
       </div>
     </details>
     ${editOn ? `
@@ -108268,11 +108312,12 @@ function toggleShowTenant() {
   document.getElementById('tglTenant')?.classList.toggle('on', state.settings.showTenant);
   saveState(); renderUnits();
 }
-// Water markers — two per-device switches (Water ▾ dropdown in the map
-// top bar, mirrored by two toggles in the Layers panel):
-//   state.settings.showSink    → teal droplet disc on units with u.sink
-//   state.settings.showShampoo → violet bottle disc on units with u.shampoo
-// Both default OFF (opt-in) so the plan stays clean. === true semantics,
+// Water markers — three per-device switches (Water ▾ dropdown in the map
+// top bar, mirrored by three toggles in the Layers panel):
+//   state.settings.showSink     → teal droplet disc on units with u.sink
+//   state.settings.showShampoo  → violet bottle disc on units with u.shampoo
+//   state.settings.showPedicure → rose footprint disc on units with u.pedicure (Entry 99)
+// All default OFF (opt-in) so the plan stays clean. === true semantics,
 // matching the renderer. Operator 2026-10-24: «вместо этой кнопки сделай
 // выпадающий список … с чекбоксами чтобы можно было два выбрать».
 function _waterFlags() {
@@ -108280,10 +108325,10 @@ function _waterFlags() {
   // One-time carry-over: before the dropdown a single showSink switch
   // drew BOTH marker kinds — keep that view for anyone who had it on.
   if (st.showShampoo === undefined && st.showSink === true) st.showShampoo = true;
-  return { sink: st.showSink === true, shampoo: st.showShampoo === true };
+  return { sink: st.showSink === true, shampoo: st.showShampoo === true, pedicure: st.showPedicure === true };
 }
 function setWaterMarker(kind, on) {
-  const key = kind === 'shampoo' ? 'showShampoo' : 'showSink';
+  const key = kind === 'shampoo' ? 'showShampoo' : kind === 'pedicure' ? 'showPedicure' : 'showSink';
   _waterFlags();                                   // carry-over before the write
   state.settings[key] = !!on;
   _syncMapLayerChips();
@@ -108292,8 +108337,9 @@ function setWaterMarker(kind, on) {
 }
 function toggleShowSink()    { setWaterMarker('sink',    !_waterFlags().sink); }
 function toggleShowShampoo() { setWaterMarker('shampoo', !_waterFlags().shampoo); }
+function toggleShowPedicure() { setWaterMarker('pedicure', !_waterFlags().pedicure); }
 
-// Water ▾ dropdown — two checkboxes under the pill. Click-outside
+// Water ▾ dropdown — three checkboxes under the pill. Click-outside
 // closes; clicks inside (the checkboxes) keep it open. Same pattern as
 // the New ▾ picker and the Legend popover; the three close each other.
 function toggleWaterLayerMenu(ev) {
@@ -108335,16 +108381,20 @@ function _syncMapLayerChips() {
   const f = _waterFlags();
   const pill = document.getElementById('mlbLayerWater');
   if (pill) {
-    pill.classList.toggle('active', f.sink || f.shampoo);
+    pill.classList.toggle('active', f.sink || f.shampoo || f.pedicure);
     pill.classList.toggle('has-sink', f.sink);
     pill.classList.toggle('has-shampoo', f.shampoo);
+    pill.classList.toggle('has-pedicure', f.pedicure);
   }
   const cbSh = document.getElementById('mlbWaterShampoo');
   if (cbSh) cbSh.checked = f.shampoo;
   const cbSk = document.getElementById('mlbWaterSink');
   if (cbSk) cbSk.checked = f.sink;
+  const cbPd = document.getElementById('mlbWaterPedicure');
+  if (cbPd) cbPd.checked = f.pedicure;
   document.getElementById('tglSink')?.classList.toggle('on', f.sink);
   document.getElementById('tglShampoo')?.classList.toggle('on', f.shampoo);
+  document.getElementById('tglPedicure')?.classList.toggle('on', f.pedicure);
 }
 
 // Right-panel rent-card layer toggles. Each flips one of the four
@@ -134074,7 +134124,7 @@ const RR_COLUMNS = [
   { key: 'suite',        label: 'Suite',        default: true,  align: 'left',  width: '70px',  tip: 'Suite identifier.' },
   { key: 'type',         label: 'Type',         default: true,  align: 'left',  width: '90px',  tip: 'Unit type — office, storage, conference, kitchen, etc.' },
   { key: 'window',       label: 'Win',          default: false, align: 'center',width: '50px',  tip: 'Has an exterior window.' },
-  { key: 'sink',         label: 'Sink',         default: true,  align: 'center',width: '55px',  tip: 'Has a sink / wet connection.' },
+  { key: 'sink',         label: 'Sink',         default: true,  align: 'center',width: '55px',  tip: 'Water: sink / plumbing, shampoo station, pedicure chair.' },
   { key: 'sqft',         label: 'Sq.Ft.',       default: true,  align: 'right', width: '70px',  tip: 'Rentable square footage of the unit.' },
   { key: 'cap',          label: 'Seats',        default: false, align: 'right', width: '60px',  tip: 'Seating / desk capacity.' },
   { key: 'status',       label: 'Status',       default: true,  align: 'left',  width: '95px',  tip: 'Occupancy status — occupied, vacant, reserved.' },
@@ -140597,6 +140647,7 @@ function buildRentRollRows() {
           window: !!u.window,
           sink: !!u.sink,
           shampoo: !!u.shampoo,
+          pedicure: !!u.pedicure,
           sqft: +u.sqft || 0,
           cap: +u.cap || 0,
           status: u.status || 'vacant',
@@ -142151,10 +142202,12 @@ function renderRRCell(r, c) {
       return _unitHasWindow(r) ? '<span title="Window unit">🌞</span>' : '<span style="color:var(--muted)">—</span>';
     case 'sink': {
       // Water column — teal droplet = sink / plumbing, violet bottle =
-      // shampoo station (FIXES_LOG Entry 93). A unit can have both.
+      // shampoo station (FIXES_LOG Entry 93), rose footprint = pedicure
+      // chair (Entry 99). A unit can have any combination.
       const parts = [];
-      if (r.sink)    parts.push(`<span title="Sink / plumbing" style="color:#0F6E56">${_rdIc('drop', 13)}</span>`);
-      if (r.shampoo) parts.push(`<span title="Shampoo station" style="color:#534AB7">${_rdIc('bottle', 13)}</span>`);
+      if (r.sink)     parts.push(`<span title="Sink / plumbing" style="color:#0F6E56">${_rdIc('drop', 13)}</span>`);
+      if (r.shampoo)  parts.push(`<span title="Shampoo station" style="color:#534AB7">${_rdIc('bottle', 13)}</span>`);
+      if (r.pedicure) parts.push(`<span title="Pedicure chair" style="color:#BE185D">${_rdIc('foot', 13)}</span>`);
       return parts.length
         ? `<span style="display:inline-flex; gap:4px; align-items:center; vertical-align:middle">${parts.join('')}</span>`
         : '<span style="color:var(--muted)">—</span>';

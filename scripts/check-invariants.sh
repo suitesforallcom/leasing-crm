@@ -686,6 +686,33 @@ if [ "$_e98_ok" = 1 ]; then
 fi
 
 echo
+echo "Entry 99 — педикюрное кресло: третья точка воды (правый клик · маркер · Water ▾ · карточка · rent roll):"
+# 2026-10-30 (Тони: «Да, делай»): поле u.pedicure добавлено по образцу shampoo
+# (Entry 93/94). Семь неподвижных строк, без любой из которых фича рассыпается
+# молча: строка правого клика пишет только через _ctxToggleUnitSpec (гейты роли и
+# leader-tab, история, saveState), сама функция принимает 'pedicure', рендер
+# маркера читает u.pedicure && showPedicure, _waterFlags — единственный читатель
+# флага showPedicure, флаг — per-device (PER_USER_SETTINGS_KEYS), свитч карточки
+# идёт через toggleField, колонка Water в rent roll рисует глиф стопы.
+_e99_ok=1
+_e99_chk() {
+  if ! grep -qF -- "$2" "$ROOT/floor-map-editor.html"; then
+    echo "  ✗ Entry 99: $1 — missing: $2 (FIXES_LOG Entry 99)"
+    _e99_ok=0; FAIL=1
+  fi
+}
+_e99_chk "right-click row writes through _ctxToggleUnitSpec" "_ctxToggleUnitSpec('\${uId}','pedicure')"
+_e99_chk "_ctxToggleUnitSpec accepts pedicure"              "field !== 'pedicure') return;"
+_e99_chk "marker block reads u.pedicure && showPedicure"   "(u.pedicure && showPedicure)"
+_e99_chk "_waterFlags returns pedicure"                    "pedicure: st.showPedicure === true"
+_e99_chk "showPedicure is a per-device setting"            "'showShampoo', 'showPedicure',"
+_e99_chk "unit card switch goes through toggleField"       "toggleField('pedicure')"
+_e99_chk "rent roll water cell draws the footprint"        "_rdIc('foot', 13)"
+if [ "$_e99_ok" = 1 ]; then
+  echo "  ✓ pedicure: правый клик → _ctxToggleUnitSpec, маркер u.pedicure && showPedicure, _waterFlags / per-device флаг, карточка, rent roll"
+fi
+
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."
