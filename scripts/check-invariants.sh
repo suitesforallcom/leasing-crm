@@ -664,6 +664,28 @@ if [ "$_e97_ok" = 1 ]; then
 fi
 
 echo
+echo "Entry 98 — hosting.ignore: неиспользуемые tracked-файлы не раздаются публично:"
+# 2026-10-30 (Тони: «Да, скрой»): после Entry 97 хостинг с public:"." по-прежнему
+# отдавал сканы и превью договора (page-*.jpg, lease-preview.pdf), картинки
+# подписей (sig-*.png), шаблоны Kiwi-Rentals-*, дизайн-мок redesign/, схемы
+# financial-model/ и dev-конфиги (cors.json, firestore.indexes.json, package.json,
+# claude-mastery-project.conf, setup-git-baseline.sh). Ни один из них не грузится
+# кодом приложения (git grep: только комментарии); pulse/** остаётся — его грузит
+# pulse.html. Проверяется именно массив hosting.ignore (grep по всему файлу дал бы
+# ложный ✓: "firestore.indexes.json" стоит и в секции firestore). См. FIXES_LOG Entry 98.
+_e98_ok=1
+_e98_ign="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).hosting.ignore.join("\n"))' "$ROOT/firebase.json" 2>/dev/null)"
+for _pat in 'page-*.jpg' 'lease-preview.pdf' 'sig-*.png' 'Kiwi-Rentals-*' 'redesign/**' 'financial-model/**' 'cors.json' 'firestore.indexes.json' 'package.json' 'claude-mastery-project.conf' 'setup-git-baseline.sh'; do
+  if ! printf '%s\n' "$_e98_ign" | grep -qxF -- "$_pat"; then
+    echo "  ✗ firebase.json hosting.ignore lacks \"$_pat\" (FIXES_LOG Entry 98)"
+    _e98_ok=0; FAIL=1
+  fi
+done
+if [ "$_e98_ok" = 1 ]; then
+  echo "  ✓ firebase.json hosting.ignore hides lease scans, signatures, templates, redesign/, financial-model/ and dev configs (pulse/** stays)"
+fi
+
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."
