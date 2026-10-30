@@ -21,6 +21,10 @@ Format:
 
 ---
 
+## 2026-10-30
+
+- ⚠️ `(этот коммит)` **Entry 96: три хвоста Entry 95** — `startAutoPay` валидирует email до Stripe (`_assertTenantEmail`) и маппит 4xx Stripe в HttpsError (`customer` / `checkout`); retry-слой десктопа (`stripeCallable`) срезает префикс `functions/` (список кодов модульного SDK не совпадал никогда) и ретраит серверные коды только для безопасных вызовов — `_CF_RETRY_SAFE`: чтения + `createStripeInvoice` / `ensureStripeCustomer`; тот же срез в audit-outbox (битые записи крутились каждые 30 с). Общий UMD-модуль контактов `functions/lib/contact.js` ≡ `m/lib/contact.js` (байт-в-байт, гейт `cmp`): `_dsSanitizeTenancy` и мобильный мастер договора нормализуют имя / компанию / телефон / email по правилам Entry 95. Тесты: email-guard 172/0, tenancy 24/0 (в `npm test`), стенд m-harness 4n2. Деплой hosting; functions НЕ задеплоены (MAIL_SA_KEY).
+
 ## 2026-10-29
 
 - ⚠️ `(этот коммит)` **Хостинг публично отдавал служебные файлы из корня репо** — `SuitesForAll-handoff-2026-05-02*/` (md), два zip, `zieqvwzX` и `backups/` (экспорты данных зданий/платежей 2026-07-02, старый `functions/index.js`): `firebase.json` hosting.ignore теперь исключает `*.zip`, `zieqvwzX`, `SuitesForAll-handoff-*/**`, `backups/**`, `**/*.md`; редеплой хостинга из чистого worktree. Локальные файлы не удалялись.
