@@ -21,6 +21,10 @@ Format:
 
 ---
 
+## 2026-10-31
+
+- ⚠️ `ae60932` **Entry 102: счёт принадлежит зданию юнита** — Invoice history / report, анти-дубль отправки, safety-net штампов, заливка карты, heal авто-счёта, move-out / recovery void, MPM-карточка + Stripe-sync, Record payment из отчёта, roll-in пени и телефон (uiStatus, dupOf) матчили счёт по голому номеру юнита: Bay Vista/113 показывался на 4355 Central/113 и блокировал отправку депозита (93 номера текли). Новые `_unitBuildingIdOf` / `_invRowInBuilding`, `_invRowsForUnit(unitId, bid)`; тест `tests/invoice-scope.test.mjs` (21), гейт Entry 102 (18). Штамп `a44d00a`, релиз ae60932ce8cf, деплой из чистого worktree; прод: утечек 0. Фаза B (functions: ключи крона/лимитов, dedupe) — отдельно, до 2026-11-21.
+
 ## 2026-10-30
 
 - 🔧 `53a2604` **Entry 101: тосты путей отправки цитируют адрес как набран** — девять гардов отправки (move-in, NTO, split move-in, late fees, авто-счёт, подсказка Create invoice) передавали `_tenantEmailProblem` нормализованный адрес, и тост показывал строку, которой нет на вкладке Tenant; `_unitStripeBillingEmail` теперь отдаёт ещё `raw`, гарды цитируют его; вердикт и Stripe-получатель не менялись; тесты email-guard +4, гейт Entry 101 в check-invariants. Хвост Entry 95 закрыт.
