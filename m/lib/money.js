@@ -761,12 +761,12 @@ export function uiStatus(unit, ym, snap) {
   return 'idle';
 }
 function _hasOpenInvoice(unit, ym, snap) {
-  const rows = (snap && snap.invoices) || [];
-  const uid = String(unit.id || '');
+  // Entry 102: строки юнита — через _rowsForUnit (номер + здание), иначе открытый
+  // счёт одноимённого сьюта другого здания красил этот «invoiced».
+  const rows = _rowsForUnit(unit, snap);
   for (const r of rows) {
     if (!r) continue;
     const m = r.metadata || r;
-    if (String(m.unitId || r.unitId || '') !== uid) continue;
     if ((m.ym || r.ym) !== ym) continue;
     const b = r.bucket || r.status;
     if (b === 'open' || b === 'sent' || b === 'past_due') return true;

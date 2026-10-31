@@ -270,8 +270,12 @@ function dupOf(ctx, L, hit) {
     || (snap.invoices || []).filter((r) => String((r && (r.unitId || (r.metadata && r.metadata.unitId))) || '') === String(hit.unit.id));
   const cust = hit.unit.stripe && hit.unit.stripe.customerId;
   const mail = String(hit.unit.email || '').trim().toLowerCase();
+  // Entry 102: номер сьюта уникален только внутри здания — счёт с чужим buildingId не дубль.
+  const bid = (hit.building && hit.building.id != null) ? String(hit.building.id) : '';
   for (const r of rows || []) {
     if (!r) continue;
+    const rb = String((r.buildingId || (r.metadata && r.metadata.buildingId)) || '');
+    if (bid && rb && rb !== bid) continue;
     if (((r.metadata && r.metadata.purpose) || r.purpose || '') !== purpose) continue;
     const b = r.bucket || r.status;
     if (b === 'void' || b === 'uncollectible' || b === 'refunded' || b === 'draft') continue;   // слот свободен

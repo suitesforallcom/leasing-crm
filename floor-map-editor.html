@@ -30434,6 +30434,7 @@ async function stripeCreateInvoice({buildingId, floorId, unitId, ym, daysUntilDu
       // legitimately (multiple damage claims, etc.) so we only de-dup
       // by unit+purpose+age.
       if (String(meta.unitId || '') !== String(unitId)) return false;
+      if (buildingId && typeof _invRowInBuilding === 'function' && !_invRowInBuilding(inv, buildingId)) return false; // Entry 102: чужое здание — не дубль
       const samePurpose = (meta.purpose || '') === purpose;
       if (!samePurpose) return false;
       const periodBound = (purpose === 'rent' || purpose === 'late_fee');
@@ -32274,8 +32275,8 @@ function _computeUnitFillCached(u, mode) {
     ? (() => {
         // FIX-perf 2: per-unit подындекс вместо O(680)-фильтра на каждый юнит.
         // Порядок строк в подындексе = порядок массива → отпечаток идентичен.
-        const _rows = (typeof _invRowsForUnit === 'function')
-          ? (_invRowsForUnit(u?.id) || [])
+        const _rows = (typeof _invRowsForUnit === 'function' && typeof _unitBuildingIdOf === 'function')
+          ? (_invRowsForUnit(u?.id, _unitBuildingIdOf(u)) || [])
           : _invoicesCache.filter(r => String(r?.unitId || r?.metadata?.unitId || '') === String(u?.id || ''));
         let _fp = '';
         for (const r of _rows) _fp += (r?.bucket || '_')[0];
@@ -32289,7 +32290,9 @@ function _computeUnitFillCached(u, mode) {
   // Lease-поля в ключе: future-ветка payment-заливки читает leaseStart/until/
   // leaseTerm — страховка на случай мутации без _rev-бампа (дёшево).
   const leaseKey = '|ls:' + (u?.leaseStart || '') + '|ue:' + (u?.until || u?.leaseEnd || '') + '|lt:' + (u?.leaseTerm || '');
-  const key = (u?.id || '?') + '|' + pKey + '|' + (u?.status || '') + '|' + (u?.rent || 0) + invCacheKey + errKey + leaseKey;
+  // Entry 102: здание в ключе — одноимённые юниты разных зданий не делят запись мемо.
+  const bldKey = '|b:' + ((typeof _unitBuildingIdOf === 'function') ? (_unitBuildingIdOf(u) || '') : '');
+  const key = (u?.id || '?') + '|' + pKey + '|' + (u?.status || '') + '|' + (u?.rent || 0) + invCacheKey + errKey + leaseKey + bldKey;
   if (_unitFillMemoCache.has(key)) return _unitFillMemoCache.get(key);
   const fill = _computeUnitFillImpl(u, mode);
   _unitFillMemoCache.set(key, fill);
@@ -32369,7 +32372,7 @@ function _computeUnitFillImpl(u, mode) {
         // FIX-perf 2: строки юнита из подындекса (O(1)); unit-предикат уже
         // применён внутри _invRowsForUnit — здесь остаётся только ym-тест.
         // Fallback на старый полный скан, если хелпер недоступен.
-        const _unitRows = (typeof _invRowsForUnit === 'function') ? _invRowsForUnit(u.id) : null;
+        const _unitRows = (typeof _invRowsForUnit === 'function' && typeof _unitBuildingIdOf === 'function') ? _invRowsForUnit(u.id, _unitBuildingIdOf(u)) : null;   // Entry 102
         const matching = (_unitRows || _invoicesCache).filter(r => {
           if (!r) return false;
           if (!_unitRows) {
@@ -32424,7 +32427,7 @@ function _computeUnitFillImpl(u, mode) {
       // (a freshly-sent auto-invoice, etc.).
       if (typeof _invoicesCache !== 'undefined' && Array.isArray(_invoicesCache)) {
         // FIX-perf 2: как в _paymentExplicitFill выше — подындекс + ym-тест.
-        const _unitRows = (typeof _invRowsForUnit === 'function') ? _invRowsForUnit(u.id) : null;
+        const _unitRows = (typeof _invRowsForUnit === 'function' && typeof _unitBuildingIdOf === 'function') ? _invRowsForUnit(u.id, _unitBuildingIdOf(u)) : null;   // Entry 102
         const matching = (_unitRows || _invoicesCache).filter(r => {
           if (!r) return false;
           if (!_unitRows) {
@@ -71125,8 +71128,10 @@ function renderUnits() {
         }
       }
       if (!stripeAlive && typeof _invoicesCache !== 'undefined' && Array.isArray(_invoicesCache)) {
+        const _e102Bid = _unitBuildingIdOf(u);
         stripeAlive = _invoicesCache.some(r => {
           if (!r) return false;
+          if (!_invRowInBuilding(r, _e102Bid)) return false; // Entry 102
           if ((r.metadata?.unitId || r.unitId) !== u.id) return false;
           if ((r.metadata?.ym || r.ym) !== errYm) return false;
           return r.bucket !== 'void' && r.bucket !== 'uncollectible';
@@ -71146,8 +71151,10 @@ function renderUnits() {
       // 'waived' since the error (covers manual-paid + comp paths).
       let healed = false;
       if (typeof _invoicesCache !== 'undefined' && Array.isArray(_invoicesCache)) {
+        const _e102Bid = _unitBuildingIdOf(u);
         healed = _invoicesCache.some(r => {
           if (!r) return false;
+          if (!_invRowInBuilding(r, _e102Bid)) return false; // Entry 102
           if ((r.metadata?.unitId || r.unitId) !== u.id) return false;
           if (r.bucket === 'void' || r.bucket === 'uncollectible') return false;
           const created = (typeof r.created === 'number') ? r.created : Date.parse(r.created || '') || 0;
@@ -85529,14 +85536,26 @@ function _uirRecordPaymentForSelected(sectionId) {
   }
 
   // Locate building + floor for this unit — MPM signature requires both.
+  // Entry 102: номер повторяется между зданиями — здание берём из metadata
+  // счёта, иначе текущее (отчёт открыт на юните текущего здания); слепой обход
+  // всех зданий открывал MPM на одноимённом сьюте другого здания. Этаж —
+  // из metadata, если совпал, иначе первый этаж этого здания с таким номером.
   let buildingId = null, floorId = null;
+  const _md = inv.metadata || {};
+  const _cb = (typeof currentBuilding === 'function') ? currentBuilding() : null;
+  const _wantBid = _md.buildingId ? String(_md.buildingId) : (_cb && _cb.id != null ? String(_cb.id) : null);
+  let _fallback = null;
   outer: for (const b of (state && state.buildings) || []) {
+    if (!b || (_wantBid && String(b.id) !== _wantBid)) continue;
     for (const f of (b && b.floors) || []) {
       for (const u of (f && f.units) || []) {
-        if (u && u.id === unitId) { buildingId = b.id; floorId = f.id; break outer; }
+        if (!u || u.id !== unitId) continue;
+        if (_md.floorId && String(f.id) === String(_md.floorId)) { buildingId = b.id; floorId = f.id; break outer; }
+        if (!_fallback) _fallback = { buildingId: b.id, floorId: f.id };
       }
     }
   }
+  if (!buildingId && _fallback) { buildingId = _fallback.buildingId; floorId = _fallback.floorId; }
   if (!buildingId || !floorId) {
     if (typeof toast === 'function') toast('Could not locate unit in workspace', 'error');
     return;
@@ -87103,14 +87122,19 @@ function _collectUnitInvoices(u, opts = {}) {
   // tenants' invoices don't bleed into the current occupant's view.
   const tenancyStartMs = (typeof _tenantTenureStartMs === 'function')
     ? _tenantTenureStartMs(u) : null;
+  // Entry 102: счёт чужого здания с тем же номером — не наш для сигналов 1 и 3
+  // (2026-10-31: Bay Vista/113 читался как 4355 Central/113). Явный штамп юнита
+  // (сигнал 2) остаётся сильнее здания — это ссылка самого юнита.
+  const _e102Bid = _unitBuildingIdOf(u);
 
   if (Array.isArray(_invoicesCache)) {
     for (const r of _invoicesCache) {
       const m = r.metadata || {};
-      const metaUnitMatch = (m.unitId || '').toString().toLowerCase() === suiteId;
+      const _inBld = _invRowInBuilding(r, _e102Bid);
+      const metaUnitMatch = _inBld && (m.unitId || '').toString().toLowerCase() === suiteId;
       const stampMatch    = stampedIds.has(r.id);
       let identityMatch = false;
-      if (!metaUnitMatch && !stampMatch) {
+      if (_inBld && !metaUnitMatch && !stampMatch) {
         const rEmail = (r.customerEmail || '').toLowerCase().trim();
         const rCust  = (r.customerId || '').trim();
         const emailHit = unitEmail && rEmail && unitEmail === rEmail;
@@ -88915,7 +88939,7 @@ function _phRowScope(u, b, r, opts) {
 // месяца и фразы о void); скоуп — _phRowScope.
 function _phGroupMonthInvoices(u, b) {
   const out = new Map();
-  const rows = (typeof _invRowsForUnit === 'function') ? (_invRowsForUnit(u.id) || []) : [];
+  const rows = (typeof _invRowsForUnit === 'function') ? (_invRowsForUnit(u.id, b && b.id) || []) : [];   // Entry 102
   for (const r of rows) {
     if (!r || !r.id || String(r.id).startsWith('manual-')) continue;
     if (_phRowScope(u, b, r)) continue;
@@ -95836,6 +95860,7 @@ function _findDepositInvoiceInCache(u) {
   const _ownEmails = new Set([_normEmail(u.email).email, _normEmail(u.emailCc).email].filter(Boolean));
   const suiteId = String(u.id || '').toLowerCase();
   if (!suiteId) return null;
+  const _e102Bid = _unitBuildingIdOf(u);   // Entry 102: только своё здание
 
   // FIXES_LOG Entry 8 (2026-05-16): окно tenancyStartMs убрано.
   // Депозит часто отправляется за недели до lease start (статус
@@ -95856,6 +95881,7 @@ function _findDepositInvoiceInCache(u) {
     // реконструировать из него штамп «open» (2026-08-15: после удаления
     // арендатора его voided-депозит вернулся на юнит следующему жильцу).
     if (r.bucket === 'void' || r.bucket === 'draft' || r.status === 'void') continue;
+    if (!_invRowInBuilding(r, _e102Bid)) continue; // Entry 102
 
     // Сильный suite-сигнал: metadata.unitId authoritative (ставим сами).
     // Описание — слабее, но полезно для счетов из Stripe dashboard.
@@ -95949,6 +95975,7 @@ function _findRentInvoiceInCache(u, ym) {
   const email = (u.email || '').toLowerCase().trim();
   const suiteId = String(u.id || '').toLowerCase();
   if (!suiteId) return null;
+  const _e102Bid = _unitBuildingIdOf(u);   // Entry 102: только своё здание
 
   // FIXES_LOG Entry 8 (2026-05-16): окно tenancyStartMs убрано.
   // Move-in rent тоже может быть выставлен заранее (та же история, что
@@ -95967,6 +95994,7 @@ function _findRentInvoiceInCache(u, ym) {
     if (meta.purpose === 'service') continue;
     // Void'нутый / черновой счёт — не живое обязательство (см. deposit-finder).
     if (r.bucket === 'void' || r.bucket === 'draft' || r.status === 'void') continue;
+    if (!_invRowInBuilding(r, _e102Bid)) continue; // Entry 102
 
     const metaSuiteMatch = meta.unitId && String(meta.unitId).toLowerCase() === suiteId;
     const descSuiteMatch = descLC.includes(`suite ${suiteId}`);
@@ -97030,7 +97058,7 @@ function _depositPaidFromCache(u) {
   if (!u || !u.id) return null;
   let rows = null;
   try {
-    if (typeof _invRowsForUnit === 'function') rows = _invRowsForUnit(u.id) || [];
+    if (typeof _invRowsForUnit === 'function') rows = _invRowsForUnit(u.id, _unitBuildingIdOf(u)) || [];   // Entry 102
     else if (typeof _invoicesCache !== 'undefined' && Array.isArray(_invoicesCache)) {
       rows = _invoicesCache.filter(r => String(r?.unitId || r?.metadata?.unitId || '') === String(u.id));
     }
@@ -97135,7 +97163,7 @@ function _rentPaidRowFromCache(u, ym) {
   if (!u || !u.id || !ym) return null;
   let rows = null;
   try {
-    if (typeof _invRowsForUnit === 'function') rows = _invRowsForUnit(u.id) || [];
+    if (typeof _invRowsForUnit === 'function') rows = _invRowsForUnit(u.id, _unitBuildingIdOf(u)) || [];   // Entry 102
     else if (typeof _invoicesCache !== 'undefined' && Array.isArray(_invoicesCache)) {
       rows = _invoicesCache.filter(r => String(r?.unitId || r?.metadata?.unitId || '') === String(u.id));
     }
@@ -97245,6 +97273,51 @@ function _stripePaidAmountForYm(u, ym) {
 // данными — никакой финансовой логики. Эпоха _invoicesCacheEpoch растёт
 // монотонно при каждой перестройке; её потребляет _invByUnitEpoch (и через
 // перестройку подындекса — fill-отпечаток юнита).
+// ─── Entry 102: invoice ↔ building scope ───
+// Номер сьюта уникален только внутри здания (на проде 294 номера из 675
+// повторяются), а кэш счетов один на весь портфель. Любая per-unit выборка из
+// _invoicesCache обязана знать здание юнита — иначе счета Bay Vista/113 читались
+// как счета 4355 Central/113 (2026-10-31: Invoice history, Invoice report,
+// анти-дубль в stripeCreateInvoice). Правило — как у сетки Payment history
+// (Entry 91) и у m/lib/money.js _rowsForUnit: строка с ЧУЖИМ buildingId
+// отбрасывается всегда; строка без buildingId (legacy, до того как CF начал
+// его писать) принимается как раньше.
+// Здание юнита — по объекту: WeakMap поверх state.buildings. Подмена объекта
+// здания buildings-strip листенером даёт новые объекты юнитов → промах →
+// карта перестраивается за один проход. Объект не из state (копия, модалка)
+// → currentBuilding(): панель юнита всегда открыта на текущем здании.
+var _unitBuildingIdMap = null;      // WeakMap(unit → buildingId); промахи не хранятся
+function _unitBuildingIdOf(u) {
+  if (!u || typeof u !== 'object') return null;
+  let hit = _unitBuildingIdMap ? _unitBuildingIdMap.get(u) : undefined;
+  if (hit === undefined) {
+    const bl = (typeof state !== 'undefined' && state && Array.isArray(state.buildings)) ? state.buildings : [];
+    const m = new WeakMap();
+    for (const b of bl) {
+      if (!b || b.id == null) continue;
+      for (const f of (b.floors || [])) {
+        for (const x of ((f && f.units) || [])) if (x && typeof x === 'object') m.set(x, String(b.id));
+      }
+    }
+    hit = m.get(u);
+    // Промах НЕ кэшируем: объект, которого нет в state (копия для модалки, юнит,
+    // который ещё не вставлен), на следующем вызове посмотрит снова — иначе он
+    // застрял бы на фолбэке после вставки. Цена промаха — один проход по юнитам;
+    // горячие циклы (renderUnits) ходят по объектам из state и попадают в карту.
+    _unitBuildingIdMap = m;
+  }
+  if (hit) return hit;
+  const cb = (typeof currentBuilding === 'function') ? currentBuilding() : null;
+  return (cb && cb.id != null) ? String(cb.id) : null;
+}
+// Принадлежит ли строка кэша зданию bid. Нет bid / нет buildingId у строки → да.
+function _invRowInBuilding(r, bid) {
+  if (!r) return false;
+  if (!bid) return true;
+  const rb = (r.metadata && r.metadata.buildingId) || r.buildingId || '';
+  return !rb || String(rb) === String(bid);
+}
+// ─── /Entry 102 ───
 var _invoicesCacheById = null;     // Map(invoiceId → row)
 var _invoicesCacheByIdSrc = null;  // ссылка на массив, для которого построен индекс
 var _invoicesCacheEpoch = 0;       // монотонный счётчик перестроек индекса
@@ -97264,7 +97337,7 @@ function _invIndexEnsure() {
 // (String(r.unitId || r.metadata.unitId || '')). Пустой ключ '' сохранён
 // нарочно: исходный filter матчил строки без unitId на юниты без id.
 // null → индекса нет (кэш не массив) — вызывающий падает на старый скан.
-function _invRowsForUnit(unitId) {
+function _invRowsForUnit(unitId, bid) {
   if (typeof _invoicesCache === 'undefined' || !Array.isArray(_invoicesCache)) return null;
   _invIndexEnsure();
   if (!_invByUnitIndex || _invByUnitEpoch !== _invoicesCacheEpoch) {
@@ -97279,7 +97352,11 @@ function _invRowsForUnit(unitId) {
     _invByUnitIndex = m;
     _invByUnitEpoch = _invoicesCacheEpoch;
   }
-  return _invByUnitIndex.get(String(unitId || '')) || [];
+  const _rows = _invByUnitIndex.get(String(unitId || '')) || [];
+  // Entry 102: подындекс — по номеру; здание — фильтром (строк на номер единицы).
+  // Без bid — прежнее поведение (все здания) для старых вызывающих.
+  if (!bid) return _rows;
+  return _rows.filter(r => _invRowInBuilding(r, bid));
 }
 
 // Look up a Stripe invoice's real bucket in the cache. Returns one of:
@@ -97602,13 +97679,14 @@ async function _voidAndResendMoveIn(kind, btn) {
 // so the Move-in card flips to OPEN instead of staying "Not sent".
 // Very strict match criteria to avoid false positives:
 //   - metadata.source === 'suitesforall' (our own invoice)
-//   - metadata.unitId === u.id
+//   - metadata.unitId === u.id, metadata.buildingId — здание юнита (Entry 102)
 //   - metadata.purpose matches the type we just sent ('rent'; for Deposit —
 //     'deposit', or legacy 'custom' + "deposit" in the description — Entry 95)
 //   - created in the last 10 minutes
 async function _verifyAndStampAfterSend(u, type) {
   if (!u || !fbSync?.enabled) return false;
   try {
+    const _e102Bid = _unitBuildingIdOf(u);   // Entry 102: здание ДО await (strip-свап отвяжет объект)
     const res = await stripeListInvoices({limit: 25});
     _mergeIntoInvoicesCache(res.rows || []);
     try { _persistInvoiceBucketsFromCache(); } catch {}
@@ -97616,6 +97694,7 @@ async function _verifyAndStampAfterSend(u, type) {
     const candidates = _invoicesCache.filter(r => {
       const m = r.metadata || {};
       if (m.source !== 'suitesforall') return false;
+      if (!_invRowInBuilding(r, _e102Bid)) return false; // Entry 102
       if (String(m.unitId || '') !== String(u.id)) return false;
       const createdMs = r.created ? new Date(r.created).getTime() : 0;
       if (createdMs < cutoffMs) return false;
@@ -104481,6 +104560,9 @@ async function _voidTenantOpenInvoices(u, snapshotEmail, tenancyStartMs) {
   const suiteId = String(u.id || '').toLowerCase();
   const email = (snapshotEmail || u.email || '').toLowerCase().trim();
   if (!suiteId || !email) return;
+  // Entry 102: здание фиксируем ДО await'ов — strip-свап может отвязать объект u;
+  // void'им только счета своего здания.
+  const _e102Bid = _unitBuildingIdOf(u);
   // Аудит P1 2026-07-03: пустой кэш раньше = МОЛЧАЛИВЫЙ no-op — открытые
   // инвойсы продолжали dunning после выезда. Теперь при пустом/несозданном
   // кэше честно тянем список через callable (до 3 страниц × 100, как
@@ -104517,6 +104599,7 @@ async function _voidTenantOpenInvoices(u, snapshotEmail, tenancyStartMs) {
   const candidates = [];
   for (const r of cache) {
     if (!r || !r.id) continue;
+    if (!_invRowInBuilding(r, _e102Bid)) continue; // Entry 102
     if (!VOIDABLE.has((r.status || '').toLowerCase())) continue;
     const meta = r.metadata || {};
     const descLC = (r.description || '').toLowerCase();
@@ -104949,8 +105032,11 @@ async function recoveryVoidInvoicesForCase(caseId) {
   }
   const VOIDABLE = new Set(['open', 'past_due', 'uncollectible', 'draft']);
   const candidates = [];
+  // Entry 102: здание — из кейса, иначе от юнита; чужие одноимённые сьюты не void'им.
+  const _e102Bid = (c.buildingId != null && c.buildingId !== '') ? String(c.buildingId) : _unitBuildingIdOf(u);
   for (const r of cache) {
     if (!r || !r.id) continue;
+    if (!_invRowInBuilding(r, _e102Bid)) continue; // Entry 102
     if (!VOIDABLE.has((r.status || '').toLowerCase())) continue;
     const meta = r.metadata || {};
     const descLC = (r.description || '').toLowerCase();
@@ -153381,6 +153467,7 @@ function _ciDetectRollInCandidate() {
   const candidates = cache.filter(i =>
     i && i.metadata
     && String(i.metadata.unitId) === String(_ciSelection.unitId)
+    && _invRowInBuilding(i, _ciSelection.buildingId)   // Entry 102: пеня чужого здания не roll-in
     && i.metadata.purpose === 'late_fee'
     && i.metadata.ym === prevYm
     && (i.bucket === 'open' || i.bucket === 'past_due')
@@ -160341,7 +160428,8 @@ function renderMpmInvoiceContext(u, ym) {
   // fall back to local stamps (lastInvoiceId, moveInRent, depositInvoice).
   let inv = null;
   if (Array.isArray(_invoicesCache)) {
-    inv = _invoicesCache.find(r =>
+    // Entry 102: карточка и Remind — только счёт своего здания.
+    inv = (_invRowsForUnit(u.id, _unitBuildingIdOf(u)) || []).find(r =>
       (r.metadata?.unitId || '').toString() === u.id.toString()
       && r.metadata?.ym === ym
     );
@@ -160484,7 +160572,9 @@ function _mpmRenderStripeSyncPrompt(u, ym) {
 
   let inv = null;
   if (Array.isArray(_invoicesCache)) {
-    inv = _invoicesCache.find(r =>
+    // Entry 102: только счета своего здания — иначе «mark paid» / void ушли бы
+    // на открытый счёт одноимённого сьюта другого здания.
+    inv = (_invRowsForUnit(u.id, _unitBuildingIdOf(u)) || []).find(r =>
       r && (r.metadata?.unitId || '').toString() === u.id.toString()
       && r.metadata?.ym === ym
       && (r.bucket === 'open' || r.bucket === 'past_due')

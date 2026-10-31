@@ -759,6 +759,44 @@ if [ "$_e101_ok" = 1 ]; then
 fi
 
 echo
+echo "Entry 102 — счёт принадлежит зданию юнита (кэш счетов один на портфель, номера повторяются):"
+# 2026-10-31: Apt 113 в 4355 Central показывал счета Suite 113 Bay Vista — Invoice
+# history / report и анти-дубль в stripeCreateInvoice матчили только
+# metadata.unitId. Теперь каждая per-unit выборка из _invoicesCache идёт через
+# _unitBuildingIdOf + _invRowInBuilding (чужой buildingId → не наш; без
+# buildingId → как раньше). Снятие любой проверки возвращает утечку на 294
+# повторяющихся номера (93 текли на проде в день инцидента).
+_e102_ok=1
+_e102_cnt() {  # $1 описание, $2 файл (от корня), $3 строка, $4 ожидаемое число строк
+  _e102_n=$(grep -cF -- "$3" "$ROOT/$2" || true)
+  if [ "$_e102_n" != "$4" ]; then
+    echo "  ✗ Entry 102: $1 — expected $4 line(s) of: $3 in $2 — found $_e102_n (FIXES_LOG Entry 102)"
+    _e102_ok=0; FAIL=1
+  fi
+}
+_e102_cnt "helpers block present"                          floor-map-editor.html "// ─── Entry 102: invoice ↔ building scope ───" 1
+_e102_cnt "unit → building resolver"                       floor-map-editor.html "function _unitBuildingIdOf(u) {" 1
+_e102_cnt "row ∈ building predicate"                       floor-map-editor.html "function _invRowInBuilding(r, bid) {" 1
+_e102_cnt "per-unit sub-index takes the building"          floor-map-editor.html "function _invRowsForUnit(unitId, bid) {" 1
+_e102_cnt "no bare sub-index reads (u.id)"                 floor-map-editor.html "_invRowsForUnit(u.id)" 0
+_e102_cnt "no bare sub-index reads (u?.id)"                floor-map-editor.html "_invRowsForUnit(u?.id)" 0
+_e102_cnt "map fill, cache verdicts, MPM prompt + card pass the building" floor-map-editor.html "_invRowsForUnit(u.id, _unitBuildingIdOf(u))" 6
+_e102_cnt "map fingerprint passes the building"            floor-map-editor.html "_invRowsForUnit(u?.id, _unitBuildingIdOf(u))" 1
+_e102_cnt "payment grid passes its building"               floor-map-editor.html "_invRowsForUnit(u.id, b && b.id)" 1
+_e102_cnt "Invoice history signals 1+3 are building-scoped" floor-map-editor.html "const _inBld = _invRowInBuilding(r, _e102Bid);" 1
+_e102_cnt "finders + two void loops skip other buildings"  floor-map-editor.html "if (!_invRowInBuilding(r, _e102Bid)) continue; // Entry 102" 4
+_e102_cnt "heal ×2 + verify-after-send skip other buildings" floor-map-editor.html "if (!_invRowInBuilding(r, _e102Bid)) return false; // Entry 102" 3
+_e102_cnt "duplicate prompt ignores other buildings"       floor-map-editor.html "if (buildingId && typeof _invRowInBuilding === 'function' && !_invRowInBuilding(inv, buildingId)) return false;" 1
+_e102_cnt "report Record payment routes by the invoice building" floor-map-editor.html "const _wantBid = _md.buildingId ? String(_md.buildingId) : (_cb && _cb.id != null ? String(_cb.id) : null);" 1
+_e102_cnt "late-fee roll-in candidate stays in the building" floor-map-editor.html "&& _invRowInBuilding(i, _ciSelection.buildingId)" 1
+_e102_cnt "map memo key carries the building"             floor-map-editor.html "+ invCacheKey + errKey + leaseKey + bldKey;" 1
+_e102_cnt "mobile: _hasOpenInvoice via _rowsForUnit"       m/lib/money.js "  const rows = _rowsForUnit(unit, snap);" 1
+_e102_cnt "mobile: dupOf ignores other buildings"          m/ui/invoice.js "if (bid && rb && rb !== bid) continue;" 1
+if [ "$_e102_ok" = 1 ]; then
+  echo "  ✓ per-unit invoice lookups are scoped to the unit's building (desktop 18 sites + mobile 2)"
+fi
+
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."
