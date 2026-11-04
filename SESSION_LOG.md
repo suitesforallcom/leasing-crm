@@ -21,6 +21,10 @@ Format:
 
 ---
 
+## 2026-11-04
+
+- 🆕 `(этот коммит)` **Entry 103: окно — отдельная секция в правом клике и синий диск «как у воды»** — в меню по правому клику секция WINDOW со строкой «Exterior window» (тот же путь записи `_ctxToggleUnitSpec`, пишет только `u.window`; у квартиры строка неактивна), на карте четвёртый диск в ряду воды (окно первым, защита по ширине Entry 99) со своим per-device выключателем `showWindow`; пилюля «Water ▾» подписана «Markers ▾» (+ чекбокс в выпадашке, ключ в Legend, тумблер в Layers), подсказка у свитча в карточке, в rent roll вместо 🌞 синий глиф спрайта; гейт Entry 103 (18 строк).
+
 ## 2026-10-31
 
 - ⚠️ `ae60932` **Entry 102: счёт принадлежит зданию юнита** — Invoice history / report, анти-дубль отправки, safety-net штампов, заливка карты, heal авто-счёта, move-out / recovery void, MPM-карточка + Stripe-sync, Record payment из отчёта, roll-in пени и телефон (uiStatus, dupOf) матчили счёт по голому номеру юнита: Bay Vista/113 показывался на 4355 Central/113 и блокировал отправку депозита (93 номера текли). Новые `_unitBuildingIdOf` / `_invRowInBuilding`, `_invRowsForUnit(unitId, bid)`; тест `tests/invoice-scope.test.mjs` (21), гейт Entry 102 (18). Штамп `a44d00a`, релиз ae60932ce8cf, деплой из чистого worktree; прод: утечек 0. Фаза B (functions: ключи крона/лимитов, dedupe) — отдельно, до 2026-11-21.

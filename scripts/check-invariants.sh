@@ -797,6 +797,46 @@ if [ "$_e102_ok" = 1 ]; then
 fi
 
 echo
+echo "Entry 103 — окно: отдельная секция в правом клике + синий диск-маркер «как у воды» (Markers ▾ · Legend · Layers · карточка · rent roll):"
+# 2026-11-04 (Тони: «Да, делай»): секция WINDOW в _unitContextMenuView пишет только
+# u.window и только через _ctxToggleUnitSpec (гейты роли и leader-tab, история,
+# saveState); у квартиры (apt_*) строка неактивна и флаг не пишется. Маркер —
+# четвёртый диск в ряду воды (окно первым, защита по ширине Entry 99), читает
+# u.window && showWindow; showWindow — per-device (PER_USER_SETTINGS_KEYS,
+# redesign-миграция OFF), единственный читатель _waterFlags, единственный
+# писатель setWaterMarker, _syncMapLayerChips держит пилюлю (.has-window),
+# чекбокс #mlbWaterWindow и тумблер #tglWindow в lockstep. Пилюля подписана
+# «Markers ▾» (id и классы остались «water» — без переименований).
+_e103_ok=1
+_e103_cnt() {  # $1 описание, $2 строка, $3 ожидаемое число строк в floor-map-editor.html
+  _e103_n=$(grep -cF -- "$2" "$ROOT/floor-map-editor.html" || true)
+  if [ "$_e103_n" != "$3" ]; then
+    echo "  ✗ Entry 103: $1 — expected $3 line(s) of: $2 — found $_e103_n (FIXES_LOG Entry 103)"
+    _e103_ok=0; FAIL=1
+  fi
+}
+_e103_cnt "right-click WINDOW row writes through _ctxToggleUnitSpec" "_ctxToggleUnitSpec('\${uId}','window')" 1
+_e103_cnt "_ctxToggleUnitSpec accepts window (Entry 99 string kept)" "if (field !== 'window' && field !== 'shampoo' && field !== 'sink' && field !== 'pedicure') return;" 1
+_e103_cnt "apartment guard — the flag is never written for apt_*"  "if (field === 'window' && typeof _isAptType === 'function' && _isAptType(u.type)) return;" 1
+_e103_cnt "inert checked row for apartments"                       "_unitMenuCheck('Exterior window', true, '', '#2563EB', false)" 1
+_e103_cnt "marker gate + the mark read u.window && showWindow"     "(u.window && showWindow)" 2
+_e103_cnt "window disc is pushed into the marker row"              "if (u.window && showWindow) marks.push({" 1
+_e103_cnt "_waterFlags returns window"                             "window: st.showWindow === true" 1
+_e103_cnt "setWaterMarker maps window → showWindow"                "kind === 'window' ? 'showWindow'" 1
+_e103_cnt "toggleShowWindow goes through setWaterMarker"           "function toggleShowWindow() { setWaterMarker('window', !_waterFlags().window); }" 1
+_e103_cnt "showWindow is a per-device setting"                     "'showPedicure', 'showWindow'," 1
+_e103_cnt "redesign migration defaults the window marker OFF"      "state.settings.showWindow = false;" 1
+_e103_cnt "_syncMapLayerChips drives the pill glyph"               "pill.classList.toggle('has-window', f.window);" 1
+_e103_cnt "dropdown checkbox writes through setWaterMarker"        "id=\"mlbWaterWindow\" onchange=\"setWaterMarker('window', this.checked)\"" 1
+_e103_cnt "Layers toggle goes through toggleShowWindow"            "id=\"tglWindow\" onclick=\"toggleShowWindow()\"" 1
+_e103_cnt "pill is labelled Markers ▾"                             "<span>Markers ▾</span>" 1
+_e103_cnt "old Water ▾ label is gone"                              "<span>Water ▾</span>" 0
+_e103_cnt "Legend key + dropdown row"                              "Exterior window</span>" 2
+_e103_cnt "rent roll Win cell draws the sprite glyph"              "_rdIc('window', 13)" 1
+if [ "$_e103_ok" = 1 ]; then
+  echo "  ✓ окно: правый клик → _ctxToggleUnitSpec (apt-гард), диск u.window && showWindow, _waterFlags / setWaterMarker / per-device флаг, Markers ▾ · Legend · Layers, карточка, rent roll"
+fi
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."

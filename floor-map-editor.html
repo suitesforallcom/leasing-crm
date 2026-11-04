@@ -6777,18 +6777,21 @@
   .map-view-tabs .mlb-pill[data-mlp-key="overdue"].active     { color: #E11D48; background: #FDE7EC; border-color: #E11D48; }
   .map-view-tabs .mlb-pill[data-mlp-key="pending-sig"].active { color: #075985; background: #E0F2FE; border-color: #0EA5E9; }
   .map-view-tabs .mlb-pill[data-mlp-key="new-tenants"].active { color: #92400E; background: #FDF3E0; border-color: #F59E0B; }
-  /* Water ▾ pill — teal frame when any marker is on; shows the glyph(s)
-     of what is on (violet bottle = shampoo station, teal droplet = sink,
-     rose footprint = pedicure chair — Entry 99)
+  /* Markers ▾ pill (named «Water ▾» until Entry 103) — teal frame when any
+     marker is on; shows the glyph(s) of what is on (violet bottle =
+     shampoo station, teal droplet = sink, rose footprint = pedicure
+     chair — Entry 99, blue window = exterior window — Entry 103)
      and a muted droplet when nothing is. .open = dropdown is showing. */
   .map-view-tabs .mlb-pill[data-layer="water"].active         { color: #0F6E56; background: #E1F5EE; border-color: #1D9E75; }
   .map-view-tabs .mlb-pill[data-layer="water"].open           { box-shadow: 0 0 0 2px rgba(15,110,86,0.18); }
   .map-view-tabs .mlb-pill[data-layer="water"] .mlb-water-ic-shampoo,
   .map-view-tabs .mlb-pill[data-layer="water"] .mlb-water-ic-sink,
-  .map-view-tabs .mlb-pill[data-layer="water"] .mlb-water-ic-pedicure { display: none; }
+  .map-view-tabs .mlb-pill[data-layer="water"] .mlb-water-ic-pedicure,
+  .map-view-tabs .mlb-pill[data-layer="water"] .mlb-water-ic-window { display: none; }
   .map-view-tabs .mlb-pill[data-layer="water"].has-shampoo .mlb-water-ic-shampoo   { display: block; color: #534AB7; }
   .map-view-tabs .mlb-pill[data-layer="water"].has-sink .mlb-water-ic-sink         { display: block; color: #0F6E56; }
   .map-view-tabs .mlb-pill[data-layer="water"].has-pedicure .mlb-water-ic-pedicure { display: block; color: #BE185D; }
+  .map-view-tabs .mlb-pill[data-layer="water"].has-window .mlb-water-ic-window     { display: block; color: #2563EB; }
   .map-view-tabs .mlb-pill[data-layer="water"].active .mlb-water-ic-off           { display: none; }
   /* The dropdown rows (checkbox + glyph + label). */
   .mlb-water-menu .mlb-water-opt {
@@ -20643,22 +20646,25 @@
               </div>
             </div>
           </div>
-          <!-- Water ▾ — NOT a filter. Dropdown with three checkboxes that
-               switch the water markers on units: violet bottle = shampoo
-               station (showShampoo), teal droplet = sink / plumbing
-               (showSink), rose footprint = pedicure chair (showPedicure,
-               Entry 99). Any combination. Default off (grey); the
-               pill turns teal when any marker is on and shows the glyph(s)
-               of what is on. Sync via _syncMapLayerChips, not the filter
-               sweep, so other filter changes don't reset it. -->
+          <!-- Markers ▾ (named «Water ▾» until Entry 103) — NOT a filter.
+               Dropdown with four checkboxes that switch the per-unit markers:
+               violet bottle = shampoo station (showShampoo), teal droplet =
+               sink / plumbing (showSink), rose footprint = pedicure chair
+               (showPedicure, Entry 99), blue window = exterior window
+               (showWindow, Entry 103). Any combination. Default off (grey);
+               the pill turns teal when any marker is on and shows the
+               glyph(s) of what is on. Sync via _syncMapLayerChips, not the
+               filter sweep, so other filter changes don't reset it. Ids and
+               classes keep the «water» name — no renames mid-project. -->
           <div class="mlb-water-wrap" style="position: relative; display: inline-block;">
             <button type="button" class="mlb-pill" id="mlbLayerWater" data-layer="water"
-                    onclick="toggleWaterLayerMenu(event)" title="Choose which water markers to show on units">
+                    onclick="toggleWaterLayerMenu(event)" title="Choose which markers to show on units — water fixtures and exterior windows">
               <svg class="mlb-pill-ic mlb-water-ic-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z"/></svg>
               <svg class="mlb-pill-ic mlb-water-ic-shampoo" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 3h4v4.5c1.8.9 3 2.7 3 4.8V19a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-6.7c0-2.1 1.2-3.9 3-4.8V3Z"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
               <svg class="mlb-pill-ic mlb-water-ic-sink" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z"/></svg>
               <svg class="mlb-pill-ic mlb-water-ic-pedicure" viewBox="0 0 24 24" aria-hidden="true"><path d="M7.6 11.2c0-2.3 2-4 4.4-4s4.4 1.7 4.4 4c0 1.9-1.1 3.4-1.5 5.3-.3 1.4-.5 2.6-.9 3.8-.4 1.1-1.1 1.7-2 1.7s-1.6-.6-2-1.7c-.4-1.2-.6-2.4-.9-3.8-.4-1.9-1.5-3.4-1.5-5.3Z"/><circle cx="8.3" cy="5.2" r="2"/><circle cx="11.3" cy="3.4" r="1.5"/><circle cx="13.9" cy="3.3" r="1.35"/><circle cx="16.1" cy="4.3" r="1.2"/><circle cx="17.7" cy="6" r="1.05"/></svg>
-              <span>Water ▾</span>
+              <svg class="mlb-pill-ic mlb-water-ic-window" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><line x1="12" y1="4" x2="12" y2="20"/><line x1="4" y1="12" x2="20" y2="12"/></svg>
+              <span>Markers ▾</span>
             </button>
             <div id="mlbWaterMenu" class="mf-new-popover mlb-water-menu" style="display: none; position: absolute; top: calc(100% + 6px); bottom: auto; right: 0; left: auto; transform: none; min-width: 196px; z-index: 100;">
               <div class="mfnp-title">Show on the plan</div>
@@ -20676,6 +20682,12 @@
                 <input type="checkbox" id="mlbWaterPedicure" onchange="setWaterMarker('pedicure', this.checked)" style="accent-color:#BE185D">
                 <svg class="mlp-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="12" fill="#BE185D"/><g transform="translate(12 12) scale(.68) translate(-12 -12)" fill="#fff"><path d="M7.6 11.2c0-2.3 2-4 4.4-4s4.4 1.7 4.4 4c0 1.9-1.1 3.4-1.5 5.3-.3 1.4-.5 2.6-.9 3.8-.4 1.1-1.1 1.7-2 1.7s-1.6-.6-2-1.7c-.4-1.2-.6-2.4-.9-3.8-.4-1.9-1.5-3.4-1.5-5.3Z"/><circle cx="8.3" cy="5.2" r="2"/><circle cx="11.3" cy="3.4" r="1.5"/><circle cx="13.9" cy="3.3" r="1.35"/><circle cx="16.1" cy="4.3" r="1.2"/><circle cx="17.7" cy="6" r="1.05"/></g></svg>
                 <span>Pedicure chair</span>
+              </label>
+              <div style="border-top:1px solid var(--border); margin:4px 0;"></div>
+              <label class="mlb-water-opt" title="Blue window disc on units flagged as having an exterior window. Apartments are not marked — windows are standard there.">
+                <input type="checkbox" id="mlbWaterWindow" onchange="setWaterMarker('window', this.checked)" style="accent-color:#2563EB">
+                <svg class="mlp-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="12" fill="#2563EB"/><g transform="translate(12 12) scale(.68) translate(-12 -12)"><rect x="4" y="4" width="16" height="16" rx="2" fill="#fff"/><line x1="12" y1="4" x2="12" y2="20" stroke="#2563EB" stroke-width="2.4" stroke-linecap="round"/><line x1="4" y1="12" x2="20" y2="12" stroke="#2563EB" stroke-width="2.4" stroke-linecap="round"/></g></svg>
+                <span>Exterior window</span>
               </label>
               <div class="mlb-water-hint">Per unit: its card › ··· › Edit unit › Unit specifications</div>
             </div>
@@ -20695,6 +20707,7 @@
                 <span><svg class="mlp-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="12" fill="#0F6E56"/><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z" fill="#fff" transform="translate(12 12) scale(.68) translate(-12 -12)"/></svg>Sink / plumbing</span>
                 <span><svg class="mlp-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="12" fill="#534AB7"/><g transform="translate(12 12) scale(.68) translate(-12 -12)"><path d="M10 3h4v4.5c1.8.9 3 2.7 3 4.8V19a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-6.7c0-2.1 1.2-3.9 3-4.8V3Z" fill="#fff"/><line x1="9" y1="14" x2="15" y2="14" stroke="#534AB7" stroke-width="2.4" stroke-linecap="round"/></g></svg>Shampoo station</span>
                 <span><svg class="mlp-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="12" fill="#BE185D"/><g transform="translate(12 12) scale(.68) translate(-12 -12)" fill="#fff"><path d="M7.6 11.2c0-2.3 2-4 4.4-4s4.4 1.7 4.4 4c0 1.9-1.1 3.4-1.5 5.3-.3 1.4-.5 2.6-.9 3.8-.4 1.1-1.1 1.7-2 1.7s-1.6-.6-2-1.7c-.4-1.2-.6-2.4-.9-3.8-.4-1.9-1.5-3.4-1.5-5.3Z"/><circle cx="8.3" cy="5.2" r="2"/><circle cx="11.3" cy="3.4" r="1.5"/><circle cx="13.9" cy="3.3" r="1.35"/><circle cx="16.1" cy="4.3" r="1.2"/><circle cx="17.7" cy="6" r="1.05"/></g></svg>Pedicure chair</span>
+                <span><svg class="mlp-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="12" fill="#2563EB"/><g transform="translate(12 12) scale(.68) translate(-12 -12)"><rect x="4" y="4" width="16" height="16" rx="2" fill="#fff"/><line x1="12" y1="4" x2="12" y2="20" stroke="#2563EB" stroke-width="2.4" stroke-linecap="round"/><line x1="4" y1="12" x2="20" y2="12" stroke="#2563EB" stroke-width="2.4" stroke-linecap="round"/></g></svg>Exterior window</span>
               </div>
             </div>
           </div>
@@ -21319,10 +21332,11 @@
         <div class="toggle-row" style="padding-left: 14px;" title="Shows the tenant's name inside the unit on the map."><label>Show tenant name <span style="color:var(--muted); font-weight:400; font-size:10px;">(on map)</span></label><div class="toggle on" id="tglTenant" onclick="toggleShowTenant()"></div></div>
 
         <!-- Map markers — feature overlays that aren't text labels.
-             Three per-device switches (the same state as the Water ▾
-             dropdown in the map top bar): shampoo-station, sink and
-             pedicure-chair discs. Default OFF (opt-in) so the map stays clean for
-             anyone not currently scoping out wet-spec offices. -->
+             Four per-device switches (the same state as the Markers ▾
+             dropdown in the map top bar): shampoo-station, sink,
+             pedicure-chair and exterior-window discs (Entry 103). Default
+             OFF (opt-in) so the map stays clean for anyone not currently
+             scoping out wet-spec or window offices. -->
         <div class="panel-title">Map markers</div>
         <div class="toggle-row">
           <label><svg class="rd-ic" style="width:14px;height:14px;vertical-align:-2px" aria-hidden="true"><use href="#i-bottle"></use></svg> Shampoo station markers</label>
@@ -21335,6 +21349,10 @@
         <div class="toggle-row">
           <label><svg class="rd-ic" style="width:14px;height:14px;vertical-align:-2px" aria-hidden="true"><use href="#i-foot"></use></svg> Pedicure chair markers</label>
           <div class="toggle" id="tglPedicure" onclick="toggleShowPedicure()"></div>
+        </div>
+        <div class="toggle-row" title="Blue window disc on units flagged as having an exterior window. Apartments are not marked — windows are standard there.">
+          <label><svg class="rd-ic" style="width:14px;height:14px;vertical-align:-2px" aria-hidden="true"><use href="#i-window"></use></svg> Exterior window markers</label>
+          <div class="toggle" id="tglWindow" onclick="toggleShowWindow()"></div>
         </div>
 
         <!-- Unit panel rent layers — control which figures appear in the
@@ -28529,6 +28547,7 @@ function loadState() {
       state.settings.showSink = false;
       state.settings.showShampoo = false;
       state.settings.showPedicure = false;
+      state.settings.showWindow = false;
       state.settings.useCompactStatus = true;
       localStorage.setItem(REDESIGN_MAP_MIGRATION_KEY, '1');
     }
@@ -34229,7 +34248,7 @@ try {
 // обобщено до whitelist в Entry 48.
 const PER_USER_SETTINGS_KEYS = new Set([
   'theme', 'editMode', 'snap', 'snapEdge',
-  'showLabels', 'showRent', 'showSqft', 'showTenant', 'showSink', 'showShampoo', 'showPedicure',
+  'showLabels', 'showRent', 'showSqft', 'showTenant', 'showSink', 'showShampoo', 'showPedicure', 'showWindow',
   'useCompactStatus', 'showLeaseIcon', 'showRentIcon', 'showNewBadge',
   'showOverdueAlert', 'showPendingOnboarding',
   'showUnitPrice', 'showRatePerSqft', 'showProformaPrice', 'showProformaRate',
@@ -69801,11 +69820,13 @@ function renderUnits() {
         const showRent   = state.settings.showRent   !== false;
         const showSqft   = state.settings.showSqft   === true;   // opt-in
         const showTenant = state.settings.showTenant !== false;
-        // Water markers — two per-device switches (Water ▾ dropdown).
-        const _water        = (typeof _waterFlags === 'function') ? _waterFlags() : { sink: false, shampoo: false, pedicure: false };
+        // Map markers — four per-device switches (Markers ▾ dropdown, named
+        // Water ▾ until Entry 103): three water fixtures + the exterior window.
+        const _water        = (typeof _waterFlags === 'function') ? _waterFlags() : { sink: false, shampoo: false, pedicure: false, window: false };
         const showSink      = _water.sink;      // opt-in
         const showShampoo   = _water.shampoo;   // opt-in
         const showPedicure  = _water.pedicure;  // opt-in (Entry 99)
+        const showWindow    = _water.window;    // opt-in (Entry 103)
 
         // Label positioning. Operator request 2026-05-10: «у квадрата
         // номер внутри, у многоугольника снаружи — сделай как у квадрата».
@@ -69908,21 +69929,29 @@ function renderUnits() {
         num.textContent = u.id;
         g.appendChild(num);
         // Water markers — small discs in the bottom-LEFT corner ONLY on
-        // units that have a sink, a shampoo station and/or a pedicure
-        // chair (FIXES_LOG Entry 93, Entry 99). Teal droplet = sink /
-        // plumbing (showSink), violet bottle = shampoo station
+        // units that have an exterior window, a sink, a shampoo station
+        // and/or a pedicure chair (FIXES_LOG Entry 93, Entry 99, Entry 103).
+        // Blue window = exterior window (showWindow, explicit u.window only —
+        // apartments, where a window is implied, get no disc), teal droplet
+        // = sink / plumbing (showSink), violet bottle = shampoo station
         // (showShampoo), rose footprint = pedicure chair (showPedicure) —
-        // each kind has its own checkbox in the Water ▾ dropdown; a unit
-        // with several switched-on kinds gets the discs side by side, as
-        // many as fit its width (Entry 99 guard below). Units without
-        // water stay clean (no marker) so the plan
-        // isn't noisy. Skip very small units (h < 38) — no room for the
+        // each kind has its own checkbox in the Markers ▾ dropdown; a unit
+        // with several switched-on kinds gets the discs side by side in the
+        // unit card's order (window first), as many as fit its width (Entry
+        // 99 guard below). Units without a switched-on kind stay clean (no
+        // marker) so the plan isn't noisy. Skip very small units (h < 38) — no room for the
         // discs without clipping the price/tenant text above. Icons are
         // inline SVG paths (not emoji) so they render identically on
         // every OS / browser.
-        if (isRentable && u.h >= 38 && ((u.sink && showSink) || (u.shampoo && showShampoo) || (u.pedicure && showPedicure))) {
+        if (isRentable && u.h >= 38 && ((u.window && showWindow) || (u.sink && showSink) || (u.shampoo && showShampoo) || (u.pedicure && showPedicure))) {
           const SVG_NS = 'http://www.w3.org/2000/svg';
           const marks = [];
+          if (u.window && showWindow) marks.push({
+            title: 'Exterior window', color: '#2563EB',
+            shapes: [['rect', { x: 4, y: 4, width: 16, height: 16, rx: 2, fill: '#fff' }],
+                     ['line', { x1: 12, y1: 4, x2: 12, y2: 20, stroke: '#2563EB', 'stroke-width': 2.4, 'stroke-linecap': 'round' }],
+                     ['line', { x1: 4, y1: 12, x2: 20, y2: 12, stroke: '#2563EB', 'stroke-width': 2.4, 'stroke-linecap': 'round' }]],
+          });
           if (u.sink && showSink) marks.push({
             title: 'Sink / plumbing', color: '#0F6E56',
             shapes: [['path', { d: 'M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z', fill: '#fff' }]],
@@ -72592,6 +72621,19 @@ function _unitContextMenuView(event, u) {
   items.push(_unitMenuCheck('Shampoo station', !!u.shampoo, `_ctxToggleUnitSpec('${uId}','shampoo')`, '#534AB7', can));
   items.push(_unitMenuCheck('Sink / plumbing', !!u.sink, `_ctxToggleUnitSpec('${uId}','sink')`, '#0F6E56', can));
   items.push(_unitMenuCheck('Pedicure chair', !!u.pedicure, `_ctxToggleUnitSpec('${uId}','pedicure')`, '#BE185D', can));
+  // Entry 103: WINDOW — its own section below WATER. Writes only u.window,
+  // through the same _ctxToggleUnitSpec path (role + leader-tab gates,
+  // history, saveState). An apartment has a window by definition
+  // (_unitHasWindow) — the row shows the check but is inert, like the
+  // hidden switch in the unit card.
+  items.push(`<div class="upv2-menu-sep"></div>`);
+  items.push(`<div style="padding:4px 10px 2px; font-size:10.5px; color:#94a3b8; text-transform:uppercase; letter-spacing:.5px; font-weight:700;">Window</div>`);
+  if (typeof _isAptType === 'function' && _isAptType(u.type)) {
+    items.push(_unitMenuCheck('Exterior window', true, '', '#2563EB', false));
+    items.push(`<div style="padding:0 10px 6px; font-size:10.5px; color:#94a3b8;">Standard for apartments</div>`);
+  } else {
+    items.push(_unitMenuCheck('Exterior window', !!u.window, `_ctxToggleUnitSpec('${uId}','window')`, '#2563EB', can));
+  }
   if (!can) items.push(`<div style="padding:2px 10px 8px; font-size:10.5px; color:#94a3b8;">View only — your role cannot edit units.</div>`);
   const menu = _unitEnsureMenuEl();
   menu.innerHTML = items.join('');
@@ -72604,13 +72646,14 @@ function _ctxEditUnit(unitId) {
   renderAll();
   try { const g = document.getElementById('unitSpecsGroup'); if (g) g.open = true; } catch {}
 }
-// Flip a water spec straight from the menu — same write path as the
+// Flip a unit spec (a water fixture or, since Entry 103, the exterior
+// window) straight from the menu — same write path as the
 // card's switches (toggleField): history snapshot → flip → saveState →
 // renderAll. If that marker kind is switched off on this device it is
 // switched on, so the operator sees what they just set. The menu stays
 // open with fresh check marks so the second box needs no new right-click.
 function _ctxToggleUnitSpec(unitId, field) {
-  if (field !== 'shampoo' && field !== 'sink' && field !== 'pedicure') return;
+  if (field !== 'window' && field !== 'shampoo' && field !== 'sink' && field !== 'pedicure') return;
   if (typeof canEdit === 'function' && !canEdit()) {
     if (typeof toast === 'function') toast('You do not have permission to edit units.', 'warning');
     return;
@@ -72619,6 +72662,9 @@ function _ctxToggleUnitSpec(unitId, field) {
   const f = currentFloor();
   const u = f && (f.units || []).find(x => x.id === unitId);
   if (!u) return;
+  // Entry 103: an apartment has a window by definition (_unitHasWindow) —
+  // the menu row is inert there and the flag is never written.
+  if (field === 'window' && typeof _isAptType === 'function' && _isAptType(u.type)) return;
   pushHistory();
   u[field] = !u[field];
   saveState();
@@ -72632,7 +72678,7 @@ function _ctxToggleUnitSpec(unitId, field) {
     _unitContextMenuView({ clientX: x, clientY: y }, u);
   }
   if (typeof toast === 'function') {
-    const _specLabel = { shampoo: 'shampoo station', sink: 'sink', pedicure: 'pedicure chair' }[field] || field;
+    const _specLabel = { shampoo: 'shampoo station', sink: 'sink', pedicure: 'pedicure chair', window: 'exterior window' }[field] || field;
     toast(`Suite ${u.id}: ${_specLabel} ${u[field] ? 'added' : 'removed'}`, 'success');
   }
 }
@@ -78687,7 +78733,7 @@ function renderDetail() {
         <div class="toggle-row"><label>${_rdIc('dollar', 14)}Rentable</label><label class="rd-sw"><input type="checkbox" ${u.rentable !== false ? 'checked' : ''} ${editOn ? `onchange="toggleField('rentable')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>
         ${_isAptType(u.type) ? `
         <div class="field" style="color:var(--muted); font-size:12px; padding:2px 0 6px;">${_rdIc('window', 12)} ${_rdIc('drop', 12)} Windows &amp; plumbing — standard for apartments</div>` : `
-        <div class="toggle-row"><label>${_rdIc('window', 14)}Window</label><label class="rd-sw"><input type="checkbox" ${u.window ? 'checked' : ''} ${editOn ? `onchange="toggleField('window')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>
+        <div class="toggle-row" title="Exterior window. Shows a blue window marker on the map when the window marker is on (Markers ▾ or Layers › Map markers)."><label>${_rdIc('window', 14)}Window</label><label class="rd-sw"><input type="checkbox" ${u.window ? 'checked' : ''} ${editOn ? `onchange="toggleField('window')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>
         <div class="toggle-row"><label>${_rdIc('drop', 14)}Sink / plumbing</label><label class="rd-sw"><input type="checkbox" ${u.sink ? 'checked' : ''} ${editOn ? `onchange="toggleField('sink')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>`}
         <div class="toggle-row" title="Backwash / shampoo bowl for a hair-stylist suite. Shows a violet bottle marker on the map when the Water layer is on."><label>${_rdIc('bottle', 14)}Shampoo station</label><label class="rd-sw"><input type="checkbox" ${u.shampoo ? 'checked' : ''} ${editOn ? `onchange="toggleField('shampoo')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>
         <div class="toggle-row" title="Pedicure chair with a plumbed foot basin for a nail-tech suite. Shows a rose footprint marker on the map when the Water layer is on."><label>${_rdIc('foot', 14)}Pedicure chair</label><label class="rd-sw"><input type="checkbox" ${u.pedicure ? 'checked' : ''} ${editOn ? `onchange="toggleField('pedicure')"` : 'disabled'}><span class="rd-sw-knob"></span></label></div>
@@ -108411,11 +108457,13 @@ function toggleShowTenant() {
   document.getElementById('tglTenant')?.classList.toggle('on', state.settings.showTenant);
   saveState(); renderUnits();
 }
-// Water markers — three per-device switches (Water ▾ dropdown in the map
-// top bar, mirrored by three toggles in the Layers panel):
+// Map markers — four per-device switches (Markers ▾ dropdown in the map
+// top bar, named Water ▾ until Entry 103; mirrored by four toggles in the
+// Layers panel):
 //   state.settings.showSink     → teal droplet disc on units with u.sink
 //   state.settings.showShampoo  → violet bottle disc on units with u.shampoo
 //   state.settings.showPedicure → rose footprint disc on units with u.pedicure (Entry 99)
+//   state.settings.showWindow   → blue window disc on units with u.window (Entry 103)
 // All default OFF (opt-in) so the plan stays clean. === true semantics,
 // matching the renderer. Operator 2026-10-24: «вместо этой кнопки сделай
 // выпадающий список … с чекбоксами чтобы можно было два выбрать».
@@ -108424,10 +108472,10 @@ function _waterFlags() {
   // One-time carry-over: before the dropdown a single showSink switch
   // drew BOTH marker kinds — keep that view for anyone who had it on.
   if (st.showShampoo === undefined && st.showSink === true) st.showShampoo = true;
-  return { sink: st.showSink === true, shampoo: st.showShampoo === true, pedicure: st.showPedicure === true };
+  return { sink: st.showSink === true, shampoo: st.showShampoo === true, pedicure: st.showPedicure === true, window: st.showWindow === true };
 }
 function setWaterMarker(kind, on) {
-  const key = kind === 'shampoo' ? 'showShampoo' : kind === 'pedicure' ? 'showPedicure' : 'showSink';
+  const key = kind === 'shampoo' ? 'showShampoo' : kind === 'pedicure' ? 'showPedicure' : kind === 'window' ? 'showWindow' : 'showSink';
   _waterFlags();                                   // carry-over before the write
   state.settings[key] = !!on;
   _syncMapLayerChips();
@@ -108437,8 +108485,9 @@ function setWaterMarker(kind, on) {
 function toggleShowSink()    { setWaterMarker('sink',    !_waterFlags().sink); }
 function toggleShowShampoo() { setWaterMarker('shampoo', !_waterFlags().shampoo); }
 function toggleShowPedicure() { setWaterMarker('pedicure', !_waterFlags().pedicure); }
+function toggleShowWindow() { setWaterMarker('window', !_waterFlags().window); }   // Entry 103
 
-// Water ▾ dropdown — three checkboxes under the pill. Click-outside
+// Markers ▾ dropdown (Water ▾ until Entry 103) — four checkboxes under the pill. Click-outside
 // closes; clicks inside (the checkboxes) keep it open. Same pattern as
 // the New ▾ picker and the Legend popover; the three close each other.
 function toggleWaterLayerMenu(ev) {
@@ -108472,7 +108521,7 @@ function _closeWaterLayerMenu() {
   document.getElementById('mlbLayerWater')?.classList.remove('open');
 }
 
-// Sync every water-marker control to state: the top-bar pill (teal when
+// Sync every map-marker control to state: the top-bar pill (teal when
 // anything is on + which glyphs it shows), the dropdown checkboxes and
 // the Layers-panel toggles. Idempotent — safe after any state change or
 // remote pull.
@@ -108480,10 +108529,11 @@ function _syncMapLayerChips() {
   const f = _waterFlags();
   const pill = document.getElementById('mlbLayerWater');
   if (pill) {
-    pill.classList.toggle('active', f.sink || f.shampoo || f.pedicure);
+    pill.classList.toggle('active', f.sink || f.shampoo || f.pedicure || f.window);
     pill.classList.toggle('has-sink', f.sink);
     pill.classList.toggle('has-shampoo', f.shampoo);
     pill.classList.toggle('has-pedicure', f.pedicure);
+    pill.classList.toggle('has-window', f.window);
   }
   const cbSh = document.getElementById('mlbWaterShampoo');
   if (cbSh) cbSh.checked = f.shampoo;
@@ -108491,9 +108541,12 @@ function _syncMapLayerChips() {
   if (cbSk) cbSk.checked = f.sink;
   const cbPd = document.getElementById('mlbWaterPedicure');
   if (cbPd) cbPd.checked = f.pedicure;
+  const cbWn = document.getElementById('mlbWaterWindow');
+  if (cbWn) cbWn.checked = f.window;
   document.getElementById('tglSink')?.classList.toggle('on', f.sink);
   document.getElementById('tglShampoo')?.classList.toggle('on', f.shampoo);
   document.getElementById('tglPedicure')?.classList.toggle('on', f.pedicure);
+  document.getElementById('tglWindow')?.classList.toggle('on', f.window);
 }
 
 // Right-panel rent-card layer toggles. Each flips one of the four
@@ -142298,7 +142351,9 @@ function renderRRCell(r, c) {
       return `<a class="rr-tenant-link" onclick="event.stopPropagation(); _openUnitDetailOrDrawer('${esc(r.buildingId)}','${esc(r.floorId)}','${esc(r.unitId)}')" title="Open tenant ledger">${esc(r.tenant)}</a>`;
     }
     case 'window':
-      return _unitHasWindow(r) ? '<span title="Window unit">🌞</span>' : '<span style="color:var(--muted)">—</span>';
+      // Entry 103: the sprite glyph in the stripe's blue, like the Water
+      // column's glyphs (the 🌞 emoji rendered differently on every OS).
+      return _unitHasWindow(r) ? `<span title="Window unit" style="display:inline-flex; align-items:center; vertical-align:middle; color:#2563EB">${_rdIc('window', 13)}</span>` : '<span style="color:var(--muted)">—</span>';
     case 'sink': {
       // Water column — teal droplet = sink / plumbing, violet bottle =
       // shampoo station (FIXES_LOG Entry 93), rose footprint = pedicure
