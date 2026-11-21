@@ -112742,6 +112742,33 @@ function fmtPhone(v) {
   return String(v);
 }
 
+// Entry 105: куда сервер пишет запись о конверте — здание и этаж САМОГО
+// юнита. Явные id (форма отправки / выбор в Rent Roll) → точный путь; без них
+// — здание и этаж, где этот объект юнита лежит в state. Отвязанный юнит без
+// явных id → null: одноимённый юнит здания на экране НЕ подставляется.
+function _dsEnvelopeTarget(unit, buildingId, floorId) {
+  if (!unit) return null;
+  const blds = (state && Array.isArray(state.buildings)) ? state.buildings : [];
+  if (buildingId != null && buildingId !== '') {
+    const b = blds.find(x => x && String(x.id) === String(buildingId));
+    if (!b) return null;
+    const floors = (floorId != null && floorId !== '')
+      ? (b.floors || []).filter(x => x && String(x.id) === String(floorId))
+      : (b.floors || []);
+    for (const f of floors) {
+      const u = ((f && f.units) || []).find(x => x === unit) || ((f && f.units) || []).find(x => x && x.id === unit.id);
+      if (u) return { b, f, u };
+    }
+    return null;
+  }
+  for (const b of blds) {
+    for (const f of ((b && b.floors) || [])) {
+      if (((f && f.units) || []).some(x => x === unit)) return { b, f, u: unit };
+    }
+  }
+  return null;
+}
+
 async function docusignSendEnvelope({
   recipientEmail,
   recipientName,
@@ -112752,6 +112779,7 @@ async function docusignSendEnvelope({
   emailSubject,
   unit,              // Шаг 5: опциональный — для resolver-based выбора lease-шаблона
   buildingId,        // Entry 104: здание юнита — адрес/шаблон берутся из него, не по голому номеру
+  floorId,           // Entry 105: этаж юнита — адрес записи о конверте на сервере
   docKind,           // Entry 80: 'renewal'|'amendment' → Amendment-документ вместо полного договора
 }) {
   if (!recipientEmail || !/@/.test(recipientEmail)) throw new Error('Recipient email invalid');
@@ -112902,12 +112930,23 @@ async function docusignSendEnvelope({
   }
   console.info('[send-lease] mode', _dsIsJwtMode() ? 'jwt/CF' : 'oauth/browser', '| jwtCache=', window._dsJwtModeCache, '| doc bytes=', (payload.documents && payload.documents[0] && payload.documents[0].documentBase64 || '').length, '| template=', payload.templateId || 'inline');
   if (_dsIsJwtMode()) {
-    const b = (typeof currentBuilding === 'function') ? currentBuilding() : null;
-    const f = (typeof currentFloor    === 'function') ? currentFloor()    : null;
-    const targetUnit = unit
-      || (Array.isArray(selectedIds) && selectedIds.length === 1
+    // Entry 105: запись о конверте сервер кладёт по пути здание/этаж/юнит,
+    // который назвал клиент. Раньше сюда уходили здание и этаж С ЭКРАНА —
+    // отправка из Rent Roll по юниту другого здания/этажа либо не находила
+    // юнит на сервере (конверт ушёл, записи нет), либо ложилась на одноимённый
+    // юнит здания на экране. Теперь — здание и этаж САМОГО юнита.
+    let b, f, targetUnit;
+    if (unit) {
+      const _tgt = _dsEnvelopeTarget(unit, buildingId, floorId);
+      if (_tgt) { b = _tgt.b; f = _tgt.f; targetUnit = _tgt.u; }
+    } else {
+      // Без юнита (legacy-вызов): единственный выбранный юнит текущего этажа.
+      b = (typeof currentBuilding === 'function') ? currentBuilding() : null;
+      f = (typeof currentFloor    === 'function') ? currentFloor()    : null;
+      targetUnit = (Array.isArray(selectedIds) && selectedIds.length === 1
             ? (typeof currentUnits === 'function' ? currentUnits().find(x => x.id === selectedIds[0]) : null)
             : null);
+    }
     if (!b || !f || !targetUnit) {
       throw new Error('Unit context missing — open the unit panel before sending');
     }
@@ -143022,6 +143061,7 @@ async function rrBulkSendLeases() {
         templateId, fields,
         unit: u, // Шаг 5: даём resolver контекст для выбора library-шаблона
         buildingId: b.id, // Entry 104
+        floorId: f.id,    // Entry 105
       });
       // Пере-résolve юнита ПОСЛЕ await — CF зеркалит здание до ответа
       // callable, и listener коллекции buildings мог подменить объект
@@ -156076,6 +156116,7 @@ async function _slDoSend(payload) {
       fields,
       unit: payload.u, // Шаг 5: даём resolver контекст для выбора library-шаблона
       buildingId,      // Entry 104: адрес здания — по buildingId формы
+      floorId,         // Entry 105: запись о конверте — на этаж юнита
       docKind: payload.docKind, // Entry 80: renewal/amendment → Amendment-документ
     });
     // Пере-résolve юнита ПОСЛЕ await: CF зеркалит здание до ответа callable,

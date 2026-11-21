@@ -36,6 +36,13 @@ const liveUnitFnSrc = (() => {
   return src.slice(from, to + 2);
 })();
 
+const targetFnSrc = (() => {
+  const from = src.indexOf('function _dsEnvelopeTarget(');
+  if (from < 0) return null;
+  const to = src.indexOf('\n}\n', from);
+  return src.slice(from, to + 2);
+})();
+
 const pts = [[0, 0], [1, 0], [1, 1]];
 function makeState() {
   return {
@@ -61,10 +68,12 @@ function build(state, currentId) {
     _landlordSignatureHtml: () => '',
     _autoRenewNextDay: () => '',
     toIsoDate: (v) => v,
+    currentFloor: () => (state.buildings.find(b => b.id === currentId) || { floors: [] }).floors[0] || null,
   };
   const names = Object.keys(stubs);
-  const body = liveSrc + (liveUnitFnSrc ? '\n' + liveUnitFnSrc : '')
-    + '\nreturn { _liveLeaseFields, _slLiveUnit: (typeof _slLiveUnit === "function") ? _slLiveUnit : null };';
+  const body = liveSrc + (liveUnitFnSrc ? '\n' + liveUnitFnSrc : '') + (targetFnSrc ? '\n' + targetFnSrc : '')
+    + '\nreturn { _liveLeaseFields, _slLiveUnit: (typeof _slLiveUnit === "function") ? _slLiveUnit : null,'
+    + ' _dsEnvelopeTarget: (typeof _dsEnvelopeTarget === "function") ? _dsEnvelopeTarget : null };';
   return new Function(...names, body)(...names.map(n => stubs[n]));
 }
 
@@ -126,6 +135,50 @@ t('_slLiveUnit после подмены объектов отдаёт НОВЫ�
   const after = _slLiveUnit('b6', 'f2', '206').u;
   assert.notStrictEqual(after, before);
   assert.strictEqual(after.type, 'apt_1_1');
+});
+
+// ── Entry 105: куда сервер кладёт ЗАПИСЬ о конверте ──────────────────────
+// docusignSendEnvelope (JWT) сообщал CF здание и этаж С ЭКРАНА. Отправка из
+// Rent Roll по юниту другого здания/этажа → запись не находила юнит или
+// ложилась на одноимённый юнит здания на экране.
+t('цель конверта = здание и этаж ЮНИТА, а не то, что на экране (экран: b1)', () => {
+  const state = makeState();
+  const { _dsEnvelopeTarget } = build(state, 'b1');
+  assert.ok(_dsEnvelopeTarget, '_dsEnvelopeTarget не найдена в floor-map-editor.html');
+  const u = state.buildings[1].floors[0].units[0];
+  const r = _dsEnvelopeTarget(u, 'b6', 'f2');
+  assert.strictEqual(r.b.id, 'b6'); assert.strictEqual(r.f.id, 'f2'); assert.strictEqual(r.u, u);
+});
+
+t('без явных id — здание и этаж находятся по самому юниту', () => {
+  const state = makeState();
+  state.buildings[1].floors.unshift({ id: 'f1', units: [{ id: '101' }] });
+  const { _dsEnvelopeTarget } = build(state, 'b1');
+  const u = state.buildings[1].floors[1].units[0];
+  const r = _dsEnvelopeTarget(u);
+  assert.strictEqual(r.b.id, 'b6'); assert.strictEqual(r.f.id, 'f2');
+});
+
+t('явное здание без этажа — этаж ищется внутри ЭТОГО здания', () => {
+  const state = makeState();
+  const { _dsEnvelopeTarget } = build(state, 'b1');
+  const stale = { id: '206' };                       // отвязанный слепок
+  const r = _dsEnvelopeTarget(stale, 'b6');
+  assert.strictEqual(r.b.id, 'b6'); assert.strictEqual(r.f.id, 'f2');
+  assert.strictEqual(r.u, state.buildings[1].floors[0].units[0], 'нужен живой юнит здания b6');
+});
+
+t('юнита нет по указанному пути → null (сервер не получит чужой адрес записи)', () => {
+  const state = makeState();
+  const { _dsEnvelopeTarget } = build(state, 'b1');
+  assert.strictEqual(_dsEnvelopeTarget({ id: '777' }, 'b6', 'f2'), null);
+  assert.strictEqual(_dsEnvelopeTarget({ id: '206' }, 'gone', 'f2'), null);
+});
+
+t('отвязанный юнит без явных id → null, а не одноимённый юнит здания на экране', () => {
+  const state = makeState();
+  const { _dsEnvelopeTarget } = build(state, 'b1');
+  assert.strictEqual(_dsEnvelopeTarget({ id: '206' }), null);
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

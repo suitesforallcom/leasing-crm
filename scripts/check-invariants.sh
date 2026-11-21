@@ -866,6 +866,25 @@ if [ "$_e104_ok" = 1 ]; then
   echo "  ✓ договор: явное здание в _liveLeaseFields / _resolveLeaseTemplate / docusignSendEnvelope, _slLiveUnit перед отправкой (одиночной и массовой), превью по тому же правилу"
 fi
 echo
+echo "Entry 105 — запись о конверте: серверу уходит здание и этаж САМОГО юнита, не то, что на экране:"
+# 2026-11-21 (Тони: «Да, исправь и привязку конверта к зданию»).
+_e105_ok=1
+_e105_cnt() {  # $1 описание, $2 строка, $3 ожидаемое число строк в floor-map-editor.html
+  _e105_n=$(grep -cF -- "$2" "$ROOT/floor-map-editor.html" || true)
+  if [ "$_e105_n" != "$3" ]; then
+    echo "  ✗ Entry 105: $1 — expected $3 line(s) of: $2 — found $_e105_n (FIXES_LOG Entry 105)"
+    _e105_ok=0; FAIL=1
+  fi
+}
+_e105_cnt "_dsEnvelopeTarget exists"                              "function _dsEnvelopeTarget(unit, buildingId, floorId) {" 1
+_e105_cnt "JWT branch resolves the unit's own path"               "const _tgt = _dsEnvelopeTarget(unit, buildingId, floorId);" 1
+_e105_cnt "old ambient-building form of the JWT branch is gone"   "const targetUnit = unit" 0
+_e105_cnt "single send passes floorId"                            "floorId,         // Entry 105: запись о конверте — на этаж юнита" 1
+_e105_cnt "bulk send passes floorId"                              "floorId: f.id,    // Entry 105" 1
+if [ "$_e105_ok" = 1 ]; then
+  echo "  ✓ запись о конверте: _dsEnvelopeTarget в JWT-ветке docusignSendEnvelope, floorId от обоих отправителей"
+fi
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."
