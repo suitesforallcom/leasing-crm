@@ -837,6 +837,35 @@ if [ "$_e103_ok" = 1 ]; then
   echo "  ✓ окно: правый клик → _ctxToggleUnitSpec (apt-гард), диск u.window && showWindow, _waterFlags / setWaterMarker / per-device флаг, Markers ▾ · Legend · Layers, карточка, rent roll"
 fi
 echo
+echo "Entry 104 — договор: здание берётся из явного buildingId отправки, юнит пере-резолвится перед отправкой:"
+# 2026-11-21 (Тони: «Да, исправляй»): договор Apt 206 / 4355 Central ушёл с
+# адресом Pinellas Park — запомненный до превью юнит отвязался от state
+# (whole-object swap), и _liveLeaseFields нашёл здание по голому номеру юнита.
+_e104_ok=1
+_e104_cnt() {  # $1 описание, $2 строка, $3 ожидаемое число строк в floor-map-editor.html
+  _e104_n=$(grep -cF -- "$2" "$ROOT/floor-map-editor.html" || true)
+  if [ "$_e104_n" != "$3" ]; then
+    echo "  ✗ Entry 104: $1 — expected $3 line(s) of: $2 — found $_e104_n (FIXES_LOG Entry 104)"
+    _e104_ok=0; FAIL=1
+  fi
+}
+_e104_cnt "_liveLeaseFields takes the explicit building"            "function _liveLeaseFields(u, overrides, buildingId) {" 1
+_e104_cnt "the pin is looked up by id before any unit search"        "b = state.buildings.find(_b => _b && String(_b.id) === String(buildingId)) || null;" 1
+_e104_cnt "resolver passes the pin into every live-fields call"      "_liveLeaseFields(u || {}, opts.liveOverrides, opts.buildingId)" 8
+_e104_cnt "no resolver call is left without the pin"                 "_liveLeaseFields(u || {}, opts.liveOverrides)" 0
+_e104_cnt "floor template cascade searches the pinned building"      "const floor = _findFloorByUnit(u, _pinB || undefined);" 1
+_e104_cnt "building template cascade uses the pinned building"       "const bld = _pinB || _findBuildingByUnit(u);" 1
+_e104_cnt "_slLiveUnit exists"                                       "function _slLiveUnit(buildingId, floorId, unitId) {" 1
+_e104_cnt "_slDoSend re-resolves the unit before the send"           "const _slLive = _slLiveUnit(payload.buildingId, payload.floorId, payload.unitId);" 1
+_e104_cnt "a vanished unit sends nothing"                            "toast('Lease NOT sent — this unit changed while the preview was open. Close the dialog and send again.', 'error');" 1
+_e104_cnt "bulk send re-resolves each unit"                          "const _rrLive = _slLiveUnit(selected[i].b.id, selected[i].f.id, selected[i].u.id);" 1
+_e104_cnt "single send passes buildingId"                            "buildingId,      // Entry 104: адрес здания — по buildingId формы" 1
+_e104_cnt "bulk send passes buildingId"                              "buildingId: b.id, // Entry 104" 1
+_e104_cnt "send preview renders with the same pin"                   "liveOverrides: payload.fields, buildingId: payload.buildingId });" 1
+if [ "$_e104_ok" = 1 ]; then
+  echo "  ✓ договор: явное здание в _liveLeaseFields / _resolveLeaseTemplate / docusignSendEnvelope, _slLiveUnit перед отправкой (одиночной и массовой), превью по тому же правилу"
+fi
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."

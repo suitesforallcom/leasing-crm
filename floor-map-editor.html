@@ -112751,6 +112751,7 @@ async function docusignSendEnvelope({
   fields,            // { tenant_name, suite, rent, lease_start, lease_end }
   emailSubject,
   unit,              // Шаг 5: опциональный — для resolver-based выбора lease-шаблона
+  buildingId,        // Entry 104: здание юнита — адрес/шаблон берутся из него, не по голому номеру
   docKind,           // Entry 80: 'renewal'|'amendment' → Amendment-документ вместо полного договора
 }) {
   if (!recipientEmail || !/@/.test(recipientEmail)) throw new Error('Recipient email invalid');
@@ -112838,6 +112839,7 @@ async function docusignSendEnvelope({
         const resolved = _resolveLeaseTemplate(unit, _dk, {
           asRawTemplate: false,
           liveOverrides: fields || {},
+          buildingId,
         });
         if (resolved && resolved.tpl && resolved.tpl.html) {
           html = resolved.tpl.html;
@@ -124268,7 +124270,7 @@ function _ldSubstituteMergeTokens(html, fields, recipientName, recipientEmail, o
 function _renderStoredLeaseTpl(source, tpl, u, opts) {
   if (opts.asRawTemplate) return { source, tpl };
   try {
-    const fields = _liveLeaseFields(u || {}, opts.liveOverrides);
+    const fields = _liveLeaseFields(u || {}, opts.liveOverrides, opts.buildingId);
     // rent_table_html — как в _renderLeaseTemplateById: нужен только
     // Commercial-шаблону, для остальных токен просто не встретится.
     const enriched = Object.assign({}, fields, {
@@ -124311,6 +124313,10 @@ function _renderStoredLeaseTpl(source, tpl, u, opts) {
 // (used by the body-preview in the Add Document modal).
 function _resolveLeaseTemplate(u, kind, opts) {
   opts = opts || {};
+  // Entry 104: явное здание отправки — каскад этаж/здание ищет шаблон в НЁМ,
+  // а не в первом здании с таким же номером юнита.
+  const _pinB = (opts.buildingId != null && opts.buildingId !== '' && Array.isArray(state.buildings))
+    ? (state.buildings.find(_b => _b && String(_b.id) === String(opts.buildingId)) || null) : null;
   const overrides = u && u.leaseTemplateOverrides;
   if (overrides && overrides[kind] && overrides[kind].html) {
     return _renderStoredLeaseTpl('unit', overrides[kind], u, opts);
@@ -124324,7 +124330,7 @@ function _resolveLeaseTemplate(u, kind, opts) {
       try {
         const fields = opts.asRawTemplate
           ? _placeholderLeaseFields()
-          : _liveLeaseFields(u || {}, opts.liveOverrides);
+          : _liveLeaseFields(u || {}, opts.liveOverrides, opts.buildingId);
         const recipientName  = opts.asRawTemplate ? '{{tenant_name}}'  : (u?.tenant || u?.company || '(Tenant)');
         const recipientEmail = opts.asRawTemplate ? '{{tenant_email}}' : (u?.email || '');
         const html = _renderLeaseTemplateById(libTpl.id, fields, recipientName, recipientEmail, !!opts.asRawTemplate);
@@ -124346,14 +124352,14 @@ function _resolveLeaseTemplate(u, kind, opts) {
   }
   // Шаг 3: floor-level дефолт. Между unit-pointer и workspace.
   if (kind === 'lease' && u && typeof _findFloorByUnit === 'function') {
-    const floor = _findFloorByUnit(u);
+    const floor = _findFloorByUnit(u, _pinB || undefined);
     if (floor && floor.defaultLeaseTemplateId && typeof _findLeaseTpl === 'function') {
       const libTpl = _findLeaseTpl(floor.defaultLeaseTemplateId);
       if (libTpl) {
         try {
           const fields = opts.asRawTemplate
             ? _placeholderLeaseFields()
-            : _liveLeaseFields(u || {}, opts.liveOverrides);
+            : _liveLeaseFields(u || {}, opts.liveOverrides, opts.buildingId);
           const recipientName  = opts.asRawTemplate ? '{{tenant_name}}'  : (u?.tenant || u?.company || '(Tenant)');
           const recipientEmail = opts.asRawTemplate ? '{{tenant_email}}' : (u?.email || '');
           const html = _renderLeaseTemplateById(libTpl.id, fields, recipientName, recipientEmail, !!opts.asRawTemplate);
@@ -124374,14 +124380,14 @@ function _resolveLeaseTemplate(u, kind, opts) {
   // выбором его перекрывают, здания без поля ведут себя как раньше.
   // Указатель на удалённый шаблон → _findLeaseTpl=null → каскад продолжается.
   if (kind === 'lease' && u && typeof _findBuildingByUnit === 'function') {
-    const bld = _findBuildingByUnit(u);
+    const bld = _pinB || _findBuildingByUnit(u);
     if (bld && bld.defaultLeaseTemplateId && typeof _findLeaseTpl === 'function') {
       const libTpl = _findLeaseTpl(bld.defaultLeaseTemplateId);
       if (libTpl) {
         try {
           const fields = opts.asRawTemplate
             ? _placeholderLeaseFields()
-            : _liveLeaseFields(u || {}, opts.liveOverrides);
+            : _liveLeaseFields(u || {}, opts.liveOverrides, opts.buildingId);
           const recipientName  = opts.asRawTemplate ? '{{tenant_name}}'  : (u?.tenant || u?.company || '(Tenant)');
           const recipientEmail = opts.asRawTemplate ? '{{tenant_email}}' : (u?.email || '');
           const html = _renderLeaseTemplateById(libTpl.id, fields, recipientName, recipientEmail, !!opts.asRawTemplate);
@@ -124410,7 +124416,7 @@ function _resolveLeaseTemplate(u, kind, opts) {
       try {
         const fields = opts.asRawTemplate
           ? _placeholderLeaseFields()
-          : _liveLeaseFields(u || {}, opts.liveOverrides);
+          : _liveLeaseFields(u || {}, opts.liveOverrides, opts.buildingId);
         const recipientName  = opts.asRawTemplate ? '{{tenant_name}}'  : (u?.tenant || u?.company || '(Tenant)');
         const recipientEmail = opts.asRawTemplate ? '{{tenant_email}}' : (u?.email || '');
         const html = _renderLeaseTemplateById(aptTpl.id, fields, recipientName, recipientEmail, !!opts.asRawTemplate);
@@ -124444,7 +124450,7 @@ function _resolveLeaseTemplate(u, kind, opts) {
       try {
         const fields = opts.asRawTemplate
           ? _placeholderLeaseFields()
-          : _liveLeaseFields(u || {}, opts.liveOverrides);
+          : _liveLeaseFields(u || {}, opts.liveOverrides, opts.buildingId);
         const recipientName  = opts.asRawTemplate ? '{{tenant_name}}'  : (u?.tenant || u?.company || '(Tenant)');
         const recipientEmail = opts.asRawTemplate ? '{{tenant_email}}' : (u?.email || '');
         const html = _renderLeaseTemplateById(defTpl.id, fields, recipientName, recipientEmail, !!opts.asRawTemplate);
@@ -124463,7 +124469,7 @@ function _resolveLeaseTemplate(u, kind, opts) {
     try {
       const fields = opts.asRawTemplate
         ? _placeholderLeaseFields()
-        : _liveLeaseFields(u || {}, opts.liveOverrides);
+        : _liveLeaseFields(u || {}, opts.liveOverrides, opts.buildingId);
       const recipientName  = opts.asRawTemplate ? '{{tenant_name}}'  : (u?.tenant || u?.company || '(Tenant)');
       const recipientEmail = opts.asRawTemplate ? '{{tenant_email}}' : (u?.email || '');
       const html = _dsBuildInlineLeaseHtml(fields, recipientName, recipientEmail);
@@ -124487,7 +124493,7 @@ function _resolveLeaseTemplate(u, kind, opts) {
     try {
       const fields = opts.asRawTemplate
         ? _placeholderLeaseFields()
-        : _liveLeaseFields(u || {}, opts.liveOverrides);
+        : _liveLeaseFields(u || {}, opts.liveOverrides, opts.buildingId);
       const recipientName  = opts.asRawTemplate ? '{{tenant_name}}'  : (u?.tenant || u?.company || '(Tenant)');
       const recipientEmail = opts.asRawTemplate ? '{{tenant_email}}' : (u?.email || '');
       const html = _dsBuildAmendmentHtml(fields, recipientName, recipientEmail);
@@ -124774,7 +124780,7 @@ function _buildFloorPlanSvgHtml(b, f, u) {
 // Effective date / Rent / Term the operator just typed into the Add
 // Document modal) so the preview updates as they type — without those
 // values being committed to the unit yet.
-function _liveLeaseFields(u, overrides) {
+function _liveLeaseFields(u, overrides, buildingId) {
   // Building, к которому реально принадлежит юнит. Раньше всегда брали
   // currentBuilding() — это работало пока оператор смотрел на тот же
   // building, в котором живёт prospect. Но lease draft modal может
@@ -124789,7 +124795,14 @@ function _liveLeaseFields(u, overrides) {
   // (по object-reference), и только если совсем не нашли — fall back на
   // currentBuilding (старое поведение).
   let b = null;
-  if (u && Array.isArray(state.buildings)) {
+  // Entry 104: ЯВНОЕ здание от вызывающего (send/preview знают buildingId из
+  // формы) выигрывает у любого поиска. Без него отвязанный от state юнит
+  // (whole-object swap между превью и «Confirm & send») находил здание по
+  // голому номеру — договор Apt 206 / 4355 Central ушёл с адресом Pinellas Park.
+  if (buildingId != null && buildingId !== '' && Array.isArray(state.buildings)) {
+    b = state.buildings.find(_b => _b && String(_b.id) === String(buildingId)) || null;
+  }
+  if (!b && u && Array.isArray(state.buildings)) {
     // Reference-match по всем buildings (надёжно: тот же объект)
     for (const _b of state.buildings) {
       if ((_b.floors || []).some(f => (f.units || []).some(x => x === u))) { b = _b; break; }
@@ -142941,7 +142954,15 @@ async function rrBulkSendLeases() {
   let ok = 0, fail = 0;
   const failures = [];
   for (let i = 0; i < selected.length; i++) {
-    const { b, f, u } = selected[i];
+    // Entry 104: свежий юнит по полному пути — ссылки из `selected` живут
+    // через confirm() и N предыдущих await'ов, листенер мог подменить здания.
+    const _rrLive = _slLiveUnit(selected[i].b.id, selected[i].f.id, selected[i].u.id);
+    if (!_rrLive) {
+      fail++;
+      failures.push(`${selected[i].u.id}: unit changed during bulk send — not sent`);
+      continue;
+    }
+    const { b, f, u } = _rrLive;
     if (btn) btn.innerHTML = `⏳ ${i+1}/${selected.length}…`;
     try {
       const ictx = {
@@ -143000,6 +143021,7 @@ async function rrBulkSendLeases() {
         subject, emailSubject: subject, message,
         templateId, fields,
         unit: u, // Шаг 5: даём resolver контекст для выбора library-шаблона
+        buildingId: b.id, // Entry 104
       });
       // Пере-résolve юнита ПОСЛЕ await — CF зеркалит здание до ответа
       // callable, и listener коллекции buildings мог подменить объект
@@ -156016,7 +156038,26 @@ async function _slConfirmAndSend() {
 
 let _slStashedPayload = null;
 
+// Entry 104: живой юнит по ПОЛНОМУ пути здание → этаж → юнит. Ссылка на юнит,
+// запомненная до превью/подтверждения, после подмены объектов зданий
+// листенером указывает в отвязанный объект — перед отправкой берём свежий.
+function _slLiveUnit(buildingId, floorId, unitId) {
+  const b = (state.buildings || []).find(x => x && x.id === buildingId);
+  const f = b && (b.floors || []).find(x => x && x.id === floorId);
+  const u = f && (f.units || []).find(x => x && x.id === unitId);
+  return u ? { b, f, u } : null;
+}
+
 async function _slDoSend(payload) {
+  // Entry 104: пере-резолв ДО отправки. Юнит исчез (удалён/перенесён, пока
+  // оператор смотрел превью) → не шлём ничего: договор с чужим адресом хуже,
+  // чем повторное нажатие.
+  const _slLive = _slLiveUnit(payload.buildingId, payload.floorId, payload.unitId);
+  if (!_slLive) {
+    toast('Lease NOT sent — this unit changed while the preview was open. Close the dialog and send again.', 'error');
+    return;
+  }
+  payload.u = _slLive.u; payload.b = _slLive.b; payload.f = _slLive.f;
   const btn = document.getElementById('slSendBtn');
   const origLabel = btn ? btn.innerHTML : '';
   if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Sending…'; }
@@ -156034,6 +156075,7 @@ async function _slDoSend(payload) {
       templateId,
       fields,
       unit: payload.u, // Шаг 5: даём resolver контекст для выбора library-шаблона
+      buildingId,      // Entry 104: адрес здания — по buildingId формы
       docKind: payload.docKind, // Entry 80: renewal/amendment → Amendment-документ
     });
     // Пере-résolve юнита ПОСЛЕ await: CF зеркалит здание до ответа callable,
@@ -156238,7 +156280,7 @@ function _slRenderPreviewBody(payload) {
     if (typeof _resolveLeaseTemplate === 'function') {
       // Entry 80: превью показывает ровно тот документ, что уйдёт —
       // Amendment для renewal/amendment, полный договор для lease.
-      const r = _resolveLeaseTemplate(payload.u, payload.docKind || 'lease', { asRawTemplate: false, liveOverrides: payload.fields });
+      const r = _resolveLeaseTemplate(payload.u, payload.docKind || 'lease', { asRawTemplate: false, liveOverrides: payload.fields, buildingId: payload.buildingId });
       if (r && r.tpl) {
         resolvedSource = r.source || 'unknown';
         resolvedName = r.tpl.name || '(unnamed)';
