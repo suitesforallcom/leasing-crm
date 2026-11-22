@@ -29042,6 +29042,50 @@ function loadState() {
 // tenant's lease started (with a 7-day grace for landlords who prep
 // invoices ahead of move-in). Pure — only touches stamps that can't
 // possibly belong to the current tenant.
+// ─── Entry 108: штамп устарел, только если он старше начала ЭТОЙ аренды ───
+// Самоочистка ниже убирает штампы прошлого арендатора по дате отправки. Раньше
+// граница была одна — leaseStart − 7 дней — и под неё попадали СВОИ счета: депозит
+// и первую ренту выставляют при подписании, за недели до въезда (Apt 206: аренда с
+// 28 декабря, депозит 22 ноября). Штамп стирался при каждой загрузке вкладки,
+// редактирующая вкладка писала это на сервер, открытие юнита возвращало штамп —
+// он «мигал», а карточка показывала «Not sent» при открытом счёте в Stripe.
+// Начало аренды для вопроса «чей это штамп» — самый ранний из якорей (та же
+// конвенция, что у _firstTenancyYm): leaseStart − 7 дней и момент, когда ЭТОГО
+// арендатора завели на юнит. Момент заведения берём из двух источников:
+//   • u._tenantAddedAt — только если метка поставлена на текущего арендатора
+//     (_lastStampedTenant): при выезде она не сбрасывается, а часть путей заселения
+//     её не ставит, так что новый арендатор может унаследовать чужую;
+//   • договор, отправленный на адрес текущего арендатора (u.leaseEnvelopes) —
+//     покрывает заселение с телефона, где _tenantAddedAt не пишется.
+// От якоря отступаем сутки (счёт могли выставить чуть раньше, чем сохранили
+// карточку). Якорь раньше начала аренды больше чем на 120 дней не учитываем —
+// так далеко заранее не заселяют, это след прошлой аренды. Якорей нет или они
+// позже начала аренды (импорт) — прежняя граница.
+function _stampStaleBeforeMs(u, leaseStartGraceMs) {
+  const DAY = 24 * 60 * 60 * 1000;
+  const key = (x) => (typeof _tenantKey === 'function') ? _tenantKey(x) : String(x || '').trim().toLowerCase();
+  const anchors = [];
+  const addedMs = (u && u._tenantAddedAt) ? new Date(u._tenantAddedAt).getTime() : NaN;
+  const curTenant = key(u && (u.tenant || u.company));
+  if (Number.isFinite(addedMs) && curTenant && u._lastStampedTenant && key(u._lastStampedTenant) === curTenant) {
+    anchors.push(addedMs);
+  }
+  const curEmail = String((u && u.email) || '').trim().toLowerCase();
+  if (curEmail && u && Array.isArray(u.leaseEnvelopes)) {
+    for (const e of u.leaseEnvelopes) {
+      if (!e || !e.createdAt) continue;
+      if (String(e.recipientEmail || '').trim().toLowerCase() !== curEmail) continue;
+      const t = new Date(e.createdAt).getTime();
+      if (Number.isFinite(t)) anchors.push(t);
+    }
+  }
+  let staleBefore = leaseStartGraceMs;
+  for (const a of anchors) {
+    if (a < leaseStartGraceMs - 120 * DAY) continue;
+    staleBefore = Math.min(staleBefore, a - DAY);
+  }
+  return staleBefore;
+}
 function _healStaleStripeStamps(u) {
   if (!u?.stripe) return;
   const leaseStartMs = _tenantTenureStartMs(u);
@@ -29059,7 +29103,9 @@ function _healStaleStripeStamps(u) {
     return;
   }
   if (!leaseStartMs) return;
-  const staleBefore = leaseStartMs; // already includes 7-day grace
+  // leaseStartMs уже включает 7-дневный запас; Entry 108 — учитываем и момент,
+  // когда арендатора завели (счета, выставленные заранее, — его собственные).
+  const staleBefore = _stampStaleBeforeMs(u, leaseStartMs);
   const di = u.stripe.depositInvoice;
   // manualLink === true означает, что оператор СОЗНАТЕЛЬНО привязал этот
   // Stripe-счёт через "Link as deposit" — sentAt у него легитимно может
