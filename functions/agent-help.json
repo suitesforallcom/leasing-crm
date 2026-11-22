@@ -1,0 +1,557 @@
+{
+  "flows": [
+    {
+      "key": "agent_key_create_revoke",
+      "title": { "en": "Create or revoke an AI agent key (AI access)", "ru": "Создать или отозвать ключ AI-агента (AI access)" },
+      "roles": ["admin", "manager", "mapeditor", "viewer", "teamviewer"],
+      "where": "Settings → \"AI access\"",
+      "steps": {
+        "en": [
+          "Open Settings → \"AI access\".",
+          "Click \"Create key\" and choose: the client (Claude, Grok, Kimi and so on), the permissions (scopes — only those your role allows), the buildings, and the lifetime (up to 90 days).",
+          "Copy the secret right away — it is shown only once. It starts with sfa_ak_.",
+          "Put it only into the AI client's own connection settings or into the environment variable SFA_AGENT_KEY. Never paste it into a chat, an email, a ticket or a repository.",
+          "To stop a key, revoke it in the same section — it stops working immediately.",
+          "An admin sees and can revoke every key of the workspace; everyone else manages only their own keys.",
+          "If a key is lost or leaked: revoke it and create a new one."
+        ],
+        "ru": [
+          "Откройте Settings → «AI access».",
+          "Нажмите «Create key» и выберите: клиент (Claude, Grok, Kimi и т.д.), права (scopes — только те, что разрешены вашей роли), здания и срок действия (до 90 дней).",
+          "Сразу скопируйте секрет — он показывается только один раз. Он начинается с sfa_ak_.",
+          "Вставляйте его только в настройки подключения самого AI-клиента или в переменную окружения SFA_AGENT_KEY. Никогда не вставляйте его в чат, письмо, тикет или репозиторий.",
+          "Чтобы отключить ключ, отзовите его (Revoke) в том же разделе — он перестаёт работать сразу.",
+          "Admin видит и может отозвать все ключи workspace; остальные управляют только своими.",
+          "Если ключ потерян или утёк: отзовите его и создайте новый."
+        ]
+      },
+      "risk": "A key lets an AI agent act as you within your role and buildings; a leaked key must be revoked at once."
+    },
+    {
+      "key": "create_invoice",
+      "title": { "en": "Send a Stripe invoice (manual)", "ru": "Отправить инвойс Stripe вручную" },
+      "roles": ["admin", "manager"],
+      "where": "Left rail → Billing → Aging tab → the row of the suite → \"Send invoice\" button",
+      "steps": {
+        "en": [
+          "In the left rail open Billing → Aging tab and find the row of the suite you want to bill.",
+          "Click \"Send invoice\" on that row.",
+          "Read the confirm dialog: check the suite, the month and the amount. If the amount is unusually high compared with the contract rent, an extra 5× warning appears — stop and re-check before accepting.",
+          "Confirm. The program creates and finalizes the invoice in Stripe, and Stripe delivers it to the recipient on file.",
+          "The unit keeps a record of the last sent invoice (amount, month, hosted link).",
+          "Nothing else to do: once the invoice is paid, Stripe notifies the program and the month becomes paid automatically."
+        ],
+        "ru": [
+          "В левой панели откройте Billing → вкладка Aging и найдите строку нужного офиса.",
+          "Нажмите «Send invoice» в этой строке.",
+          "Прочитайте окно подтверждения: проверьте офис, месяц и сумму. Если сумма необычно большая относительно contract rent, появится дополнительное предупреждение 5× — остановитесь и перепроверьте.",
+          "Подтвердите. Программа создаёт и финализирует инвойс в Stripe, Stripe сам отправляет его получателю, который записан в карточке.",
+          "В карточке офиса сохраняется запись о последнем отправленном инвойсе (сумма, месяц, ссылка).",
+          "Больше ничего делать не нужно: когда инвойс оплатят, Stripe сообщит программе и месяц станет оплаченным автоматически."
+        ]
+      },
+      "risk": "Critical: sends a real invoice for real money to a real person through Stripe."
+    },
+    {
+      "key": "record_manual_payment",
+      "title": { "en": "Record a manual payment (check, ACH, wire, cash)", "ru": "Записать платёж вручную (чек, ACH, wire, наличные)" },
+      "roles": ["admin", "manager"],
+      "where": "Payments matrix → click the `$` cell of the suite and month → payment modal",
+      "steps": {
+        "en": [
+          "Open the Payments matrix and click the $ cell for the suite and the month you are recording.",
+          "In the modal choose the Method: Stripe / Check / ACH / Wire / Cash / Other. (The \"Waived\" option is described in its own topic.)",
+          "Fill in Reference # (check number, ACH or wire confirmation), Amount $ (defaults to the contract rent), Payment date (defaults to today) and, if useful, a Memo.",
+          "Optionally upload a photo of the receipt.",
+          "If the Method is Stripe, the Stripe invoice browser opens so that you can link an existing Stripe invoice.",
+          "Submit. If the amount is more than 5× the rent, the program asks you to confirm — re-check the amount before accepting.",
+          "The month now shows as paid for that suite."
+        ],
+        "ru": [
+          "Откройте матрицу Payments и нажмите ячейку $ нужного офиса и месяца.",
+          "В окне выберите Method: Stripe / Check / ACH / Wire / Cash / Other. (Вариант «Waived» описан в отдельной теме.)",
+          "Заполните Reference # (номер чека, подтверждение ACH или wire), Amount $ (по умолчанию contract rent), Payment date (по умолчанию сегодня) и при необходимости Memo.",
+          "При желании загрузите фото квитанции.",
+          "Если Method = Stripe, откроется браузер инвойсов Stripe, чтобы привязать существующий инвойс.",
+          "Нажмите Submit. Если сумма больше 5× аренды, программа попросит подтвердить — перепроверьте сумму.",
+          "Месяц по этому офису теперь показан как оплаченный."
+        ]
+      },
+      "risk": "Critical: this is a money record — a wrong amount or month misstates what is owed."
+    },
+    {
+      "key": "send_lease",
+      "title": { "en": "Send a lease for signing (DocuSign)", "ru": "Отправить договор на подпись (DocuSign)" },
+      "roles": ["admin", "manager"],
+      "where": "Unit → Lease lifecycle UI → \"Send lease\"",
+      "steps": {
+        "en": [
+          "Open the unit and go to its lease lifecycle section.",
+          "Check the tenant's name and email and the lease terms on the unit first: the lease PDF is generated from the template with these values substituted, and the envelope goes to the tenant's email.",
+          "Click \"Send lease\".",
+          "The program creates a DocuSign envelope and sends it to the tenant's email.",
+          "The envelope appears on the unit with status \"sent\"; the status updates by itself when the recipient signs, declines, or the envelope expires."
+        ],
+        "ru": [
+          "Откройте офис и перейдите в раздел жизненного цикла договора (lease lifecycle).",
+          "Сначала проверьте в карточке имя и email арендатора и условия договора: PDF собирается из шаблона с подстановкой этих значений, а конверт уходит на email арендатора.",
+          "Нажмите «Send lease».",
+          "Программа создаёт конверт DocuSign и отправляет его на email арендатора.",
+          "Конверт появляется в карточке со статусом «sent»; статус обновляется сам, когда получатель подписал, отказался или срок конверта истёк."
+        ]
+      },
+      "risk": "High: a legally binding document is sent to a real tenant through DocuSign."
+    },
+    {
+      "key": "record_waiver",
+      "title": { "en": "Record a waiver / free month", "ru": "Записать waiver / бесплатный месяц" },
+      "roles": ["admin", "manager"],
+      "where": "Payments matrix → `$` cell of the suite and month → payment modal → Method = \"Waived (free month)\"",
+      "steps": {
+        "en": [
+          "Click the $ cell of the suite and month in the Payments matrix (the same modal as for a manual payment).",
+          "Choose Method = \"Waived (free month)\".",
+          "Pick the reason: Referral / Promotion / Goodwill / Comp month / Other.",
+          "Set the waiver Start and End dates (default: the 1st of the month to one month later).",
+          "Read the info panel below the dates: it shows the coverage month by month — which month is fully waived and how many days of the next one.",
+          "If the reason is Referral, specify the referred suite. Credit: 100% for a lease of 12+ months, 50% for 6–11 months, 0 for under 6 months.",
+          "Submit — the month is recorded as free with amount 0.",
+          "If the waiver crosses into the next month, tell an admin or manager: the pro-rated amount is not applied to invoices automatically yet and must be checked by hand."
+        ],
+        "ru": [
+          "Нажмите ячейку $ нужного офиса и месяца в матрице Payments (то же окно, что и для ручного платежа).",
+          "Выберите Method = «Waived (free month)».",
+          "Выберите причину: Referral / Promotion / Goodwill / Comp month / Other.",
+          "Укажите даты Start и End (по умолчанию: с 1-го числа месяца на один месяц вперёд).",
+          "Прочитайте информационную панель под датами: она показывает покрытие по месяцам — какой месяц закрыт полностью и сколько дней следующего.",
+          "Если причина Referral, укажите офис, который привёл арендатор. Кредит: 100% при договоре от 12 месяцев, 50% при 6–11 месяцах, 0 при сроке меньше 6 месяцев.",
+          "Нажмите Submit — месяц записывается как бесплатный с суммой 0.",
+          "Если waiver переходит на следующий месяц, сообщите admin или manager: пропорциональная сумма пока не применяется к инвойсам автоматически, её нужно проверить вручную."
+        ]
+      },
+      "risk": "High: reduces revenue; a waiver that crosses a month boundary affects the next month's billing and pro-rating is not automatic."
+    },
+    {
+      "key": "add_tenant_lease",
+      "title": { "en": "Add a tenant + lease to a unit", "ru": "Добавить арендатора и договор в офис" },
+      "roles": ["admin", "manager"],
+      "where": "Click the unit → side panel → \"+ Add tenant\"",
+      "steps": {
+        "en": [
+          "Click the unit on the map and in the side panel click \"+ Add tenant\".",
+          "Enter the tenant name (or company name), email and phone.",
+          "Enter the Lease start date and the Lease end date (leave the end date blank for month-to-month).",
+          "Enter the Contract rent ($/mo) — what the tenant actually pays — and the Deposit ($).",
+          "Move-in date defaults to the lease start; change it if it differs.",
+          "Click Save. The program checks: rent above 0, a valid start date, end date not earlier than the start.",
+          "The unit becomes occupied. Optionally a deposit invoice is created in Stripe (only if Stripe is configured and an admin opted in)."
+        ],
+        "ru": [
+          "Нажмите на офис на карте и в боковой панели нажмите «+ Add tenant».",
+          "Введите имя арендатора (или название компании), email и телефон.",
+          "Введите Lease start date и Lease end date (оставьте дату окончания пустой для month-to-month).",
+          "Введите Contract rent ($/mo) — сколько арендатор реально платит — и Deposit ($).",
+          "Move-in date по умолчанию равна началу договора; измените, если отличается.",
+          "Нажмите Save. Программа проверяет: аренда больше 0, дата начала корректна, дата окончания не раньше начала.",
+          "Офис становится occupied. Дополнительно может быть создан инвойс на депозит в Stripe (только если Stripe настроен и admin это включил)."
+        ]
+      },
+      "risk": "Medium-High: sets the financial baseline for billing — a wrong rent or start date produces wrong invoices from then on."
+    },
+    {
+      "key": "group_lease",
+      "title": { "en": "Multi-suite lease (group several suites as one lease)", "ru": "Договор на несколько офисов (объединить офисы в один договор)" },
+      "roles": ["admin", "manager"],
+      "where": "Map → shift-click 2+ vacant or same-tenant units → press G (or the \"Group as one lease\" button)",
+      "steps": {
+        "en": [
+          "Shift-click two or more units that are vacant or belong to the same tenant.",
+          "Press G or click \"Group as one lease\".",
+          "In the modal choose the primary suite — it will hold the combined contract rent.",
+          "After that the other suites become members with rent 0, and the tenant details are copied to all of them.",
+          "From then on treat the group as one lease: one set of invoices, one overdue balance and one set of payment records (on the primary suite) — never per suite.",
+          "To undo, use \"Ungroup lease\" — it restores the per-suite state."
+        ],
+        "ru": [
+          "С зажатым Shift выберите два или больше офисов — свободных или одного и того же арендатора.",
+          "Нажмите G или кнопку «Group as one lease».",
+          "В окне выберите основной офис (primary) — на нём будет общая contract rent.",
+          "После этого остальные офисы становятся участниками с арендой 0, данные арендатора копируются на все офисы группы.",
+          "Дальше считайте группу одним договором: один набор инвойсов, один долг и одна история оплат (на основном офисе) — никогда не по каждому офису отдельно.",
+          "Отменить можно через «Ungroup lease» — возвращает состояние по каждому офису."
+        ]
+      },
+      "risk": "Medium: changes how rent is billed; ungrouping in the middle of a billing cycle makes the ledger ambiguous."
+    },
+    {
+      "key": "move_out",
+      "title": { "en": "Move out a tenant", "ru": "Выселить арендатора (Move out)" },
+      "roles": ["admin", "manager"],
+      "where": "Unit detail panel → \"Move out\" button",
+      "steps": {
+        "en": [
+          "Open the unit's detail panel and click \"Move out\".",
+          "In the modal confirm the date; optionally add a reason and set the balance forgiveness flag.",
+          "Submit. The tenant's details are saved into the unit's tenant history and cleared from the unit; the unit becomes vacant.",
+          "If a balance is still owed, you can open a recovery (collections) case — see topic open_recovery_case.",
+          "Afterwards reconcile the final balance."
+        ],
+        "ru": [
+          "Откройте панель офиса и нажмите «Move out».",
+          "В окне подтвердите дату; при необходимости укажите причину и отметьте флаг прощения долга (balance forgiveness).",
+          "Подтвердите. Данные арендатора сохраняются в истории арендаторов офиса и убираются из карточки; офис становится vacant.",
+          "Если остался долг, можно открыть дело о взыскании (recovery case) — см. тему open_recovery_case.",
+          "После этого сверьте итоговый баланс."
+        ]
+      },
+      "risk": "High: ends the tenancy (legal endgame) and clears the tenant from the unit; financial reconciliation is required."
+    },
+    {
+      "key": "open_recovery_case",
+      "title": { "en": "Open a recovery (collections) case", "ru": "Открыть дело о взыскании (recovery / collections)" },
+      "roles": ["admin", "manager"],
+      "where": "After \"Move out\" when the balance is above 0, or manually via the Recovery panel",
+      "steps": {
+        "en": [
+          "Start from Move out when the balance is above 0, or open the Recovery panel and create the case manually.",
+          "The case records: the tenant's identity (a snapshot), the unit, the balance owed, the agency assignment and the status (in_collections / written_off / recovered).",
+          "Add events to the case log as they happen.",
+          "Follow the case in the Recovery panel: age, agency, last activity."
+        ],
+        "ru": [
+          "Начните из Move out, если долг больше 0, либо откройте панель Recovery и создайте дело вручную.",
+          "В деле фиксируются: данные арендатора (снимок), офис, сумма долга, назначенное агентство и статус (in_collections / written_off / recovered).",
+          "Добавляйте события в журнал дела по мере их появления.",
+          "Следите за делом в панели Recovery: возраст, агентство, последняя активность."
+        ]
+      },
+      "risk": "High: this is legal documentation; assigning an agency may trigger external workflows."
+    },
+    {
+      "key": "view_ar_aging",
+      "title": { "en": "View A/R Aging (who owes and for how long)", "ru": "Посмотреть A/R Aging (кто должен и как давно)" },
+      "roles": ["admin", "manager", "viewer"],
+      "where": "Left rail → Billing → Aging tab",
+      "steps": {
+        "en": [
+          "In the left rail open Billing → Aging tab.",
+          "Read the buckets: Current / 1-30d / 31-60d / 61-90d / 90+.",
+          "Narrow the list with the filters: building, floor, status, manager, min owed, and the \"only overdue\" chip.",
+          "Click a row to drill into the tenant detail; from there an admin or manager can send a late notice or record a payment."
+        ],
+        "ru": [
+          "В левой панели откройте Billing → вкладка Aging.",
+          "Смотрите колонки по срокам: Current / 1-30d / 31-60d / 61-90d / 90+.",
+          "Сузьте список фильтрами: building, floor, status, manager, min owed и чип «only overdue».",
+          "Нажмите строку, чтобы открыть детали арендатора; оттуда admin или manager может отправить уведомление о просрочке или записать оплату."
+        ]
+      },
+      "risk": "Reading is safe; actions started from a row (late notice, late fee) reach real tenants or change money records."
+    },
+    {
+      "key": "view_rent_roll",
+      "title": { "en": "View Rent Roll", "ru": "Посмотреть Rent Roll" },
+      "roles": ["admin", "manager", "viewer"],
+      "where": "Left rail → Rent roll",
+      "steps": {
+        "en": [
+          "In the left rail click Rent roll. It opens filtered to the active building.",
+          "Filter by building, floor, status, window, sink, expiring-only, or use the search.",
+          "Click a column header to sort; drag columns to reorder them; use the gear menu to show or hide columns.",
+          "Use CSV export if you need the table as a file."
+        ],
+        "ru": [
+          "В левой панели нажмите Rent roll. Таблица открывается с фильтром по активному зданию.",
+          "Фильтруйте по building, floor, status, window, sink, expiring-only или пользуйтесь поиском.",
+          "Нажмите заголовок колонки для сортировки; перетаскивайте колонки, чтобы поменять порядок; меню-шестерёнка показывает и скрывает колонки.",
+          "Если таблица нужна файлом, используйте экспорт в CSV."
+        ]
+      },
+      "risk": ""
+    },
+    {
+      "key": "auto_billing",
+      "title": { "en": "Auto-billing daily run (how it works and how it is stopped)", "ru": "Ежедневный авто-биллинг (как работает и как его остановить)" },
+      "roles": ["admin", "manager"],
+      "where": "Runs on the server once a day (there is no button to start it); safety brakes: the per-building pause flag and the per-tenant auto-send on/off toggle",
+      "steps": {
+        "en": [
+          "There is nothing to click: a scheduled server job runs once a day at the configured time.",
+          "It goes through every unit that has auto-send turned on, is occupied and has a tenant.",
+          "If the current month is missing or past due and the grace days have passed, it creates and finalizes a Stripe invoice with a late fee line.",
+          "If Stripe rejects the invoice, the unit gets a red border on the map — report it to an admin or manager.",
+          "To stop it, an admin or manager uses the safety brakes: the per-building pause flag or the per-tenant on/off toggle.",
+          "AI agents can neither change these toggles nor start the run."
+        ],
+        "ru": [
+          "Нажимать ничего не нужно: серверное задание запускается раз в день в настроенное время.",
+          "Оно проходит по всем офисам, где включён auto-send, офис occupied и есть арендатор.",
+          "Если текущий месяц не оплачен или просрочен и льготные дни (grace) прошли, создаётся и финализируется инвойс Stripe со строкой late fee.",
+          "Если Stripe отклонил инвойс, офис на карте получает красную рамку — сообщите admin или manager.",
+          "Остановить можно предохранителями: флаг паузы на здании или переключатель on/off у конкретного арендатора — это делает admin или manager.",
+          "AI-агенты не могут ни менять эти переключатели, ни запускать задание."
+        ]
+      },
+      "risk": "Critical: autonomous money — invoices with late fees go out without anyone clicking."
+    },
+    {
+      "key": "investment_analysis",
+      "title": { "en": "Configure Investment Analysis (BRRRR)", "ru": "Настроить инвестиционный анализ (BRRRR)" },
+      "roles": ["admin"],
+      "where": "Left rail → Fin. analytics",
+      "steps": {
+        "en": [
+          "In the left rail open Fin. analytics (admin only).",
+          "If the current building has no investment record yet, you see four quick-estimate cards: GPR / EGI / NOI / Building Value @ 7% cap.",
+          "Click \"+ Create full record →\": an editable record is created with defaults (valuation = NOI / 7%, refi amount = 65% of the valuation).",
+          "Enter the purchase price yourself — it starts at 0, the program never guesses it.",
+          "Use the sub-tabs (Overview, Cash Flow, Hold Period, Sensitivity, Compare, AI Heuristic Insights) and the sliders for cap rate, vacancy, opex and refi terms."
+        ],
+        "ru": [
+          "В левой панели откройте Fin. analytics (только admin).",
+          "Если по текущему зданию ещё нет инвестиционной записи, показываются четыре карточки быстрой оценки: GPR / EGI / NOI / Building Value @ 7% cap.",
+          "Нажмите «+ Create full record →»: создаётся редактируемая запись со значениями по умолчанию (оценка = NOI / 7%, сумма рефинансирования = 65% от оценки).",
+          "Цену покупки введите сами — она начинается с 0, программа её не придумывает.",
+          "Пользуйтесь вкладками (Overview, Cash Flow, Hold Period, Sensitivity, Compare, AI Heuristic Insights) и ползунками cap rate, vacancy, opex и условий рефинансирования."
+        ]
+      },
+      "risk": ""
+    },
+    {
+      "key": "switch_building",
+      "title": { "en": "Switch the active building", "ru": "Переключить активное здание" },
+      "roles": ["admin", "manager", "mapeditor", "viewer", "teamviewer"],
+      "where": "Top-bar building dropdown → click the building name",
+      "steps": {
+        "en": [
+          "Click the building dropdown in the top bar.",
+          "Click the name of the building you need.",
+          "The map switches to that building (its last floor), the unit selection is cleared, and the building filters of all open tables follow the new building."
+        ],
+        "ru": [
+          "Нажмите выпадающий список зданий в верхней панели.",
+          "Нажмите название нужного здания.",
+          "Карта переключается на это здание (его последний этаж), выделение офисов сбрасывается, фильтры по зданию во всех открытых таблицах переходят на новое здание."
+        ]
+      },
+      "risk": ""
+    },
+    {
+      "key": "add_building",
+      "title": { "en": "Add a new building", "ru": "Добавить новое здание" },
+      "roles": ["admin", "manager"],
+      "where": "Top-bar building dropdown → \"+ Add building\"",
+      "steps": {
+        "en": [
+          "Open the building dropdown in the top bar and click \"+ Add building\".",
+          "In the modal enter the name (required); address, photo, floors list and billing rules are optional.",
+          "Click Save.",
+          "The program switches to the new building, turns Edit Mode on, selects its first floor and asks \"Upload floor plan?\".",
+          "Upload the floor plan if you have it."
+        ],
+        "ru": [
+          "Откройте список зданий в верхней панели и нажмите «+ Add building».",
+          "В окне введите название (обязательно); адрес, фото, список этажей и правила биллинга — по желанию.",
+          "Нажмите Save.",
+          "Программа переключается на новое здание, включает Edit Mode, выбирает его первый этаж и спрашивает «Upload floor plan?».",
+          "Загрузите план этажа, если он есть."
+        ]
+      },
+      "risk": ""
+    },
+    {
+      "key": "trace_floor_outline",
+      "title": { "en": "Trace the floor outline", "ru": "Обвести контур этажа (floor outline)" },
+      "roles": ["admin", "manager", "mapeditor"],
+      "where": "\"⋯ More\" menu → \"Set / re-draw floor outline\", or Floor stats overlay → \"Set floor outline\" (also offered after a blueprint upload)",
+      "steps": {
+        "en": [
+          "Start the tool: \"⋯ More\" menu → \"Set / re-draw floor outline\", or Floor stats overlay → \"Set floor outline\".",
+          "The cursor turns into a crosshair. Click each corner of the building perimeter in order.",
+          "Cyan dots mark the corners of existing units — click them to snap exactly.",
+          "Double-click, or click the first corner again, to close the outline.",
+          "The Total / Useful / Other ft² figures become available.",
+          "To redo it, draw the outline again or use \"Remove floor outline\"."
+        ],
+        "ru": [
+          "Запустите инструмент: меню «⋯ More» → «Set / re-draw floor outline» или оверлей Floor stats → «Set floor outline».",
+          "Курсор становится перекрестием. По очереди нажимайте каждый угол периметра здания.",
+          "Голубые точки отмечают углы существующих офисов — нажимайте на них для точной привязки.",
+          "Двойной клик или клик по первому углу замыкает контур.",
+          "Становятся доступны показатели Total / Useful / Other ft².",
+          "Чтобы переделать, обведите контур заново или используйте «Remove floor outline»."
+        ]
+      },
+      "risk": ""
+    },
+    {
+      "key": "draw_unit",
+      "title": { "en": "Draw and name a unit", "ru": "Нарисовать и назвать офис (unit)" },
+      "roles": ["admin", "manager", "mapeditor"],
+      "where": "Bottom toolbar → Rect (R) or Polygon (P) tool",
+      "steps": {
+        "en": [
+          "Pick Rect (R) or Polygon (P) in the bottom toolbar.",
+          "Rect: drag from one corner to the opposite corner. Polygon: click the corners one by one and double-click to close.",
+          "The side panel opens with the unit details. Rename the Suite ID (the automatic name is new-N).",
+          "Set the Type (office / mechanical / restroom / storage / kitchen and others) and check Sqft and Capacity — both are calculated automatically and can be overridden.",
+          "Tick Window and Sink if they apply and add Notes if needed."
+        ],
+        "ru": [
+          "Выберите инструмент Rect (R) или Polygon (P) в нижней панели.",
+          "Rect: протяните от одного угла до противоположного. Polygon: нажимайте углы по очереди, двойной клик замыкает фигуру.",
+          "Открывается боковая панель с данными офиса. Переименуйте Suite ID (автоматическое имя — new-N).",
+          "Укажите Type (office / mechanical / restroom / storage / kitchen и другие) и проверьте Sqft и Capacity — оба считаются автоматически, их можно задать вручную.",
+          "Отметьте Window и Sink, если они есть, и при необходимости добавьте Notes."
+        ]
+      },
+      "risk": ""
+    },
+    {
+      "key": "move_label",
+      "title": { "en": "Move a unit label («123» tool)", "ru": "Передвинуть подпись офиса (инструмент «123»)" },
+      "roles": ["admin", "manager", "mapeditor"],
+      "where": "Bottom toolbar → «123» button (shortcut L), with Edit Mode on",
+      "steps": {
+        "en": [
+          "Turn Edit Mode on and click the «123» button in the bottom toolbar (or press L).",
+          "Dashed cyan boxes appear over the label of each unit.",
+          "Drag a box to move the label; green guides help to align it with other labels.",
+          "A click without dragging simply selects the unit.",
+          "Press V (or click the Select tool) to leave the mode."
+        ],
+        "ru": [
+          "Включите Edit Mode и нажмите кнопку «123» в нижней панели (или клавишу L).",
+          "Над подписью каждого офиса появляются голубые пунктирные рамки.",
+          "Перетащите рамку, чтобы передвинуть подпись; зелёные направляющие помогают выровнять её с другими.",
+          "Клик без перетаскивания просто выделяет офис.",
+          "Нажмите V (или инструмент Select), чтобы выйти из режима."
+        ]
+      },
+      "risk": ""
+    },
+    {
+      "key": "bulk_edit_units",
+      "title": { "en": "Bulk-edit unit properties via shift-select", "ru": "Массово изменить свойства офисов (выделение с Shift)" },
+      "roles": ["admin", "manager", "mapeditor"],
+      "where": "Map → shift-click several units → bulk action bar",
+      "steps": {
+        "en": [
+          "Shift-click the units you want to change; the bulk action bar appears.",
+          "Choose the action: align (left / center / right / top / middle / bottom), distribute, set type, set capacity, set rent, set window/sink, archive, delete, group as one lease.",
+          "The change is applied to every selected unit at once. Rent and \"group as one lease\" are finance actions — leave them to an admin or manager.",
+          "If it was a mistake, press Ctrl+Z right away — undo covers one step only."
+        ],
+        "ru": [
+          "С зажатым Shift выделите офисы, которые нужно изменить; появится панель массовых действий.",
+          "Выберите действие: align (left / center / right / top / middle / bottom), distribute, set type, set capacity, set rent, set window/sink, archive, delete, group as one lease.",
+          "Изменение применяется сразу ко всем выделенным офисам. Аренда и «group as one lease» — финансовые действия, оставьте их admin или manager.",
+          "Если ошиблись, сразу нажмите Ctrl+Z — отмена работает только на один шаг."
+        ]
+      },
+      "risk": "Medium: changes many units at once (including rent, archive and delete); undo is a single step."
+    },
+    {
+      "key": "calibrate_floor_scale",
+      "title": { "en": "Calibrate the floor scale", "ru": "Откалибровать масштаб этажа" },
+      "roles": ["admin", "manager", "mapeditor"],
+      "where": "Bottom toolbar → Calibrate-line (ruler icon) or Calibrate-area (□ ft²) tool",
+      "steps": {
+        "en": [
+          "Pick Calibrate-line (ruler icon) or Calibrate-area (□ ft²) in the bottom toolbar.",
+          "Calibrate-line: drag a line along something whose real length you know, then enter the length in ft.",
+          "Calibrate-area: drag a rectangle over a room whose size you know, then enter its ft².",
+          "The floor scale is recalculated and the automatic sqft of every unit on the floor updates.",
+          "Do not use Calibrate-area to draw the floor outline — that is a different tool (topic trace_floor_outline)."
+        ],
+        "ru": [
+          "Выберите Calibrate-line (значок линейки) или Calibrate-area (□ ft²) в нижней панели.",
+          "Calibrate-line: протяните линию вдоль объекта с известной реальной длиной и введите длину в ft.",
+          "Calibrate-area: обведите прямоугольником комнату с известной площадью и введите её ft².",
+          "Масштаб этажа пересчитывается, автоматическая площадь (sqft) каждого офиса на этаже обновляется.",
+          "Не используйте Calibrate-area для контура этажа — это другой инструмент (тема trace_floor_outline)."
+        ]
+      },
+      "risk": "Medium: a wrong scale changes the automatically calculated sqft of every unit on the floor."
+    },
+    {
+      "key": "sync_conflict_recovery",
+      "title": { "en": "Cloud-sync conflict recovery (red sync banner)", "ru": "Конфликт синхронизации с облаком (красный баннер)" },
+      "roles": ["admin", "manager"],
+      "where": "Red sync banner \"Cloud sync failed: stored version X does not match required base Y\" → \"↑ Force push\" / \"↓ Pull cloud\"",
+      "steps": {
+        "en": [
+          "When the red banner appears, stop editing.",
+          "Decide which side you trust: what is on your screen or what is in the cloud (a teammate may have edited in the meantime, or your tab may be stale).",
+          "\"↓ Pull cloud\" discards your unsaved local changes and loads the cloud version.",
+          "\"↑ Force push\" makes your local version win — whatever differs on the cloud side is overwritten.",
+          "Read the confirm dialog (it warns about teammate edits) before accepting.",
+          "If you are not sure which side is right, ask an admin before pressing either button."
+        ],
+        "ru": [
+          "Когда появился красный баннер, прекратите редактирование.",
+          "Решите, какой стороне вы доверяете: тому, что у вас на экране, или тому, что в облаке (коллега мог внести правки, либо ваша вкладка устарела).",
+          "«↓ Pull cloud» отбрасывает ваши несохранённые локальные изменения и загружает версию из облака.",
+          "«↑ Force push» делает главной вашу локальную версию — всё, что отличается в облаке, перезаписывается.",
+          "Прочитайте окно подтверждения (оно предупреждает о правках коллег), прежде чем соглашаться.",
+          "Если не уверены, какая сторона верна, спросите admin, прежде чем нажимать любую из кнопок."
+        ]
+      },
+      "risk": "High: both buttons are destructive in opposite directions — one discards local changes, the other overwrites the cloud version."
+    },
+    {
+      "key": "agent_proposal_approve",
+      "title": { "en": "Approve or reject an AI agent proposal (Agent proposals)", "ru": "Одобрить или отклонить предложение AI-агента (Agent proposals)" },
+      "roles": ["admin", "manager"],
+      "where": "Settings → \"Agent proposals\" (also a widget on Home)",
+      "steps": {
+        "en": [
+          "An agent never performs a money action by itself: it first creates a proposal (create an invoice, void an invoice, mark an invoice paid outside Stripe).",
+          "Small amounts — up to $5,000 and not more than 2× the contract rent — can be confirmed by the employee right in the chat with the agent.",
+          "Everything above that, and everything coming from a service key, waits in Settings → \"Agent proposals\" (and in the Home widget).",
+          "Open the proposal and read its summary: the action, building, suite, month, amount and recipient.",
+          "Click Approve to execute it or Reject to cancel it. Only an admin or manager can decide.",
+          "A proposal works once and expires: after 15 minutes if it is to be confirmed in chat, after 24 hours if it waits for Approve in the program. If the data changed in the meantime it is refused and the agent has to propose again."
+        ],
+        "ru": [
+          "Агент никогда не выполняет денежное действие сам: сначала он создаёт предложение (создать инвойс, аннулировать инвойс, отметить инвойс оплаченным вне Stripe).",
+          "Небольшие суммы — до $5,000 и не больше 2× contract rent — сотрудник может подтвердить прямо в чате с агентом.",
+          "Всё, что выше, и всё, что приходит от сервисного ключа, ждёт в Settings → «Agent proposals» (и в виджете на Home).",
+          "Откройте предложение и прочитайте описание: действие, здание, офис, месяц, сумма и получатель.",
+          "Нажмите Approve, чтобы выполнить, или Reject, чтобы отменить. Решать может только admin или manager.",
+          "Предложение срабатывает один раз и имеет срок: 15 минут, если его подтверждают в чате, и 24 часа, если оно ждёт Approve в программе. Если данные за это время изменились, оно отклоняется и агент должен предложить заново."
+        ]
+      },
+      "risk": "Approve executes a real money action in Stripe (invoice sent, invoice voided, or invoice marked paid)."
+    },
+    {
+      "key": "agent_forbidden_actions",
+      "title": { "en": "What AI agents are never allowed to do (a person does these by hand)", "ru": "Что AI-агентам запрещено всегда (это делает человек вручную)" },
+      "roles": ["admin", "manager"],
+      "where": "Not available to agents on any key; a person with the required role does these in the program itself",
+      "steps": {
+        "en": [
+          "Members and roles: inviting members, changing roles, archiving members, transferring the workspace.",
+          "Backups and personal data: restoring a backup, taking a manual backup, erasing a tenant's personal data.",
+          "Stripe and bank settings: live/test mode, API credentials, connecting or disconnecting the bank feed, attaching a Stripe invoice to a unit. DocuSign configuration as well.",
+          "Auto-billing: the auto-invoice and late-fee auto-send flags, the building pause, and manual starts of the daily run.",
+          "Bulk actions without one-by-one confirmation: bulk invoices, bulk reminders, bulk void, bulk mark paid.",
+          "Deleting or archiving buildings, floors and units, and all map geometry (drawing, calibration, floor outline).",
+          "Deleting or overwriting records that are already paid, and refunds.",
+          "Free-text emails to tenants or emails to recipients of the agent's choice; security rules and secrets; reconciliation runs; door-access provisioning."
+        ],
+        "ru": [
+          "Участники и роли: приглашение участников, смена ролей, архивация участников, передача workspace.",
+          "Бэкапы и персональные данные: восстановление из бэкапа, ручной бэкап, удаление персональных данных арендатора.",
+          "Настройки Stripe и банка: режим live/test, учётные данные API, подключение и отключение банковского фида, привязка инвойса Stripe к офису. Также конфигурация DocuSign.",
+          "Авто-биллинг: флаги auto-invoice и авто-отправки late fee, пауза здания и ручной запуск ежедневного задания.",
+          "Массовые действия без подтверждения по одному: bulk invoices, bulk reminders, bulk void, bulk mark paid.",
+          "Удаление и архивация зданий, этажей и офисов, а также вся геометрия карты (рисование, калибровка, контур этажа).",
+          "Удаление или перезапись уже оплаченных записей, а также возвраты (refund).",
+          "Письма арендаторам со своим текстом или произвольным получателям; правила безопасности и секреты; запуски сверки (reconcile); выдача доступа к дверям."
+        ]
+      },
+      "risk": "Informational: these actions are irreversible, legal, or affect all billing — an agent refuses them and names who can do it by hand."
+    }
+  ]
+}
