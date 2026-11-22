@@ -177,6 +177,16 @@ async function test(name, fn) { try { await fn(); results.push(['PASS', name]); 
     assert.ok(spec.paths['/v1/whoami'] && spec.paths['/v1/whoami'].get.operationId === 'whoami');
     assert.ok(spec.paths['/v1/help'] && spec.paths['/v1/help'].get.parameters.some((p) => p.name === 'topic'));
     assert.strictEqual(spec.components.securitySchemes.bearerAuth.scheme, 'bearer');
+    // Адрес сервера: на cloudfunctions.net платформа срезает /agentApi из пути запроса —
+    // префикс обязан восстановиться по хосту; на run.app функция живёт в корне.
+    const cf = fakeReq({ path: '/v1/openapi.json', headers: { host: 'us-central1-suitesforall.cloudfunctions.net' } });
+    cf.url = '/v1/openapi.json'; cf.originalUrl = '/v1/openapi.json';
+    const r2 = fakeRes(); await g._internal.restHandler(cf, r2);
+    assert.strictEqual(r2.json().servers[0].url, 'https://us-central1-suitesforall.cloudfunctions.net/agentApi');
+    const run = fakeReq({ path: '/v1/openapi.json', headers: { host: 'agentapi-abc123-uc.a.run.app' } });
+    run.url = '/v1/openapi.json'; run.originalUrl = '/v1/openapi.json';
+    const r3 = fakeRes(); await g._internal.restHandler(run, r3);
+    assert.strictEqual(r3.json().servers[0].url, 'https://agentapi-abc123-uc.a.run.app');
   });
   await test('no token → 401 + WWW-Authenticate', async () => {
     const res = await rest(fakeReq({ path: '/v1/whoami' }));

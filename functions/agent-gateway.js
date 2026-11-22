@@ -770,8 +770,13 @@ function create(deps) {
   function functionBaseUrl(req, name) {
     const host = (req.headers && (req.headers['x-forwarded-host'] || req.headers.host)) || '';
     const proto = (req.headers && req.headers['x-forwarded-proto']) || 'https';
-    // На cloudfunctions.net функция живёт под /<name>; на run.app — в корне.
-    const path = (req.originalUrl || req.url || '').startsWith(`/${name}`) ? `/${name}` : '';
+    // На cloudfunctions.net функция живёт под /<name>, на run.app — в корне. Платформа
+    // срезает /<name> до того, как запрос дойдёт до обработчика (originalUrl = /v1/…),
+    // поэтому префикс определяется по хосту, а не по пути (наблюдение на проде 2026-11-22:
+    // в openapi.json адрес сервера выходил без /agentApi).
+    const bareHost = String(host).split(':')[0];
+    const onCloudFunctions = /\.cloudfunctions\.net$/i.test(bareHost);
+    const path = (onCloudFunctions || (req.originalUrl || req.url || '').startsWith(`/${name}`)) ? `/${name}` : '';
     return host ? `${proto}://${host}${path}` : '';
   }
   async function restHandler(req, res) {
