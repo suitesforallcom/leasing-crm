@@ -1036,6 +1036,27 @@ exports.ensureStripeCustomer = onCall(
 // чтобы та же реализация вызывалась in-process с синтетическим req
 // ({auth, data}) агентского шлюза. onCall-обёртка ниже (после тела) и само
 // тело не изменились.
+// ─── Entry 107: депозитный ли это счёт ───
+// Назначение (metadata.purpose) решает. Слово «deposit» в описании — только для
+// СТАРЫХ счетов: до purpose:'deposit' депозит уходил как 'custom' + «Security
+// deposit». Разовый счёт «Key card deposit» / «Pet deposit» (custom, создан после
+// отсечки) и любой счёт с явным другим назначением (keys / damages / cleaning /
+// late_fee / rent) — НЕ депозит: раньше дедуп блокировал такой счёт как «второй
+// депозит», а вебхук invoice.paid затирал u.stripe.depositInvoice его суммой.
+// ЗЕРКАЛО floor-map-editor.html (_invRowIsDeposit) — отсечка одна и та же.
+const _DEPOSIT_BY_TEXT_CUTOFF_SEC = Date.UTC(2026, 10, 22) / 1000;   // 2026-11-22T00:00Z — день выката Entry 107
+function _isDepositInvoiceCF(inv) {
+  if (!inv) return false;
+  const purpose = String((inv.metadata && inv.metadata.purpose) || '');
+  if (purpose === 'deposit') return true;
+  if (purpose && purpose !== 'custom') return false;
+  // custom после отсечки — обычный разовый счёт. Счёт БЕЗ назначения узнаём по
+  // тексту, как раньше (другого сигнала у него нет).
+  if (purpose === 'custom' && (Number(inv.created) || 0) >= _DEPOSIT_BY_TEXT_CUTOFF_SEC) return false;
+  return /\bdeposit\b/i.test(String(inv.description || ''));
+}
+// ─── /Entry 107 ───
+
 async function _createStripeInvoiceImpl(req) {
     // Аудит 2026-07-16 (security): auth ДО rate-limit'а. Раньше счётчик
     // /rateLimits/ws_{hour} инкрементился до requireEditor — аноним мог
@@ -1329,9 +1350,10 @@ async function _createStripeInvoiceImpl(req) {
         // had > 50 invoices). Search is eventually-consistent
         // (~10s lag for new invoices), so we ALSO keep the list-50
         // fallback below for race-against-just-created cases.
-        const customDescStr = String(customDesc || '');
-        const isDepositIntent = invPurpose === 'deposit'
-          || (invPurpose === 'custom' && /deposit/i.test(customDescStr));
+        // Entry 107: депозит — только purpose 'deposit'. Новый custom-счёт со словом
+        // «deposit» в описании («Key card deposit») — обычный разовый счёт и дедупится
+        // как custom (unit, purpose, ym), а не как «второй депозит юнита».
+        const isDepositIntent = invPurpose === 'deposit';
         let metadataDup = null;
         try {
           // Build a metadata-scoped search query. For rent: dedupe by
@@ -1391,9 +1413,8 @@ async function _createStripeInvoiceImpl(req) {
           if (isDepositIntent) {
             // Match any existing deposit invoice for this unit — accepts
             // both new (purpose='deposit') and legacy (purpose='custom'
-            // + 'deposit' in desc) records.
-            if (m.purpose === 'deposit') return true;
-            return m.purpose === 'custom' && /deposit/i.test(inv.description || '');
+            // + 'deposit' in desc, created before the Entry 107 cutoff).
+            return _isDepositInvoiceCF(inv);
           }
           // For keys / damages / cleaning / late_fee / custom — same
           // (unit, purpose, ym) can only have one active invoice
@@ -1928,8 +1949,13 @@ async function _createStripeInvoiceImpl(req) {
       if (!f) return;
       f.unit.stripe = f.unit.stripe || {};
       f.unit.stripe.customerId = customerId;
-      f.unit.stripe.lastInvoiceId = sent.id;
+      // Entry 107: пара lastInvoiceId + lastInvoiceYm описывает ОДИН rent-счёт.
+      // Раньше lastInvoiceId писался для любого назначения, lastInvoiceYm — только
+      // для rent: после оплаченного разового счёта (ключи, пеня, custom) канон
+      // (_isMonthSettled) читал месяц последней ренты как stripe-paid при открытом
+      // rent-счёте. Не-rent счета живут в extraInvoices и пару не трогают.
       if (invPurpose === 'rent') {
+        f.unit.stripe.lastInvoiceId = sent.id;
         f.unit.stripe.lastInvoiceYm = effectiveYm;
       } else {
         f.unit.stripe.extraInvoices = f.unit.stripe.extraInvoices || [];
@@ -4360,12 +4386,14 @@ async function handleInvoicePaid(invoice, eventId) {
       nonRentUnitFound = true;
       const u = f.unit;
       u.stripe = u.stripe || {};
-      // Match deposit by invoice id OR by /deposit/ in description
-      // (handles invoices created via the Stripe dashboard without
-      // our metadata.purpose='deposit' tag).
+      // Депозит — по штампу юнита (invoice id) ИЛИ по назначению счёта
+      // (Entry 107: metadata.purpose === 'deposit'; слово «deposit» в описании —
+      // только legacy custom-счета до отсечки). Раньше хватало слова в описании
+      // у счёта ЛЮБОГО назначения: «Key card deposit» $25 или счёт за ущерб
+      // «…not covered by deposit» перезаписывали штамп настоящего депозита.
       const isDepositByStamp = u.stripe.depositInvoice?.invoiceId === invoice.id;
-      const isDepositByDesc = /\bdeposit\b/i.test(invoice.description || '');
-      if (isDepositByStamp || isDepositByDesc) {
+      const isDepositByPurpose = _isDepositInvoiceCF(invoice);
+      if (isDepositByStamp || isDepositByPurpose) {
         const priorDepStatus = u.stripe.depositInvoice?.status || null;
         u.stripe.depositInvoice = {
           ...(u.stripe.depositInvoice || {}),
