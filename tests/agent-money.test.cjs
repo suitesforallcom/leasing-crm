@@ -103,6 +103,10 @@ const STATE = {
       // 212 — более поздний месяц уже выставлен (Entry 71: штамп не двигается назад).
       unit('212', { tenant: 'Zeta LLC', email: 't212@example.com', contractRent: 600, leaseStart: START, payments: paidThrough(addYm(CUR, -2), 600), stripe: { customerId: 'cus_212', lastInvoiceId: 'in_212cur', lastInvoiceYm: CUR } }),
       unit('213', { status: 'vacant', rent: 1200 }),
+      // 222 — лиза 9 месяцев; месяц «7 месяцев назад» закрыт ТОЛЬКО счётом Stripe (локальной записи нет),
+      // остальные оплачены локально, включая текущий. Должником он быть не должен.
+      unit('222', { tenant: 'Old Stripe LLC', email: 't222@example.com', contractRent: 400, leaseStart: addYm(CUR, -9) + '-01', stripe: { customerId: 'cus_222' },
+        payments: (() => { const o = {}; for (let i = 9; i >= 0; i--) if (i !== 7) o[addYm(CUR, -i)] = { status: 'paid', amount: 400 }; return o; })() }),
       // 214 — въезд 15-го числа текущего месяца: программа считает этот месяц с прорейтом.
       unit('214', { tenant: 'Move In LLC', email: 't214@example.com', contractRent: 3000, leaseStart: CUR + '-15', payments: {}, stripe: { customerId: 'cus_214' } }),
       // 215 — НОВЫЙ арендатор, а customerId на юните остался от прежнего (штампы чистятся, клиент — нет).
@@ -131,9 +135,10 @@ const stripeInvoices = [
   { id: 'in_b2x205', number: 'R-205-9', status: 'open', total: 100000, amount_remaining: 100000, amount_paid: 0, customer: 'cus_b2_205', customer_email: 'other205@example.com', created: sec(4), due_date: sec(-5), metadata: { source: 'suitesforall', unitId: '205', buildingId: 'b2', purpose: 'rent', ym: CUR }, lines: { total_count: 1 } },
   { id: 'in_215old', number: 'R-215-1', status: 'open', total: 80000, amount_remaining: 80000, amount_paid: 0, customer: 'cus_old215', customer_email: 'old215@example.com', created: sec(40), due_date: sec(30), metadata: { source: 'suitesforall', unitId: '215', buildingId: 'b1', purpose: 'rent', ym: PREV }, lines: { total_count: 1 } },
   { id: 'in_216old', number: 'R-216-1', status: 'open', total: 80000, amount_remaining: 80000, amount_paid: 0, customer: 'cus_old216', customer_email: 'old216@example.com', created: sec(40), due_date: sec(30), metadata: { source: 'suitesforall', unitId: '216', buildingId: 'b1', purpose: 'rent', ym: PREV }, lines: { total_count: 1 } },
+  { id: 'in_222old', number: 'R-222-1', status: 'paid', total: 40000, amount_remaining: 0, amount_paid: 40000, customer: 'cus_222', customer_email: 't222@example.com', created: sec(7 * 30 + 12), due_date: sec(7 * 30 + 2), metadata: { source: 'suitesforall', unitId: '222', buildingId: 'b1', purpose: 'rent', ym: addYm(CUR, -7) }, lines: { total_count: 1 } },
   { id: 'in_205paid', number: 'R-205-0', status: 'paid', total: 90000, amount_remaining: 0, amount_paid: 90000, customer: 'cus_205', customer_email: 't205@example.com', created: sec(70), due_date: sec(60), metadata: { source: 'suitesforall', unitId: '205', buildingId: 'b1', purpose: 'rent', ym: addYm(CUR, -2) }, lines: { total_count: 1 } },
 ];
-const fakeStripe = { invoices: { list: async (q) => ({ data: stripeInvoices.filter((i) => !q.status || i.status === q.status), has_more: false }) } };
+const fakeStripe = { invoices: { list: async (q) => ({ data: stripeInvoices.filter((i) => (!q.status || i.status === q.status) && (!(q.created && q.created.gte) || i.created >= q.created.gte)), has_more: false }) } };
 // Форма строки — как _stripeInvoiceToRow в functions/index.js.
 function toRow(inv, nowSec) {
   const isPastDue = inv.status === 'open' && inv.due_date && inv.due_date < nowSec;
@@ -691,6 +696,16 @@ async function test(name, fn) { try { await fn(); results.push(['PASS', name]); 
     const card = (await call(b1only, 'GET', '/v1/units/b1/205')).body.structured;
     const open = card.stripe.openInvoices.map((x) => x.id);
     assert.ok(open.includes('in_legacyB1') && !open.includes('in_legacyB2'), open.join(','));
+  });
+  await test('a month 7 months back that was settled ONLY by a Stripe invoice is not a debt (paid-invoice window covers the 12-month lookback)', async () => {
+    const o = (await call(mgr, 'GET', '/v1/overdue', {})).body.structured;
+    assert.ok(!o.rows.some((r) => r.unitId === '222'), 'suite 222 must not be overdue: ' + JSON.stringify(o.rows.filter((r) => r.unitId === '222').map((r) => r.months)));
+    const led = (await call(mgr, 'GET', '/v1/units/b1/222/ledger', { months: 12 })).body.structured;
+    const m = led.months.find((x) => x.ym === addYm(CUR, -7));
+    assert.ok(m && m.status === 'paid' && m.settledVia === 'stripe-paid', JSON.stringify(m));
+    assert.strictEqual(led.totals.owedUsd, 0);
+    // леджер не уходит дальше окна, которое видит снимок счетов
+    assert.strictEqual((await call(mgr, 'GET', '/v1/units/b1/222/ledger', { months: 24 })).status, 400);
   });
   await test('Stripe invoice snapshot is read to the end; hitting the page cap is reported, never silent', async () => {
     const realList = fakeStripe.invoices.list;

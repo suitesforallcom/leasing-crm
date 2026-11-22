@@ -665,7 +665,7 @@ function unitCard(snapshot, money, opts) {
 
 // ─── get_unit_ledger ────────────────────────────────────────────────────────
 /**
- * ledgerRows(snapshot, money, {buildingId, unitId, months? (≤24, default 12), fields}) → леджер | null.
+ * ledgerRows(snapshot, money, {buildingId, unitId, months? (≤12, default 12), fields}) → леджер | null.
  * Месяцы от текущего назад, никогда раньше старта лизы; без старта — пустой леджер + note.
  */
 function ledgerRows(snapshot, money, opts) {
@@ -678,7 +678,9 @@ function ledgerRows(snapshot, money, opts) {
   const { u } = hit;
   const head = money.leaseHead(u, snap) || u;
   const headHit = head === u ? hit : (floorOfUnit(snap, head) || hit);
-  const nMonths = Math.max(1, Math.min(Math.round(+o.months || 12), 24));
+  // Не дальше окна просрочки канона: за его пределами снимок оплаченных счетов Stripe
+  // неполон, и «неоплаченный» месяц там был бы ложным.
+  const nMonths = Math.max(1, Math.min(Math.round(+o.months || 12), LOOKBACK_MONTHS));
   const curYm = ymOf(snap.now);
   const startIso = leaseStartIso(head);
   const out = {

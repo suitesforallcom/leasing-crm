@@ -36,7 +36,13 @@ const CONFIG_TTL_MS = 60_000;
 const MEMBER_TTL_MS = 60_000;
 const SNAPSHOT_TTL_MS = 30_000;
 const INVOICES_TTL_MS = 5 * 60_000;
-const INVOICE_MAX_PAGES = 30;             // × 100 счетов на статус (open / paid за 120 дней)
+const INVOICE_MAX_PAGES = 30;             // × 100 счетов на статус (open / paid за окно ниже)
+// Окно оплаченных счетов обязано покрывать ВСЁ окно просрочки канона (12 месяцев:
+// текущий + 11 назад) плюс запас на счёт, выставленный за месяц вперёд: 11 мес + 1 мес
+// ≈ 396 дней → 430. Наблюдение на проде 2026-11-22: при 120 днях месяцы, закрытые
+// только счётом Stripe старше окна (декабрь–март), читались как просроченные —
+// шлюз показал 31 должника на $47,498.96 против 10 на $14,050 в программе.
+const PAID_INVOICE_LOOKBACK_DAYS = 430;
 const LAST_USED_THROTTLE_MS = 5 * 60_000;
 const IDEMPOTENCY_TTL_MS = 24 * 3600_000;
 const IDEMPOTENCY_INFLIGHT_MS = 120_000;
@@ -483,8 +489,9 @@ function create(deps) {
         map.set(inv.id, normInvoiceRow(stripeInvoiceToRow(inv, nowSec)));
       }
     };
-    // Открытые — все, оплаченные — за 120 дней: этого хватает канон-предикату
-    // isMonthSettled для текущего и прошлых месяцев. Читаем ДО КОНЦА (потолок
+    // Открытые — все, оплаченные — за PAID_INVOICE_LOOKBACK_DAYS (всё 12-месячное окно
+    // просрочки канона): месяц, закрытый только счётом Stripe, обязан найти свой счёт
+    // в снимке, иначе он читается как долг. Читаем ДО КОНЦА (потолок
     // INVOICE_MAX_PAGES страниц по 100 на статус): обрезанный список сделал бы месяц,
     // закрытый только счётом Stripe, «просроченным» — ложный должник. Если потолок
     // всё же достигнут — truncated=true, и инструменты обязаны сказать об этом.
@@ -500,7 +507,7 @@ function create(deps) {
       truncated = true;
     };
     await readAll({ status: 'open' });
-    await readAll({ status: 'paid', created: { gte: nowSec - 120 * 86400 } });
+    await readAll({ status: 'paid', created: { gte: nowSec - PAID_INVOICE_LOOKBACK_DAYS * 86400 } });
     const rows = Array.from(map.values());
     if (truncated) logger.warn(`[agent] Stripe invoice snapshot truncated at ${INVOICE_MAX_PAGES} pages per status (${rows.length} rows)`);
     _inv = { at: Date.now(), rows, truncated };
