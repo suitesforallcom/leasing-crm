@@ -16897,6 +16897,8 @@
 
   /* Members / invites panel — admin only */
   body:not(.role-admin) #stMembersPanel { display: none !important; }
+  /* Agent proposals tab — только admin и manager (AGENT_API_PLAN Этап 1) */
+  body:not(.role-admin):not(.role-manager) #stTabs [data-st-tab="agentproposals"] { display: none !important; }
 
   /* Financial Analytics tab — admin-only (запрос оператора 2026-05-11).
      Hide rail button + POTENTIAL VALUE card на Home для всех кроме admin.
@@ -22363,6 +22365,8 @@
         <button class="settings-tab"        data-st-tab="templates"    onclick="setSettingsTab('templates')"><span class="st-tab-dot"></span>📄 <span>Templates</span><span class="st-tab-count" data-st-count></span></button>
         <button class="settings-tab"        data-st-tab="team"         onclick="setSettingsTab('team')"><span class="st-tab-dot"></span>👥 <span>Team</span><span class="st-tab-count" data-st-count></span></button>
         <button class="settings-tab"        data-st-tab="data"         onclick="setSettingsTab('data')"><span class="st-tab-dot"></span>📦 <span>Data</span><span class="st-tab-count" data-st-count></span></button>
+        <button class="settings-tab"        data-st-tab="aiaccess"     onclick="setSettingsTab('aiaccess')"><span class="st-tab-dot"></span>🤖 <span>AI access</span><span class="st-tab-count" data-st-count></span></button>
+        <button class="settings-tab"        data-st-tab="agentproposals" onclick="setSettingsTab('agentproposals')"><span class="st-tab-dot"></span>📋 <span>Agent proposals</span><span class="st-tab-count" data-st-count></span></button>
         <button class="settings-tab"        data-st-tab="help"         onclick="setSettingsTab('help')"><span class="st-tab-dot"></span>❓ <span>Help</span><span class="st-tab-count" data-st-count></span></button>
       </nav>
       <div class="settings-sidebar-footer">
@@ -23838,6 +23842,26 @@
     </div>
 
     </div> <!-- /data panel -->
+
+    <!-- ===== AI ACCESS TAB — личные ключи агента (AGENT_API_PLAN Этап 1) =====
+         Видна каждому участнику workspace. Наполняется agentUiRenderKeys();
+         у полей формы намеренно нет id/name — чтобы dirty-трекер Settings
+         их не считал «несохранёнными изменениями». -->
+    <div class="st-tab-panel" data-st-panel="aiaccess">
+    <p class="st-panel-intro">Personal keys let an AI assistant (Claude, Grok, Kimi…) act in SuitesForAll as you, with your role and buildings.</p>
+    <div id="agentUiTokenBox"></div>
+    <div id="agentUiKeysList"><div class="team-empty">Loading keys…</div></div>
+    <div id="agentUiKeyForm"></div>
+    </div> <!-- /aiaccess panel -->
+
+    <!-- ===== AGENT PROPOSALS TAB — очередь предложений + настройки шлюза =====
+         Только admin и manager (кнопка вкладки скрыта CSS-правилом для
+         остальных ролей; сервер проверяет роль сам). -->
+    <div class="st-tab-panel" data-st-panel="agentproposals">
+    <p class="st-panel-intro">Actions that AI assistants have asked to carry out. Money actions above the chat limits wait here until an admin or manager approves or rejects them.</p>
+    <div id="agentUiProposalsList"><div class="team-empty">Loading proposals…</div></div>
+    <div id="agentUiConfigHost" style="margin-top: 22px;"></div>
+    </div> <!-- /agentproposals panel -->
 
     <!-- ===== HELP TAB — reference documentation =====
          Single source of truth for operator-facing docs. Kept in-app so
@@ -139634,6 +139658,9 @@ function renderHomeView() {
   // скрытие на секции, наполненные по id выше. try/catch — баг раскладки не
   // должен обнулить дашборд.
   try { applyDashboardLayout('home'); } catch (e) { console.warn('[dash-layout]', e); }
+  // Agent gateway UI (AGENT_API_PLAN Этап 1) — плашка «N agent proposals waiting»:
+  // fire-and-forget, не чаще раза в 60 с, ошибка не ломает Home.
+  try { if (typeof _agentUiHomeTick === 'function') _agentUiHomeTick(); } catch (e) { console.warn('[agent-ui]', e); }
 }
 
 // 12-month revenue chart from real payment data. Shows actual collected
@@ -149610,6 +149637,8 @@ const _ST_TAB_TITLES = {
   templates:    'Lease templates',
   team:         'Team & Access',
   data:         'Data & Backups',
+  aiaccess:       'AI access',
+  agentproposals: 'Agent proposals',
 };
 function setSettingsTab(tabId) {
   const modal = document.getElementById('settingsModal');
@@ -149693,6 +149722,12 @@ function setSettingsTab(tabId) {
   if (tabId === 'data' && typeof renderLocalBackupsPanel === 'function') {
     setTimeout(() => { try { renderLocalBackupsPanel(); } catch (e) { console.warn(e); } }, 0);
   }
+  // Agent gateway UI (AGENT_API_PLAN Этап 1) — вкладки «AI access» и
+  // «Agent proposals» рисуются при активации; уход с «AI access» стирает
+  // показанный один раз токен ключа из DOM.
+  if (typeof _agentUiOnSettingsTab === 'function') {
+    setTimeout(() => { try { _agentUiOnSettingsTab(tabId); } catch (e) { console.warn(e); } }, 0);
+  }
 }
 
 // Mirror of server-side PURPOSE_CODE (functions/index.js). Kept in sync
@@ -149772,6 +149807,850 @@ function renderInvoiceNumberHelp() {
     </div>
   `;
 }
+
+// =============================================================
+// ===== Agent gateway UI (AGENT_API_PLAN Этап 1) =====
+// Settings → «AI access» (личные ключи агента), Settings → «Agent
+// proposals» (очередь предложений + настройки шлюза) и плашка на Home.
+// Только request/response через callables: ни saveState(), ни записи в
+// state.*, ни localStorage, ни onSnapshot (CLAUDE.md § 0.2, правила 3 и 4).
+// Токен ключа существует только в DOM блока #agentUiTokenBox и стирается
+// при уходе с вкладки и при закрытии Settings любым путём.
+// =============================================================
+const _AGENT_UI_MISSING_TEXT = 'Agent access is not enabled on the server yet.';
+const _AGENT_UI_DENIED_TEXT  = 'Your role cannot use this.';
+const _AGENT_UI_CLIENT_LABEL = { claude: 'Claude', chatgpt: 'ChatGPT', grok: 'Grok', kimi: 'Kimi', script: 'Script', other: 'Other' };
+// Подсказки к scopes — зеркало таблицы AGENT_API_PLAN § 2.3. Неизвестный
+// scope (сервер добавил новый) показывается просто идентификатором.
+const _AGENT_UI_SCOPE_HINT = {
+  'read:units':       'Suites, vacancy, specs',
+  'read:contacts':    'Tenant and prospect contacts',
+  'read:finance':     'Balances, aging, ledger, invoices',
+  'read:forecast':    'Forecast and potential value',
+  'read:audit':       'Audit log',
+  'write:specs':      'Suite specs (sink, window, capacity)',
+  'write:notes':      'Notes and outreach log',
+  'write:prospects':  'Prospects (no delete)',
+  'write:collection': 'Collection status and promises',
+  'write:reminders':  'Resend invoice reminders',
+  'money:invoices':   'Create, send, void invoices',
+  'money:payments':   'Record payments',
+  'legal:leases':     'Send, resend, void lease envelopes',
+  'confirm:chat':     'Confirm money actions from chat',
+};
+// Семейства callables деплоятся независимо (ключи и конфиг — agent-gateway,
+// предложения — отдельный модуль), поэтому «сервер ещё не готов» помним по
+// семейству и до конца сессии: Home-плашка перестаёт звать сервер.
+const _agentUiMissing = { keys: false, proposals: false, config: false };
+const _agentUiSeenOk  = { keys: false, proposals: false, config: false };
+let _agentUiKeysData = null;       // последний ответ agentKeyList (токенов в нём нет)
+let _agentUiKeyBuildings = [];     // черновик формы: выбранные здания (пусто = все мои)
+let _agentUiPropsData = null;      // последний ответ agentProposalList
+let _agentUiPropsShowAll = false;  // «Show history»
+let _agentUiPropsNote = null;      // {kind, text} — итог последнего решения, строкой над списком
+let _agentUiConfigData = null;     // последний ответ agentConfigGet
+let _agentUiBusy = false;          // идёт мутация (create / revoke / decide / save) — защита от двойного клика
+let _agentUiHomeCount = 0;         // pending-предложения с requiredConfirmation === 'app'
+let _agentUiHomeLastAt = 0;
+let _agentUiHomeInFlight = false;
+let _agentUiHomeStop = false;      // permission-denied — в этой сессии больше не спрашиваем
+let _agentUiCloseObserver = null;
+
+function _agentUiFamily(name) {
+  if (/^agentKey/.test(name)) return 'keys';
+  if (/^agentProposal/.test(name)) return 'proposals';
+  return 'config';
+}
+function _agentUiOwn(map, key) {
+  return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined;
+}
+function _agentUiClientLabel(c) {
+  const k = String(c || 'other');
+  return _agentUiOwn(_AGENT_UI_CLIENT_LABEL, k) || k;
+}
+function _agentUiIsDecider() {
+  const r = (typeof currentRole === 'function') ? currentRole() : '';
+  return r === 'admin' || r === 'manager';
+}
+
+// Классификация ошибки callable. Модульный SDK отдаёт код как
+// 'functions/<code>'. Незадеплоенная функция — это 404 без JSON-тела
+// (code not-found, message равен коду) либо сорванный CORS-preflight
+// (code internal, message 'internal'). not-found с осмысленным текстом
+// («Key not found») — настоящий ответ сервера, его показываем как есть.
+function _agentUiClassifyError(err, family) {
+  const code = String((err && err.code) || '').replace(/^functions\//, '');
+  const msg = String((err && err.message) || '').trim();
+  if (code === 'permission-denied') return { kind: 'denied', text: _AGENT_UI_DENIED_TEXT };
+  const bare = !msg || msg.toLowerCase() === code || /^(internal|not[-_ ]found|unimplemented)$/i.test(msg);
+  const networkish = !code && /network|failed to fetch|load failed|cors/i.test(msg);
+  if (code === 'unimplemented' || code === 'internal' || (code === 'not-found' && bare) || networkish) {
+    // Семейство уже отвечало в этой сессии → функция задеплоена, значит это
+    // сбой сервера/сети, а не «ещё не включено». Говорим прямо: для решения
+    // по предложению исход неизвестен (§ 0.2 правило 5 — не молчим).
+    if (_agentUiSeenOk[family]) {
+      return { kind: 'other', unconfirmed: true, text: 'The server did not confirm the request. Check your connection and try again.' };
+    }
+    return { kind: 'missing', text: _AGENT_UI_MISSING_TEXT };
+  }
+  // Ошибка без кода — клиентская (таймаут, SDK не загрузился): исход неизвестен.
+  return { kind: 'other', unconfirmed: !code, text: msg || code || 'Request failed' };
+}
+
+// Единая обёртка вызова. Бросает Error с полем agentUi = {kind, text}:
+//   missing — сервер ещё не задеплоен · denied — роль · offline — нет входа · other — текст сервера.
+async function _agentUiCall(name, args, timeoutMs) {
+  const family = _agentUiFamily(name);
+  const fail = (info) => { const e = new Error(info.text); e.agentUi = info; return e; };
+  if (typeof fbSync === 'undefined' || !fbSync || !fbSync.enabled) {
+    throw fail({ kind: 'offline', text: 'Sign in to a workspace to use agent access.' });
+  }
+  try {
+    if (typeof _fbEnsureFunctionsModule === 'function') await _fbEnsureFunctionsModule();
+    const data = await _dsCallCF(name, args || {}, { timeoutMs: timeoutMs || 30000 });
+    _agentUiSeenOk[family] = true;
+    _agentUiMissing[family] = false;
+    return (data && typeof data === 'object') ? data : {};
+  } catch (err) {
+    const info = _agentUiClassifyError(err, family);
+    if (info.kind === 'missing') _agentUiMissing[family] = true;
+    // В консоль — только имя функции и код, без payload и ответа
+    // (в ответе agentKeyCreate лежит токен).
+    console.warn('[agent-ui] ' + name + ' failed: ' + String((err && err.code) || info.kind));
+    throw fail(info);
+  }
+}
+
+function _agentUiNoticeHtml(info, retryCall) {
+  const kind = info && info.kind;
+  const color = kind === 'other' ? 'var(--danger)' : 'var(--muted)';
+  const retry = retryCall
+    ? ` <button type="button" class="inv-copy" style="margin-left:8px;" onclick="${retryCall}">↻ Check again</button>`
+    : '';
+  return `<div class="team-empty" style="color:${color};">${esc((info && info.text) || 'Request failed')}${retry}</div>`;
+}
+async function _agentUiConfirm(o) {
+  if (typeof appConfirm === 'function') return !!(await appConfirm(o));
+  return confirm((o.title || 'Confirm') + '\n\n' + (o.body || ''));
+}
+function _agentUiToast(msg, kind) {
+  if (typeof toast === 'function') toast(msg, kind || 'success');
+}
+
+function _agentUiFmtDate(ms) {
+  const n = +ms;
+  if (!Number.isFinite(n) || n <= 0) return '—';
+  try { return new Date(n).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); } catch { return '—'; }
+}
+function _agentUiFmtDateTime(ms) {
+  const n = +ms;
+  if (!Number.isFinite(n) || n <= 0) return '—';
+  try { return new Date(n).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); } catch { return '—'; }
+}
+function _agentUiFmtAgo(ms) {
+  const n = +ms;
+  if (!Number.isFinite(n) || n <= 0) return 'never';
+  if (typeof _fmtRelTimeMs === 'function') return _fmtRelTimeMs(Date.now() - n) || 'just now';
+  return _agentUiFmtDate(n);
+}
+function _agentUiFmtIn(ms) {
+  const n = +ms;
+  if (!Number.isFinite(n) || n <= 0) return '';
+  const left = n - Date.now();
+  if (left <= 0) return 'expired';
+  const min = Math.ceil(left / 60000);
+  if (min < 60) return `expires in ${min}m`;
+  const hr = Math.floor(min / 60);
+  if (hr < 48) return `expires in ${hr}h ${min % 60}m`;
+  return `expires in ${Math.floor(hr / 24)}d`;
+}
+function _agentUiFmtUsd(v) {
+  if (v == null || v === '') return '';
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '';
+  return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function _agentUiBuildingName(id) {
+  const list = (typeof state !== 'undefined' && state && Array.isArray(state.buildings)) ? state.buildings : [];
+  const b = list.find(x => x && x.id === id);
+  if (!b) return String(id == null ? '' : id);
+  return ((typeof buildingLabel === 'function') ? buildingLabel(b) : (b.name || b.address)) || String(id);
+}
+
+// ---- Токен: показывается один раз, живёт только в DOM ----------------
+function _agentUiClearToken() {
+  const box = document.getElementById('agentUiTokenBox');
+  if (box && box.firstChild) box.textContent = '';
+}
+// Settings закрывается не только через closeSettings() — _closeOtherModals
+// снимает .active напрямую. Поэтому следим за классом модалки (DOM-наблюдатель,
+// не слушатель данных) и стираем токен + черновик формы при любом закрытии.
+function _agentUiWatchSettingsClose() {
+  if (_agentUiCloseObserver || typeof MutationObserver === 'undefined') return;
+  const modal = document.getElementById('settingsModal');
+  if (!modal) return;
+  _agentUiCloseObserver = new MutationObserver(() => {
+    if (modal.classList.contains('active')) return;
+    _agentUiClearToken();
+    const form = document.getElementById('agentUiKeyForm');
+    if (form && form.firstChild) form.textContent = '';
+    _agentUiKeyBuildings = [];
+  });
+  _agentUiCloseObserver.observe(modal, { attributes: true, attributeFilter: ['class'] });
+}
+function _agentUiShowToken(token, meta) {
+  const box = document.getElementById('agentUiTokenBox');
+  if (!box) return;
+  const m = meta || {};
+  const expMs = m.expiresAt ? +new Date(m.expiresAt) : 0;
+  box.innerHTML = `
+    <div class="team-invite-dialog" style="border-color: var(--warning, #F59E0B);">
+      <div style="font-weight:600; font-size:13.5px; margin-bottom:8px;">New key — ${esc(_agentUiClientLabel(m.client))}${m.label ? ' · ' + esc(m.label) : ''}</div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <code data-agent-ui="token" style="flex:1; min-width:220px; padding:8px 10px; background:var(--surface); border:1px solid var(--border); border-radius:6px; font-family: ui-monospace, Menlo, monospace; font-size:12px; word-break:break-all; user-select:all;">${esc(token)}</code>
+        <button type="button" class="rr-btn primary" onclick="agentUiCopyToken(this)">Copy</button>
+        <button type="button" class="rr-btn" onclick="_agentUiClearToken()" title="Remove the key from the screen">Done</button>
+      </div>
+      <div style="margin-top:8px; font-size:12.5px; font-weight:600; color: var(--danger);">Copy it now — it will not be shown again. Never paste it into chat or email.</div>
+      <div style="margin-top:4px; font-size:12px; color: var(--muted);">Enter it only in your AI assistant’s connection settings.${expMs > 0 ? ' Expires ' + esc(_agentUiFmtDate(expMs)) + '.' : ''}</div>
+    </div>`;
+  try { box.scrollIntoView({ block: 'nearest' }); } catch {}
+}
+function agentUiCopyToken(btn) {
+  const el = document.querySelector('#agentUiTokenBox [data-agent-ui="token"]');
+  const val = el ? el.textContent : '';
+  if (!val) return;
+  const done = () => {
+    if (btn) btn.textContent = '✓ Copied';
+    _agentUiToast('Key copied', 'success');
+  };
+  // Буфер недоступен — выделяем текст, чтобы скопировать вручную.
+  const manual = () => {
+    try {
+      const r = document.createRange();
+      r.selectNodeContents(el);
+      const s = window.getSelection();
+      s.removeAllRanges();
+      s.addRange(r);
+    } catch {}
+    _agentUiToast('Press ⌘C / Ctrl+C to copy the selected key', 'info');
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(val).then(done).catch(manual);
+  else manual();
+}
+
+// ---- A. Settings → AI access ------------------------------------------
+function _agentUiKeyStatus(k) {
+  if (k && k.revoked) return 'revoked';
+  const exp = +(k && k.expiresAt);
+  if (Number.isFinite(exp) && exp > 0 && exp <= Date.now()) return 'expired';
+  return 'active';
+}
+async function agentUiRenderKeys(opts) {
+  const el = document.getElementById('agentUiKeysList');
+  if (!el) return;
+  _agentUiWatchSettingsClose();
+  const force = !!(opts && opts.force);
+  if (_agentUiMissing.keys && !force) {
+    el.innerHTML = _agentUiNoticeHtml({ kind: 'missing', text: _AGENT_UI_MISSING_TEXT }, 'agentUiRenderKeys({force:true})');
+    agentUiToggleKeyForm(false);
+    return;
+  }
+  if (!_agentUiKeysData) el.innerHTML = '<div class="team-empty">Loading keys…</div>';
+  try {
+    _agentUiKeysData = await _agentUiCall('agentKeyList', {});
+  } catch (e) {
+    _agentUiKeysData = null;
+    el.innerHTML = _agentUiNoticeHtml(e.agentUi, 'agentUiRenderKeys({force:true})');
+    agentUiToggleKeyForm(false);
+    return;
+  }
+  _agentUiPaintKeys();
+}
+function _agentUiPaintKeys() {
+  const el = document.getElementById('agentUiKeysList');
+  const d = _agentUiKeysData;
+  if (!el || !d) return;
+  const isAdmin = d.role === 'admin';
+  const rank = { active: 0, expired: 1, revoked: 2 };
+  const chipCls = { active: 'team-status-active', expired: 'team-status-archived', revoked: 'team-status-archived' };
+  const chipTxt = { active: 'Active', expired: 'Expired', revoked: 'Revoked' };
+  const keys = (Array.isArray(d.keys) ? d.keys : []).filter(Boolean)
+    .map(k => ({ k, st: _agentUiKeyStatus(k) }))
+    .sort((a, b) => (rank[a.st] - rank[b.st]) || ((+b.k.createdAt || 0) - (+a.k.createdAt || 0)));
+  const activeN = keys.filter(x => x.st === 'active').length;
+  const head = `
+    <div class="team-header">
+      <div class="team-header-title">
+        <h3 style="margin:0; font-size:15px; font-weight:600;">${isAdmin ? 'Keys — all members' : 'Your keys'}</h3>
+        <p style="margin:2px 0 0; color:var(--muted); font-size:12.5px;">${activeN} active${keys.length > activeN ? ` · ${keys.length - activeN} expired or revoked` : ''}</p>
+      </div>
+      <div style="display:flex; gap:8px; flex:0 0 auto;">
+        <button type="button" class="rr-btn" onclick="agentUiRenderKeys({force:true})" title="Reload the list from the server">↻ Refresh</button>
+        <button type="button" class="int-btn team-invite-btn" onclick="agentUiToggleKeyForm(true)" title="Create a personal key for an AI assistant">＋ Create key</button>
+      </div>
+    </div>`;
+  const rows = keys.map(({ k, st }) => {
+    const scopes = (Array.isArray(k.scopes) ? k.scopes : []).map(s =>
+      `<span class="inv-role" style="text-transform:none; font-weight:600; font-family: ui-monospace, Menlo, monospace;" title="${esc(_agentUiOwn(_AGENT_UI_SCOPE_HINT, String(s)) || '')}">${esc(s)}</span>`
+    ).join('');
+    const buildings = (Array.isArray(k.buildings) && k.buildings.length)
+      ? k.buildings.map(id => esc(_agentUiBuildingName(id))).join(', ')
+      : 'all of the owner’s buildings';
+    const meta = [
+      'Buildings: ' + buildings,
+      'Created ' + esc(_agentUiFmtDate(k.createdAt)),
+      (st === 'expired' ? 'Expired ' : 'Expires ') + esc(_agentUiFmtDate(k.expiresAt)),
+      'Last used ' + esc(_agentUiFmtAgo(k.lastUsedAt)),
+    ];
+    if (isAdmin) meta.push('Owner ' + esc(k.email || k.uid || '—'));
+    return `
+      <div class="bk-row" style="display:block;${st === 'active' ? '' : ' opacity:.6;'}">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <b>${esc(_agentUiClientLabel(k.client))}</b>
+          <span>${k.label ? esc(k.label) : '<span style="color:var(--muted);">No label</span>'}</span>
+          <span class="inv-link" style="flex:0 1 auto;">${esc(k.prefix || '')}</span>
+          <span class="team-status-chip ${chipCls[st]}">${chipTxt[st]}</span>
+          <span style="flex:1;"></span>
+          ${st === 'active' ? `<button type="button" class="inv-revoke" data-key-id="${esc(k.keyId)}" onclick="agentUiRevokeKey(this.dataset.keyId)" title="Stop this key from working">Revoke</button>` : ''}
+        </div>
+        ${scopes ? `<div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:6px;">${scopes}</div>` : ''}
+        <div class="bk-meta" style="margin-top:6px;">${meta.join(' · ')}</div>
+      </div>`;
+  }).join('');
+  el.innerHTML = head + (rows || '<div class="team-list"><div class="team-empty">No keys yet. Click “Create key” to connect an AI assistant.</div></div>');
+}
+
+// Форма создания. Весь ввод — черновик в DOM (и _agentUiKeyBuildings);
+// в state ничего не пишется, пока сервер не выдал ключ (§ 0.2 правило 3).
+function agentUiToggleKeyForm(open) {
+  const el = document.getElementById('agentUiKeyForm');
+  if (!el) return;
+  _agentUiKeyBuildings = [];
+  const d = _agentUiKeysData;
+  if (!open || !d) { if (el.firstChild) el.textContent = ''; return; }
+  const clients = (Array.isArray(d.clients) && d.clients.length) ? d.clients : Object.keys(_AGENT_UI_CLIENT_LABEL);
+  const scopes = Array.isArray(d.allowedScopes) ? d.allowedScopes : [];
+  const maxTtl = Math.max(1, Math.round(+d.maxTtlDays) || 90);
+  const scopeHtml = scopes.map(s => {
+    const hint = _agentUiOwn(_AGENT_UI_SCOPE_HINT, String(s)) || '';
+    return `
+          <label style="display:flex; align-items:flex-start; gap:6px; font-size:12px; cursor:pointer;">
+            <input type="checkbox" data-agent-ui="scope" value="${esc(s)}"${/^read:/.test(String(s)) ? ' checked' : ''} style="margin-top:2px;">
+            <span><span style="font-family: ui-monospace, Menlo, monospace; font-size:11.5px;">${esc(s)}</span>${hint ? `<span style="display:block; color:var(--muted); font-size:11px;">${esc(hint)}</span>` : ''}</span>
+          </label>`;
+  }).join('');
+  el.innerHTML = `
+    <div class="team-invite-dialog">
+      <div class="team-invite-dialog-head">
+        <div style="font-weight:600; font-size:13.5px;">Create a key</div>
+        <button type="button" class="settings-close-x" onclick="agentUiToggleKeyForm(false)" style="width:26px; height:26px; font-size:13px;" title="Cancel">✕</button>
+      </div>
+      <div class="field-row" style="align-items:flex-end; margin-bottom: 8px;">
+        <div class="field">
+          <label>AI assistant</label>
+          <select data-agent-ui="client">${clients.map(c => `<option value="${esc(c)}">${esc(_agentUiClientLabel(c))}</option>`).join('')}</select>
+        </div>
+        <div class="field">
+          <label>Label <span style="color:var(--muted); font-weight:400; margin-left:4px;">(optional, up to 60 characters)</span></label>
+          <input type="text" data-agent-ui="label" maxlength="60" placeholder="e.g. Work laptop" autocomplete="off" spellcheck="false">
+        </div>
+      </div>
+      <div style="margin-bottom: 10px;">
+        <div style="font-size:12.5px; font-weight:500; margin-bottom:6px;">What the assistant may do <span style="color:var(--muted); font-weight:400;">(never more than your own role allows)</span></div>
+        <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap:6px 14px;">${scopeHtml || '<span style="color:var(--muted); font-size:12px;">Your role has no agent permissions.</span>'}
+        </div>
+      </div>
+      <div style="margin-bottom: 10px;">
+        <div style="font-size:12.5px; font-weight:500; margin-bottom:6px;">Buildings <span style="color:var(--muted); font-weight:400;">(leave on “All my buildings” or pick a subset)</span></div>
+        <div data-agent-ui="buildings" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
+      </div>
+      <div class="field" style="max-width:240px; margin-bottom: 12px;">
+        <label>Expires after, days (1–${maxTtl})</label>
+        <input type="number" data-agent-ui="ttl" min="1" max="${maxTtl}" step="1" value="${Math.min(90, maxTtl)}">
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button type="button" class="int-btn" data-agent-ui="create-btn" onclick="agentUiCreateKey()">Create key</button>
+        <button type="button" class="int-btn outline" onclick="agentUiToggleKeyForm(false)">Cancel</button>
+      </div>
+    </div>`;
+  _agentUiPaintKeyBuildings();
+  try { el.scrollIntoView({ block: 'nearest' }); } catch {}
+}
+function _agentUiPaintKeyBuildings() {
+  const host = document.querySelector('#agentUiKeyForm [data-agent-ui="buildings"]');
+  if (!host) return;
+  const list = (typeof state !== 'undefined' && state && Array.isArray(state.buildings)) ? state.buildings : [];
+  const mine = list.filter(b => b && b.id && (typeof canAccessBuilding !== 'function' || canAccessBuilding(b.id)));
+  const sel = _agentUiKeyBuildings;
+  const chip = (on, label, id) => `
+    <button type="button" class="int-btn ${on ? '' : 'outline'}" style="flex:0 0 auto; padding:4px 10px; font-size:12px; border-radius:14px;"
+            data-bid="${esc(id)}" onclick="agentUiToggleKeyBuilding(this.dataset.bid)">${on ? '✓ ' : ''}${esc(label)}</button>`;
+  host.innerHTML = chip(sel.length === 0, 'All my buildings', '')
+    + mine.map(b => chip(sel.includes(b.id), ((typeof buildingLabel === 'function') ? buildingLabel(b) : (b.name || b.id)) || b.id, b.id)).join('');
+}
+function agentUiToggleKeyBuilding(bid) {
+  if (!bid) {
+    _agentUiKeyBuildings = [];
+  } else {
+    const i = _agentUiKeyBuildings.indexOf(bid);
+    if (i >= 0) _agentUiKeyBuildings.splice(i, 1);
+    else _agentUiKeyBuildings.push(bid);
+  }
+  _agentUiPaintKeyBuildings();
+}
+async function agentUiCreateKey() {
+  if (_agentUiBusy) return;
+  const form = document.getElementById('agentUiKeyForm');
+  const d = _agentUiKeysData;
+  if (!form || !d) return;
+  const q = (k) => form.querySelector('[data-agent-ui="' + k + '"]');
+  const client = (q('client') && q('client').value) || 'other';
+  const label = String((q('label') && q('label').value) || '').trim().slice(0, 60);
+  const scopes = Array.from(form.querySelectorAll('[data-agent-ui="scope"]')).filter(c => c.checked).map(c => c.value);
+  const maxTtl = Math.max(1, Math.round(+d.maxTtlDays) || 90);
+  const ttlDays = Number(q('ttl') ? q('ttl').value : NaN);
+  if (!scopes.length) { _agentUiToast('Pick at least one permission for the key', 'error'); return; }
+  if (!Number.isInteger(ttlDays) || ttlDays < 1 || ttlDays > maxTtl) {
+    _agentUiToast(`Expiry must be a whole number of days from 1 to ${maxTtl}`, 'error');
+    return;
+  }
+  const payload = { client, label, scopes, ttlDays };
+  if (_agentUiKeyBuildings.length) payload.buildings = _agentUiKeyBuildings.slice();
+  const btn = q('create-btn');
+  _agentUiBusy = true;
+  if (btn) { btn.disabled = true; btn.textContent = 'Creating…'; }
+  try {
+    const res = await _agentUiCall('agentKeyCreate', payload);
+    if (!res.token) {
+      const e = new Error('The server did not return a key. Check the list below before trying again.');
+      e.agentUi = { kind: 'other' };
+      throw e;
+    }
+    // Токен уходит прямо в DOM блока и нигде больше не сохраняется.
+    _agentUiShowToken(res.token, { client: res.client || client, label: (res.label != null ? res.label : label), expiresAt: res.expiresAt });
+    agentUiToggleKeyForm(false);
+    _agentUiToast('Key created — copy it now', 'success');
+  } catch (e) {
+    _agentUiToast(e.message || 'Could not create the key', 'error');
+    if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = 'Create key'; }
+  } finally {
+    _agentUiBusy = false;
+  }
+  agentUiRenderKeys({ force: true });
+}
+async function agentUiRevokeKey(keyId) {
+  if (_agentUiBusy || !keyId) return;
+  const k = ((_agentUiKeysData && _agentUiKeysData.keys) || []).find(x => x && x.keyId === keyId);
+  if (!k) return;
+  const what = `${_agentUiClientLabel(k.client)}${k.label ? ' · ' + k.label : ''} (${k.prefix || keyId})`;
+  const ok = await _agentUiConfirm({
+    title: 'Revoke this key?',
+    body: `${what} will stop working immediately. This cannot be undone — create a new key if the assistant still needs access.`,
+    confirmLabel: 'Revoke key',
+    confirmStyle: 'danger',
+  });
+  if (!ok || _agentUiBusy) return;
+  _agentUiBusy = true;
+  try {
+    await _agentUiCall('agentKeyRevoke', { keyId });
+    _agentUiToast('Key revoked', 'success');
+  } catch (e) {
+    _agentUiToast(e.message || 'Could not revoke the key', 'error');
+  } finally {
+    _agentUiBusy = false;
+  }
+  agentUiRenderKeys({ force: true });
+}
+
+// ---- B. Settings → Agent proposals ------------------------------------
+function _agentUiCountAppPending(list) {
+  const now = Date.now();
+  return (Array.isArray(list) ? list : []).filter(p =>
+    p && p.status === 'pending' && p.requiredConfirmation === 'app' && !(+p.expiresAt > 0 && +p.expiresAt <= now)
+  ).length;
+}
+async function agentUiRenderProposals(opts) {
+  const el = document.getElementById('agentUiProposalsList');
+  if (!el) return;
+  if (!_agentUiIsDecider()) {
+    el.innerHTML = _agentUiNoticeHtml({ kind: 'denied', text: _AGENT_UI_DENIED_TEXT });
+    return;
+  }
+  const force = !!(opts && opts.force);
+  if (_agentUiMissing.proposals && !force) {
+    el.innerHTML = _agentUiNoticeHtml({ kind: 'missing', text: _AGENT_UI_MISSING_TEXT }, '_agentUiRenderProposalsTab(true)');
+    return;
+  }
+  if (!_agentUiPropsData) el.innerHTML = '<div class="team-empty">Loading proposals…</div>';
+  const wantAll = _agentUiPropsShowAll;
+  let data;
+  try {
+    data = await _agentUiCall('agentProposalList', { status: wantAll ? 'all' : 'pending' });
+  } catch (e) {
+    _agentUiPropsData = null;
+    el.innerHTML = _agentUiNoticeHtml(e.agentUi, '_agentUiRenderProposalsTab(true)');
+    return;
+  }
+  _agentUiPropsData = data;
+  // Плашка на Home считает по этому же ответу — отдельный запрос не нужен.
+  if (!wantAll) {
+    _agentUiHomeCount = _agentUiCountAppPending(data.proposals);
+    _agentUiHomeLastAt = Date.now();
+    try { _agentUiHomePaint(); } catch {}
+  }
+  _agentUiPaintProposals();
+  // Список ожил, а настройки ещё помечены «сервер не готов» — под списком
+  // должна стоять строка с «Check again» (без запроса: помета не сброшена).
+  if (_agentUiMissing.config && !_agentUiConfigData) agentUiRenderConfig().catch(() => {});
+}
+function _agentUiProposalRowHtml(p, canDecide) {
+  const eff = (p.effect && typeof p.effect === 'object') ? p.effect : {};
+  const req = (p.requestedBy && typeof p.requestedBy === 'object') ? p.requestedBy : {};
+  const st = String(p.status || '');
+  const pending = st === 'pending';
+  const expired = pending && +p.expiresAt > 0 && +p.expiresAt <= Date.now();
+  const live = pending && !expired;
+  const amount = _agentUiFmtUsd(eff.amountUsd);
+  const where = [
+    eff.buildingName || (eff.buildingId ? _agentUiBuildingName(eff.buildingId) : ''),
+    eff.unitId ? 'Suite ' + eff.unitId : '',
+    eff.ym || '',
+  ].filter(Boolean).join(' · ');
+  const chips = {
+    pending:  ['team-status-pending',  'Pending'],
+    executed: ['team-status-active',   'Executed'],
+    rejected: ['team-status-archived', 'Rejected'],
+    expired:  ['team-status-archived', 'Expired'],
+    stale:    ['team-status-archived', 'Stale'],
+    failed:   ['team-status-archived', 'Failed'],
+  };
+  const chip = expired ? chips.expired : (_agentUiOwn(chips, st) || ['team-status-archived', st || 'Unknown']);
+  const chipStyle = st === 'failed' ? ' style="background:rgba(220,38,38,0.14); color:#b91c1c;"' : '';
+  let actions = '';
+  if (live && p.requiredConfirmation === 'app' && canDecide) {
+    actions = `
+          <button type="button" class="inv-revoke" data-pid="${esc(p.proposalId)}" onclick="agentUiDecideProposal(this.dataset.pid, 'reject')">Reject</button>
+          <button type="button" class="rr-btn primary" style="padding:4px 12px; font-size:11.5px;" data-pid="${esc(p.proposalId)}" onclick="agentUiDecideProposal(this.dataset.pid, 'approve')">Approve</button>`;
+  } else if (live && p.requiredConfirmation === 'chat') {
+    actions = `<span class="team-status-chip team-status-pending" style="text-transform:none; letter-spacing:0;" title="The person who asked confirms this one in their chat with the assistant">awaiting confirmation in chat</span>`;
+  } else if (live) {
+    actions = `<span class="team-status-chip team-status-archived" style="text-transform:none; letter-spacing:0;">awaiting approval</span>`;
+  }
+  // confirmationReasons — необязательное поле сервера («amount … is over the chat limit»).
+  const why = (live && p.requiredConfirmation === 'app' && Array.isArray(p.confirmationReasons))
+    ? p.confirmationReasons.filter(Boolean).map(String).join('; ') : '';
+  const meta = ['Asked by ' + esc(req.email || 'unknown') + (req.client ? ' via ' + esc(_agentUiClientLabel(req.client)) : '')];
+  if (where) meta.push(esc(where));
+  if (eff.invoiceId) meta.push('Invoice ' + esc(eff.invoiceId));
+  if (eff.customerEmail) meta.push('To ' + esc(eff.customerEmail));
+  if (pending) {
+    const left = expired ? 'expired' : _agentUiFmtIn(p.expiresAt);
+    if (left) meta.push(esc(left));
+  } else {
+    meta.push('Created ' + esc(_agentUiFmtDateTime(p.createdAt)));
+    if (p.decidedBy) meta.push('Decided by ' + esc(p.decidedBy) + (p.decidedAt ? ', ' + esc(_agentUiFmtDateTime(p.decidedAt)) : ''));
+  }
+  return `
+      <div class="bk-row" style="display:block;${live ? '' : ' opacity:.75;'}">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <b>${esc(p.title || p.action || 'Agent action')}</b>
+          <span class="team-status-chip ${chip[0]}"${chipStyle}>${esc(chip[1])}</span>
+          ${amount ? `<span style="font-weight:700;">${esc(amount)}</span>` : ''}
+          <span style="flex:1;"></span>
+          ${actions}
+        </div>
+        ${p.summary ? `<div style="margin-top:6px; font-size:12.5px; line-height:1.45; color:var(--text);">${esc(p.summary)}</div>` : ''}
+        <div class="bk-meta" style="margin-top:6px;">${meta.join(' · ')}</div>
+        ${why ? `<div class="bk-meta" style="margin-top:4px;">Needs approval here because ${esc(why)}</div>` : ''}
+        ${p.error ? `<div style="margin-top:6px; font-size:11.5px; color:var(--danger);">${esc(p.error)}</div>` : ''}
+      </div>`;
+}
+function _agentUiPaintProposals() {
+  const el = document.getElementById('agentUiProposalsList');
+  const d = _agentUiPropsData;
+  if (!el || !d) return;
+  const canDecide = d.canDecide === true;
+  const list = (Array.isArray(d.proposals) ? d.proposals : []).filter(Boolean);
+  const pending = list.filter(p => p.status === 'pending').sort((a, b) => (+a.expiresAt || 0) - (+b.expiresAt || 0));
+  const history = list.filter(p => p.status !== 'pending').sort((a, b) => (+b.createdAt || 0) - (+a.createdAt || 0));
+  const n = _agentUiPropsNote;
+  const note = n ? `<div class="int-status-msg show ${n.kind === 'error' ? 'error' : (n.kind === 'info' ? 'info' : 'success')}" style="margin:0 0 12px;">${esc(n.text)}</div>` : '';
+  const empty = (text) => `<div class="team-list"><div class="team-empty">${text}</div></div>`;
+  const head = `
+    <div class="team-header">
+      <div class="team-header-title">
+        <h3 style="margin:0; font-size:15px; font-weight:600;">Waiting for a decision</h3>
+        <p style="margin:2px 0 0; color:var(--muted); font-size:12.5px;">${pending.length} pending${canDecide ? '' : ' · view only'}</p>
+      </div>
+      <div style="display:flex; gap:8px; flex:0 0 auto;">
+        <button type="button" class="rr-btn" onclick="agentUiRenderProposals({force:true})" title="Reload the list from the server">↻ Refresh</button>
+        <button type="button" class="rr-btn" onclick="agentUiToggleProposalHistory()" title="Also show executed, rejected, expired and failed proposals">${_agentUiPropsShowAll ? 'Hide history' : 'Show history'}</button>
+      </div>
+    </div>`;
+  const pendHtml = pending.length ? pending.map(p => _agentUiProposalRowHtml(p, canDecide)).join('') : empty('Nothing is waiting for approval.');
+  const histHtml = _agentUiPropsShowAll
+    ? '<div class="panel-title">History</div>' + (history.length ? history.map(p => _agentUiProposalRowHtml(p, false)).join('') : empty('No earlier proposals.'))
+    : '';
+  el.innerHTML = note + head + pendHtml + histHtml;
+}
+function agentUiToggleProposalHistory() {
+  _agentUiPropsShowAll = !_agentUiPropsShowAll;
+  agentUiRenderProposals({ force: true });
+}
+// Решение по предложению. Успех показываем только после ответа сервера
+// (§ 0.2 правило 5); при обрыве связи честно говорим, что исход неизвестен.
+async function agentUiDecideProposal(proposalId, decision) {
+  if (_agentUiBusy || !proposalId) return;
+  if (decision !== 'approve' && decision !== 'reject') return;
+  const d = _agentUiPropsData;
+  const p = ((d && d.proposals) || []).find(x => x && x.proposalId === proposalId);
+  if (!p || d.canDecide !== true || p.status !== 'pending' || p.requiredConfirmation !== 'app') return;
+  const approve = decision === 'approve';
+  const eff = (p.effect && typeof p.effect === 'object') ? p.effect : {};
+  const req = (p.requestedBy && typeof p.requestedBy === 'object') ? p.requestedBy : {};
+  const summary = String(p.summary || p.title || p.action || 'Agent action');
+  const amount = _agentUiFmtUsd(eff.amountUsd);
+  const where = [
+    eff.buildingName || (eff.buildingId ? _agentUiBuildingName(eff.buildingId) : ''),
+    eff.unitId ? 'Suite ' + eff.unitId : '',
+    eff.ym || '',
+  ].filter(Boolean).join(' · ');
+  const who = (req.email || 'unknown') + (req.client ? ' via ' + _agentUiClientLabel(req.client) : '');
+  const line = (label, value) => value ? `<div><span style="color:var(--muted);">${label}:</span> <b>${esc(value)}</b></div>` : '';
+  const ok = await _agentUiConfirm({
+    title: approve ? 'Approve this agent action?' : 'Reject this agent proposal?',
+    body: summary + (amount ? '\nAmount: ' + amount : '') + (approve ? '\n\nThis is a real action. It runs as soon as you approve.' : '\n\nNothing will be sent or changed.'),
+    bodyHtml: `<div style="font-weight:600; margin-bottom:8px;">${esc(summary)}</div>`
+      + line('Amount', amount) + line('Where', where) + line('Asked by', who)
+      + (approve
+        ? '<div style="margin-top:10px; font-weight:600; color:var(--danger);">This is a real action — it runs as soon as you approve.</div>'
+        : '<div style="margin-top:10px; color:var(--muted);">Nothing will be sent or changed.</div>'),
+    confirmLabel: approve ? ('Approve' + (amount ? ' ' + amount : '')) : 'Reject',
+    confirmStyle: approve ? undefined : 'danger',
+  });
+  if (!ok || _agentUiBusy) return;
+  _agentUiBusy = true;
+  document.querySelectorAll('#agentUiProposalsList button[data-pid]').forEach(b => { b.disabled = true; });
+  _agentUiToast(approve ? 'Approving…' : 'Rejecting…', 'loading');
+  let note;
+  try {
+    // У серверной функции таймаут 120 с (исполнение = реальный вызов Stripe) —
+    // клиент ждёт столько же, иначе медленное одобрение выглядело бы «не подтверждено».
+    const res = await _agentUiCall('agentProposalDecide', { proposalId, decision }, 125000);
+    const status = String(res.status || '');
+    const text = (res.result && res.result.text) ? String(res.result.text) : '';
+    if (res.ok === true && approve && status === 'executed') note = { kind: 'success', text: text || 'Approved and carried out.' };
+    else if (res.ok === true && !approve && status === 'rejected') note = { kind: 'success', text: 'Proposal rejected. Nothing was sent or changed.' };
+    else if (res.ok === true) note = { kind: 'info', text: (text ? text + ' ' : '') + 'Status: ' + (status || 'unknown') + '.' };
+    else note = { kind: 'error', text: text || ('Not carried out. Status: ' + (status || 'unknown') + '.') };
+  } catch (e) {
+    const info = e.agentUi || {};
+    note = { kind: 'error', text: e.message || 'The decision could not be confirmed.' };
+    if (approve && info.unconfirmed) {
+      note.text = 'The server did not confirm the approval — it may or may not have been carried out. Check the proposal status below before trying again.';
+    }
+  } finally {
+    _agentUiBusy = false;
+  }
+  _agentUiPropsNote = note;
+  _agentUiToast(note.text, note.kind === 'error' ? 'error' : (note.kind === 'info' ? 'info' : 'success'));
+  _agentUiHomeLastAt = 0;
+  agentUiRenderProposals({ force: true });
+}
+
+// ---- C. Agent settings (kill switch + пороги) --------------------------
+async function agentUiRenderConfig(opts) {
+  const host = document.getElementById('agentUiConfigHost');
+  if (!host) return;
+  if (!_agentUiIsDecider()) { host.textContent = ''; return; }
+  const force = !!(opts && opts.force);
+  const title = '<div class="panel-title">Agent settings</div>';
+  // Спокойная строка «сервер ещё не готов» уже стоит в списке предложений —
+  // второй раз её не повторяем.
+  const missingHtml = () => _agentUiMissing.proposals
+    ? ''
+    : title + _agentUiNoticeHtml({ kind: 'missing', text: _AGENT_UI_MISSING_TEXT }, 'agentUiRenderConfig({force:true})');
+  if (_agentUiMissing.config && !force) { host.innerHTML = missingHtml(); return; }
+  try {
+    _agentUiConfigData = await _agentUiCall('agentConfigGet', {});
+  } catch (e) {
+    _agentUiConfigData = null;
+    const info = e.agentUi || {};
+    host.innerHTML = info.kind === 'missing' ? missingHtml() : title + _agentUiNoticeHtml(info, 'agentUiRenderConfig({force:true})');
+    return;
+  }
+  _agentUiPaintConfig();
+}
+function _agentUiPaintConfig() {
+  const host = document.getElementById('agentUiConfigHost');
+  const d = _agentUiConfigData;
+  if (!host || !d) return;
+  const c = (d.config && typeof d.config === 'object') ? d.config : {};
+  const ed = d.editable === true;
+  const dis = ed ? '' : ' disabled';
+  const num = (v) => { const n = Number(v); return (v != null && Number.isFinite(n)) ? String(n) : ''; };
+  // Тогглы без id и поля без id/name — dirty-трекер Settings их не видит.
+  const tgl = (key, label, hint, warn) => `
+    <div class="toggle-row"${ed ? '' : ' style="opacity:.7;"'}>
+      <label>${label}${hint ? `<span style="display:block; font-weight:400; font-size:11.5px; margin-top:2px; color:${warn ? 'var(--danger)' : 'var(--muted)'};">${hint}</span>` : ''}</label>
+      <div class="toggle${c[key] === true ? ' on' : ''}" data-agent-ui-cfg="${key}" title="${ed ? 'Click to switch, then Save' : 'Only an admin can change this'}"${ed ? ` onclick="this.classList.toggle('on')"` : ' style="pointer-events:none;"'}></div>
+    </div>`;
+  host.innerHTML = `
+    <div class="panel-title">Agent settings</div>
+    <div class="modal-sub" style="margin-bottom:10px;">Workspace-wide switches for AI assistants. ${ed ? 'Saved changes take effect within about a minute.' : 'Only an admin can change these.'}</div>
+    ${tgl('enabled', 'Agent access enabled', 'Turn off to block every AI assistant key at once.', false)}
+    ${tgl('classB', 'Allow write tools (notes, reminders)', '', false)}
+    ${tgl('classC', 'Allow money tools (invoices)', 'Warning: this lets agents propose real invoices.', true)}
+    <div class="field-row">
+      <div class="field">
+        <label>Confirm below threshold in</label>
+        <select data-agent-ui-cfg="confirmMode"${dis}>
+          <option value="chat"${c.confirmMode === 'app' ? '' : ' selected'}>chat</option>
+          <option value="app"${c.confirmMode === 'app' ? ' selected' : ''}>app</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Max invoice in chat ($)</label>
+        <input type="number" min="0" step="1" data-agent-ui-cfg="maxInvoiceUsd" value="${esc(num(c.maxInvoiceUsd))}"${dis}>
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>Max × contract rent in chat</label>
+        <input type="number" min="0" step="0.1" data-agent-ui-cfg="rentMultiple" value="${esc(num(c.rentMultiple))}"${dis}>
+      </div>
+      <div class="field"></div>
+    </div>
+    <div class="modal-sub" style="margin:2px 0 10px;">Anything above either limit always waits for approval here, in the app.</div>
+    ${ed ? `<div style="display:flex; gap:8px;"><button type="button" class="int-btn team-invite-btn" data-agent-ui="cfg-save" onclick="agentUiSaveConfig()">Save agent settings</button></div>` : ''}`;
+}
+async function agentUiSaveConfig() {
+  if (_agentUiBusy) return;
+  const host = document.getElementById('agentUiConfigHost');
+  const d = _agentUiConfigData;
+  if (!host || !d || d.editable !== true) return;
+  const c = (d.config && typeof d.config === 'object') ? d.config : {};
+  const q = (k) => host.querySelector('[data-agent-ui-cfg="' + k + '"]');
+  // В patch попадают только изменённые поля.
+  const patch = {};
+  for (const k of ['enabled', 'classB', 'classC']) {
+    const el = q(k);
+    if (!el) continue;
+    const on = el.classList.contains('on');
+    if (on !== (c[k] === true)) patch[k] = on;
+  }
+  const modeEl = q('confirmMode');
+  if (modeEl && (modeEl.value === 'chat' || modeEl.value === 'app') && modeEl.value !== c.confirmMode) patch.confirmMode = modeEl.value;
+  const numLabel = { maxInvoiceUsd: 'Max invoice in chat', rentMultiple: 'Max × contract rent in chat' };
+  for (const k of ['maxInvoiceUsd', 'rentMultiple']) {
+    const el = q(k);
+    if (!el) continue;
+    const raw = String(el.value).trim();
+    const n = Number(raw);
+    if (raw === '' || !Number.isFinite(n) || n < 0) { _agentUiToast(numLabel[k] + ' must be a number, 0 or more', 'error'); return; }
+    if (n !== Number(c[k])) patch[k] = n;
+  }
+  if (!Object.keys(patch).length) { _agentUiToast('No changes to save', 'info'); return; }
+  if (patch.classC === true) {
+    const ok = await _agentUiConfirm({
+      title: 'Allow money tools?',
+      body: 'AI assistants will be able to propose real invoices. Each one still needs a confirmation — in chat below the limits, here in the app above them.',
+      confirmLabel: 'Allow money tools',
+      confirmStyle: 'danger',
+    });
+    if (!ok || _agentUiBusy) return;
+  }
+  const btn = host.querySelector('[data-agent-ui="cfg-save"]');
+  _agentUiBusy = true;
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  let saved = null;
+  try {
+    const res = await _agentUiCall('agentConfigSet', patch);
+    saved = (res.config && typeof res.config === 'object') ? res.config : null;
+    _agentUiToast('Agent settings saved', 'success');
+  } catch (e) {
+    // Ввод оставляем как есть — можно поправить и сохранить ещё раз.
+    _agentUiToast(e.message || 'Could not save agent settings', 'error');
+    if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = 'Save agent settings'; }
+    return;
+  } finally {
+    _agentUiBusy = false;
+  }
+  if (saved) { _agentUiConfigData = Object.assign({}, d, { config: saved }); _agentUiPaintConfig(); }
+  else agentUiRenderConfig({ force: true });
+}
+
+// ---- Вкладки Settings --------------------------------------------------
+// Сначала список, потом настройки: так «сервер ещё не готов» выводится
+// одной строкой, а kill switch остаётся доступен, даже если модуль
+// предложений ещё не задеплоен.
+async function _agentUiRenderProposalsTab(force) {
+  const o = force ? { force: true } : undefined;
+  try { await agentUiRenderProposals(o); } catch (e) { console.warn('[agent-ui]', e); }
+  try { await agentUiRenderConfig(o); } catch (e) { console.warn('[agent-ui]', e); }
+}
+function _agentUiOnSettingsTab(tabId) {
+  if (tabId !== 'aiaccess') {
+    _agentUiClearToken();
+    const form = document.getElementById('agentUiKeyForm');
+    if (form && form.firstChild) form.textContent = '';
+    _agentUiKeyBuildings = [];
+  }
+  if (tabId === 'aiaccess') agentUiRenderKeys();
+  if (tabId === 'agentproposals') {
+    _agentUiPropsNote = null;
+    _agentUiRenderProposalsTab(false);
+  }
+}
+
+// ---- D. Home: «N agent proposals waiting for approval» -----------------
+function _agentUiHomePaint() {
+  const host = document.querySelector('#homeView .hv-topbar-actions');
+  if (!host) return;
+  let pill = document.getElementById('agentUiHomePill');
+  const n = _agentUiIsDecider() ? _agentUiHomeCount : 0;
+  if (!(n > 0)) { if (pill) pill.style.display = 'none'; return; }
+  if (!pill) {
+    pill = document.createElement('button');
+    pill.type = 'button';
+    pill.id = 'agentUiHomePill';
+    pill.className = 'hv-dash-btn';
+    pill.title = 'AI assistants asked for actions that need your approval — click to review';
+    pill.addEventListener('click', () => {
+      try { openSettings('agentproposals'); } catch (e) { console.warn('[agent-ui]', e); }
+    });
+    const dot = document.createElement('span');
+    dot.style.cssText = 'width:6px; height:6px; border-radius:3px; background:var(--zip-due); flex:0 0 auto;';
+    const label = document.createElement('span');
+    label.setAttribute('data-agent-ui', 'home-label');
+    pill.appendChild(dot);
+    pill.appendChild(label);
+    host.insertBefore(pill, host.firstChild);
+  }
+  const label = pill.querySelector('[data-agent-ui="home-label"]');
+  if (label) label.textContent = `${n} agent proposal${n === 1 ? '' : 's'} waiting for approval`;
+  pill.style.display = '';
+}
+// Зовётся в конце renderHomeView. Ничего не ждёт и не бросает: рисует из
+// кэша и не чаще раза в 60 с спрашивает сервер в фоне. После «сервер ещё
+// не готов» или permission-denied в этой сессии больше не спрашивает.
+function _agentUiHomeTick() {
+  try { _agentUiHomePaint(); } catch {}
+  if (!_agentUiIsDecider()) return;
+  if (typeof fbSync === 'undefined' || !fbSync || !fbSync.enabled) return;
+  if (_agentUiMissing.proposals || _agentUiHomeStop || _agentUiHomeInFlight) return;
+  if (Date.now() - _agentUiHomeLastAt < 60000) return;
+  _agentUiHomeLastAt = Date.now();
+  _agentUiHomeInFlight = true;
+  setTimeout(() => {
+    _agentUiCall('agentProposalList', { status: 'pending' })
+      .then(d => { _agentUiHomeCount = _agentUiCountAppPending(d.proposals); })
+      .catch(e => { if (e && e.agentUi && e.agentUi.kind === 'denied') { _agentUiHomeStop = true; _agentUiHomeCount = 0; } })
+      .finally(() => { _agentUiHomeInFlight = false; try { _agentUiHomePaint(); } catch {} });
+  }, 0);
+}
+// ===== /Agent gateway UI =====
 
 // =============================================================
 // Settings search — filters rows across all tabs by their visible
