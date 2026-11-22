@@ -943,6 +943,31 @@ if [ "$_e107_ok" = 1 ]; then
   echo "  ✓ штамп = rent-счёт месяца (сервер · канон ×3 · карта · пилл · сканеры); депозит по metadata.purpose, текст только до 2026-11-22"
 fi
 echo
+echo "Entry 108 — самоочистка штампов не стирает депозит и первую ренту, выставленные заранее:"
+# 2026-11-22. _healStaleStripeStamps считал штамп «от прошлого арендатора», если он старше
+# leaseStart − 7 дней. Под правило попадали СВОИ счета, выставленные при подписании (Apt 206:
+# аренда с 28 декабря, депозит 22 ноября): штамп стирался при каждой загрузке, редактирующая
+# вкладка писала это на сервер. Граница теперь — самый ранний из leaseStart − 7д и момента,
+# когда ЭТОГО арендатора завели (_tenantAddedAt на текущее имя или договор на его адрес, − 1д,
+# не дальше 120 дней до начала аренды).
+_e108_ok=1
+_e108_cnt() {  # $1 описание, $2 строка, $3 ожидаемое число строк
+  _e108_n=$(grep -cF -- "$2" "$HTML" || true)
+  if [ "$_e108_n" != "$3" ]; then
+    echo "  ✗ Entry 108: $1 — expected $3 line(s) of: $2 — found $_e108_n (FIXES_LOG Entry 108)"
+    _e108_ok=0; FAIL=1
+  fi
+}
+_e108_cnt "boundary helper present"                     "function _stampStaleBeforeMs(u, leaseStartGraceMs) {" 1
+_e108_cnt "tenant-added marker counts only for the current tenant" "if (Number.isFinite(addedMs) && curTenant && u._lastStampedTenant && key(u._lastStampedTenant) === curTenant) {" 1
+_e108_cnt "an anchor more than 120 days before the lease is ignored" "if (a < leaseStartGraceMs - 120 * DAY) continue;" 1
+_e108_cnt "boundary is the earliest anchor minus a day"  "staleBefore = Math.min(staleBefore, a - DAY);" 1
+_e108_cnt "heal uses the helper"                        "const staleBefore = _stampStaleBeforeMs(u, leaseStartMs);" 1
+_e108_cnt "old lease-start-only boundary is gone"       "const staleBefore = leaseStartMs;" 0
+if [ "$_e108_ok" = 1 ]; then
+  echo "  ✓ граница устаревания штампа = min(leaseStart − 7д, момент заведения текущего арендатора − 1д)"
+fi
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."
