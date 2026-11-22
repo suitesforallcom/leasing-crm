@@ -101,6 +101,8 @@ function desktopCtx(rows, units, opts = {}) {
     src.split('\n').find(l => l.startsWith('function isValidEmail(')) || 'function isValidEmail(e){ return /@/.test(String(e||"")); }',
     sliceBetween('// ─── Entry 95: tenant contact hygiene ───', '// ─── /Entry 95 ───', 'Entry 95'),
     sliceBetween('// ─── Entry 102: invoice ↔ building scope ───', '// ─── /Entry 102 ───', 'Entry 102'),
+    // Entry 107: сканеры кэша решают «депозит / рента» по назначению счёта (_invRowIsDeposit, _stampRowIsRent)
+    sliceBetween('// ─── Entry 107: штамп закрывает месяц только rent-счётом ───', '// ─── /Entry 107 ───', 'Entry 107'),
     // индекс кэша: var-ы + _invIndexEnsure + _invRowsForUnit
     src.slice(src.indexOf('\nvar _invoicesCacheById = null;'), src.indexOf("\n// Look up a Stripe invoice's real bucket")),
     fnSource('_parseDateUTC'),

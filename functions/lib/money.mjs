@@ -254,11 +254,39 @@ function _stampPointsToDeposit(u, invoiceId, snap) {
  * а он бывает пустым (роль без доступа к Stripe, урезанный офлайн-снимок).
  * Нет строки в кэше → штампу не верим. Направление безопасное: телефон скажет
  * «не оплачено» там, где не уверен, вместо ложного «оплачено» по просроченной ренте.
- * moveInRent такой проблемы не имеет — он пишется только для ренты.
+ * Entry 107: то же верно для ЛЮБОГО не-rent счёта, не только депозита — поэтому
+ * строка обязана быть rent-счётом (_stampRowIsRent).
+ * С Entry 107 сервер пишет lastInvoiceId только для ренты; проверка остаётся —
+ * старые штампы и отставшие вкладки никуда не делись.
  */
 function _lastStampTrustworthy(u, invoiceId, snap) {
   if (_stampPointsToDeposit(u, invoiceId, snap)) return false;
-  return !!_lookupInvoiceRow(invoiceId, snap);
+  const row = _lookupInvoiceRow(invoiceId, snap);
+  if (!row) return false;
+  // Ручная привязка оператора («Link to month»): он сам назначил этот счёт арендой
+  // месяца — назначение счёта не проверяем. Маркер хранит id, а не флаг: стоит
+  // другому писателю сменить lastInvoiceId — исключение само перестаёт действовать.
+  const st = (u && u.stripe) || {};
+  if (st.lastInvoiceLinkedId && st.lastInvoiceLinkedId === invoiceId) return true;
+  return _stampRowIsRent(row);
+}
+
+// Entry 107 (2026-11-22). Штамп — голый указатель; месяц аренды он закрывает,
+// только если счёт по нему — счёт АРЕНДЫ. Оплаченный разовый счёт (ключи, пеня,
+// уборка, custom) с тем же штампом читался как оплата месяца: должник пропадал из
+// Aging, а «собрано» показывало $25 вместо ренты. Назначение пишет наш сервер в
+// metadata.purpose; строка без назначения (счёт из Stripe Dashboard, старые счета)
+// остаётся как была — иначе потеряли бы историю.
+function _stampRowIsRent(row) {
+  const p = String((row && ((row.metadata && row.metadata.purpose) || row.purpose)) || '');
+  return !p || p === 'rent' || p === 'move_in_rent';
+}
+// Штамп moveInRent: по назначению — то же правило; ручная привязка оператора
+// (manualLink) сильнее назначения — он сам сказал, что этот счёт и есть аренда.
+function _moveInStampIsRent(mi, snap) {
+  if (mi && mi.manualLink === true) return true;
+  const row = _lookupInvoiceRow(mi && mi.invoiceId, snap);
+  return !row || _stampRowIsRent(row);
 }
 
 // Порт _rentPaidRowFromCache :94972. STRICT: purpose='rent', точный ym без created-date
@@ -294,6 +322,7 @@ function _settle(u0, ym, snap) {
   const mi = u && u.stripe && u.stripe.moveInRent;
   if (mi && mi.ym === ym && mi.invoiceId
       && !_stampPointsToDeposit(u, mi.invoiceId, snap)
+      && _moveInStampIsRent(mi, snap)
       && _lookupInvoiceBucket(mi.invoiceId, snap) === 'paid') {
     return { v: 'stripe-paid', id: mi.invoiceId, via: 'stamp-movein' };
   }

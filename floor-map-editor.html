@@ -32445,7 +32445,10 @@ function _computeUnitFillImpl(u, mode) {
           // future-лизы (старт 1 сентября) последний инвойс = сентябрьская
           // рента, и без гейта июльская карта красилась от чужого месяца.
           // Legacy-штампы без lastInvoiceYm сохраняют старое поведение.
-          && (!u.stripe.lastInvoiceYm || u.stripe.lastInvoiceYm === ym)) {
+          && (!u.stripe.lastInvoiceYm || u.stripe.lastInvoiceYm === ym)
+          // Entry 107: если строка счёта уже в кэше и это не rent-счёт месяца
+          // (ключи, пеня, custom) — зелёным от него не красим.
+          && _lastStampIsRent(u)) {
         if (_loadInvoiceBucketDisk()[u.stripe.lastInvoiceId] === 'paid') return SETTLED_GREEN;
       }
       return null;
@@ -32502,7 +32505,8 @@ function _computeUnitFillImpl(u, mode) {
           // Тот же месячный гейт, что в _paymentExplicitFill выше — не красим
           // текущий месяц синим от инвойса ДРУГОГО месяца (сентябрьская
           // move-in рента красила июльскую плитку Suite 224 в blue).
-          && (!u.stripe.lastInvoiceYm || u.stripe.lastInvoiceYm === ym)) {
+          && (!u.stripe.lastInvoiceYm || u.stripe.lastInvoiceYm === ym)
+          && _lastStampIsRent(u)) {   // Entry 107
         const _b = _loadInvoiceBucketDisk()[u.stripe.lastInvoiceId];
         if (['open', 'past_due', 'pending', 'sent', 'overdue', 'late'].includes(_b)) return true;
       }
@@ -63796,16 +63800,11 @@ async function stackingSendReminders(buildingId, btn) {
   };
   for (const { u: u0, f: f0 } of remindable) {
     try {
-      const payload = u0.stripe?.lastInvoiceId
-        ? { invoiceId: u0.stripe.lastInvoiceId }
-        : { customerId: u0.stripe.customerId };
+      const payload = _stripeReminderPayload(u0);   // Entry 107
       const res = await fn(payload);
       const u = _freshU(f0?.id, u0.id, u0);
       const sentInvoiceId = res?.data?.invoiceId || u.stripe?.lastInvoiceId;
-      if (res?.data?.autoDiscovered && sentInvoiceId) {
-        u.stripe = u.stripe || {};
-        u.stripe.lastInvoiceId = sentInvoiceId;
-      }
+      if (res?.data?.autoDiscovered && sentInvoiceId) _stampDiscoveredReminderInvoice(u, sentInvoiceId);   // Entry 107
       try { recordOutreach(u, 'reminder', `Stripe reminder sent for invoice ${sentInvoiceId || '?'} (stacking bulk)`); } catch {}
       if (!u.collectionStatus || u.collectionStatus === 'normal') u.collectionStatus = 'reminded';
       sent++;
@@ -87062,7 +87061,9 @@ async function _fetchUnitInvoicesFromStripe(u, opts = {}) {
       const lastRent = eligible.find(r => {
         const m = r.metadata || {};
         if (m.purpose === 'deposit') return false;
-        if (m.purpose && m.purpose !== 'rent' && m.purpose !== 'custom') return false;
+        // Entry 107: «последний rent-счёт» — только rent (или счёт без назначения);
+        // custom раньше проходил и штамповался как рента месяца.
+        if (!_stampRowIsRent(r)) return false;
         return true;
       });
       if (lastRent) {
@@ -87073,8 +87074,7 @@ async function _fetchUnitInvoicesFromStripe(u, opts = {}) {
       }
     }
     if (!u_.stripe?.depositInvoice?.invoiceId) {
-      const depRow = eligible.find(r => (r.metadata || {}).purpose === 'deposit'
-        || /\bdeposit\b/i.test(r.description || ''));
+      const depRow = eligible.find(r => _invRowIsDeposit(r));   // Entry 107
       if (depRow && typeof _backfillDepositStamp === 'function') {
         if (_backfillDepositStamp(u_, depRow)) stampChanged = true;
       }
@@ -95945,8 +95945,8 @@ function _findDepositInvoiceInCache(u) {
     const descLC = (r.description || '').toLowerCase();
     const emailLC = _normEmail(r.customerEmail).email;
     const meta = r.metadata || {};
-    const isDepositDesc = /\bdeposit\b/.test(descLC) || meta.purpose === 'deposit';
-    if (!isDepositDesc) continue;
+    // Entry 107: назначение, а не слово в описании (текст — только legacy-счета).
+    if (!_invRowIsDeposit(r)) continue;
     // Void'нутый / черновой счёт — не живое обязательство: нельзя
     // реконструировать из него штамп «open» (2026-08-15: после удаления
     // арендатора его voided-депозит вернулся на юнит следующему жильцу).
@@ -96062,6 +96062,10 @@ function _findRentInvoiceInCache(u, ym) {
     const isDepositDesc = /\bdeposit\b/.test(descLC) || meta.purpose === 'deposit';
     if (isDepositDesc) continue;
     if (meta.purpose === 'service') continue;
+    // Entry 107: счёт с явным не-rent назначением (ключи, пеня, уборка, custom)
+    // несёт metadata.ym месяца выставления — без этого гейта он становился
+    // «рентой месяца» и штамповался в moveInRent.
+    if (!_stampRowIsRent(r)) continue;
     // Void'нутый / черновой счёт — не живое обязательство (см. deposit-finder).
     if (r.bucket === 'void' || r.bucket === 'draft' || r.status === 'void') continue;
     if (!_invRowInBuilding(r, _e102Bid)) continue; // Entry 102
@@ -96461,6 +96465,10 @@ function _attachInvoiceAsRentMonth(buildingId, floorId, unitId, invId, ym) {
   // resolve the invoice for this unit.
   u.stripe.lastInvoiceId = inv.id;
   u.stripe.lastInvoiceYm = ym;
+  // Entry 107: ручная привязка — оператор сам назначил этот счёт арендой месяца.
+  // Канон верит штампу только для rent-счёта; маркер с id снимает проверку
+  // назначения ровно для этого счёта (сменится lastInvoiceId — перестанет).
+  u.stripe.lastInvoiceLinkedId = inv.id;
 
   // If this happens to be the lease-start month, also stamp moveInRent
   // so the Move-in card (which reads moveInRent specifically) flips
@@ -97220,6 +97228,84 @@ function _stampPointsToDeposit(u, invoiceId) {
   return false;
 }
 
+// ─── Entry 107: штамп закрывает месяц только rent-счётом ───
+// Штамп — голый указатель; месяц аренды он закрывает, только если счёт по нему —
+// счёт АРЕНДЫ. Оплаченный разовый счёт (ключи, пеня, уборка, custom) с тем же
+// штампом читался как оплата месяца: должник пропадал из Aging, «собрано»
+// показывало $25 вместо ренты. Назначение пишет наш сервер в metadata.purpose;
+// строка без назначения (счёт из Stripe Dashboard, старые счета) — как раньше.
+// ЗЕРКАЛО m/lib/money.js (_stampRowIsRent / _lastStampTrustworthy / _moveInStampIsRent).
+function _stampRowIsRent(row) {
+  const p = String((row && ((row.metadata && row.metadata.purpose) || row.purpose)) || '');
+  return !p || p === 'rent' || p === 'move_in_rent';
+}
+// lastInvoiceId: строка в кэше есть → она обязана быть rent-счётом. Строки нет
+// (кэш ещё не подъехал) → прежнее поведение: решает дисковый bucket (быстрый путь
+// загрузки; с Entry 107 сервер не штампует не-rent счета). Ручная привязка
+// оператора («Link to month», _attachInvoiceAsRentMonth) сильнее назначения:
+// маркер lastInvoiceLinkedId хранит id, а не флаг — стоит другому писателю сменить
+// lastInvoiceId, исключение само перестаёт действовать.
+function _lastStampIsRent(u) {
+  const st = (u && u.stripe) || {};
+  if (!st.lastInvoiceId) return false;
+  if (st.lastInvoiceLinkedId && st.lastInvoiceLinkedId === st.lastInvoiceId) return true;
+  const row = (typeof _lookupInvoiceRow === 'function') ? _lookupInvoiceRow(st.lastInvoiceId) : null;
+  return !row || _stampRowIsRent(row);
+}
+// moveInRent: то же правило по назначению; ручная привязка оператора (manualLink)
+// сильнее назначения — он сам сказал, что этот счёт и есть аренда.
+function _moveInStampIsRent(mi) {
+  if (mi && mi.manualLink === true) return true;
+  const row = (typeof _lookupInvoiceRow === 'function') ? _lookupInvoiceRow(mi && mi.invoiceId) : null;
+  return !row || _stampRowIsRent(row);
+}
+// Депозитный ли это счёт. Назначение (metadata.purpose) решает; слово «deposit» в
+// описании — только для СТАРЫХ счетов: до purpose:'deposit' депозит уходил как
+// 'custom' + «Security deposit». Разовый счёт «Key card deposit» / «Pet deposit»
+// (custom, после отсечки) и любой счёт с явным другим назначением — НЕ депозит:
+// раньше такой счёт затирал u.stripe.depositInvoice своей суммой и статусом.
+// ЗЕРКАЛО functions/index.js (_isDepositInvoiceCF) — отсечка одна и та же.
+const _DEPOSIT_BY_TEXT_CUTOFF_MS = Date.UTC(2026, 10, 22);   // 2026-11-22T00:00Z — день выката Entry 107
+function _invRowIsDeposit(r) {
+  if (!r) return false;
+  const p = String((r.metadata && r.metadata.purpose) || r.purpose || '');
+  if (p === 'deposit') return true;
+  if (p && p !== 'custom') return false;
+  // custom после отсечки — обычный разовый счёт. Счёт БЕЗ назначения (выставлен
+  // руками в Stripe Dashboard) узнаём по тексту, как раньше: другого сигнала у него нет.
+  if (p === 'custom' && (+r.created || 0) >= _DEPOSIT_BY_TEXT_CUTOFF_MS) return false;
+  return /\bdeposit\b/i.test(String(r.description || ''));
+}
+
+// Напоминание по счёту. Штамп lastInvoiceId — rent-счёт; если он уже закрыт
+// (оплачен / аннулирован), напоминать по нему нельзя — сервер сам найдёт самый
+// свежий ОТКРЫТЫЙ счёт клиента (в т.ч. разовый или пеню, которые штамп не несёт).
+function _stripeReminderPayload(u) {
+  const st = (u && u.stripe) || {};
+  const id = st.lastInvoiceId || null;
+  if (id && st.customerId && typeof _lookupInvoiceBucket === 'function') {
+    const b = String(_lookupInvoiceBucket(id) || '').toLowerCase();
+    if (b === 'paid' || b === 'void' || b === 'uncollectible' || b === 'draft' || b === 'deleted') {
+      return { customerId: st.customerId };
+    }
+  }
+  return id ? { invoiceId: id } : { customerId: st.customerId };
+}
+// Сервер сам нашёл счёт для напоминания → в штамп его пишем, только если это
+// rent-счёт и штампа ещё нет: разовый счёт / пеня пару lastInvoiceId + lastInvoiceYm
+// не трогают, существующий штамп не перетираем (Entry 71).
+function _stampDiscoveredReminderInvoice(u, invoiceId) {
+  if (!u || !invoiceId) return;
+  if (u.stripe && u.stripe.lastInvoiceId) return;
+  const row = (typeof _lookupInvoiceRow === 'function') ? _lookupInvoiceRow(invoiceId) : null;
+  const m = (row && row.metadata) || {};
+  if (m.purpose !== 'rent') return;
+  u.stripe = u.stripe || {};
+  u.stripe.lastInvoiceId = invoiceId;
+  if (/^\d{4}-\d{2}$/.test(String(m.ym || ''))) u.stripe.lastInvoiceYm = m.ym;
+}
+// ─── /Entry 107 ───
+
 // Cache-scan rent verdict (аудит 2026-07-16, volatile-verdicts). Штампы
 // moveInRent/lastInvoiceId стираются building-свапами (rev-шторм ~30с) —
 // 'stripe-paid' месяцы мигали в unpaid по всем денежным поверхностям, и
@@ -97275,12 +97361,14 @@ function _isMonthSettled(u, ym) {
   const mi = u?.stripe?.moveInRent;
   if (mi?.ym === ym && mi?.invoiceId && typeof _lookupInvoiceBucket === 'function') {
     if (!_stampPointsToDeposit(u, mi.invoiceId)
+        && _moveInStampIsRent(mi)                          // Entry 107
         && _lookupInvoiceBucket(mi.invoiceId) === 'paid') {
       return 'stripe-paid';
     }
   }
   if (u?.stripe?.lastInvoiceYm === ym && u?.stripe?.lastInvoiceId && typeof _lookupInvoiceBucket === 'function') {
     if (!_stampPointsToDeposit(u, u.stripe.lastInvoiceId)
+        && _lastStampIsRent(u)   // Entry 107
         && _lookupInvoiceBucket(u.stripe.lastInvoiceId) === 'paid') {
       return 'stripe-paid';
     }
@@ -97304,11 +97392,13 @@ function _stripePaidRowForYm(u, ym) {
     (typeof _stampPointsToDeposit === 'function') && _stampPointsToDeposit(u, invId);
   const mi = u?.stripe?.moveInRent;
   if (mi?.ym === ym && mi?.invoiceId && !_depGuard(mi.invoiceId)
+      && _moveInStampIsRent(mi)                            // Entry 107
       && _lookupInvoiceBucket(mi.invoiceId) === 'paid') {
     return _lookupInvoiceRow(mi.invoiceId) || null;
   }
   if (u?.stripe?.lastInvoiceYm === ym && u?.stripe?.lastInvoiceId
       && !_depGuard(u.stripe.lastInvoiceId)
+      && _lastStampIsRent(u)   // Entry 107
       && _lookupInvoiceBucket(u.stripe.lastInvoiceId) === 'paid') {
     return _lookupInvoiceRow(u.stripe.lastInvoiceId) || null;
   }
@@ -97772,7 +97862,9 @@ async function _verifyAndStampAfterSend(u, type) {
         // Entry 95: новые депозиты уходят с purpose 'deposit'; legacy — 'custom'
         // + «deposit» в описании. Раньше матчился только legacy → штамп после
         // таймаута не восстанавливался, карточка оставалась «Not sent».
-        return m.purpose === 'deposit' || (m.purpose === 'custom' && /deposit/i.test(r.description || ''));
+        // Entry 107: legacy-ветка — только для custom-счетов до отсечки
+        // (_invRowIsDeposit): свежий «Pet deposit» депозитом не станет.
+        return m.purpose === 'deposit' || (m.purpose === 'custom' && /deposit/i.test(r.description || '') && _invRowIsDeposit(r));
       }
       if (type === 'Rent') {
         return m.purpose === 'rent';
@@ -130703,7 +130795,8 @@ function _unitRentCurrentStatus(u) {
   // stamp указывает на депозит-инвойс, не доверяем bucket'у как индикатору
   // rent-статуса (deposit-paid отдельно рендерится через _unitDepositStatus).
   const mi = u.stripe?.moveInRent;
-  if (mi?.ym === ym && mi.invoiceId && !_stampPointsToDeposit(u, mi.invoiceId)) {
+  // Entry 107: штамп на не-rent счёт (ключи, пеня, custom) — не статус аренды.
+  if (mi?.ym === ym && mi.invoiceId && !_stampPointsToDeposit(u, mi.invoiceId) && _moveInStampIsRent(mi)) {
     if (mi.status === 'paid') return { state: 'paid', color: '#16a34a', opacity: 1.0, label: `Rent paid for ${ym}` };
     const bucket = _lookupInvoiceBucket(mi.invoiceId);
     if (bucket === 'paid')     return { state: 'paid',    color: '#16a34a', opacity: 1.0, label: `Rent paid for ${ym}` };
@@ -130711,7 +130804,8 @@ function _unitRentCurrentStatus(u) {
     if (bucket === 'void')     return { state: 'none',    color: '#94a3b8', opacity: 0.35, label: 'Rent invoice voided' };
     return { state: 'open', color: '#6b7280', opacity: 1.0, label: `Rent invoice open (${ym})` };
   }
-  if (u.stripe?.lastInvoiceYm === ym && u.stripe.lastInvoiceId && !_stampPointsToDeposit(u, u.stripe.lastInvoiceId)) {
+  if (u.stripe?.lastInvoiceYm === ym && u.stripe.lastInvoiceId && !_stampPointsToDeposit(u, u.stripe.lastInvoiceId)
+      && _lastStampIsRent(u)) {   // Entry 107
     const bucket = _lookupInvoiceBucket(u.stripe.lastInvoiceId);
     if (bucket === 'paid')     return { state: 'paid',    color: '#16a34a', opacity: 1.0, label: `Rent paid for ${ym}` };
     if (bucket === 'past_due') return { state: 'overdue', color: '#6b7280', opacity: 1.0, label: `Rent overdue (${ym})` };
@@ -151743,17 +151837,12 @@ async function agingBulkSendReminders() {
   for (const t of remindable) {
     const _ids = _bfIds(t.u);
     try {
-      const payload = t.u.stripe?.lastInvoiceId
-        ? { invoiceId: t.u.stripe.lastInvoiceId }
-        : { customerId: t.u.stripe.customerId };
+      const payload = _stripeReminderPayload(t.u);   // Entry 107
       const res = await fn(payload);
       const uL = _freshBy(_ids, t.u);
       const sentInvoiceId = res?.data?.invoiceId || uL.stripe?.lastInvoiceId;
       // Backfill local cache so future reminders take the fast path.
-      if (res?.data?.autoDiscovered && sentInvoiceId) {
-        uL.stripe = uL.stripe || {};
-        uL.stripe.lastInvoiceId = sentInvoiceId;
-      }
+      if (res?.data?.autoDiscovered && sentInvoiceId) _stampDiscoveredReminderInvoice(uL, sentInvoiceId);   // Entry 107
       recordOutreach(uL, 'reminder', `Stripe reminder sent for invoice ${sentInvoiceId || '?'}`);
       if (!uL.collectionStatus || uL.collectionStatus === 'normal') {
         uL.collectionStatus = 'reminded';
@@ -151875,16 +151964,13 @@ async function agingQuickRemind(buildingId, floorId, unitId, btn) {
     const fn = stripeCallable('stripeResendInvoice');
     // Prefer invoiceId (fast path). Otherwise send customerId and let the
     // server find the most recent open invoice on the fly.
-    const payload = invoiceId ? { invoiceId } : { customerId };
+    const payload = _stripeReminderPayload(r.u);   // Entry 107: закрытый штамп → сервер ищет открытый счёт
     const res = await fn(payload);
     const sentInvoiceId = res?.data?.invoiceId || invoiceId;
     // Backfill u.stripe.lastInvoiceId if server auto-discovered it — so
     // subsequent operations (like the paid-cell badge on Payments) have
     // a fast path.
-    if (res?.data?.autoDiscovered && sentInvoiceId) {
-      r.u.stripe = r.u.stripe || {};
-      r.u.stripe.lastInvoiceId = sentInvoiceId;
-    }
+    if (res?.data?.autoDiscovered && sentInvoiceId) _stampDiscoveredReminderInvoice(r.u, sentInvoiceId);   // Entry 107
     recordOutreach(r.u, 'reminder', `Stripe reminder sent for invoice ${sentInvoiceId || '?'}`);
     if (!r.u.collectionStatus || r.u.collectionStatus === 'normal') r.u.collectionStatus = 'reminded';
     saveState();
@@ -153875,8 +153961,13 @@ async function stripeActionSendInvoiceAdvanced() {
     if (u) {
       u.stripe = u.stripe || {};
       u.stripe.customerId = res.customerId || u.stripe.customerId;
-      u.stripe.lastInvoiceId = res.invoiceId;
-      if (purpose === 'rent') u.stripe.lastInvoiceYm = ym;
+      // Entry 107: пара lastInvoiceId + lastInvoiceYm описывает ОДИН rent-счёт.
+      // Разовый счёт (ключи, пеня, custom) её не трогает — иначе его оплата
+      // читалась как оплата месяца аренды.
+      if (purpose === 'rent') {
+        u.stripe.lastInvoiceId = res.invoiceId;
+        u.stripe.lastInvoiceYm = ym;
+      }
       saveState();
     }
     // Push the just-sent invoice into the local _invoicesCache so the
@@ -156426,10 +156517,10 @@ async function ciSubmit() {
       const u2 = f2?.units.find(x => x.id === _ciSelection.unitId);
       if (u2) {
         u2.stripe = u2.stripe || {};
-        // Broader match: "security deposit", "refundable deposit",
-        // "move-in deposit", or plain "deposit" all route to depositInvoice
-        // so the badge picks up ANY flavor of deposit the user typed.
-        const isDeposit = purpose === 'custom' && /\bdeposit\b/i.test(description || '');
+        // Entry 107: депозит — только purpose 'deposit' (его шлёт Move-in card).
+        // Раньше слово «deposit» в описании разового счёта («Key card deposit»,
+        // «Pet deposit») затирало штамп настоящего депозита уже при отправке.
+        const isDeposit = purpose === 'deposit';
         if (isDeposit) {
           u2.stripe.depositInvoice = {
             invoiceId: res.invoiceId,
