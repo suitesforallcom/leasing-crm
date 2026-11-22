@@ -7,6 +7,7 @@
     "test:mail": "node tests/mail-sanitize.test.cjs && node tests/mail-access.test.cjs && node tests/mail-link.test.cjs && node tests/mail-sync.test.cjs && node tests/mail-read.test.cjs",
     "parse-check": "node -e \"const fs=require('fs');const html=fs.readFileSync('floor-map-editor.html','utf8');const re=/<script\\b([^>]*)>([\\s\\S]*?)<\\/script>/gi;let m,idx=0,fail=0;while((m=re.exec(html))!==null){idx++;const attrs=m[1]||'';if(/\\bsrc=/.test(attrs))continue;if(/\\btype=\\\"(?!text\\/javascript|module|application\\/javascript)/.test(attrs))continue;try{new Function(m[2]);}catch(e){fail++;console.error('Block #'+idx+' FAILED: '+e.message);}}console.log('Inline scripts checked: '+idx+', failures: '+fail);process.exit(fail?1:0);\"",
     "test:stripe-cf": "node tests/nonrent-invoice-cf.test.cjs",
-    "test:agent": "node tests/money-sync.test.cjs && node tests/agent-gateway.test.cjs && node tests/agent-stats.test.cjs && node tests/agent-money.test.cjs && node tests/agent-openapi.test.cjs && node tests/agent-invariants.test.cjs"
+    "test:agent": "node tests/money-sync.test.cjs && node tests/agent-gateway.test.cjs && node tests/agent-stats.test.cjs && node tests/agent-money.test.cjs && node tests/agent-openapi.test.cjs && node tests/agent-invariants.test.cjs && node tests/agent-stripe-e2e.cjs",
+    "test:agent:stripe-test-mode": "node tests/agent-stripe-e2e.cjs --stripe-test-mode"
   }
 }
