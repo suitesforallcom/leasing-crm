@@ -898,6 +898,51 @@ else
   FAIL=1
 fi
 echo
+echo "Entry 107 — штамп закрывает месяц только rent-счётом; депозит — по назначению счёта, не по слову в описании:"
+# 2026-11-22. (1) u.stripe.lastInvoiceId писался для ЛЮБОГО назначения счёта, lastInvoiceYm — только
+# для rent: оплаченный разовый счёт (ключи, пеня, custom) читался каноном как оплата месяца аренды.
+# (2) Слово «deposit» в описании разового счёта делало его депозитом: дедуп блокировал, вебхук
+# invoice.paid затирал u.stripe.depositInvoice. Гейт держит правило во всех копиях: сервер,
+# канон телефона (+ байт-копия), десктопный канон, клиентские сканеры и штамп при отправке.
+_e107_ok=1
+_e107_cnt() {  # $1 описание, $2 файл (от корня), $3 строка, $4 ожидаемое число строк, $5 = x → строка целиком
+  if [ "${5:-}" = "x" ]; then _e107_n=$(grep -cxF -- "$3" "$ROOT/$2" || true); else _e107_n=$(grep -cF -- "$3" "$ROOT/$2" || true); fi
+  if [ "$_e107_n" != "$4" ]; then
+    echo "  ✗ Entry 107: $1 — expected $4 line(s) of: $3 in $2 — found $_e107_n (FIXES_LOG Entry 107)"
+    _e107_ok=0; FAIL=1
+  fi
+}
+_e107_cnt "server: rent-only stamp pair (lastInvoiceId inside the rent branch)" functions/index.js "        f.unit.stripe.lastInvoiceId = sent.id;" 1 x
+_e107_cnt "server: no unconditional lastInvoiceId stamp"                        functions/index.js "      f.unit.stripe.lastInvoiceId = sent.id;" 0 x
+_e107_cnt "server: one deposit predicate"                                       functions/index.js "function _isDepositInvoiceCF(inv) {" 1
+_e107_cnt "server: webhook decides deposit by purpose"                          functions/index.js "const isDepositByPurpose = _isDepositInvoiceCF(invoice);" 1
+_e107_cnt "server: description-only deposit match is gone"                      functions/index.js "isDepositByDesc" 0
+_e107_cnt "server: dedupe treats only purpose 'deposit' as a deposit"           functions/index.js "const isDepositIntent = invPurpose === 'deposit';" 1
+_e107_cnt "server: legacy text cutoff"                                          functions/index.js "const _DEPOSIT_BY_TEXT_CUTOFF_SEC = Date.UTC(2026, 10, 22) / 1000;" 1
+_e107_cnt "client: same legacy text cutoff"                                     floor-map-editor.html "const _DEPOSIT_BY_TEXT_CUTOFF_MS = Date.UTC(2026, 10, 22);" 1
+_e107_cnt "desktop: helpers block present"                                      floor-map-editor.html "// ─── Entry 107: штамп закрывает месяц только rent-счётом ───" 1
+_e107_cnt "desktop: rent-row predicate"                                         floor-map-editor.html "function _stampRowIsRent(row) {" 1
+_e107_cnt "desktop: deposit-row predicate"                                      floor-map-editor.html "function _invRowIsDeposit(r) {" 1
+_e107_cnt "desktop: canon ×2, map fast paths ×2, status pill check the stamped row" floor-map-editor.html "&& _lastStampIsRent(u)" 5
+_e107_cnt "desktop: move-in stamp checks the purpose (canon ×2 + status pill)"  floor-map-editor.html "&& _moveInStampIsRent(mi)" 3
+_e107_cnt "desktop: rent finder skips one-off invoices"                         floor-map-editor.html "if (!_stampRowIsRent(r)) continue;" 1
+_e107_cnt "desktop: stamp self-heal skips one-off invoices"                     floor-map-editor.html "if (!_stampRowIsRent(r)) return false;" 1
+_e107_cnt "desktop: deposit finder, deposit self-heal, verify-after-send go by purpose" floor-map-editor.html "_invRowIsDeposit(r)" 4
+_e107_cnt "desktop: reminders never target a closed stamped invoice"            floor-map-editor.html "= _stripeReminderPayload(" 3
+_e107_cnt "desktop: reminder write-back never stamps a one-off invoice"         floor-map-editor.html "stripe.lastInvoiceId = sentInvoiceId;" 0
+_e107_cnt "desktop: manual Link-to-month carries its marker"                    floor-map-editor.html "  u.stripe.lastInvoiceLinkedId = inv.id;" 1 x
+_e107_cnt "mobile canon: manual link marker honoured"                           m/lib/money.js "if (st.lastInvoiceLinkedId && st.lastInvoiceLinkedId === invoiceId) return true;" 1
+_e107_cnt "desktop: Invoice Generator stamps a deposit only for purpose 'deposit'" floor-map-editor.html "const isDeposit = purpose === 'deposit';" 1
+_e107_cnt "desktop: description-based deposit stamp is gone"                    floor-map-editor.html "const isDeposit = purpose === 'custom'" 0
+_e107_cnt "desktop: send mirror no longer stamps lastInvoiceId for any purpose" floor-map-editor.html "if (purpose === 'rent') u.stripe.lastInvoiceYm = ym;" 0
+_e107_cnt "desktop: send mirror stamps the pair for rent only"                  floor-map-editor.html "      // Entry 107: пара lastInvoiceId + lastInvoiceYm описывает ОДИН rent-счёт." 1 x
+_e107_cnt "mobile canon: rent-row predicate"                                    m/lib/money.js "function _stampRowIsRent(row) {" 1
+_e107_cnt "mobile canon: last-invoice stamp checks the row purpose"            m/lib/money.js "  return _stampRowIsRent(row);" 1 x
+_e107_cnt "mobile canon: move-in stamp checks the purpose"                      m/lib/money.js "&& _moveInStampIsRent(mi, snap)" 1
+if [ "$_e107_ok" = 1 ]; then
+  echo "  ✓ штамп = rent-счёт месяца (сервер · канон ×3 · карта · пилл · сканеры); депозит по metadata.purpose, текст только до 2026-11-22"
+fi
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."
