@@ -7,8 +7,8 @@
 // Канон денег — ТОЛЬКО functions/lib/money.mjs (≡ m/lib/money.js, байт-в-байт,
 // tests/money-sync.test.cjs). Модуль передаётся параметром `money` (ESM-namespace,
 // который gateway грузит через core.money()). Здесь нет ни одного `status==='paid'`
-// на денежном пути (CLAUDE.md § 0.2.2); единственное сознательное наложение —
-// Entry 70 «$0-paid shell» (см. classifyMonth).
+// на денежном пути (CLAUDE.md § 0.2.2). Вердикт месяца — ровно канон, без наложений:
+// шлюз показывает то же, что программа (см. classifyMonth про записи «paid, $0»).
 //
 // Что зеркалится из floor-map-editor.html и где сознательные отличия:
 //   • get_overdue  → buildAgingRows :147871 (гейты юнита, lease-start gate, окно
@@ -288,44 +288,35 @@ function invoiceBrief(r) {
 }
 function isOpenBucket(b) { return b === 'open' || b === 'past_due' || b === 'sent'; }
 
-// ─── Месяц: вердикт + Entry 70 ──────────────────────────────────────────────
+// ─── Месяц: вердикт канона ─────────────────────────────────────────────────
 /**
- * Entry 70 / RECONCILE_PLAN: запись {status:'paid', amount:0} — артефакт $0-бага,
- * «месяц НЕ закрыт» (functions/index.js — _monthSettled требует paid И amount>0).
- * Канонический _isMonthSettled / money.isMonthSettled такую запись считает 'paid'
- * (сумму не смотрит) — это задокументированный разъезд клиента; здесь шелл
- * игнорируется, и месяц идёт по остальным ярусам вердикта (штампы Stripe, кэш).
- * Узко: только явный числовой ноль; отсутствующая сумма — не шелл
- * (_computeUnitMoneyImpl трактует её как полную ренту).
+ * Запись {status:'paid', amount:0} — «оплачено без суммы». В проде это массовый импорт
+ * истории (78 записей с заметкой «PAID» за декабрь 2025 – март 2026 у 32 занятых офисов,
+ * наблюдение 2026-11-22). Канон (_isMonthSettled / money.isMonthSettled) считает такой
+ * месяц ЗАКРЫТЫМ — и программа (Aging, карта, карточка) тоже. Шлюз обязан показывать
+ * то же самое, что программа (CLAUDE.md § 0.2.2): первая редакция этого модуля такую
+ * запись игнорировала и на проде показала 19 должников на $32 тыс., которых в программе
+ * нет. Поэтому здесь это ТОЛЬКО пометка для леджера, вердикт месяца она не меняет.
+ * (Правило Entry 70 «paid && amount===0 — не settled» относится к reconcile-apply:
+ * ему можно перезаписать такую запись настоящим платежом. К отображению долга оно
+ * не относится.) Узко: только явный числовой ноль; отсутствующая сумма — не шелл.
  */
 function isZeroPaidShell(p) {
   return !!(p && p.status === 'paid' && p.amount != null && p.amount !== '' && Number.isFinite(+p.amount) && +p.amount === 0);
 }
-// Клон head'а без шелл-записи и без groupId: money.leaseHead() вернёт сам клон, а
-// остальные ярусы (_settle: штампы/кэш; _classify: due/overdue, прорейт, вейверы)
-// отработают на тех же данных.
-function probeWithoutShell(head, ym) {
-  const payments = Object.assign({}, head.payments || {});
-  delete payments[ym];
-  const probe = Object.assign({}, head, { payments });
-  delete probe.groupId; delete probe.groupRole;
-  return probe;
-}
+const ZERO_PAID_NOTE = 'recorded as paid with a $0 amount (imported history — the amount actually received is not on file)';
 /**
  * Классификация месяца для head'а лизы: {status, amountUsd, settledVia, zeroShell}.
  * status — money.monthStatus (paid|free|due|overdue|upcoming|ended|vacant|reserved|no_lease),
  * amountUsd — money.monthAmount (0, если не должен), settledVia — money.isMonthSettled
- * ('paid'|'free'|'stripe-paid'|null).
+ * ('paid'|'free'|'stripe-paid'|null). zeroShell — информационный флаг, вердикт не меняет.
  */
 function classifyMonth(head, ym, snap, money) {
   const p = head && head.payments && head.payments[ym];
-  let subject = head;
-  let zeroShell = false;
-  if (isZeroPaidShell(p)) { subject = probeWithoutShell(head, ym); zeroShell = true; }
-  const settledVia = money.isMonthSettled(subject, ym, snap) || null;
-  const status = money.monthStatus(subject, ym, snap);
-  const amountUsd = round2(money.monthAmount(subject, ym, snap));
-  return { status, amountUsd, settledVia, zeroShell };
+  const settledVia = money.isMonthSettled(head, ym, snap) || null;
+  const status = money.monthStatus(head, ym, snap);
+  const amountUsd = round2(money.monthAmount(head, ym, snap));
+  return { status, amountUsd, settledVia, zeroShell: isZeroPaidShell(p) };
 }
 /**
  * Сколько реально получено за закрытый месяц (для totals леджера) — как paidYtd в
@@ -459,7 +450,6 @@ function overdueRows(snapshot, money, opts) {
       if (c.status !== 'overdue') continue;
       const dueIso = dueDateFor(ym, grace, startIso);
       const m = { ym, amountUsd: c.amountUsd, dueDate: dueIso, daysPastDue: Math.max(0, daysPastDue(dueIso, now)), status: c.status };
-      if (c.zeroShell) m.note = 'paid record with $0 amount ignored (Entry 70)';
       months.push(m);
     }
     if (!months.length) continue;
@@ -620,7 +610,6 @@ function unitCard(snapshot, money, opts) {
         owed += c.amountUsd;
         const dueIso = dueDateFor(m, grace, startIso);
         const row = { ym: m, amountUsd: c.amountUsd, dueDate: dueIso, daysPastDue: Math.max(0, daysPastDue(dueIso, now)), status: c.status };
-        if (c.zeroShell) row.note = 'paid record with $0 amount ignored (Entry 70)';
         unpaid.push(row);
       }
     }
@@ -705,7 +694,7 @@ function ledgerRows(snapshot, money, opts) {
     const p = head.payments && head.payments[ym];
     const inv = money.liveInvoiceFor(head, 'rent', ym, snap);
     const row = { ym, status: c.status, amountUsd: c.amountUsd, settledVia: c.settledVia, payment: paymentDto(p, clamp), invoice: invoiceBrief(inv) };
-    if (c.zeroShell) row.note = 'paid record with $0 amount ignored (Entry 70)';
+    if (c.zeroShell) row.note = ZERO_PAID_NOTE;
     if (c.status === 'paid') paid += paidAmountFor(head, ym, snap, headHit.b, c);
     if (money.UNPAID.has(c.status)) outstanding += c.amountUsd;
     if (c.status === 'overdue') owed += c.amountUsd;

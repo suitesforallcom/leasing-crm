@@ -40,7 +40,8 @@ function makeBuildings() {
         { id: '206', type: 'office', rentable: true, status: 'occupied', tenant: 'NoStart Inc', contractRent: 1000, payments: {} },
         { id: '207', type: 'office', rentable: true, status: 'occupied', tenant: 'Paid Co', contractRent: 800, leaseStart: '2026-09-01',
           payments: { '2026-09': { status: 'paid', amount: 800 }, '2026-10': { status: 'paid', amount: 800, paidVia: '<i>zelle</i> wire', memo: 'ref <b>77</b>' } } },
-        // Entry 70: запись «paid» с суммой 0 — артефакт, месяц НЕ закрыт.
+        // Запись «paid» с суммой 0 (импорт истории): канон и программа считают месяц ЗАКРЫТЫМ —
+        // шлюз обязан показывать то же самое (на проде таких записей 78, иначе 19 ложных должников).
         { id: '208', type: 'office', rentable: true, status: 'occupied', tenant: 'Shell LLC', contractRent: 500, leaseStart: '2026-10-01',
           payments: { '2026-10': { status: 'paid', amount: 0 } } },
         { id: '209', type: 'office', rentable: true, status: 'occupied', tenant: 'Ghost', contractRent: 700, leaseStart: '2026-01-01', deletedAt: '2026-09-01T00:00:00Z', payments: {} },
@@ -290,8 +291,8 @@ async function test(name, fn) { try { await fn(); results.push(['PASS', name]); 
   await test('stats.overdueRows: unpaid past months appear, amounts to the cent, sorted by debt', async () => {
     const out = stats.overdueRows(pureSnapshot(), money, { fields: ALL_FIELDS });
     assert.strictEqual(out.asOf, '2026-10-20'); assert.strictEqual(out.currentYm, '2026-10'); assert.strictEqual(out.graceDays, 5);
-    assert.deepStrictEqual(out.rows.map((r) => `${r.buildingId}/${r.unitId}`), ['b1/210', 'b1/204', 'b2/204', 'b1/208']);
-    assert.strictEqual(out.totals.rows, 4); assert.strictEqual(out.totals.amountUsd, 7166.67); assert.strictEqual(out.totals.truncated, false);
+    assert.deepStrictEqual(out.rows.map((r) => `${r.buildingId}/${r.unitId}`), ['b1/210', 'b1/204', 'b2/204']);
+    assert.strictEqual(out.totals.rows, 3); assert.strictEqual(out.totals.amountUsd, 6666.67); assert.strictEqual(out.totals.truncated, false);
     const r = byUnit(out.rows, 'b1', '204');
     assert.deepStrictEqual(r.months.map((m) => [m.ym, m.amountUsd, m.dueDate, m.daysPastDue]), [['2026-09', 1350, '2026-09-06', 44], ['2026-10', 1350, '2026-10-06', 14]]);
     assert.strictEqual(r.totalOwedUsd, 2700); assert.strictEqual(r.oldestDueDate, '2026-09-06'); assert.strictEqual(r.maxDaysPastDue, 44); assert.strictEqual(r.bucket, 'd31_60');
@@ -325,17 +326,24 @@ async function test(name, fn) { try { await fn(); results.push(['PASS', name]); 
     assert.strictEqual(card.lease.contractRentUsd, 1350); assert.strictEqual(card.lease.rentUsd, 1400);
     assert.strictEqual(card.money.currentMonthAmountUsd, 1350);
   });
-  await test('stats: {status:"paid", amount:0} shell is ignored (Entry 70)', async () => {
+  await test('stats: a month recorded as paid with a $0 amount is SETTLED, exactly as the program shows it — never a debt; the ledger flags it', async () => {
     const snap = pureSnapshot();
     const r = byUnit(stats.overdueRows(snap, money, { fields: ALL_FIELDS }).rows, 'b1', '208');
-    assert.ok(r, 'unit 208 must be overdue'); assert.strictEqual(r.totalOwedUsd, 500);
-    assert.ok(/Entry 70/.test(r.months[0].note), r.months[0].note);
+    assert.strictEqual(r, undefined, 'unit 208 must NOT be overdue: the canon settles a paid month whatever the amount');
+    // вердикт — ровно канон, без наложений
+    const u208 = stats.findUnit(stats.buildMoneySnap(snap), 'b1', '208').u;
+    const cls = stats.classifyMonth(u208, '2026-10', stats.buildMoneySnap(snap), money);
+    assert.strictEqual(cls.settledVia, money.isMonthSettled(u208, '2026-10', stats.buildMoneySnap(snap)));
+    assert.strictEqual(cls.status, money.monthStatus(u208, '2026-10', stats.buildMoneySnap(snap)));
+    assert.strictEqual(cls.status, 'paid'); assert.strictEqual(cls.zeroShell, true);
     assert.strictEqual(stats.isZeroPaidShell({ status: 'paid', amount: 0 }), true);
     assert.strictEqual(stats.isZeroPaidShell({ status: 'paid' }), false, 'missing amount is not a shell');
     assert.strictEqual(stats.isZeroPaidShell({ status: 'paid', amount: 500 }), false);
     const led = stats.ledgerRows(snap, money, { buildingId: 'b1', unitId: '208', fields: ALL_FIELDS });
-    assert.strictEqual(led.months[0].status, 'overdue'); assert.strictEqual(led.months[0].amountUsd, 500);
-    assert.strictEqual(led.totals.paidUsd, 0); assert.strictEqual(led.totals.owedUsd, 500);
+    assert.strictEqual(led.months[0].status, 'paid'); assert.strictEqual(led.totals.owedUsd, 0);
+    assert.ok(/recorded as paid with a \$0 amount/.test(led.months[0].note), led.months[0].note);
+    const card = stats.unitCard(snap, money, { buildingId: 'b1', unitId: '208', fields: ALL_FIELDS });
+    assert.strictEqual(card.money.owedUsd, 0); assert.strictEqual(card.money.currentMonthStatus, 'paid');
   });
   await test('stats: multi-suite group is reported once under the head, with move-in proration', async () => {
     const snap = pureSnapshot();
@@ -378,7 +386,7 @@ async function test(name, fn) { try { await fn(); results.push(['PASS', name]); 
     assert.deepStrictEqual(stats.overdueRows(snap, money, { buildingId: 'b2', fields: ALL_FIELDS }).rows.map((r) => r.unitId), ['204']);
     assert.deepStrictEqual(stats.overdueRows(snap, money, { minAmountUsd: 1000, fields: ALL_FIELDS }).rows.map((r) => r.unitId), ['210', '204']);
     const lim = stats.overdueRows(snap, money, { limit: 1, fields: ALL_FIELDS });
-    assert.strictEqual(lim.rows.length, 1); assert.strictEqual(lim.totals.rows, 4); assert.strictEqual(lim.totals.amountUsd, 7166.67); assert.strictEqual(lim.totals.truncated, true);
+    assert.strictEqual(lim.rows.length, 1); assert.strictEqual(lim.totals.rows, 3); assert.strictEqual(lim.totals.amountUsd, 6666.67); assert.strictEqual(lim.totals.truncated, true);
     assertNoKeys(stats.overdueRows(snap, money, { fields: { finance: true, contacts: false, notes: false } }), ['email', 'phone'], 'overdue without contacts');
   });
   await test('stats.ledgerRows: months from current back to lease start, totals, Stripe-paid month', async () => {
@@ -468,15 +476,15 @@ async function test(name, fn) { try { await fn(); results.push(['PASS', name]); 
     assert.strictEqual(res.statusCode, 200, res.body());
     assert.ok(stripeCalls > 0, 'get_overdue loads the invoice snapshot');
     const j = res.json();
-    assert.deepStrictEqual(j.structured.rows.map((r) => `${r.buildingId}/${r.unitId}`), ['b1/210', 'b1/204', 'b2/204', 'b1/208']);
-    assert.strictEqual(j.structured.totals.amountUsd, 7166.67); assert.strictEqual(j.structured.asOf, '2026-10-20');
+    assert.deepStrictEqual(j.structured.rows.map((r) => `${r.buildingId}/${r.unitId}`), ['b1/210', 'b1/204', 'b2/204']);
+    assert.strictEqual(j.structured.totals.amountUsd, 6666.67); assert.strictEqual(j.structured.asOf, '2026-10-20');
     const r = byUnit(j.structured.rows, 'b1', '204');
     assert.strictEqual(r.totalOwedUsd, 2700); assert.strictEqual(r.email, 't204@example.com'); assert.strictEqual(r.phone, '555-0001');
     assert.strictEqual(r.stripe.openInvoice.id, 'in_b1_204_oct');
     assert.strictEqual(byUnit(j.structured.rows, 'b2', '204').stripe.openInvoice.id, 'in_b2_204_oct');
     assert.ok(!j.structured.rows.some((x) => x.unitId === '212'), 'Stripe-paid unit is not overdue');
     assert.ok(!j.structured.rows.some((x) => x.buildingId === 'b3'), 'archived building excluded');
-    assert.ok(/Overdue as of 2026-10-20/.test(j.text) && j.text.includes('$7,166.67') && j.text.includes('Suite 204') && j.text.includes('$2,700.00'), j.text);
+    assert.ok(/Overdue as of 2026-10-20/.test(j.text) && j.text.includes('$6,666.67') && j.text.includes('Suite 204') && j.text.includes('$2,700.00'), j.text);
     assert.ok(/^ag_[a-f0-9]{16}$/.test(j.requestId));
     const audit = store.get('workspaces/default/agentAudit/' + j.requestId);
     assert.ok(audit && audit.tool === 'get_overdue' && audit.status === 'ok', 'agentAudit row');
@@ -552,8 +560,8 @@ async function test(name, fn) { try { await fn(); results.push(['PASS', name]); 
   });
   await test('gateway: viewer restricted to b1 — only b1 rows; 403 for another building', async () => {
     const over = (await get(viewerKey, '/v1/overdue')).json();
-    assert.deepStrictEqual(over.structured.rows.map((r) => `${r.buildingId}/${r.unitId}`), ['b1/210', 'b1/204', 'b1/208']);
-    assert.strictEqual(over.structured.totals.amountUsd, 6266.67);
+    assert.deepStrictEqual(over.structured.rows.map((r) => `${r.buildingId}/${r.unitId}`), ['b1/210', 'b1/204']);
+    assert.strictEqual(over.structured.totals.amountUsd, 5766.67);
     assert.strictEqual(byUnit(over.structured.rows, 'b1', '204').email, 't204@example.com', 'viewer has read:contacts');
     const units = (await get(viewerKey, '/v1/units', { q: '204' })).json();
     assert.deepStrictEqual(units.structured.rows.map((r) => `${r.buildingId}/${r.unitId}`), ['b1/204']);
@@ -590,7 +598,7 @@ async function test(name, fn) { try { await fn(); results.push(['PASS', name]); 
   await test('gateway: fields come from key scopes, never from request args', async () => {
     // Ключ менеджера, но без read:contacts: деньги есть, контактов и заметок нет.
     const over = (await get(finKey, '/v1/overdue')).json();
-    assert.strictEqual(over.structured.totals.amountUsd, 7166.67);
+    assert.strictEqual(over.structured.totals.amountUsd, 6666.67);
     assertNoKeys(over.structured, ['email', 'phone'], 'finance-only key: overdue');
     const card = (await get(finKey, '/v1/units/b1/204')).json();
     assert.strictEqual(card.structured.money.owedUsd, 2700);
@@ -686,7 +694,7 @@ async function test(name, fn) { try { await fn(); results.push(['PASS', name]); 
     const cj = call.json();
     assert.ok(cj.result && !cj.result.isError, call.body().slice(0, 300));
     assert.deepStrictEqual(cj.result.structuredContent.structured.rows.map((r) => r.unitId), ['210', '204']);
-    assert.strictEqual(cj.result.structuredContent.structured.totals.amountUsd, 6266.67);
+    assert.strictEqual(cj.result.structuredContent.structured.totals.amountUsd, 5766.67);
     assert.ok(/Overdue as of 2026-10-20/.test(cj.result.content[0].text));
     const unit = (await mcp(teamKey.token, { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'get_unit', arguments: { buildingId: 'b1', unitId: '204' } } })).json();
     assert.ok(unit.result && !unit.result.isError); assertNoKeys(unit.result.structuredContent, ['money', 'email', 'phone', 'note', 'rentUsd'], 'MCP teamviewer get_unit');
