@@ -110365,6 +110365,7 @@ async function _checkBankSyncHealth() {
         fcId: c.stripeFcAccountId || '',
         label: `${c.institutionName || 'Bank'}${c.accountLast4 ? ' ····' + c.accountLast4 : ''}`,
         since: c.relinkRequiredSince || null,
+        shared: c.sharedConnection === true,   // Entry 82: общее подключение — relink НЕ лечит
       })),
       checkedAt: Date.now(),
     };
@@ -110392,13 +110393,19 @@ function _refreshBankSyncBanner() {
     ? new Date(h.newestTxnUnix * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
     : '—';
   const relinkLabels = (h.relink || []).map(r => r.label).join(', ') || 'Bank account';
+  // Entry 82 (повтор 2026-11-22): общее подключение стало inactive, потому что банк
+  // заново подключили из другого приложения на этом аккаунте Stripe. Relink отозвал бы
+  // его свежее разрешение — ведём к переключению на новый активный счёт.
+  const relinkShared = h.status === 'relink' && (h.relink || []).some(r => r.shared);
   const headline = h.status === 'relink'
-    ? `${relinkLabels} must be re-linked`
+    ? (relinkShared ? `${relinkLabels} — shared bank connection was replaced` : `${relinkLabels} must be re-linked`)
     : h.status === 'orphan'
     ? `Bank connector lost`
     : `Bank sync is ${h.daysStale} day${h.daysStale === 1 ? '' : 's'} behind`;
   const detail = h.status === 'relink'
-    ? `Stripe marked the bank connection inactive (bank sign-in expired or access revoked) — no new transactions since ${newestStr}. In Stripe: Financial Connections → Accounts → ⋯ → Request relink, then sign in to the bank from Stripe's email.`
+    ? (relinkShared
+        ? `This account is read through a connection shared with another app on the same Stripe account, and Stripe now reports it inactive — the bank was most likely linked again from that app, which retires the old connection. No new transactions since ${newestStr}. Do NOT request a relink (it would cut the other app off): switch SuitesForAll to the new active account in Settings → Integrations.`
+        : `Stripe marked the bank connection inactive (bank sign-in expired or access revoked) — no new transactions since ${newestStr}. In Stripe: Financial Connections → Accounts → ⋯ → Request relink, then sign in to the bank from Stripe's email.`)
     : h.status === 'orphan'
     ? `0 active connections, ${h.daysStale} days since last transaction (${newestStr}). New deposits aren't being recorded.`
     : `Newest cached transaction: ${newestStr}. Stripe Financial Connections may need a refresh.`;
@@ -110406,7 +110413,9 @@ function _refreshBankSyncBanner() {
   // re-pulls history under new txn ids (Entry 30) — for an inactive account
   // the action is Stripe's relink, which keeps the same account id.
   const actionBtn = h.status === 'relink'
-    ? `<a class="bsb-btn" href="${_BANK_STRIPE_FC_ACCOUNTS_URL}" target="_blank" rel="noopener" style="text-decoration:none;" title="Opens Stripe Dashboard → Financial Connections → Accounts. Use ⋯ → Request relink on the inactive account.">Relink in Stripe ↗</a>`
+    ? (relinkShared
+        ? `<button class="bsb-btn" type="button" onclick="_openBankSettingsFromBanner()" title="Open Settings → Integrations → Bank Connections and switch to the re-linked account">Switch account →</button>`
+        : `<a class="bsb-btn" href="${_BANK_STRIPE_FC_ACCOUNTS_URL}" target="_blank" rel="noopener" style="text-decoration:none;" title="Opens Stripe Dashboard → Financial Connections → Accounts. Use ⋯ → Request relink on the inactive account.">Relink in Stripe ↗</a>`)
     : `<button class="bsb-btn" type="button" onclick="_openBankSettingsFromBanner()" title="Open Settings → Integrations → Bank Connections">Reconnect bank →</button>`;
   // Кол-во audit-алертов в истории (заполняется _loadBankSyncAlerts).
   const alerts = Array.isArray(window._bankSyncAlerts) ? window._bankSyncAlerts : [];
@@ -110709,6 +110718,67 @@ async function _autoApplyHistUndo(buildingId, floorId, unitId, ym) {
 }
 window._autoApplyHistUndo = _autoApplyHistUndo;
 
+// ── FIXES_LOG Entry 82 (повтор 2026-11-22) — общее подключение стало inactive ──
+// Запись с sharedConnection:true читает FC-объект, подключённый ДРУГИМ приложением на
+// этом же аккаунте Stripe. Когда банк подключают там заново, старый объект становится
+// inactive. «Request relink» здесь НЕВЕРНОЕ действие: он отозвал бы свежее разрешение
+// второго приложения (Capital One держит одно разрешение на логин). Правильное —
+// переключить запись на новый активный FC-объект (CF adoptBankFcAccount, root admin).
+// Раньше для этого была только консоль браузера.
+function _bankSharedRelinkNoteHtml(c) {
+  const fcId = esc(c.stripeFcAccountId || '');
+  const label = esc(`${c.institutionName || 'Bank'}${c.accountLast4 ? ' ····' + c.accountLast4 : ''}`);
+  const me = (typeof fbSync !== 'undefined' && fbSync && fbSync.user && fbSync.user.email) || '';
+  const canSwitch = typeof isRootAdmin === 'function' && isRootAdmin(me);
+  // Поле без id/name — чтобы трекер несохранённых изменений Settings его не замечал.
+  const form = canSwitch
+    ? `<div style="display:flex; gap:6px; align-items:center; margin-top:6px; flex-wrap:wrap;">
+         <input type="text" data-bank-adopt-input="${fcId}" placeholder="fca_… — Account ID of the new active account" autocomplete="off" spellcheck="false" style="flex:1 1 240px; min-width:180px; font-size:11px; padding:4px 6px; border:1px solid var(--border); border-radius:4px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; background:var(--surface); color:var(--text);">
+         <button class="int-btn" type="button" style="flex:0 0 auto; padding:4px 10px; font-size:11px;" onclick="bankAdoptSharedAccount('${fcId}', this)" title="Point this connection at the re-linked account. Nothing is changed at Stripe.">⇄ Switch account</button>
+       </div>`
+    : `<div style="margin-top:4px;">Only the workspace owner can switch the account — ask them to open Settings → Integrations.</div>`;
+  return `<div style="font-size:11px; line-height:1.5; color:#7f1d1d; background:rgba(220,38,38,0.08); border:1px solid rgba(220,38,38,0.25); padding:7px 10px; border-radius:6px; margin-left:28px;">
+      ⚠ Stripe marked this account <b>inactive</b>${c.relinkRequiredSince ? ` (detected ${esc(new Date(c.relinkRequiredSince).toLocaleDateString())})` : ''}, so no new transactions can arrive.<br>
+      This is a <b>shared connection</b>: another app on the same Stripe account linked this bank account, and SuitesForAll reads the same feed. The bank was most likely linked again from that app — the old connection is retired and a new one took its place.<br>
+      <b>Do NOT use “Request relink”</b> for <code style="word-break:break-all;">${fcId}</code> — it would cut the other app off. And don't use “Connect bank account”: it links a new account object and re-imports history as duplicates.<br>
+      <b>Fix:</b> open <a href="${_BANK_STRIPE_FC_ACCOUNTS_URL}" target="_blank" rel="noopener">Stripe Dashboard → Financial Connections → Accounts ↗</a>, find the newest <b>Active</b> account for ${label}, copy its Account ID and switch to it here. Missed transactions are pulled automatically and nothing already loaded is duplicated.
+      ${form}
+    </div>`;
+}
+async function bankAdoptSharedAccount(fromFcId, btn) {
+  const box = btn && btn.parentElement;
+  const input = box && box.querySelector('input[data-bank-adopt-input]');
+  const toId = String((input && input.value) || '').trim();
+  if (!/^fca_[A-Za-z0-9]+$/.test(toId)) { toast('Paste the Account ID of the new active account from Stripe — it starts with fca_', 'error'); return; }
+  if (toId === fromFcId) { toast('That is the current (inactive) account — paste the ID of the new active one', 'error'); return; }
+  const conn = ((state && state.bankConnections) || []).find(x => x.stripeFcAccountId === fromFcId);
+  const label = conn ? `${conn.institutionName || 'Bank'}${conn.accountLast4 ? ' ····' + conn.accountLast4 : ''}` : 'this bank account';
+  const ok = await appConfirm({
+    title: `Switch ${label} to the re-linked account?`,
+    body: `SuitesForAll will read ${toId} instead of ${fromFcId}. Nothing is changed at Stripe and the other app keeps working. The server checks that the new account is active and is the same bank account; history already loaded is kept and not duplicated.`,
+    confirmLabel: 'Switch account',
+  });
+  if (!ok) return;
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Switching…'; }
+  try {
+    if (!fbSync?.functions || !fbSync.sdk?.httpsCallable) throw new Error('Cloud Functions not ready — sign in and try again');
+    // Один вызов, без retry-слоя stripeCallable: повтор после успеха дал бы already-exists.
+    const fn = fbSync.sdk.httpsCallable(fbSync.functions, 'adoptBankFcAccount');
+    const { data } = await fn({ fromFcAccountId: fromFcId, toFcAccountId: toId });
+    // § 0.2.5: «готово» — только после подтверждения сервера.
+    if (!data || !(data.adopted === true || data.resumed === true)) throw new Error('The server did not confirm the switch');
+    toast(`✓ ${label} now reads the re-linked account — pulling missed transactions…`, 'success');
+    try { await refreshBankAccountNow(toId); } catch (e) { console.warn('[bank-adopt] refresh after switch failed:', e); }
+    try { if (typeof _checkBankSyncHealth === 'function') await _checkBankSyncHealth(); } catch (e) {}
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    toast('Switch failed: ' + msg, 'error');
+    try { setIntStatus('bankFeed', 'error', `⚠ Switch failed: ${esc(msg)}`); } catch (_) {}
+    if (btn) { btn.disabled = false; btn.textContent = '⇄ Switch account'; }
+  }
+}
+window.bankAdoptSharedAccount = bankAdoptSharedAccount;
+
 function _renderBankConnections() {
   const host = document.getElementById('bankFeedConnectionsList');
   if (!host) return;
@@ -110752,7 +110822,7 @@ function _renderBankConnections() {
       ? new Date(h.newestTxnUnix * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
       : '—';
     const warnTitle = h.status === 'relink'
-      ? `${(h.relink || []).map(r => r.label).join(', ') || 'Bank account'} must be re-linked`
+      ? `${(h.relink || []).map(r => r.label).join(', ') || 'Bank account'} ${(h.relink || []).some(r => r.shared) ? '— shared connection was replaced' : 'must be re-linked'}`
       : h.status === 'orphan' ? 'Bank connector lost' : `Bank sync is ${h.daysStale} day${h.daysStale === 1 ? '' : 's'} behind`;
     orphanWarning = `
       <div style="background: linear-gradient(135deg, rgba(220,38,38,0.10), rgba(239,68,68,0.06)); border:1px solid rgba(220,38,38,0.30); border-radius:8px; padding:10px 12px; margin-bottom:10px; display:flex; align-items:flex-start; gap:10px;">
@@ -110761,7 +110831,9 @@ function _renderBankConnections() {
           <div style="font-weight:700; color:#991b1b; margin-bottom:2px;">${esc(warnTitle)}</div>
           <div style="color:#7f1d1d;">
             ${h.status === 'relink'
-              ? `Stripe marked the bank connection inactive — no new transactions since ${esc(newestStr)}. See the account below for the relink steps.`
+              ? ((h.relink || []).some(r => r.shared)
+                  ? `A shared bank connection was replaced — no new transactions since ${esc(newestStr)}. Do not relink: switch to the new active account below.`
+                  : `Stripe marked the bank connection inactive — no new transactions since ${esc(newestStr)}. See the account below for the relink steps.`)
               : h.status === 'orphan'
               ? `Cached bank transactions exist (newest: ${esc(newestStr)}, ${h.daysStale}d ago) but no active Stripe Financial Connections account. Reconnect to resume sync.`
               : `Newest cached transaction: ${esc(newestStr)}. Click <b>↻ Refresh now</b> on an active account below, or reconnect if the issue persists.`}
@@ -110786,7 +110858,7 @@ function _renderBankConnections() {
     // in-app Connect flow, which makes a new account object + duplicates).
     const needsRelink = isActive && (c.needsRelink === true || c.status === 'inactive');
     const statusColor = needsRelink ? 'var(--danger)' : isActive ? 'var(--success)' : 'var(--muted)';
-    const statusLabel = needsRelink ? 'Relink required' : isActive ? c.status : 'Disconnected';
+    const statusLabel = needsRelink ? (c.sharedConnection === true ? 'Switch required' : 'Relink required') : isActive ? c.status : 'Disconnected';
     const last4 = c.accountLast4 ? `····${esc(c.accountLast4)}` : '';
     const sub = c.accountSubcategory ? ` · ${esc(c.accountSubcategory)}` : '';
     const interval = Number.isFinite(+c.pollIntervalHours) ? +c.pollIntervalHours : 24;
@@ -110797,7 +110869,7 @@ function _renderBankConnections() {
             : '')
       : 'Never polled') +
       (needsRelink && c.lastPollAttemptAt ? ` · last check: ${esc(new Date(c.lastPollAttemptAt).toLocaleString())}` : '');
-    const relinkNote = needsRelink
+    const relinkNote = needsRelink && c.sharedConnection === true ? _bankSharedRelinkNoteHtml(c) : needsRelink
       ? `<div style="font-size:11px; line-height:1.5; color:#7f1d1d; background:rgba(220,38,38,0.08); border:1px solid rgba(220,38,38,0.25); padding:7px 10px; border-radius:6px; margin-left:28px;">
            ⚠ Stripe marked this account <b>inactive</b>${c.relinkRequiredSince ? ` (detected ${esc(new Date(c.relinkRequiredSince).toLocaleDateString())})` : ''} — the bank sign-in expired or access was revoked, so no new transactions can arrive.<br>
            <b>Fix:</b> <a href="${_BANK_STRIPE_FC_ACCOUNTS_URL}" target="_blank" rel="noopener">Stripe Dashboard → Financial Connections → Accounts ↗</a> → ⋯ next to <code style="word-break:break-all;">${esc(c.stripeFcAccountId || '')}</code> → <b>Request relink</b>, then sign in to the bank from Stripe's email. Afterwards click <b>↻ Refresh now</b> here — missed transactions are pulled automatically.<br>
@@ -111023,8 +111095,13 @@ async function refreshBankAccountNow(fcAccountId) {
     } else if (acc.accountStatus && acc.accountStatus !== 'active') {
       // Entry 81: Stripe refuses refreshes on an inactive account — say so
       // instead of «✓ Up to date».
-      result = { ok: false, message: `⚠ Stripe reports this account ${acc.accountStatus} — relink required (Stripe Dashboard → Financial Connections → Accounts → ⋯ → Request relink).` };
-      setIntStatus('bankFeed', 'warn', `⚠ Bank account is ${esc(acc.accountStatus)} at Stripe — relink required.`);
+      const _sharedConn = ((state && state.bankConnections) || []).some(x => x.stripeFcAccountId === fcAccountId && x.sharedConnection === true);
+      result = { ok: false, message: _sharedConn
+        ? `⚠ Stripe reports this shared account ${acc.accountStatus} — do not relink; switch to the new active account (see the note on this account).`
+        : `⚠ Stripe reports this account ${acc.accountStatus} — relink required (Stripe Dashboard → Financial Connections → Accounts → ⋯ → Request relink).` };
+      setIntStatus('bankFeed', 'warn', _sharedConn
+        ? `⚠ Shared bank account is ${esc(acc.accountStatus)} at Stripe — switch to the re-linked account, do not relink.`
+        : `⚠ Bank account is ${esc(acc.accountStatus)} at Stripe — relink required.`);
     } else if (acc.refreshStatus === 'failed' && !(acc.written > 0)) {
       // Entry 81: active account, but Stripe could not refresh from the bank.
       result = { ok: false, message: `⚠ Stripe could not refresh from the bank (last attempt failed) — showing cached data only. Try again later; use 🔍 Diagnose if it persists.` };

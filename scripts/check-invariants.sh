@@ -345,6 +345,15 @@ check_gate 81 _checkBankSyncHealth "needsRelink === true \|\| c\.status === 'ina
 check_gate 81 _checkBankSyncHealth "status = 'relink'" 120
 check_gate 81 _refreshBankSyncBanner "h\.status === 'relink'" 40
 check_gate 81 _renderBankConnections 'Request relink' 120
+# Entry 82 (повтор 2026-11-22): общее подключение (sharedConnection) стало inactive после
+# повторного подключения банка из другого приложения. Баннер и карточка обязаны вести к
+# ПЕРЕКЛЮЧЕНИЮ на новый активный счёт (adoptBankFcAccount), а не к «Request relink» —
+# relink отозвал бы разрешение второго приложения.
+check_gate 82 _checkBankSyncHealth "shared: c\.sharedConnection === true" 120
+check_gate 82 _refreshBankSyncBanner "relinkShared" 40
+check_gate 82 _renderBankConnections "c\.sharedConnection === true \? _bankSharedRelinkNoteHtml\(c\)" 120
+check_gate 82 _bankSharedRelinkNoteHtml "Do NOT use .Request relink." 40
+check_gate 82 bankAdoptSharedAccount "httpsCallable\(fbSync\.functions, 'adoptBankFcAccount'\)" 40
 FN_JS="$ROOT/functions/index.js"
 # grep -c (не -q): под `set -o pipefail` ранний выход grep -q даёт SIGPIPE
 # первому grep на длинном окне → ложный провал гейта.
