@@ -1032,9 +1032,11 @@ exports.ensureStripeCustomer = onCall(
 // Creates a one-off invoice for a specific unit + month. Uses auto_advance
 // so Stripe finalizes and emails the tenant in a single call.
 // =========================================================================
-exports.createStripeInvoice = onCall(
-  {secrets: [STRIPE_SECRET_KEY]},
-  async (req) => {
+// Agent gateway (AGENT_API_PLAN Этап 1): тело вынесено в именованную функцию,
+// чтобы та же реализация вызывалась in-process с синтетическим req
+// ({auth, data}) агентского шлюза. onCall-обёртка ниже (после тела) и само
+// тело не изменились.
+async function _createStripeInvoiceImpl(req) {
     // Аудит 2026-07-16 (security): auth ДО rate-limit'а. Раньше счётчик
     // /rateLimits/ws_{hour} инкрементился до requireEditor — аноним мог
     // ~100 вызовами в час выжигать лимит и блокировать выставление счетов
@@ -1976,8 +1978,8 @@ exports.createStripeInvoice = onCall(
         },
       } : {}),
     };
-  }
-);
+}
+exports.createStripeInvoice = onCall({secrets: [STRIPE_SECRET_KEY]}, _createStripeInvoiceImpl);
 
 // =========================================================================
 // ===== Stripe — Start Auto-Pay ===========================================
@@ -2084,9 +2086,47 @@ exports.startAutoPay = onCall(
 // and status-bucketing happens client-side because Stripe's filter API
 // doesn't support all our needs (e.g., metadata.source).
 // =========================================================================
-exports.listStripeInvoices = onCall(
-  {secrets: [STRIPE_SECRET_KEY]},
-  async (req) => {
+// Фильтр «наши» инвойсы + маппер Stripe-инвойса в компактную строку UI. Вынесены
+// из listStripeInvoices (поведение 1-в-1), чтобы agent gateway строил тот же
+// снимок инвойсов для канон-предиката money.js (isMonthSettled) без дублирования.
+function _stripeInvoiceIsOurs(inv) {
+  // Авто-счета (source:'auto') — тоже наши. Без 'auto' в фильтре список
+  // и история юнита их не показывают (инцидент 2026-07: авто-счета невидимы).
+  // ПЛЮС прячем пустые $0-артефакты backfill-бага (total===0 && 0 строк):
+  // это не настоящие счета (Stripe их не даёт void/delete), они захламляют
+  // список/историю и ложно красят месяц «paid».
+  const src = inv.metadata && inv.metadata.source;
+  if (!(!inv.metadata || !src || src === 'suitesforall' || src === 'auto')) return false;
+  const total = Number(inv.total ?? inv.amount_due ?? 0);
+  const lineCount = inv.lines?.total_count ?? (inv.lines?.data?.length ?? 0);
+  if (total === 0 && lineCount === 0) return false;
+  return true;
+}
+function _stripeInvoiceToRow(inv, now) {
+  const customer = (typeof inv.customer === 'object') ? inv.customer : null;
+  // Derive "past due" client-friendly bucket
+  const isPastDue = inv.status === 'open' && inv.due_date && inv.due_date < now;
+  return {
+    id: inv.id,
+    number: inv.number || inv.id,
+    status: inv.status,
+    bucket: isPastDue ? 'past_due' : inv.status,
+    total: (inv.total || 0) / 100,
+    amountRemaining: (inv.amount_remaining || 0) / 100,
+    amountPaid: (inv.amount_paid || 0) / 100,
+    currency: (inv.currency || 'usd').toUpperCase(),
+    customerId: typeof inv.customer === 'string' ? inv.customer : customer?.id,
+    customerName: customer?.name || inv.customer_name || '',
+    customerEmail: customer?.email || inv.customer_email || '',
+    description: inv.description || '',
+    created: inv.created ? inv.created * 1000 : null,
+    dueDate: inv.due_date ? inv.due_date * 1000 : null,
+    hostedUrl: inv.hosted_invoice_url || null,
+    pdfUrl: inv.invoice_pdf || null,
+    metadata: inv.metadata || {},
+  };
+}
+async function _listStripeInvoicesImpl(req) {
     await requireEditor(req.auth);
     const {limit, startingAfter, status, customer, lean} = req.data || {};
     const stripe = getStripe();
@@ -2157,59 +2197,22 @@ exports.listStripeInvoices = onCall(
     const page = await stripe.invoices.list(args);
     const now = Math.floor(Date.now() / 1000);
     const rows = page.data
-      // Авто-счета (source:'auto') — тоже наши. Без 'auto' в фильтре список
-      // и история юнита их не показывают (инцидент 2026-07: авто-счета невидимы).
-      // ПЛЮС прячем пустые $0-артефакты backfill-бага (total===0 && 0 строк):
-      // это не настоящие счета (Stripe их не даёт void/delete), они захламляют
-      // список/историю и ложно красят месяц «paid».
-      .filter(inv => {
-        const src = inv.metadata && inv.metadata.source;
-        if (!(!inv.metadata || !src || src === 'suitesforall' || src === 'auto')) return false;
-        const total = Number(inv.total ?? inv.amount_due ?? 0);
-        const lineCount = inv.lines?.total_count ?? (inv.lines?.data?.length ?? 0);
-        if (total === 0 && lineCount === 0) return false;
-        return true;
-      })
-      .map(inv => {
-        const customer = (typeof inv.customer === 'object') ? inv.customer : null;
-        // Derive "past due" client-friendly bucket
-        const isPastDue = inv.status === 'open' && inv.due_date && inv.due_date < now;
-        return {
-          id: inv.id,
-          number: inv.number || inv.id,
-          status: inv.status,
-          bucket: isPastDue ? 'past_due' : inv.status,
-          total: (inv.total || 0) / 100,
-          amountRemaining: (inv.amount_remaining || 0) / 100,
-          amountPaid: (inv.amount_paid || 0) / 100,
-          currency: (inv.currency || 'usd').toUpperCase(),
-          customerId: typeof inv.customer === 'string' ? inv.customer : customer?.id,
-          customerName: customer?.name || inv.customer_name || '',
-          customerEmail: customer?.email || inv.customer_email || '',
-          description: inv.description || '',
-          created: inv.created ? inv.created * 1000 : null,
-          dueDate: inv.due_date ? inv.due_date * 1000 : null,
-          hostedUrl: inv.hosted_invoice_url || null,
-          pdfUrl: inv.invoice_pdf || null,
-          metadata: inv.metadata || {},
-        };
-      });
+      .filter(_stripeInvoiceIsOurs)
+      .map(inv => _stripeInvoiceToRow(inv, now));
     return {
       rows,
       hasMore: page.has_more,
       nextCursor: page.has_more ? page.data[page.data.length - 1].id : null,
     };
-  }
-);
+}
+exports.listStripeInvoices = onCall({secrets: [STRIPE_SECRET_KEY]}, _listStripeInvoicesImpl);
 
 // =========================================================================
 // ===== Stripe — Resend invoice (manual reminder) ========================
 // Triggers Stripe to send the invoice email again. Called from the A/R
 // Aging "Send reminder" quick-action and the bulk reminder button.
 // =========================================================================
-exports.stripeResendInvoice = onCall(
-  {secrets: [STRIPE_SECRET_KEY]},
-  async (req) => {
+async function _stripeResendInvoiceImpl(req) {
     await requireEditor(req.auth);
     const {invoiceId, customerId} = req.data || {};
     if (!invoiceId && !customerId) {
@@ -2255,8 +2258,8 @@ exports.stripeResendInvoice = onCall(
       logger.error('[stripeResend] failed:', err.message, err.stack);
       throw new HttpsError('internal', `Resend failed: ${err.message || err}`);
     }
-  }
-);
+}
+exports.stripeResendInvoice = onCall({secrets: [STRIPE_SECRET_KEY]}, _stripeResendInvoiceImpl);
 
 // =========================================================================
 // ===== Stripe — Void or delete an invoice ================================
@@ -2274,9 +2277,7 @@ exports.stripeResendInvoice = onCall(
 // status } so the client knows what actually happened and can update
 // its local cache accordingly.
 // =========================================================================
-exports.voidOrDeleteStripeInvoice = onCall(
-  {secrets: [STRIPE_SECRET_KEY]},
-  async (req) => {
+async function _voidOrDeleteStripeInvoiceImpl(req) {
     await requireEditor(req.auth);
     const {invoiceId} = req.data || {};
     if (!invoiceId) {
@@ -2354,8 +2355,8 @@ exports.voidOrDeleteStripeInvoice = onCall(
       await writeAudit('void-failed', { note: 'Failure: ' + err.message });
       throw new HttpsError('internal', `Void/Delete failed: ${err.message || err}`);
     }
-  }
-);
+}
+exports.voidOrDeleteStripeInvoice = onCall({secrets: [STRIPE_SECRET_KEY]}, _voidOrDeleteStripeInvoiceImpl);
 
 // =========================================================================
 // ===== Stripe — Mark invoice paid out of band ===========================
@@ -2379,9 +2380,7 @@ exports.voidOrDeleteStripeInvoice = onCall(
 //
 // Audit: пишет в /workspaces/{id}/audit с action='invoice.mark-paid-oob'.
 // =========================================================================
-exports.markInvoicePaidOutOfBand = onCall(
-  {secrets: [STRIPE_SECRET_KEY]},
-  async (req) => {
+async function _markInvoicePaidOutOfBandImpl(req) {
     await requireEditor(req.auth);
     const {invoiceId, suiteId, ym, paymentMethod, paidAt, note} = req.data || {};
     if (!invoiceId) {
@@ -2485,8 +2484,8 @@ exports.markInvoicePaidOutOfBand = onCall(
       await writeAudit('mark-paid-oob-failed', { note: 'Failure: ' + err.message });
       throw new HttpsError('internal', `Mark paid OOB failed: ${err.message || err}`);
     }
-  }
-);
+}
+exports.markInvoicePaidOutOfBand = onCall({secrets: [STRIPE_SECRET_KEY]}, _markInvoicePaidOutOfBandImpl);
 
 // =========================================================================
 // ===== Stripe — Discount an open invoice (credit note) ==================
@@ -12633,6 +12632,36 @@ exports.ppWebhookFlushScheduled = _ppWebhook.ppWebhookFlushScheduled;
 // См. docs/incident-2026-06-09-suite344.md, FIXES_LOG 65/67.
 const _clobberAlert = require('./clobber-alert');
 exports.clobberAlertBuildingWrite = _clobberAlert.clobberAlertBuildingWrite;
+
+// ─── Agent gateway (AGENT_API_PLAN.md, Этап 1) ───────────────────────────────
+// REST /v1 + MCP для AI-агентов. Модуль самодостаточен (functions/agent-gateway.js
+// + agent-tools-*.js + agent-proposals.js); сюда передаются только зависимости и
+// in-process реализации существующих callables (_*Impl). Пишет ТОЛЬКО через них
+// и в свои коллекции agentKeys / agentAudit / agentProposals / agentIdempotency /
+// agentDeadLetter / agentConfig (все CF-only, без правил). firestore.rules НЕ меняются.
+const _agentGateway = require('./agent-gateway').create({
+  db, admin, logger, HttpsError, onCall, onRequest, WORKSPACE_ID,
+  readWorkspaceState, mutateWorkspaceState, getStripe, secrets: [STRIPE_SECRET_KEY],
+  stripeInvoiceToRow: _stripeInvoiceToRow, stripeInvoiceFilter: _stripeInvoiceIsOurs,
+  // Точная сумма rent-счёта для предпросмотра proposal — та же функция, что считает сам счёт.
+  unitRentCents,
+  impls: {
+    createStripeInvoice: _createStripeInvoiceImpl,
+    listStripeInvoices: _listStripeInvoicesImpl,
+    stripeResendInvoice: _stripeResendInvoiceImpl,
+    voidOrDeleteStripeInvoice: _voidOrDeleteStripeInvoiceImpl,
+    markInvoicePaidOutOfBand: _markInvoicePaidOutOfBandImpl,
+  },
+});
+exports.agentApi = _agentGateway.agentApi;
+exports.agentMcp = _agentGateway.agentMcp;
+exports.agentKeyCreate = _agentGateway.agentKeyCreate;
+exports.agentKeyList = _agentGateway.agentKeyList;
+exports.agentKeyRevoke = _agentGateway.agentKeyRevoke;
+exports.agentConfigGet = _agentGateway.agentConfigGet;
+exports.agentConfigSet = _agentGateway.agentConfigSet;
+exports.agentProposalList = _agentGateway.agentProposalList;
+exports.agentProposalDecide = _agentGateway.agentProposalDecide;
 
 // ─── Тест-хуки (ТОЛЬКО под env-флагом) ──────────────────────────────────────
 // Деплой-дискавери firebase никогда не выставляет SFA_TEST_EXPORTS — в проде
