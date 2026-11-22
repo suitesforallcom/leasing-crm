@@ -885,6 +885,19 @@ if [ "$_e105_ok" = 1 ]; then
   echo "  ✓ запись о конверте: _dsEnvelopeTarget в JWT-ветке docusignSendEnvelope, floorId от обоих отправителей"
 fi
 echo
+echo "Entry 106 — agent gateway: серверная копия денежного модуля равна канону телефона:"
+# 2026-11-22. functions/lib/money.mjs ≡ m/lib/money.js байт-в-байт: шлюз для AI-агентов и
+# телефон решают «оплачен ли месяц» одним кодом (§ 0.2.2). Копия уже расходилась один раз
+# (правка Entry 102 в m/lib/money.js не доехала до functions/) — отсюда гейт на деплое
+# хостинга: правка канона без `cp m/lib/money.js functions/lib/money.mjs` не выходит.
+_e106_c1="$ROOT/m/lib/money.js"; _e106_c2="$ROOT/functions/lib/money.mjs"
+if [ -s "$_e106_c1" ] && [ -s "$_e106_c2" ] && cmp -s "$_e106_c1" "$_e106_c2"; then
+  echo "  ✓ functions/lib/money.mjs ≡ m/lib/money.js (байт-в-байт)"
+else
+  echo "  ✗ Entry 106: functions/lib/money.mjs разошёлся с m/lib/money.js или отсутствует — cp m/lib/money.js functions/lib/money.mjs (FIXES_LOG Entry 106)"
+  FAIL=1
+fi
+echo
 echo "──────────────────────────────────────────────────────────"
 if [ "$FAIL" -ne 0 ]; then
   echo "✗ DEPLOY BLOCKED — FIXES_LOG invariants missing."
