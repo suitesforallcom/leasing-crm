@@ -150,6 +150,17 @@ Do paste:
 - Anonymized examples (`Suite 101 → tenant <X>`)
 - Public release tags (commit hashes)
 
+## Agent keys (AI assistants) — FIXES_LOG Entry 106
+
+Personal agent keys (`sfa_ak_<12 hex>_<43 chars>`) are secrets of the employee who created them (Settings → «AI access»).
+
+- The server stores only the sha256 of the secret (`workspaces/default/agentKeys/{keyId}`, no Firestore rules — Cloud Functions only). The full key is shown once at creation and cannot be recovered.
+- A key never goes into chat (including the chat with the assistant itself), a repository, a ticket, an email, a log or a commit message. Keep it in an environment variable (`SFA_AGENT_KEY`).
+- Claude never asks Tony or a secretary to paste a key, never prints one, and never writes one into `.mcp.json` in this repository — use `${SFA_AGENT_KEY}`.
+- A leaked or lost key: Revoke in Settings → «AI access» (immediate; an admin can revoke anyone's), then create a new one. A key expires in at most 90 days.
+- A key can do only what its owner's role allows, inside the owner's buildings; money tools are off until an admin turns on `classC`. The whole gateway can be switched off in under a minute: Settings → «Agent proposals» → «Agent access enabled».
+- No new Secret Manager secrets were added for the gateway. `agentApi`, `agentMcp` and `agentProposalDecide` bind the existing `STRIPE_SECRET_KEY`.
+
 ## Audit log
 
 Any time Claude potentially exposes a secret (even by accident), record it in SESSION_LOG.md with `⚠️` marker and timestamp. Tony reviews and rotates if needed.
