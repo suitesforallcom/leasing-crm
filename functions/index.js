@@ -12108,6 +12108,11 @@ exports.hubspotFullSync = _hs.hubspotFullSync;
 exports.hubspotSyncNow = _hs.hubspotSyncNow;
 exports.hubspotGetData = _hs.hubspotGetData;
 
+// FPM → HubSpot: подписанные договоры и оплаты в сделки (Contract signed / Payment received).
+const _leaseSync = require('./fpm-hubspot-lease-sync');
+exports.fpmHubspotLeaseSync = _leaseSync.fpmHubspotLeaseSync;
+exports.fpmHubspotLeaseSyncNow = _leaseSync.fpmHubspotLeaseSyncNow;
+
 // Phase 20 — Marketing ingest (Google Ads Scripts / Meta / TikTok bridges).
 // HTTPS endpoint that external scripts POST spend/campaign data to. Uses
 // shared secret in X-Shared-Secret header for auth. Storage: separate
