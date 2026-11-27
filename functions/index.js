@@ -12113,6 +12113,11 @@ const _leaseSync = require('./fpm-hubspot-lease-sync');
 exports.fpmHubspotLeaseSync = _leaseSync.fpmHubspotLeaseSync;
 exports.fpmHubspotLeaseSyncNow = _leaseSync.fpmHubspotLeaseSyncNow;
 
+// HubSpot: first_note_at (Time to first note) + short Created column, every 10 minutes.
+const _dealTiming = require('./hubspot-deal-timing');
+exports.hubspotDealTiming = _dealTiming.hubspotDealTiming;
+exports.hubspotDealTimingNow = _dealTiming.hubspotDealTimingNow;
+
 // Phase 20 — Marketing ingest (Google Ads Scripts / Meta / TikTok bridges).
 // HTTPS endpoint that external scripts POST spend/campaign data to. Uses
 // shared secret in X-Shared-Secret header for auth. Storage: separate
